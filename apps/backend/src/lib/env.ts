@@ -4,7 +4,7 @@ import { z } from "zod";
  * Cấu hình môi trường của backend, kiểm bằng zod khi nạp `medusa-config.ts` (BASE-CFG-002).
  *
  * - Thiếu/sai → `loadEnvOrExit` in danh sách TÊN biến + lý do ra stderr rồi thoát mã 1. Không bao giờ in giá trị.
- * - `NODE_ENV=production`: mọi bí mật, CORS và REDIS_URL đều bắt buộc.
+ * - `NODE_ENV=production`: mọi bí mật, CORS và REDIS_URL đều bắt buộc; VNPAY bật (mặc định) → đủ `VNPAY_REQUIRED`.
  * - `development`/`test`: chỉ DATABASE_URL bắt buộc; CORS vắng → `DEV_CORS_DEFAULTS` (localhost); bí mật vắng →
  *   Medusa dùng mặc định dev của nó ("supersecret", Medusa tự từ chối ở production); REDIS_URL vắng → module
  *   in-memory (một tiến trình). Biến CÓ đặt thì vẫn phải đúng định dạng.
@@ -29,6 +29,26 @@ export const PRODUCTION_REQUIRED = [
   "AUTH_CORS",
   "AUTH_MFA_ENCRYPTION_KEY",
 ] as const;
+
+/**
+ * VNPAY (SPEC-payment): bật mặc định. Production + VNPAY_ENABLED=true → bắt buộc đủ các biến dưới. Dev/test vắng → dùng
+ * `VNPAY_DEV_DEFAULTS` (GIẢ — chỉ ký/kiểm chữ ký cục bộ với MockVnpayGateway; production từ chối khoá giả này).
+ */
+export const VNPAY_REQUIRED = [
+  "VNPAY_TMN_CODE",
+  "VNPAY_HASH_SECRET",
+  "VNPAY_PAYMENT_URL",
+  "VNPAY_API_URL",
+  "VNPAY_RETURN_URL",
+] as const;
+
+export const VNPAY_DEV_DEFAULTS = {
+  VNPAY_TMN_CODE: "XSHOPDEV",
+  VNPAY_HASH_SECRET: "xshop-dev-vnpay-hash-secret-khong-dung-production",
+  VNPAY_PAYMENT_URL: "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html",
+  VNPAY_API_URL: "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction",
+  VNPAY_RETURN_URL: "http://localhost:3000/thanh-toan/ket-qua",
+} as const;
 
 /** CORS khi chạy dev/test mà không đặt biến: storefront (Next.js 3000/8000) và Admin (Vite 5173, Medusa 9000). */
 export const DEV_CORS_DEFAULTS = {
@@ -115,6 +135,20 @@ const schema = z
       (v) => (v === undefined || v === "" ? "false" : v),
       z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
     ),
+    VNPAY_ENABLED: z.preprocess(
+      (v) => (v === undefined || v === "" ? "true" : v),
+      z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
+    ),
+    VNPAY_TMN_CODE: optionalText.pipe(
+      z
+        .string()
+        .regex(/^[A-Za-z0-9]{1,32}$/, { message: "phải là mã merchant chữ/số (≤ 32 ký tự)" })
+        .optional(),
+    ),
+    VNPAY_HASH_SECRET: optionalText.pipe(secret.optional()),
+    VNPAY_PAYMENT_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
+    VNPAY_API_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
+    VNPAY_RETURN_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV !== "production") return;
@@ -126,14 +160,52 @@ const schema = z
     if (env.JWT_SECRET !== undefined && env.JWT_SECRET === env.COOKIE_SECRET) {
       ctx.addIssue({ code: "custom", path: ["COOKIE_SECRET"], message: "phải khác JWT_SECRET" });
     }
+    if (env.VNPAY_ENABLED) {
+      for (const key of VNPAY_REQUIRED) {
+        if (env[key] === undefined) {
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: "bắt buộc khi NODE_ENV=production và VNPAY_ENABLED=true",
+          });
+        }
+      }
+      if (env.VNPAY_HASH_SECRET === VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["VNPAY_HASH_SECRET"],
+          message: "không được dùng khoá giả của dev",
+        });
+      }
+      for (const key of ["VNPAY_PAYMENT_URL", "VNPAY_API_URL", "VNPAY_RETURN_URL"] as const) {
+        const value = env[key];
+        if (value !== undefined && !value.startsWith("https://")) {
+          ctx.addIssue({ code: "custom", path: [key], message: "phải dùng https:// ở production" });
+        }
+      }
+    }
   })
   // Chỉ tới đây khi hợp lệ; production đã bắt buộc CORS ở trên nên mặc định dev không bao giờ áp ở production.
-  .transform((env) => ({
-    ...env,
-    STORE_CORS: env.STORE_CORS ?? DEV_CORS_DEFAULTS.STORE_CORS,
-    ADMIN_CORS: env.ADMIN_CORS ?? DEV_CORS_DEFAULTS.ADMIN_CORS,
-    AUTH_CORS: env.AUTH_CORS ?? DEV_CORS_DEFAULTS.AUTH_CORS,
-  }));
+  // Tương tự cho VNPAY: production + bật đã bắt buộc đủ biến nên mặc định giả chỉ lấp ở dev/test. Tắt → `vnpay: null`.
+  .transform((env) => {
+    const pick = <K extends keyof typeof VNPAY_DEV_DEFAULTS>(key: K): string =>
+      env[key] ?? (env.NODE_ENV === "production" ? "" : VNPAY_DEV_DEFAULTS[key]);
+    return {
+      ...env,
+      STORE_CORS: env.STORE_CORS ?? DEV_CORS_DEFAULTS.STORE_CORS,
+      ADMIN_CORS: env.ADMIN_CORS ?? DEV_CORS_DEFAULTS.ADMIN_CORS,
+      AUTH_CORS: env.AUTH_CORS ?? DEV_CORS_DEFAULTS.AUTH_CORS,
+      vnpay: env.VNPAY_ENABLED
+        ? {
+            tmnCode: pick("VNPAY_TMN_CODE"),
+            hashSecret: pick("VNPAY_HASH_SECRET"),
+            paymentUrl: pick("VNPAY_PAYMENT_URL"),
+            apiUrl: pick("VNPAY_API_URL"),
+            returnUrl: pick("VNPAY_RETURN_URL"),
+          }
+        : null,
+    };
+  });
 
 export type Env = z.output<typeof schema>;
 
