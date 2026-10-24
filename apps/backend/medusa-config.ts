@@ -82,5 +82,7 @@ module.exports = defineConfig({
     { resolve: "./src/modules/fashion" },
     // Read model tìm/lọc cùng SKU `catalog_variant_index` (T-014, D-004).
     { resolve: "./src/modules/catalog-index" },
+    // Nhập CSV catalog: preview/commit idempotent theo import id (T-015).
+    { resolve: "./src/modules/catalog-import" },
   ],
 });

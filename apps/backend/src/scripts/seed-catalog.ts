@@ -266,8 +266,10 @@ async function stockDemoVariants(
     fields: ["id", "sku", "inventory_items.inventory_item_id"],
     filters: { product_id: productId },
   });
-  const rows: { sku?: string | null; inventory_items?: ({ inventory_item_id: string } | null)[] | null }[] =
-    data;
+  const rows = data as unknown as {
+    sku?: string | null;
+    inventory_items?: ({ inventory_item_id: string } | null)[] | null;
+  }[];
   const stockBySku = new Map(
     demo.variants.map(([c, s, , stock]) => [`${demo.sku}-${c}-${s}`.toUpperCase(), stock]),
   );

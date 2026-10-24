@@ -62,7 +62,7 @@ export async function loadVariantPrices(
       }),
     },
   });
-  const rows: RawCalculated[] = data;
+  const rows = data as unknown as RawCalculated[];
   const priceListIds = new Set<string>();
   const pending: { id: string; price: number; compareAt: number | null; listId: string | null }[] = [];
   for (const r of rows) {
