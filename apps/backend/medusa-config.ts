@@ -74,5 +74,9 @@ module.exports = defineConfig({
     disable: env.DISABLE_MEDUSA_ADMIN,
     ...(env.MEDUSA_BACKEND_URL !== undefined && { backendUrl: env.MEDUSA_BACKEND_URL }),
   },
-  modules: redisModules,
+  modules: [
+    ...redisModules,
+    // Catalog thời trang: bảng size có version, thuộc tính, bảng màu/size (T-013).
+    { resolve: "./src/modules/fashion" },
+  ],
 });
