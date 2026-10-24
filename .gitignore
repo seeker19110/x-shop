@@ -13,3 +13,5 @@ coverage/
 *.key
 playwright-report/
 test-results/
+.claude/worktrees/
+docs/ops/perf/budget-latest.json
