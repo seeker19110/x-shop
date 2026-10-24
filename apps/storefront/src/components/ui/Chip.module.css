@@ -25,6 +25,7 @@
   background: transparent;
   font-size: 1.25rem;
   line-height: 1;
+  text-decoration: none;
   cursor: pointer;
   transition: background-color var(--motion-fast) var(--ease);
 }
@@ -50,6 +51,8 @@
 }
 
 .clear {
+  display: inline-flex;
+  align-items: center;
   min-height: var(--touch-min);
   padding: 0 var(--space-2);
   border: 0;

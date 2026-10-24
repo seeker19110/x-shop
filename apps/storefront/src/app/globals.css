@@ -8,6 +8,8 @@
 }
 
 html {
+  /* Focus/anchor không bị header dính che (DESIGN.md §Focus). */
+  scroll-padding-top: 4.5rem;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }

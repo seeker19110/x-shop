@@ -1,4 +1,4 @@
-import { formatVnd } from "@x-shop/domain";
+import { formatVnd } from "../../lib/format-vnd";
 import styles from "./Price.module.css";
 import { cx } from "./cx";
 import { VisuallyHidden } from "./VisuallyHidden";

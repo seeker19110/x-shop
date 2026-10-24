@@ -1,0 +1,107 @@
+.fields {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.group {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.legend {
+  padding: 0;
+  font-weight: var(--weight-semibold);
+}
+
+.options {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--touch-min);
+  cursor: pointer;
+}
+
+.option input[type="checkbox"] {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.count {
+  color: var(--muted);
+  font-size: var(--text-small);
+}
+
+.price {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.priceField {
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+}
+
+.input {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+/* Sidebar (>= 64em) */
+.sidebar {
+  display: none;
+}
+
+.sidebarForm {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.apply {
+  width: 100%;
+}
+
+/* Drawer lọc */
+.drawerFooter {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+  padding: var(--space-4) 0 calc(var(--space-2) + env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--divider);
+}
+
+.openButton {
+  display: inline-flex;
+}
+
+@media (min-width: 64em) {
+  .sidebar {
+    display: block;
+  }
+
+  .openButton {
+    display: none;
+  }
+}
