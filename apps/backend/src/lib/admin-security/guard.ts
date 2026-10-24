@@ -1,0 +1,179 @@
+import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { can, type Permission, type Role } from "@x-shop/domain";
+import { RBAC_MODULE } from "../../modules/rbac";
+import type RbacModuleService from "../../modules/rbac/service";
+import { recordAudit } from "../audit/record";
+import { sendProblem } from "../http/problem";
+import { getAdminSessionPolicy, isSensitive } from "./config";
+import { resolveAdminRule } from "./policy";
+import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
+import { normalizeAdminPath, normalizeMethod } from "./route-match";
+import { checkAndTouchSession, evaluateMfa, mfaCompletedAtMs, type AdminAuthContext } from "./session";
+import { getSecurityStore } from "./store";
+
+type AuthedRequest = MedusaRequest & { auth_context?: AdminAuthContext };
+
+/** Thông tin RBAC đã kiểm, gắn vào request cho route dùng tiếp (vd. che PII theo vai trò). */
+export interface AdminAccess {
+  userId: string;
+  roles: Role[];
+  permission: Permission | null;
+}
+
+export const adminAccessOf = (req: MedusaRequest): AdminAccess | undefined =>
+  (req as MedusaRequest & { x_admin_access?: AdminAccess }).x_admin_access;
+
+const MESSAGES = {
+  UNAUTHORIZED: "Chưa đăng nhập",
+  SESSION_EXPIRED: "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại",
+  SESSION_IDLE: "Phiên đã nhàn rỗi quá lâu, vui lòng đăng nhập lại",
+  FORBIDDEN: "Bạn không có quyền thực hiện thao tác này",
+  MFA_REQUIRED: "Thao tác này cần xác thực hai lớp (TOTP) đã bật và đã xác minh trong phiên",
+  REAUTH_REQUIRED: "Thao tác nhạy cảm cần xác thực lại (đăng nhập + mã TOTP) trong vài phút gần đây",
+  RATE_LIMITED: "Thử quá nhiều lần, vui lòng thử lại sau",
+} as const;
+
+function deny(
+  res: MedusaResponse,
+  status: number,
+  code: keyof typeof MESSAGES,
+  extra: Record<string, unknown> = {},
+) {
+  sendProblem(res, status, code, MESSAGES[code], [], extra);
+}
+
+async function auditDenied(
+  req: MedusaRequest,
+  method: string,
+  path: string,
+  detail: Record<string, unknown>,
+) {
+  try {
+    await recordAudit(
+      req.scope,
+      { action: "rbac.denied", resource_type: "route", resource_id: `${method} ${path}`, changes: detail },
+      req,
+    );
+  } catch (e) {
+    req.scope
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .error(`[rbac] Không ghi được audit lần từ chối: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Cổng bảo mật cho MỌI request `/admin/*` (T-023 + T-024), chạy sau middleware xác thực native của Medusa:
+ *  1. route công khai native (invite accept, feature flags) → cho qua;
+ *  2. chỉ actor `user` (khoá API bí mật không có vai trò → từ chối);
+ *  3. chính sách phiên: hết hạn tuyệt đối / nhàn rỗi → 401;
+ *  4. quyền theo map (`/admin/x/*`: permissions.ts, fail-closed; native: native-permissions.ts) × vai trò → 403 + audit;
+ *  5. quyền nhạy cảm → MFA đã xác minh (403 MFA_REQUIRED); thao tác `reauth` → MFA ≤ 5 phút (403 REAUTH_REQUIRED).
+ */
+export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
+  const method = normalizeMethod(req.method);
+  if (method === "OPTIONS") return next();
+  const path = normalizeAdminPath(req.originalUrl);
+  const rule = resolveAdminRule(method, path);
+  if (rule.kind === "public") return next();
+
+  const ctx = (req as AuthedRequest).auth_context;
+  if (!ctx?.actor_id) return deny(res, 401, "UNAUTHORIZED");
+  if (ctx.actor_type !== "user") {
+    await auditDenied(req, method, path, { reason: "actor_type", actor_type: ctx.actor_type ?? null });
+    return deny(res, 403, "FORBIDDEN");
+  }
+
+  const policy = getAdminSessionPolicy();
+  const session = await checkAndTouchSession(getSecurityStore(), ctx, policy);
+  if (!session.ok) return deny(res, 401, session.code);
+
+  const rbac = req.scope.resolve<RbacModuleService>(RBAC_MODULE);
+  const roles = rule.kind === "self" ? [] : await rbac.rolesOf(ctx.actor_id);
+  const allowed =
+    rule.kind === "self" ||
+    (rule.kind === "any_role" && roles.length > 0) ||
+    (rule.kind === "permission" && can(roles, rule.permission));
+  if (!allowed) {
+    await auditDenied(req, method, path, {
+      reason: rule.kind === "deny" ? rule.reason : "missing_permission",
+      permission: rule.kind === "permission" ? rule.permission : null,
+      roles,
+    });
+    return deny(res, 403, "FORBIDDEN", rule.kind === "permission" ? { permission: rule.permission } : {});
+  }
+
+  if (rule.kind === "permission" && (isSensitive(rule.permission) || rule.reauth)) {
+    const mfa = evaluateMfa(ctx, Date.now(), rule.reauth ? policy.reauthMaxAgeSeconds : null);
+    if (!mfa.ok) {
+      return deny(res, 403, mfa.code, {
+        permission: rule.permission,
+        ...(mfa.code === "REAUTH_REQUIRED" && { max_age_seconds: policy.reauthMaxAgeSeconds }),
+      });
+    }
+  }
+
+  (req as MedusaRequest & { x_admin_access?: AdminAccess }).x_admin_access = {
+    userId: ctx.actor_id,
+    roles,
+    permission: rule.kind === "permission" ? rule.permission : null,
+  };
+  return next();
+}
+
+/**
+ * Xác thực lại cho thao tác nhạy cảm quyết định TRONG route (vd. hoàn tiền vượt ngưỡng — T-027 gọi khi biết số tiền).
+ * Trả `true` khi đã gửi 403 REAUTH_REQUIRED/MFA_REQUIRED.
+ */
+export function rejectWithoutRecentMfa(req: MedusaRequest, res: MedusaResponse): boolean {
+  const ctx = (req as AuthedRequest).auth_context ?? {};
+  const policy = getAdminSessionPolicy();
+  const mfa = evaluateMfa(ctx, Date.now(), policy.reauthMaxAgeSeconds);
+  if (mfa.ok) return false;
+  deny(res, 403, mfa.code, { max_age_seconds: policy.reauthMaxAgeSeconds });
+  return true;
+}
+
+/**
+ * `POST /auth/token/refresh` cho admin: token đổi mới giữ mốc MFA nên không kéo dài phiên quá hạn tuyệt đối; token
+ * admin KHÔNG có MFA thì không refresh được (mốc của nó là `iat`, refresh sẽ đặt lại mốc → lách hạn 8 giờ).
+ */
+export async function adminRefreshGuard(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
+  const ctx = (req as AuthedRequest).auth_context;
+  if (!ctx || ctx.actor_type !== "user" || !ctx.actor_id) return next();
+  if (mfaCompletedAtMs(ctx) === null) return deny(res, 401, "SESSION_EXPIRED", { action: "login" });
+  const session = await checkAndTouchSession(getSecurityStore(), ctx, getAdminSessionPolicy());
+  if (!session.ok) return deny(res, 401, session.code);
+  return next();
+}
+
+/**
+ * Rate limit đăng nhập / xác minh MFA theo nhiều tín hiệu (SEC03). Lần thử được giữ chỗ trước khi handler chạy; kết
+ * quả 2xx → hoàn lại (không tính thất bại), 4xx → giữ là thất bại, 5xx → hoàn lại (lỗi hệ thống không phạt người dùng).
+ */
+export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest) => string | null) {
+  return async (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => {
+    const store = getSecurityStore();
+    const identity = identityOf(req);
+    const ip = req.ip ?? "unknown";
+    const attempt = await registerAttempt(store, scope, identity, ip);
+    if (!attempt.allowed) {
+      res.setHeader("Retry-After", String(attempt.retryAfterSeconds));
+      return deny(res, 429, "RATE_LIMITED", { retry_after: attempt.retryAfterSeconds });
+    }
+    res.on("finish", () => {
+      const s = res.statusCode;
+      if (s < 400) registerSuccess(store, scope, identity, ip).catch(() => undefined);
+      else if (s >= 500) registerRefund(store, scope, identity, ip).catch(() => undefined);
+    });
+    return next();
+  };
+}
+
+export const loginIdentity = (req: MedusaRequest): string | null => {
+  const email = (req.body as { email?: unknown } | undefined)?.email;
+  return typeof email === "string" ? email.slice(0, 320) : null;
+};
+
+export const mfaIdentity = (req: MedusaRequest): string | null =>
+  (req as AuthedRequest).auth_context?.auth_identity_id || null;

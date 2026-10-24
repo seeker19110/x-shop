@@ -17,8 +17,13 @@ REDIS_URL=redis://localhost:6379
 # ≥ 32 ký tự ngẫu nhiên, JWT_SECRET khác COOKIE_SECRET. Sinh: openssl rand -base64 48
 JWT_SECRET=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-jwt
 COOKIE_SECRET=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-cookie
-# Khoá mã hoá bí mật TOTP của Auth Module (MFA admin).
+# Khoá mã hoá bí mật TOTP của Auth Module (MFA admin). Thiếu → đăng ký TOTP thất bại (route nhạy cảm không dùng được).
+# Đổi khoá = mọi TOTP đã đăng ký không giải mã được nữa → phải đăng ký lại.
 AUTH_MFA_ENCRYPTION_KEY=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-mfa
+# Chính sách phiên admin (SEC02, T-024) — tùy chọn, số nguyên giây; vắng = mặc định.
+# ADMIN_SESSION_MAX_AGE_SECONDS=28800   # hết hạn tuyệt đối từ lúc xác thực (8 giờ); [300, 86400]
+# ADMIN_SESSION_IDLE_SECONDS=1800       # nhàn rỗi tối đa (30 phút); [60, 28800]
+# ADMIN_REAUTH_MAX_AGE_SECONDS=300      # xác thực lại cho đổi quyền / hoàn tiền vượt ngưỡng (5 phút); [30, 900]
 # Origin http(s) hoặc /regex/, phẩy, không đường dẫn.
 STORE_CORS=http://localhost:3000
 ADMIN_CORS=http://localhost:5173,http://localhost:9000
@@ -56,3 +61,12 @@ MEDUSA_BACKEND_URL=http://localhost:9000
 # XS_DATA_SOURCE=fixtures
 ```
 Chỉ tiền tố `NEXT_PUBLIC_` vào bundle client; bí mật không bao giờ có tiền tố này (BASE-CFG-008).
+
+## Quản trị: vai trò, MFA, phiên (T-023/T-024)
+- Owner đầu tiên: tạo admin (`medusa user -e <email>` hoặc lời mời) rồi chạy trên máy chủ
+  `pnpm --filter @x-shop/backend rbac:grant-owner <email>` — không có route công khai để tự cấp owner.
+- Mọi route `/admin/*` đi qua `src/lib/admin-security/guard.ts`: quyền theo `src/api/admin/x/permissions.ts` (route
+  `/admin/x/*`, không khai báo = 403) và `src/lib/admin-security/native-permissions.ts` (route native). Quyền nhạy cảm
+  (`user.manage`, `refund.*`, `settings.manage`, `customer.export`, `settlement.import`) đòi TOTP đã bật + đã xác minh
+  trong phiên. Trạng thái nhàn rỗi phiên và bộ đếm rate limit đăng nhập/MFA nằm trong Redis (`REDIS_URL`, tiền tố
+  `xs:sec:`), không lưu email/IP thô.

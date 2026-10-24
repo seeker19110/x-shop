@@ -82,5 +82,9 @@ module.exports = defineConfig({
     { resolve: "./src/modules/fashion" },
     // Read model tìm/lọc cùng SKU `catalog_variant_index` (T-014, D-004).
     { resolve: "./src/modules/catalog-index" },
+    // Vai trò admin `user_role` — RBAC tự xây, không dùng RBAC Enterprise (T-023).
+    { resolve: "./src/modules/rbac" },
+    // Audit log chỉ ghi thêm + sổ điều chỉnh tồn (T-025).
+    { resolve: "./src/modules/audit" },
   ],
 });

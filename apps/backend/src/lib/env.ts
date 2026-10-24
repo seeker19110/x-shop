@@ -107,6 +107,17 @@ const corsList = z.string().refine(
   { message: "phải là danh sách origin http(s) (hoặc /regex/) cách nhau dấu phẩy" },
 );
 
+/** Số nguyên giây trong [min, max]; vắng/rỗng → mặc định. */
+const intInRange = (fallback: number, min: number, max: number) =>
+  z.preprocess(
+    (v) => (v === undefined || (typeof v === "string" && v.trim() === "") ? String(fallback) : v),
+    z
+      .string()
+      .regex(/^\d+$/, { message: `phải là số nguyên giây trong [${min}, ${max}]` })
+      .transform(Number)
+      .refine((n) => n >= min && n <= max, { message: `phải là số nguyên giây trong [${min}, ${max}]` }),
+  );
+
 const schema = z
   .object({
     NODE_ENV: z.preprocess(
@@ -135,6 +146,10 @@ const schema = z
       (v) => (v === undefined || v === "" ? "false" : v),
       z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
     ),
+    // Chính sách phiên admin (SPEC-admin S-402, SEC02): tuyệt đối 8 giờ, nhàn rỗi 30 phút, xác thực lại ≤ 5 phút.
+    ADMIN_SESSION_MAX_AGE_SECONDS: intInRange(28_800, 300, 86_400),
+    ADMIN_SESSION_IDLE_SECONDS: intInRange(1_800, 60, 28_800),
+    ADMIN_REAUTH_MAX_AGE_SECONDS: intInRange(300, 30, 900),
     VNPAY_ENABLED: z.preprocess(
       (v) => (v === undefined || v === "" ? "true" : v),
       z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),

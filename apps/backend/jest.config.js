@@ -8,6 +8,8 @@ if (process.env.TEST_TYPE?.startsWith("integration")) {
   // scripts/dev-services.sh — trùng giá trị của job CI; không phải bí mật (tài khoản DB thử nghiệm cục bộ).
   process.env.DATABASE_URL ||= "postgres://xshop:xshop@localhost:5432/xshop";
   process.env.REDIS_URL ||= "redis://localhost:6379";
+  // MFA TOTP native cần khoá mã hoá bí mật (Auth Module đọc AUTH_MFA_ENCRYPTION_KEY) — giá trị CHỈ cho test cục bộ/CI.
+  process.env.AUTH_MFA_ENCRYPTION_KEY ||= "x-shop-test-only-mfa-encryption-key-0123456789";
   // @medusajs/test-utils tạo DB tạm từ DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD; CI và dev chỉ đặt DATABASE_URL.
   const db = new URL(process.env.DATABASE_URL);
   process.env.DB_HOST ??= db.hostname;
