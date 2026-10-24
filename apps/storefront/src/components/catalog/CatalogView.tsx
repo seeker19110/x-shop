@@ -12,6 +12,7 @@ import { FilterDrawer } from "./FilterDrawer";
 import { FilterSidebar } from "./FilterSidebar";
 import { chipsFor, describeIssues, hrefFor, totalPages, withoutConditions } from "./filter-state";
 import { Pagination } from "./Pagination";
+import { ScrollRestorer } from "./ScrollRestorer";
 import { ProductGrid } from "./ProductGrid";
 import { SortForm } from "./SortForm";
 
@@ -56,6 +57,7 @@ export function CatalogView({
 
   return (
     <div className={styles.page}>
+      <ScrollRestorer />
       <header className={styles.head}>
         <h1>{heading}</h1>
         {intro ? <p className={styles.intro}>{intro}</p> : null}

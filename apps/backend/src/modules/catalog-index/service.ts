@@ -230,6 +230,20 @@ export default class CatalogIndexModuleService {
     };
   }
 
+  /** Số sản phẩm (đếm riêng) đã publish theo handle danh mục (gồm danh mục tổ tiên) trong các kênh bán. */
+  async categoryCounts(channelIds: string[]): Promise<{ handle: string; count: number }[]> {
+    if (channelIds.length === 0) return [];
+    const ch = inList("sales_channel_id", channelIds);
+    const res = await this.db.raw(
+      `SELECT h AS handle, count(DISTINCT product_id)::int AS count
+       FROM ${TABLE}, unnest(category_handles) AS h
+       WHERE ${ch.sql}
+       GROUP BY h`,
+      ch.bindings as Knex.ValueDict[],
+    );
+    return res.rows as { handle: string; count: number }[];
+  }
+
   async facet(scope: Scope, f: CatalogFilter, facet: FacetName): Promise<FacetValue[]> {
     const q = facetSql(scope, f, facet);
     const res = await this.db.raw(q.sql, q.bindings as Knex.ValueDict[]);

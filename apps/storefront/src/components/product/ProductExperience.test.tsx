@@ -6,6 +6,9 @@ import type { ProductDetail } from "../../lib/catalog/types";
 import { ProductExperience } from "./ProductExperience";
 import { initialSelection, type Selection } from "./selection";
 
+const addToCartMock = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/cart/actions", () => ({ addToCart: addToCartMock }));
+
 const product = (handle: string): ProductDetail => FIXTURE_PRODUCTS.find((p) => p.handle === handle)!;
 
 function setup(handle: string, params: Record<string, string> = {}, initial?: Selection) {
@@ -120,10 +123,38 @@ describe("CTA states (product)", () => {
     expect(cta()).toBeDisabled();
   });
 
-  it("'Thêm vào giỏ' gọi server action stub và hiện lỗi rõ 'chưa bật' (T-019 sẽ nối giỏ thật)", async () => {
+  it("'Thêm vào giỏ' gọi server action với handle + biến thể; thành công: thông báo aria-live, KHÔNG đổi focus, phát số giỏ", async () => {
+    addToCartMock.mockResolvedValueOnce({
+      ok: true,
+      count: 3,
+      message: "Đã thêm Áo sơ mi lụa (Đen, S) vào giỏ.",
+    });
+    const events: number[] = [];
+    const onChange = (e: Event) => events.push((e as CustomEvent<{ count: number }>).detail.count);
+    window.addEventListener("xs:cart-changed", onChange);
+    setup("ao-so-mi-lua", { color: "den", size: "s" });
+    cta().focus();
+    fireEvent.click(cta());
+    await waitFor(() => expect(notice()).toHaveTextContent("Đã thêm Áo sơ mi lụa (Đen, S) vào giỏ."));
+    expect(addToCartMock).toHaveBeenCalledWith(
+      expect.objectContaining({ handle: "ao-so-mi-lua", quantity: 1, variantId: expect.any(String) }),
+    );
+    expect(events).toEqual([3]);
+    expect(document.activeElement).toBe(cta());
+    expect(screen.getByRole("link", { name: "Xem giỏ hàng" })).toHaveAttribute("href", "/gio-hang");
+    window.removeEventListener("xs:cart-changed", onChange);
+  });
+
+  it("server từ chối (hết hàng/không còn bán): hiện lỗi rõ, không phát sự kiện, không báo 'đã thêm'", async () => {
+    addToCartMock.mockResolvedValueOnce({
+      ok: false,
+      code: "OUT_OF_STOCK",
+      message: "Phiên bản này đã hết hàng.",
+    });
     setup("ao-so-mi-lua", { color: "den", size: "s" });
     fireEvent.click(cta());
-    expect(await screen.findByRole("alert")).toHaveTextContent("Giỏ hàng chưa được bật");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Phiên bản này đã hết hàng.");
+    expect(screen.queryByRole("link", { name: "Xem giỏ hàng" })).toBeNull();
   });
 });
 

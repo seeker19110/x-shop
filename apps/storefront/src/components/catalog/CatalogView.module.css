@@ -159,3 +159,42 @@
   border-radius: var(--radius-md);
   background: var(--surface);
 }
+
+.comboWrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.comboWrap .searchInput {
+  width: 100%;
+}
+
+.suggestList {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1) 0;
+  list-style: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+}
+
+.suggestOption {
+  display: flex;
+  align-items: center;
+  min-height: var(--touch-min);
+  padding: 0 var(--space-3);
+  cursor: pointer;
+}
+
+.suggestOption[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}

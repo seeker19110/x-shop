@@ -53,7 +53,9 @@ export default async function ProductPage({ params, searchParams }: Props) {
       <Breadcrumb
         items={[
           { label: "Trang chủ", href: "/" },
-          { label: product.category.name, href: categoryHref(product.category.handle) },
+          ...(product.category
+            ? [{ label: product.category.name, href: categoryHref(product.category.handle) }]
+            : []),
           { label: product.title },
         ]}
       />

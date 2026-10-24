@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Hàng rào ngân sách JS (đặc tả §10.2): `@x-shop/domain` kéo ~139 KiB gzip (mã crypto của provider) nếu một client
- * component import GIÁ TRỊ từ nó. Quét mọi file "use client" và các file nó import tương đối: chỉ cho `import type`.
+ * component import GIÁ TRỊ từ nó. Quét mọi file "use client" và các file nó import tương đối (dừng ở ranh giới "use server"): chỉ cho `import type`.
  */
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EXTS = [".ts", ".tsx", "/index.ts", "/index.tsx"];
@@ -43,6 +43,8 @@ function clientGraph(): Set<string> {
     if (seen.has(file)) continue;
     seen.add(file);
     const src = readFileSync(file, "utf8");
+    // Server Actions ("use server") là ranh giới: client chỉ nhận stub RPC, không nhận mã bên trong (Next thay thế).
+    if (/^\s*["']use server["']/.test(src)) continue;
     for (const m of src.matchAll(/(?:import|export)\s[^;]*?from\s+["'](\.[^"']*)["']/g)) {
       const dep = resolveImport(file, m[1]!);
       if (dep) stack.push(dep);

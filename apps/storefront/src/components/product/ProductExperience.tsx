@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRef, useState, useTransition, type ReactNode } from "react";
 import { addToCart } from "../../lib/cart/actions";
+import { emitCartChanged } from "../../lib/cart/events";
 import type { ProductDetail } from "../../lib/catalog/types";
 import { PDP_SUMMARY } from "../../lib/content/site";
 import { Button } from "../ui/Button";
@@ -44,6 +45,7 @@ export function ProductExperience({ product, initial, children }: ProductExperie
   const [notice, setNotice] = useState<string | null>(null);
   const [sizeError, setSizeError] = useState<string | null>(null);
   const [cartError, setCartError] = useState<string | null>(null);
+  const [added, setAdded] = useState(false);
   const [chartOpen, setChartOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const buyRef = useRef<HTMLDivElement>(null);
@@ -91,9 +93,17 @@ export function ProductExperience({ product, initial, children }: ProductExperie
     if (cta.kind !== "add" || !cta.variant) return;
     const variantId = cta.variant.variant_id;
     setCartError(null);
+    setAdded(false);
     startTransition(async () => {
-      const r = await addToCart({ variantId, quantity: 1 });
-      if (!r.ok) setCartError(r.message);
+      const r = await addToCart({ handle: product.handle, variantId, quantity: 1 });
+      if (!r.ok) {
+        setCartError(r.message);
+        return;
+      }
+      // Thông báo qua vùng aria-live (không chuyển focus) + cập nhật số ở header.
+      setNotice(r.message);
+      setAdded(true);
+      emitCartChanged(r.count);
     });
   };
 
@@ -154,6 +164,13 @@ export function ProductExperience({ product, initial, children }: ProductExperie
             {cta.label}
           </Button>
           {cartError ? <InlineError alert>{cartError}</InlineError> : null}
+          {added ? (
+            <p className={styles.notice}>
+              <Link href="/gio-hang" prefetch={false}>
+                Xem giỏ hàng
+              </Link>
+            </p>
+          ) : null}
 
           <ul className={styles.summary} aria-label="Giao hàng và đổi trả">
             {PDP_SUMMARY.map((s) => (

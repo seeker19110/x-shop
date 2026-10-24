@@ -1,0 +1,208 @@
+{
+  "product_id": "prod_01M5QJKMA2GPWVXEG2VS5DBEZJ",
+  "handle": "ao-so-mi-lua",
+  "title": "Áo sơ mi lụa",
+  "description": "Áo sơ mi lụa tơ tằm mềm, form suông, cổ đức, phù hợp đi làm và dạo phố. (Dữ liệu demo)",
+  "kind": "apparel",
+  "attributes": {
+    "material": "Lụa",
+    "composition": "100% lụa tơ tằm",
+    "stretch": "none",
+    "fit": "Suông",
+    "care": "Giặt tay hoặc giặt máy chế độ nhẹ ở 30°C, không tẩy, phơi trong bóng râm, là ở nhiệt độ thấp.",
+    "origin": "Việt Nam"
+  },
+  "category": {
+    "handle": "ao-nu",
+    "name": "Áo nữ"
+  },
+  "options": {
+    "colors": [
+      {
+        "value": "den",
+        "label": "Đen",
+        "hex": "#1A1A1A"
+      },
+      {
+        "value": "trang",
+        "label": "Trắng",
+        "hex": "#FFFFFF"
+      }
+    ],
+    "sizes": [
+      {
+        "value": "s",
+        "label": "S"
+      },
+      {
+        "value": "m",
+        "label": "M"
+      }
+    ]
+  },
+  "variants": [
+    {
+      "variant_id": "variant_01M5QJKMDEVMP3WQ1YAD27G46V",
+      "sku": "SMLUA-DEN-M",
+      "color": "den",
+      "size": "m",
+      "price": 700000,
+      "compare_at": null,
+      "in_stock": true
+    },
+    {
+      "variant_id": "variant_01M5QJKMDFGJN5FE8H4A05MMAE",
+      "sku": "SMLUA-TRANG-S",
+      "color": "trang",
+      "size": "s",
+      "price": 300000,
+      "compare_at": null,
+      "in_stock": true
+    },
+    {
+      "variant_id": "variant_01M5QJKMDFXC6WWG2AQVS2V2ME",
+      "sku": "SMLUA-DEN-S",
+      "color": "den",
+      "size": "s",
+      "price": 650000,
+      "compare_at": null,
+      "in_stock": false
+    },
+    {
+      "variant_id": "variant_01M5QJKMDGGR5YCAQCSY05FX0D",
+      "sku": "SMLUA-TRANG-M",
+      "color": "trang",
+      "size": "m",
+      "price": 350000,
+      "compare_at": null,
+      "in_stock": true
+    }
+  ],
+  "images": [
+    {
+      "url": "/static/demo/den.svg?view=front",
+      "alt": "Áo sơ mi lụa màu đen — mặt trước (ảnh demo)",
+      "color": "den",
+      "width": 800,
+      "height": 1000
+    },
+    {
+      "url": "/static/demo/den.svg?view=back",
+      "alt": "Áo sơ mi lụa màu đen — mặt sau (ảnh demo)",
+      "color": "den",
+      "width": 800,
+      "height": 1000
+    },
+    {
+      "url": "/static/demo/den.svg?view=detail",
+      "alt": "Áo sơ mi lụa màu đen — chi tiết chất liệu (ảnh demo)",
+      "color": "den",
+      "width": 800,
+      "height": 1000
+    },
+    {
+      "url": "/static/demo/trang.svg?view=front",
+      "alt": "Áo sơ mi lụa màu trắng — mặt trước (ảnh demo)",
+      "color": "trang",
+      "width": 800,
+      "height": 1000
+    },
+    {
+      "url": "/static/demo/trang.svg?view=back",
+      "alt": "Áo sơ mi lụa màu trắng — mặt sau (ảnh demo)",
+      "color": "trang",
+      "width": 800,
+      "height": 1000
+    },
+    {
+      "url": "/static/demo/trang.svg?view=detail",
+      "alt": "Áo sơ mi lụa màu trắng — chi tiết chất liệu (ảnh demo)",
+      "color": "trang",
+      "width": 800,
+      "height": 1000
+    }
+  ],
+  "size_chart": {
+    "code": "ao-nu",
+    "name": "Bảng size áo nữ",
+    "version": 1,
+    "unit": "cm",
+    "columns": [
+      {
+        "key": "nguc",
+        "basis": "body",
+        "label": "Vòng ngực"
+      },
+      {
+        "key": "eo",
+        "basis": "body",
+        "label": "Vòng eo"
+      },
+      {
+        "key": "dai_ao",
+        "basis": "garment",
+        "label": "Dài áo"
+      }
+    ],
+    "rows": [
+      {
+        "size": "xs",
+        "label": "XS",
+        "values": {
+          "eo": [60, 64],
+          "nguc": [78, 82],
+          "dai_ao": 60
+        }
+      },
+      {
+        "size": "s",
+        "label": "S",
+        "values": {
+          "eo": [64, 68],
+          "nguc": [82, 86],
+          "dai_ao": 62
+        }
+      },
+      {
+        "size": "m",
+        "label": "M",
+        "values": {
+          "eo": [68, 72],
+          "nguc": [86, 90],
+          "dai_ao": 64
+        }
+      },
+      {
+        "size": "l",
+        "label": "L",
+        "values": {
+          "eo": [72, 76],
+          "nguc": [90, 94],
+          "dai_ao": 66
+        }
+      },
+      {
+        "size": "xl",
+        "label": "XL",
+        "values": {
+          "eo": [76, 80],
+          "nguc": [94, 98],
+          "dai_ao": 68
+        }
+      }
+    ]
+  },
+  "model_measurements": [
+    {
+      "image_set": "den",
+      "color": "den",
+      "height_cm": 168,
+      "chest_cm": 82,
+      "waist_cm": 62,
+      "hip_cm": 90,
+      "size_worn": "s",
+      "note": "Dữ liệu demo"
+    }
+  ],
+  "updated_at": "2026-10-24T18:26:14.500Z"
+}

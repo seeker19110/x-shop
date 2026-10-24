@@ -174,7 +174,7 @@ describe("trang tìm kiếm /tim-kiem (catalog)", () => {
 
   it("từ khóa quá dài bị cắt ở 100 ký tự (không lỗi)", async () => {
     await searchPage({ q: "a".repeat(300) });
-    const input = screen.getByRole("searchbox") as HTMLInputElement;
+    const input = screen.getByLabelText("Tìm theo tên, mã SKU hoặc danh mục") as HTMLInputElement;
     expect(input.value.length).toBe(100);
   });
 });
