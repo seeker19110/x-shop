@@ -77,6 +77,8 @@
 - [ ] `T-021` Trang đơn hàng/kết quả thanh toán "Đang xác nhận", tra cứu bảo mật (POST01, CHK06) (sau: T-020, T-011; files: apps/storefront/src/app/(shop)/don-hang/) — Gate: `pnpm --filter @x-shop/storefront test -- order`
 - [ ] `T-022` E2E Playwright luồng R-001 (COD) + R-002 (VNPAY mock) + axe 6 màn + reflow 320 px (AT25) (sau: T-021; files: e2e/, playwright.config.ts) — Gate: `pnpm e2e`
 
+- [ ] `T-040` Bổ sung P0 storefront: gợi ý truy vấn (debounce, giới hạn độ dài — CAT01), khôi phục vị trí danh sách khi Back từ PDP (CAT03), endpoint `/store/x/categories` + menu từ backend, nối `XS_DATA_SOURCE=backend` với API thật của T-014 (sau: T-014, T-018; files: apps/storefront/src/lib/catalog/, apps/storefront/src/components/catalog/, apps/backend/src/api/store/x/categories/) — Gate: `pnpm --filter @x-shop/storefront test -- catalog search-suggest scroll`
+
 ### Lát 6 — Vận hành (F-008, F-009, F-010)
 - [ ] `T-023` RBAC: ma trận vai trò dữ liệu + middleware mọi `/admin/x/*` + test sinh tự động phủ route × vai trò (AT21) (sau: T-002; files: apps/backend/src/modules/rbac/, apps/backend/src/api/middlewares.ts; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- rbac`
 - [ ] `T-024` MFA admin bằng TOTP native của Auth Module (`requireMfa` cho route nhạy cảm) + chính sách phiên + xác thực lại thao tác nhạy cảm (SEC02) (sau: T-023; files: apps/backend/src/modules/mfa/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- mfa`

@@ -52,7 +52,14 @@ for (const route of routes) {
         .catch(() => {}),
     );
   });
-  await page.goto(new URL(route, base).toString(), { waitUntil: "networkidle" });
+  const main = await page.goto(new URL(route, base).toString(), { waitUntil: "networkidle" });
+  // Không đo trang lỗi như thể là trang thật.
+  if (!main || main.status() >= 400) {
+    console.log(`✗ ${route} trả HTTP ${main ? main.status() : "không phản hồi"} — không đo`);
+    failed = true;
+    await ctx.close();
+    continue;
+  }
   await Promise.all(pending);
   const total = Object.values(sizes).reduce((a, b) => a + b, 0);
   const over = [];
