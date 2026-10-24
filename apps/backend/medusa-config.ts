@@ -80,5 +80,7 @@ module.exports = defineConfig({
     { resolve: "./src/modules/checkout" },
     // Catalog thời trang: bảng size có version, thuộc tính, bảng màu/size (T-013).
     { resolve: "./src/modules/fashion" },
+    // Read model tìm/lọc cùng SKU `catalog_variant_index` (T-014, D-004).
+    { resolve: "./src/modules/catalog-index" },
   ],
 });
