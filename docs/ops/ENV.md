@@ -38,5 +38,8 @@ NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=
 # Chỉ server.
 MEDUSA_BACKEND_URL=http://localhost:9000
+# Nguồn dữ liệu catalog: backend | fixtures. Bỏ trống → `backend` nếu MEDUSA_BACKEND_URL được đặt thật,
+# ngược lại `fixtures` (bộ demo cục bộ trong src/lib/catalog/fixtures.ts + ảnh SVG ở public/demo/).
+# XS_DATA_SOURCE=fixtures
 ```
 Chỉ tiền tố `NEXT_PUBLIC_` vào bundle client; bí mật không bao giờ có tiền tố này (BASE-CFG-008).

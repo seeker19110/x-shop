@@ -5,6 +5,7 @@ import {
   parseClientEnv,
   parseServerEnv,
   resetEnvCacheForTests,
+  resolveDataSource,
   shouldUseDefaults,
 } from "./env";
 
@@ -95,5 +96,35 @@ describe("getters lười + cache", () => {
     expect(a.MEDUSA_BACKEND_URL).toBe("http://localhost:9000");
     expect(getServerEnv()).toBe(a);
     expect(getClientEnv().NEXT_PUBLIC_SITE_URL).toBe("http://localhost:3000");
+  });
+});
+
+describe("resolveDataSource", () => {
+  it("không có gì → fixtures (mặc định localhost của MEDUSA_BACKEND_URL không tính là có backend)", () => {
+    expect(resolveDataSource({})).toBe("fixtures");
+    expect(resolveDataSource({ MEDUSA_BACKEND_URL: "  " })).toBe("fixtures");
+  });
+  it("có MEDUSA_BACKEND_URL thật → backend", () => {
+    expect(resolveDataSource({ MEDUSA_BACKEND_URL: "http://medusa:9000" })).toBe("backend");
+  });
+  it("XS_DATA_SOURCE tường minh thắng", () => {
+    expect(resolveDataSource({ XS_DATA_SOURCE: "fixtures", MEDUSA_BACKEND_URL: "http://medusa:9000" })).toBe(
+      "fixtures",
+    );
+    expect(resolveDataSource({ XS_DATA_SOURCE: "backend" })).toBe("backend");
+  });
+  it("giá trị lạ → lỗi nêu tên biến", () => {
+    expect(() => resolveDataSource({ XS_DATA_SOURCE: "mock" })).toThrow(/XS_DATA_SOURCE/);
+  });
+  it("schema server chấp nhận XS_DATA_SOURCE hợp lệ và từ chối giá trị lạ", () => {
+    expect(
+      parseServerEnv(
+        { MEDUSA_BACKEND_URL: "http://m:9000", XS_DATA_SOURCE: "fixtures" },
+        { useDefaults: false },
+      ).XS_DATA_SOURCE,
+    ).toBe("fixtures");
+    expect(() =>
+      parseServerEnv({ MEDUSA_BACKEND_URL: "http://m:9000", XS_DATA_SOURCE: "x" }, { useDefaults: false }),
+    ).toThrow(/XS_DATA_SOURCE/);
   });
 });

@@ -1,0 +1,21 @@
+.article {
+  display: grid;
+  gap: var(--space-6);
+  max-width: 44rem;
+}
+
+.warning {
+  padding: var(--space-3) var(--space-4);
+  border-left: 4px solid var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.section h2 {
+  font-size: 1.25rem;
+}

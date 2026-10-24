@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import type { ComponentPropsWithRef, MouseEvent, ReactNode } from "react";
 import styles from "./Button.module.css";

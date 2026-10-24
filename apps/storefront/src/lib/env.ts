@@ -28,8 +28,13 @@ export const clientEnvSchema = z.object({
   NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: z.string().trim().min(1, "không được rỗng"),
 });
 
+export const DATA_SOURCES = ["backend", "fixtures"] as const;
+export type DataSource = (typeof DATA_SOURCES)[number];
+
 export const serverEnvSchema = z.object({
   MEDUSA_BACKEND_URL: httpUrl,
+  /** Nguồn dữ liệu catalog. Bỏ trống: `backend` nếu `MEDUSA_BACKEND_URL` được đặt thật, ngược lại `fixtures`. */
+  XS_DATA_SOURCE: z.enum(DATA_SOURCES).optional(),
 });
 
 export type ClientEnv = z.infer<typeof clientEnvSchema>;
@@ -73,6 +78,19 @@ export function parseServerEnv(source: Source, opts: { useDefaults: boolean }): 
   const r = serverEnvSchema.safeParse(withDefaults(raw, opts.useDefaults));
   if (!r.success) throw format("server", r.error);
   return r.data;
+}
+
+/**
+ * Chọn nguồn dữ liệu: `XS_DATA_SOURCE` tường minh thắng; không có thì nhìn `MEDUSA_BACKEND_URL` THÔ (không áp mặc
+ * định localhost — mặc định đó không có nghĩa là có backend).
+ */
+export function resolveDataSource(source: Source = process.env): DataSource {
+  const explicit = source.XS_DATA_SOURCE?.trim();
+  if (explicit) {
+    if ((DATA_SOURCES as readonly string[]).includes(explicit)) return explicit as DataSource;
+    throw new Error(`XS_DATA_SOURCE phải là ${DATA_SOURCES.join(" | ")}, nhận "${explicit}"`);
+  }
+  return source.MEDUSA_BACKEND_URL?.trim() ? "backend" : "fixtures";
 }
 
 /** Mặc định chỉ khi không phải production runtime. */
