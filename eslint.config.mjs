@@ -1,6 +1,7 @@
 import js from "@eslint/js";
 import nextPlugin from "@next/eslint-plugin-next";
 import reactHooks from "eslint-plugin-react-hooks";
+import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
@@ -19,6 +20,10 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ["scripts/**/*.{js,mjs}", "e2e/**/*.{js,mjs}"],
+    languageOptions: { globals: { ...globals.node } },
+  },
   {
     files: ["apps/storefront/**/*.{ts,tsx}"],
     settings: { next: { rootDir: "apps/storefront/" } },
