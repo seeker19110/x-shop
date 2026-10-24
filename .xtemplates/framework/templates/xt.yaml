@@ -1,0 +1,48 @@
+# xt.yaml — lệnh chuẩn của dự án (YAML PHẲNG `task: lệnh`), nguồn duy nhất cho agent, hook và CI; agent không suy diễn
+# lệnh từ văn xuôi. "" = không có; thiếu khoá = tự dò từ manifest. Nhà của bộ khoá, sàn M/L, mẫu theo stack
+# (Node/Python/Go): .xtemplates/framework/11-autonomous-loop/harness-files.md §Khoá của xt.yaml (LOOP-HARNESS-008/023).
+# gate = build → typecheck → lint → test (CI mẫu chạy cùng lệnh qua gate-par: typecheck ∥ lint ∥ build → test song song
+# trong job `gate`, ADR-0039/D-128); gate-fast = format_check → lint → typecheck → test_fast.
+# Autopilot đang chạy mà lint/test rỗng hay no-op (true, :, echo …) = cổng ĐỎ (ADR-0011); CI mẫu đỏ tới khi có lệnh thật.
+lint: ""
+typecheck: ""
+test: ""
+build: ""
+format: ""
+setup: ""             # cài phụ thuộc trước mỗi job CI (npm ci · pip install …); trống = bỏ qua
+format_check: ""      # sàn M/L: kiểm format không ghi file, đỏ khi lệch
+coverage: ""          # sàn M/L: test có ngưỡng coverage; artefact ra mktemp, không `|| true`
+format_file: ""       # format MỘT file (hook PostToolUse), `{}` = đường dẫn; trống = mẫu dựng sẵn của khung
+# commit_gate: hook trước `git commit` — fast = gate-fast · full = gate; diff đụng cấu hình cổng → mọi lớp test
+commit_gate: fast
+test_fast: ""         # test liên quan file đổi (XT_CHANGED_FILES, mỗi dòng một file); trống → test
+# Ngưỡng coverage của CI mẫu nằm trong `test` (job `gate` chạy nó). Chia shard (chỉ khi đo thấy test là đường dài nhất
+# và CI tách test ra job riêng; gate-fast cũng dùng khi diff đụng cấu hình cổng): test_list (in mỗi dòng một id) ·
+# test_unit (chạy id "$1", coverage vào "$XT_COV_DIR" nếu có) · test_combine (gộp coverage, đòi ngưỡng).
+# test_list: ""
+# test_unit: ""
+# test_combine: ""
+# merge_autonomy: L3 = máy merge ghim head theo làn · L2 = chỉ làn nhanh · L1 = người merge (ADR-0015, D-122)
+merge_autonomy: L3
+merge_risk_paths: ""          # glob thêm vào đường dẫn nhạy cảm (ngoại lệ cứng), cách nhau dấu phẩy
+# merge_hard_exceptions: human = người merge ngoại lệ cứng (ADR-0016) · auto = máy merge khi CI xanh (ADR-0020)
+merge_hard_exceptions: human
+# delivery_phase: build = CI xanh là merge, không reviewer, review ghi nợ · harden (chỉ khi lên production) = review sạch ở head (ADR-0031/0037)
+delivery_phase: build
+# review_identity: ""         # chỉ dấu review của tài khoản này mở được merge (T-1508)
+# author_model_family: ""     # reviewer năng lực cao hơn tác giả: bậc model cao hơn, cùng họ thì effort cao hơn (ci-check kiểm)
+# reviewer_model_family: ""
+# author_effort: ""           # low|medium|high|xhigh|max — cần cả hai khi cùng họ (D-161); chỉ dùng cùng model lấy từ cấu hình
+# reviewer_effort: ""
+# CI mẫu 3 job (ADR-0039): job e2e chạy cùng lúc với job gate; khoá rỗng = bỏ qua có log.
+e2e: ""               # suite E2E, CI chạy (`dev-task.sh e2e I N`); dùng $XT_SHARD để chia shard, vd npx playwright test --shard=${XT_SHARD:-1/1}
+e2e_setup: ""         # trước e2e: cài trình duyệt (vd npx playwright install --with-deps chromium)
+e2e_affected: ""      # chỉ spec của lát đang làm (Gate mỗi task); trống = e2e
+audit: ""             # audit phụ thuộc (npm audit · pip-audit …)
+# Trước phát hành (pha harden, `release-check` chạy — ADR-0042): đỏ = NO-GO; trống ở M/L = người ký lý do không áp.
+attack: ""            # tấn công thử: DAST (ZAP baseline/API scan) · fuzz API (schemathesis run …) trên bản chạy cục bộ/staging
+perf: ""              # kiểm tải có ngưỡng, đỏ khi vượt ngân sách (vd k6 run với thresholds)
+claude_min_version: ""   # doctor cảnh báo khi Claude Code thấp hơn (LOOP-HARNESS-026)
+ai_attribution: ""    # forbid = guard chặn commit/PR ghi tên model hay URL phiên AI (LOOP-HARNESS-027)
+pr_title_check: ""    # off = không đòi tiêu đề PR `<type>(scope): mô tả` ≤ 72 ký tự
+harness_permissions: ""   # own = install.py giữ quyền + dạng lệnh hook của dự án (không thêm allow/deny khung)

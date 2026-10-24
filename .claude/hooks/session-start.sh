@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# session-start.sh — SessionStart hook (startup|resume|clear|compact).
+# Nạp NGẮN GỌN trạng thái để phiên tiếp tục đúng chỗ: 4 mục của PROGRESS.md (tối đa 8 KB),
+# verdict autopilot (từ bằng chứng trên đĩa), git branch/dirty/3 commit, và nhắc đọc AGENTS.md.
+# Chỉ đọc, không đổi gì. Fail-open.
+set -uo pipefail
+. "$(dirname "$0")/_lib.sh"
+
+ctx=""
+if [ -f "$XT_ROOT/PROGRESS.md" ]; then
+  # Chỉ lấy các mục "Đang làm / Tiếp theo / Quyết định / Bàn giao" (và tiêu đề), cắt 8 KB.
+  # Chuẩn hoá NFC trước awk: PROGRESS.md dạng NFD (soạn trên macOS) không khớp tên mục → mất cả 4 mục.
+  prog="$(python3 -I -c 'import sys, unicodedata; sys.stdout.write(unicodedata.normalize("NFC", sys.stdin.read()))' \
+    < "$XT_ROOT/PROGRESS.md" 2>/dev/null | awk '
+    /^## /{keep = ($0 ~ /Đang làm|Tiếp theo|Quyết định|Bàn giao/)}
+    NR==1 || keep {print}
+  ' | utf8_head 8192)"
+  [ -n "$prog" ] || prog="$(utf8_head 8192 < "$XT_ROOT/PROGRESS.md")"
+  ctx+="===== PROGRESS.md (trạng thái phiên trước) =====
+$prog
+
+"
+fi
+
+XT="$(xt_py)" || true
+if [ -n "${XT:-}" ] && [ -f "$XT_ROOT/.autopilot/state.json" ]; then
+  ctx+="===== Autopilot =====
+$(py_run "$XT" loop status 2>/dev/null || echo 'không đọc được trạng thái')
+
+"
+fi
+
+if git -C "$XT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  branch="$(git -C "$XT_ROOT" branch --show-current 2>/dev/null)"
+  # Tên repo: đuôi URL remote origin (bỏ .git), không có remote thì tên thư mục gốc (LOOP-HARNESS-028).
+  repo="$(git -C "$XT_ROOT" remote get-url origin 2>/dev/null | sed -e 's#/*$##' -e 's#\.git$##' -e 's#.*[/:]##')"
+  [ -n "$repo" ] || repo="$(basename "$XT_ROOT")"
+  if [ -n "$branch" ] && [ "$branch" != "main" ] && [ "$branch" != "master" ]; then
+    name_hint="Tên phiên: \"$repo — $branch\" — đặt ngay nếu phiên chưa mang tên này (Claude Code: /rename; phiên cloud: tool set_session_title)."
+  else
+    name_hint="Tên phiên: \"$repo — <nhánh>\" — tạo nhánh làm việc (<type>/<mô-tả-ngắn>) rồi đặt tên phiên (Claude Code: /rename; phiên cloud: tool set_session_title)."
+  fi
+  ctx+="===== Git =====
+Branch: $branch
+$name_hint
+Chưa commit: $(git -C "$XT_ROOT" status --short 2>/dev/null | wc -l | tr -d ' ') file
+$(git -C "$XT_ROOT" log --oneline -3 2>/dev/null)
+
+"
+fi
+
+fw="framework"; [ -d "$XT_ROOT/.xtemplates/framework" ] && fw=".xtemplates/framework"
+ctx+="Luật vận hành: AGENTS.md ở gốc dự án (Claude Code đã nạp qua CLAUDE.md; agent khác tự đọc); chạy autopilot thì đọc thêm $fw/11-autonomous-loop/README.md. Khi người dùng nhắn \"tiếp tục\": nối tiếp mục Đang làm/Bàn giao ở trên, không hỏi lại điều đã có trong file."
+
+context_output SessionStart "$ctx"
+exit 0
