@@ -1,0 +1,113 @@
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.media {
+  position: relative;
+  aspect-ratio: var(--aspect-product);
+  overflow: hidden;
+  background: var(--divider);
+  border-radius: var(--radius-md);
+}
+
+.image,
+.hoverImage {
+  object-fit: cover;
+}
+
+.hoverImage {
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease);
+}
+
+@media (hover: hover) {
+  .card:hover .hoverImage {
+    opacity: 1;
+  }
+}
+
+.badge {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--foreground);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: var(--text-small);
+  font-weight: var(--weight-medium);
+}
+
+.sale {
+  top: auto;
+  bottom: var(--space-2);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.name {
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-body);
+}
+
+/* Link phủ toàn thẻ: một đích bấm, không lồng link. */
+.link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.link:focus-visible {
+  outline: none;
+}
+
+.link:focus-visible::after {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.swatches {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.swatchItem {
+  display: inline-flex;
+}
+
+.swatch {
+  width: 1rem;
+  height: 1rem;
+}
+
+.more {
+  color: var(--muted);
+  font-size: var(--text-small);
+}

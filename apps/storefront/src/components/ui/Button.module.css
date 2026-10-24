@@ -1,0 +1,89 @@
+.button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--touch-min);
+  padding: 0 var(--space-6);
+  border: 2px solid transparent;
+  border-radius: var(--radius-md);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+
+.md {
+  min-height: var(--touch-min);
+}
+
+.lg {
+  min-height: var(--control-height);
+}
+
+.full {
+  width: 100%;
+}
+
+.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.primary:hover {
+  background: var(--accent-hover);
+}
+
+.secondary {
+  background: transparent;
+  color: var(--foreground);
+  border-color: var(--border-strong);
+}
+
+.secondary:hover {
+  border-color: var(--foreground);
+}
+
+.ghost {
+  background: transparent;
+  color: var(--foreground);
+}
+
+.ghost:hover {
+  text-decoration: underline;
+}
+
+.button:disabled,
+.button[aria-disabled="true"] {
+  cursor: not-allowed;
+  background: var(--divider);
+  color: var(--muted);
+  border-color: transparent;
+}
+
+.button[aria-busy="true"] {
+  cursor: progress;
+}
+
+.labelLoading {
+  visibility: hidden;
+}
+
+.spinner {
+  position: absolute;
+  width: 1.25em;
+  height: 1.25em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-full);
+  animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
