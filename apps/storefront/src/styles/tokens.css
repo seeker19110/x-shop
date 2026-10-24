@@ -1,0 +1,97 @@
+/* Token thiết kế — nguồn: docs/specs/DAC-TA-GOC.md §3.1; mô tả ở DESIGN.md.
+   Mọi cặp chữ/nền dùng thật được liệt kê ở contrast-pairs.txt (cổng: xt.py contrast). */
+:root {
+  /* Màu: nền, bề mặt, chữ */
+  --background: #faf8f4;
+  --surface: #ffffff;
+  --foreground: #191919;
+  --muted: #5f5a53; /* chữ phụ */
+  --divider: #e5e1da; /* đường chia bố cục; KHÔNG làm dấu focus/viền điều khiển */
+  --border-strong: #85807a; /* viền điều khiển (input, nút size): >= 3:1 */
+
+  /* Nhấn thương hiệu */
+  --accent: #6d2635;
+  --accent-hover: #571e2a;
+  --on-accent: #ffffff; /* chữ trên nền nhấn */
+
+  /* Trạng thái (luôn đi kèm chữ/icon, không chỉ màu) */
+  --error: #a3262a;
+  --error-bg: #fbeaea;
+  --success: #1e6b3a;
+  --success-bg: #e8f4ec;
+  --warning: #7a4f00;
+  --warning-bg: #fdf1d8;
+
+  /* Focus */
+  --focus-ring: #0b57d0;
+
+  /* Chữ */
+  --font-sans: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --text-body: 1rem; /* 16 px */
+  --text-small: 0.875rem;
+  --text-h1: clamp(1.75rem, 1.2rem + 2.2vw, 2.5rem); /* 28–40 px */
+  --text-h2: clamp(1.375rem, 1.1rem + 1.2vw, 2rem);
+  --leading-body: 1.5;
+  --leading-heading: 1.15;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Spacing 4/8/12/16/24/32/48/64 */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Bố cục */
+  --page-margin: 1rem; /* 16 px mobile */
+  --page-max: 1440px;
+  --grid-cols: 2; /* mobile 2 cột; 3–4 cột desktop */
+  --grid-gap: var(--space-4);
+  --aspect-product: 4 / 5;
+
+  /* Điều khiển */
+  --control-height: 48px; /* nút mua */
+  --touch-min: 44px; /* vùng chạm tối thiểu */
+
+  /* Radius */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+  --radius-full: 9999px;
+
+  /* Chuyển động 120–200 ms */
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --motion-slow: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (min-width: 48em) {
+  :root {
+    --page-margin: 2rem;
+    --grid-cols: 3;
+    --grid-gap: var(--space-6);
+    --text-h1: clamp(2.5rem, 1.6rem + 2.4vw, 4rem); /* 40–64 px */
+  }
+}
+
+@media (min-width: 72em) {
+  :root {
+    --page-margin: 4rem;
+    --grid-cols: 4;
+    --grid-gap: var(--space-8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+    --motion-slow: 0ms;
+  }
+}

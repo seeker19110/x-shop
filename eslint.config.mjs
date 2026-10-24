@@ -1,4 +1,6 @@
 import js from "@eslint/js";
+import nextPlugin from "@next/eslint-plugin-next";
+import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
@@ -17,6 +19,16 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ["apps/storefront/**/*.{ts,tsx}"],
+    settings: { next: { rootDir: "apps/storefront/" } },
+    plugins: { "react-hooks": reactHooks, "@next/next": nextPlugin },
+    rules: {
+      ...reactHooks.configs.recommended.rules,
+      ...nextPlugin.configs.recommended.rules,
+      ...nextPlugin.configs["core-web-vitals"].rules,
+    },
+  },
   {
     rules: {
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
