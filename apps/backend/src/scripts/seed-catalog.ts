@@ -7,6 +7,7 @@ import {
   updateProductsWorkflow,
 } from "@medusajs/medusa/core-flows";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "../lib/catalog/constants";
+import { rebuildCatalogIndex } from "../lib/catalog/indexer";
 import { FASHION_MODULE } from "../modules/fashion";
 import type FashionModuleService from "../modules/fashion/service";
 import { setProductFashionWorkflow } from "../workflows/fashion/set-product-fashion";
@@ -47,6 +48,8 @@ export default async function seedCatalog({
   const result = await locking.execute(CATALOG_SEED_LOCK, () => seedUnlocked(container, base), {
     timeout: 300,
   });
+  // Read model đọc được ngay sau seed (không chờ hàng đợi sự kiện) — rebuild là idempotent.
+  await rebuildCatalogIndex(container);
   container
     .resolve(ContainerRegistrationKeys.LOGGER)
     .info(
