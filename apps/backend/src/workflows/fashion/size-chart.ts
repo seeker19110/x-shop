@@ -88,7 +88,7 @@ async function reviseUnlocked(container: MedusaContainer, input: SizeChartConten
       fields: ["id", "products.id"],
       filters: { id: current.id },
     });
-    const rows: { products?: ({ id: string } | null)[] | null }[] = data;
+    const rows = data as unknown as { products?: ({ id: string } | null)[] | null }[];
     for (const p of rows[0]?.products ?? []) {
       if (!p) continue;
       await relinkSizeChart(container, p.id, current.id, chart.id);

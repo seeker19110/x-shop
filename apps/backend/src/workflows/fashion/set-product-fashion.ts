@@ -25,11 +25,11 @@ async function currentLinks(container: MedusaContainer, productId: string) {
     fields: ["id", "fashion_product_attributes.id", "size_chart.id"],
     filters: { id: productId },
   });
-  const rows: {
+  const rows = data as unknown as {
     id: string;
     fashion_product_attributes?: { id: string } | null;
     size_chart?: { id: string } | null;
-  }[] = data;
+  }[];
   const row = rows[0];
   if (!row) throw new MedusaError(MedusaError.Types.NOT_FOUND, `Không thấy sản phẩm ${productId}`);
   return {

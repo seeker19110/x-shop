@@ -361,6 +361,6 @@ export async function loadProductSources(
     fields: PRODUCT_SOURCE_FIELDS,
     filters: filters.id !== undefined ? { id: filters.id } : { handle: filters.handle },
   });
-  const rows: RawProduct[] = data;
+  const rows = data as unknown as RawProduct[];
   return rows.map(toProductSource);
 }

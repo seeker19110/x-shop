@@ -47,7 +47,7 @@ async function productsOfVariants(container: MedusaContainer, variantIds: string
     fields: ["id", "product_id"],
     filters: { id: variantIds },
   });
-  const fromSource = (data as { product_id?: string | null }[]).flatMap((v) =>
+  const fromSource = (data as unknown as { product_id?: string | null }[]).flatMap((v) =>
     v.product_id ? [v.product_id] : [],
   );
   // Biến thể đã xoá không còn trong nguồn → lấy product từ chính read model.
@@ -64,7 +64,9 @@ async function variantsOfInventoryItems(container: MedusaContainer, itemIds: str
     fields: ["variant_id"],
     filters: { inventory_item_id: itemIds },
   });
-  return (data as { variant_id?: string | null }[]).flatMap((l) => (l.variant_id ? [l.variant_id] : []));
+  return (data as unknown as { variant_id?: string | null }[]).flatMap((l) =>
+    l.variant_id ? [l.variant_id] : [],
+  );
 }
 
 async function variantsOfPriceSets(container: MedusaContainer, priceSetIds: string[]): Promise<string[]> {
@@ -75,7 +77,9 @@ async function variantsOfPriceSets(container: MedusaContainer, priceSetIds: stri
     fields: ["variant_id"],
     filters: { price_set_id: priceSetIds },
   });
-  return (data as { variant_id?: string | null }[]).flatMap((l) => (l.variant_id ? [l.variant_id] : []));
+  return (data as unknown as { variant_id?: string | null }[]).flatMap((l) =>
+    l.variant_id ? [l.variant_id] : [],
+  );
 }
 
 /**
