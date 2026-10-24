@@ -1,0 +1,10 @@
+{
+  "//": "Kiểm kiểu không cần build trước gói workspace: điều kiện @x-shop/source trỏ thẳng vào src/*.ts. `medusa build` luôn đọc tsconfig.json (dùng dist/*.d.ts) — không thêm điều kiện này ở đó, vì mã ngoài rootDir sẽ bị biên dịch vào .medusa/server.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "customConditions": ["@x-shop/source"]
+  },
+  "exclude": ["node_modules", ".medusa/server", ".medusa/admin", ".cache", "jest.config.js"]
+}
