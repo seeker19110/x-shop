@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { track } from "../../lib/analytics/track";
 import { finishCheckout, pollCheckout, quoteCheckout, submitCheckout } from "../../lib/checkout/actions";
 import { runSubmit, type FlowDeps, type FlowOutcome } from "../../lib/checkout/flow";
 import { createKeyKeeper } from "../../lib/checkout/idempotency";
@@ -107,6 +108,30 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
         ? wards
         : { code: provinceCode, status: "loading", list: [] };
   const itemCount = lines.reduce((s, l) => s + l.quantity, 0);
+  const trackItems = useMemo(
+    () => lines.flatMap((l) => (l.itemId ? [{ item_id: l.itemId, quantity: l.quantity }] : [])).slice(0, 50),
+    [lines],
+  );
+
+  /* ---------------------------------------------------------------- telemetry (không PII: chỉ id/giá trị) */
+  useEffect(() => {
+    track({ event: "begin_checkout", value: subtotal, items: trackItems });
+    // Một lần mỗi lần mở trang thanh toán.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const shippingSent = useRef(false);
+  useEffect(() => {
+    if (!addrOk || shippingSent.current) return;
+    shippingSent.current = true;
+    track({ event: "add_shipping_info", value: subtotal, items: trackItems });
+  }, [addrOk, subtotal, trackItems]);
+  const paymentSent = useRef(new Set<PaymentMethod>());
+  const choosePayment = (m: PaymentMethod) => {
+    setPayment(m);
+    if (paymentSent.current.has(m)) return;
+    paymentSent.current.add(m);
+    track({ event: "add_payment_info", value: subtotal, items: trackItems, payment_type: m });
+  };
 
   /* ---------------------------------------------------------------- tỉnh → phường/xã */
   const loadWards = useCallback((code: string, signal?: AbortSignal) => {
@@ -208,6 +233,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
 
   const complete = async (o: { ref: string; paymentUrl: string | null }) => {
     setPhase("redirecting");
+    track({ event: "order_placed", order_id: o.ref, value: quote?.total ?? subtotal, items: trackItems });
     try {
       await finishCheckout(); // bỏ cookie giỏ: giỏ đã gắn với đơn
     } catch {
@@ -632,7 +658,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                   name="payment"
                   value={m}
                   checked={payment === m}
-                  onChange={() => setPayment(m)}
+                  onChange={() => choosePayment(m)}
                 />
                 <span>{PAYMENT_LABEL[m]}</span>
               </label>

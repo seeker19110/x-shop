@@ -23,6 +23,7 @@ export default async function CheckoutPage() {
       provinces={provinces}
       lines={cart.lines.map((l) => ({
         id: l.id,
+        itemId: l.handle,
         title: l.title,
         variantLabel: l.variantLabel,
         quantity: l.quantity,

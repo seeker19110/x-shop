@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState, useTransition, type ReactNode } from "react";
+import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
+import { track } from "../../lib/analytics/track";
 import { addToCart } from "../../lib/cart/actions";
 import { emitCartChanged } from "../../lib/cart/events";
-import type { ProductDetail } from "../../lib/catalog/types";
+import type { ProductDetail, ProductVariant } from "../../lib/catalog/types";
 import { PDP_SUMMARY } from "../../lib/content/site";
 import { Button } from "../ui/Button";
 import { ColorSwatchGroup } from "../ui/ColorSwatch";
@@ -18,6 +19,7 @@ import { StickyCta } from "./StickyCta";
 import {
   colorInStock,
   ctaFor,
+  findVariant,
   galleryFor,
   modelFor,
   priceFor,
@@ -34,6 +36,17 @@ export interface ProductExperienceProps {
   initial: Selection;
   /** Chi tiết (chất liệu, bảo quản…) dựng ở server, đặt sau khối mua. */
   children?: ReactNode;
+}
+
+/** Mục sự kiện: `item_id` = handle (khớp danh sách/giỏ), `sku` khi đã chọn đủ biến thể; không tên/PII. */
+function trackItem(product: ProductDetail, variant: ProductVariant | null, quantity?: number) {
+  return [
+    {
+      item_id: product.handle,
+      ...(variant ? { sku: variant.sku, price: variant.price } : {}),
+      ...(quantity ? { quantity } : {}),
+    },
+  ];
 }
 
 /**
@@ -56,9 +69,17 @@ export function ProductExperience({ product, initial, children }: ProductExperie
   const model = modelFor(product, sel.color);
   const hasSizes = product.options.size.length > 0;
 
+  useEffect(() => {
+    track({ event: "view_item", items: trackItem(product, findVariant(product, initial)) });
+    // Một lần mỗi lần mở trang sản phẩm.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product.handle]);
+
   const update = (next: Selection) => {
     setSel(next);
     replaceVariantUrl(next);
+    const v = findVariant(product, next);
+    track({ event: "select_variant", items: trackItem(product, v) });
   };
 
   const onColor = (color: string) => {
@@ -91,7 +112,8 @@ export function ProductExperience({ product, initial, children }: ProductExperie
       return;
     }
     if (cta.kind !== "add" || !cta.variant) return;
-    const variantId = cta.variant.variant_id;
+    const chosen = cta.variant;
+    const variantId = chosen.variant_id;
     setCartError(null);
     setAdded(false);
     startTransition(async () => {
@@ -103,6 +125,11 @@ export function ProductExperience({ product, initial, children }: ProductExperie
       // Thông báo qua vùng aria-live (không chuyển focus) + cập nhật số ở header.
       setNotice(r.message);
       setAdded(true);
+      track({
+        event: "add_to_cart",
+        value: chosen.price,
+        items: trackItem(product, chosen, 1),
+      });
       emitCartChanged(r.count);
     });
   };
@@ -140,6 +167,7 @@ export function ProductExperience({ product, initial, children }: ProductExperie
                         chartOpenerRef.current =
                           document.activeElement instanceof HTMLElement ? document.activeElement : null;
                         setChartOpen(true);
+                        track({ event: "view_size_guide", items: trackItem(product, null) });
                       }
                     : undefined
                 }
