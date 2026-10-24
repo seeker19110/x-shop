@@ -13,6 +13,7 @@ import { FilterSidebar } from "./FilterSidebar";
 import { chipsFor, describeIssues, hrefFor, totalPages, withoutConditions } from "./filter-state";
 import { Pagination } from "./Pagination";
 import { ScrollRestorer } from "./ScrollRestorer";
+import { ListAnalytics } from "./ListAnalytics";
 import { ProductGrid } from "./ProductGrid";
 import { SortForm } from "./SortForm";
 
@@ -105,6 +106,10 @@ export function CatalogView({
           ) : result.items.length > 0 ? (
             <>
               <ProductGrid items={result.items} priorityCount={2} />
+              <ListAnalytics
+                listId={isSearch ? "tim-kiem" : (category ?? "danh-muc")}
+                items={result.items.map((i) => ({ handle: i.handle, price: i.price_min }))}
+              />
               <Pagination basePath={basePath} filter={filter} lastPage={lastPage} />
             </>
           ) : result.total > 0 ? (

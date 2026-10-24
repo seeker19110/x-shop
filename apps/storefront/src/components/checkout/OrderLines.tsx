@@ -4,6 +4,8 @@ import styles from "./Checkout.module.css";
 
 export interface CheckoutLine {
   id: string;
+  /** Handle sản phẩm (cho telemetry); null nếu dòng không còn gắn sản phẩm. */
+  itemId?: string | null;
   title: string;
   variantLabel: string | null;
   quantity: number;
