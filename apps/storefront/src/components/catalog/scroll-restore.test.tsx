@@ -120,6 +120,8 @@ describe("ScrollRestorer (CAT03)", () => {
     render(
       <>
         <ScrollRestorer />
+        {/* Thẻ <a> thuần là chủ ý: ScrollRestorer nghe click trên mọi liên kết, kể cả ngoài next/link. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a href="/san-pham/x">PDP</a>
       </>,
     );
