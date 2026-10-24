@@ -65,3 +65,10 @@
 - Chọn: Giữ chặn route complete (đường tạo đơn vòng qua checkout); cột integer có trần 2.147.483.647 đ, vượt → 422 LIMIT; tổng hợp tính ở ứng dụng
 - Lý do (tiêu chí chất lượng cuối): Chặn mọi đường tạo đơn không qua giữ hàng/idempotency (đúng hơn, an toàn hơn); đơn thời trang không chạm trần, trần là lỗi rõ chứ không sai tiền; tránh lỗi ép kiểu chuỗi int8 của MikroORM
 - Đường lùi: Migration expand sang bigint + ép kiểu khi mở bán sỉ giá trị lớn
+
+### D-010 · 2026-10-24T19:48:14+00:00 · Ghi tồn qua route admin native (inventory-items, reservations)
+
+- Phương án: (1) Giữ quyền inventory.adjust, chấp nhận đường vòng INV03 · (2) Chỉ owner (settings.manage); kho dùng /admin/x/inventory/adjustments có lý do + idempotency + khóa + không dưới reserved
+- Chọn: Chỉ owner (settings.manage); kho dùng /admin/x/inventory/adjustments có lý do + idempotency + khóa + không dưới reserved
+- Lý do (tiêu chí chất lượng cuối): Mọi điều chỉnh tồn phải có lý do/người/khóa (INV03, đặc tả §6.2); mất tiện ích sửa tồn trên dashboard native cho vai trò kho là chấp nhận được
+- Đường lùi: Đổi 2 dòng trong native-permissions.ts

@@ -72,9 +72,10 @@ export const NATIVE_ADMIN_ROUTES: readonly NativeRoute[] = [
   { methods: R, path: "/admin/customers/*", rule: p("order.read") },
   { methods: R, path: "/admin/customer-groups/*", rule: p("order.read") },
   // Tồn kho: điều chỉnh có lý do/khóa chống trùng đi qua POST /admin/x/inventory/adjustments (INV03).
-  { methods: W, path: "/admin/inventory-items/*", rule: p("inventory.adjust") },
+  // D-010: ghi tồn native đi vòng qua lý do/idempotency/khóa của INV03 → chỉ owner; kho dùng /admin/x/inventory/adjustments.
+  { methods: W, path: "/admin/inventory-items/*", rule: p("settings.manage") },
   { methods: R, path: "/admin/inventory-items/*", rule: p("inventory.read") },
-  { methods: W, path: "/admin/reservations/*", rule: p("inventory.adjust") },
+  { methods: W, path: "/admin/reservations/*", rule: p("settings.manage") },
   { methods: R, path: "/admin/reservations/*", rule: p("inventory.read") },
   // Catalog / giá
   { methods: ["POST"], path: "/admin/products/import*", rule: p("catalog.import") },

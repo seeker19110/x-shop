@@ -17,7 +17,12 @@ export interface SecurityStore {
   close(): Promise<void>;
 }
 
-export const KEY_PREFIX = "xs:sec:";
+/**
+ * `XS_SECURITY_KEY_NAMESPACE` (tùy chọn) tách khóa giữa các môi trường dùng chung một Redis — test tích hợp đặt giá trị
+ * riêng mỗi lần chạy để bộ đếm rate limit (cửa sổ 15 phút) của lần/suite trước không rò sang lần sau.
+ */
+const NAMESPACE = process.env.XS_SECURITY_KEY_NAMESPACE?.trim();
+export const KEY_PREFIX = NAMESPACE ? `xs:sec:${NAMESPACE}:` : "xs:sec:";
 
 class RedisStore implements SecurityStore {
   constructor(private readonly redis: Redis) {}

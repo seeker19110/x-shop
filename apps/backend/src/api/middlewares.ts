@@ -39,7 +39,7 @@ export default defineMiddlewares({
       middlewares: [authenticate("customer", ["session", "bearer"], { allowUnauthenticated: true })],
     },
     {
-      method: ["POST"],
+      methods: ["POST"],
       matcher: "/store/carts/:id/complete",
       middlewares: [blockNativeCartComplete],
     },
