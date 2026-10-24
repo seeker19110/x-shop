@@ -53,7 +53,7 @@
 - [x] `T-005` Chuẩn hóa tiếng Việt (NFC, bỏ dấu, đ→d) + so khớp lọc cùng SKU + giá SKU khớp (AT01, AT31) + chuẩn hóa query URL lọc (sau: T-001; files: packages/domain/src/catalog/) — Gate: `pnpm --filter @x-shop/domain test -- catalog`
 - [x] `T-006` Máy trạng thái đơn/thanh toán/giao/đổi trả/hoàn/đối soát, đơn điệu (không lùi captured→pending), bất biến refund ≤ captured, COD amount (AT13) (sau: T-001; files: packages/domain/src/state/, packages/domain/src/ledger/) — Gate: `pnpm --filter @x-shop/domain test -- state ledger`
 - [x] `T-007` Protocol VNPAY PAY: tạo URL ký HMAC-SHA512, xác minh IPN/return, mã phản hồi RspCode, querydr/refund payload, giờ GMT+7; mock server (AT07) (sau: T-001; files: packages/domain/src/providers/vnpay/) — Gate: `pnpm --filter @x-shop/domain test -- vnpay`
-- [ ] `T-008` Protocol GHN (báo phí, tạo đơn hai cấp, client_order_code, ánh xạ trạng thái, COD) + danh mục địa chỉ 2 cấp có nguồn/giấy phép (sau: T-001; files: packages/domain/src/providers/ghn/, packages/domain/data/) — Gate: `pnpm --filter @x-shop/domain test -- ghn address`
+- [x] `T-008` Protocol GHN (báo phí, tạo đơn hai cấp, client_order_code, ánh xạ trạng thái, COD) + danh mục địa chỉ 2 cấp có nguồn/giấy phép (sau: T-001; files: packages/domain/src/providers/ghn/, packages/domain/data/) — Gate: `pnpm --filter @x-shop/domain test -- ghn address`
 
 ### Lát 3 — Spike giao dịch trên Medusa (RK-001 — cổng dừng)
 - [ ] `T-009` Module `checkout` (checkout_attempt, payment_attempt, payment_ledger, webhook_inbox, outbox, idempotency_record) + migration + ràng buộc UNIQUE/CHECK (sau: T-002, T-006; files: apps/backend/src/modules/checkout/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- checkout-module`

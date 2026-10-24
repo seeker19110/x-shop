@@ -11,3 +11,4 @@ pnpm-lock.yaml
 **/.medusa/
 coverage/
 xt.yaml
+packages/domain/data/
