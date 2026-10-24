@@ -46,6 +46,15 @@ export const VNPAY_REQUIRED = [
 export const VNPAY_MODES = ["mock", "sandbox", "live"] as const;
 export type VnpayMode = (typeof VNPAY_MODES)[number];
 
+/**
+ * GHN (giao vận, T-026): mock = MockGhn cục bộ (mặc định dev/test) · sandbox | live = HTTP tới GHN_BASE_URL với
+ * GHN_TOKEN + GHN_SHOP_ID (chỉ ở server). sandbox|live → bắt buộc đủ `GHN_REQUIRED`. Production: bắt buộc khai rõ
+ * sandbox|live (không được mock — vận đơn giả ở production là sai nghiệp vụ) và GHN_BASE_URL phải https://.
+ */
+export const GHN_MODES = ["mock", "sandbox", "live"] as const;
+export type GhnMode = (typeof GHN_MODES)[number];
+export const GHN_REQUIRED = ["GHN_BASE_URL", "GHN_TOKEN", "GHN_SHOP_ID"] as const;
+
 export const VNPAY_DEV_DEFAULTS = {
   VNPAY_TMN_CODE: "XSHOPDEV",
   VNPAY_HASH_SECRET: "xshop-dev-vnpay-hash-secret-khong-dung-production",
@@ -156,9 +165,45 @@ const schema = z
     VNPAY_PAYMENT_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
     VNPAY_API_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
     VNPAY_RETURN_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
+    GHN_MODE: optionalText.pipe(
+      z.enum(GHN_MODES, { message: `phải là một trong ${GHN_MODES.join("|")}` }).optional(),
+    ),
+    GHN_BASE_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
+    GHN_TOKEN: optionalText.pipe(
+      z
+        .string()
+        .regex(/^[A-Za-z0-9-]{8,128}$/, { message: "phải là token chữ/số/gạch nối (8–128 ký tự)" })
+        .optional(),
+    ),
+    GHN_SHOP_ID: optionalText.pipe(
+      z
+        .string()
+        .regex(/^[0-9]{1,20}$/, { message: "phải là mã cửa hàng dạng số" })
+        .optional(),
+    ),
   })
   .superRefine((env, ctx) => {
+    const ghnMode = env.GHN_MODE ?? (env.NODE_ENV === "production" ? undefined : "mock");
+    if (ghnMode === "sandbox" || ghnMode === "live") {
+      for (const key of GHN_REQUIRED) {
+        if (env[key] === undefined) {
+          ctx.addIssue({ code: "custom", path: [key], message: "bắt buộc khi GHN_MODE=sandbox|live" });
+        }
+      }
+    }
     if (env.NODE_ENV !== "production") return;
+    if (env.GHN_MODE === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["GHN_MODE"],
+        message: "bắt buộc khai rõ (sandbox|live) khi NODE_ENV=production",
+      });
+    } else if (env.GHN_MODE === "mock") {
+      ctx.addIssue({ code: "custom", path: ["GHN_MODE"], message: "không được dùng mock ở production" });
+    }
+    if (env.GHN_BASE_URL !== undefined && !env.GHN_BASE_URL.startsWith("https://")) {
+      ctx.addIssue({ code: "custom", path: ["GHN_BASE_URL"], message: "phải dùng https:// ở production" });
+    }
     for (const key of PRODUCTION_REQUIRED) {
       if (env[key] === undefined) {
         ctx.addIssue({ code: "custom", path: [key], message: "bắt buộc khi NODE_ENV=production" });
@@ -211,6 +256,12 @@ const schema = z
       STORE_CORS: env.STORE_CORS ?? DEV_CORS_DEFAULTS.STORE_CORS,
       ADMIN_CORS: env.ADMIN_CORS ?? DEV_CORS_DEFAULTS.ADMIN_CORS,
       AUTH_CORS: env.AUTH_CORS ?? DEV_CORS_DEFAULTS.AUTH_CORS,
+      ghn: {
+        mode: (env.GHN_MODE ?? "mock") as GhnMode,
+        baseUrl: env.GHN_BASE_URL ?? "",
+        token: env.GHN_TOKEN ?? "",
+        shopId: env.GHN_SHOP_ID ?? "",
+      },
       vnpay: env.VNPAY_ENABLED
         ? {
             tmnCode: pick("VNPAY_TMN_CODE"),

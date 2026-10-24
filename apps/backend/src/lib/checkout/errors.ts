@@ -8,6 +8,7 @@ export const CHECKOUT_ERROR_STATUS = {
   CART_EMPTY: 422,
   LIMIT: 422,
   DISCOUNT_NOT_APPLICABLE: 422,
+  ADDRESS_NOT_SERVED: 422,
   NOT_FOUND: 404,
   CART_CHANGED: 409,
   PRICE_CHANGED: 409,
@@ -21,18 +22,20 @@ export const CHECKOUT_ERROR_STATUS = {
   ATTEMPT_ABORTED: 409,
   RATE_LIMITED: 429,
   INTERNAL: 500,
+  SHIPPING_UNAVAILABLE: 503,
 } as const;
 
 export type CheckoutErrorCode = keyof typeof CHECKOUT_ERROR_STATUS;
 
 /** Lỗi tạm thời: cùng Idempotency-Key được thử lại (attempt mở lại), không phải đổi key. */
-export const RETRYABLE_CODES: readonly CheckoutErrorCode[] = ["BUSY_RETRY"];
+export const RETRYABLE_CODES: readonly CheckoutErrorCode[] = ["BUSY_RETRY", "SHIPPING_UNAVAILABLE"];
 
 const DEFAULT_MESSAGES: Record<CheckoutErrorCode, string> = {
   VALIDATION: "Dữ liệu chưa hợp lệ",
   CART_EMPTY: "Giỏ hàng đang trống",
   LIMIT: "Vượt giới hạn cho phép",
   DISCOUNT_NOT_APPLICABLE: "Mã giảm giá không áp dụng được cho đơn này",
+  ADDRESS_NOT_SERVED: "Đơn vị vận chuyển chưa giao tới địa chỉ này, vui lòng chọn địa chỉ khác",
   NOT_FOUND: "Không tìm thấy giỏ hàng",
   CART_CHANGED: "Giỏ hàng đã thay đổi, vui lòng xem lại trước khi đặt",
   PRICE_CHANGED: "Giá sản phẩm đã thay đổi, vui lòng xác nhận tổng tiền mới",
@@ -46,6 +49,7 @@ const DEFAULT_MESSAGES: Record<CheckoutErrorCode, string> = {
   ATTEMPT_ABORTED: "Lần đặt hàng trước bị gián đoạn, vui lòng đặt lại",
   RATE_LIMITED: "Bạn thao tác quá nhanh, vui lòng thử lại sau ít giây",
   INTERNAL: "Không thể xử lý yêu cầu lúc này",
+  SHIPPING_UNAVAILABLE: "Chưa lấy được phí vận chuyển, vui lòng thử lại sau giây lát",
 };
 
 /** Hành động gợi ý cho client (đặc tả §9.1 "kèm hành động cần làm"). */
@@ -60,6 +64,8 @@ const ACTIONS: Partial<Record<CheckoutErrorCode, string>> = {
   BUSY_RETRY: "retry_same_key",
   ATTEMPT_ABORTED: "resubmit_new_key",
   RATE_LIMITED: "retry_later",
+  ADDRESS_NOT_SERVED: "change_address",
+  SHIPPING_UNAVAILABLE: "retry_same_key",
 };
 
 export type CheckoutErrorDetail = Record<string, unknown>;
@@ -144,6 +150,7 @@ export function sendProblem(res: ProblemResponse, error: CheckoutError): void {
   res.setHeader("Content-Type", "application/problem+json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   if (error.code === "BUSY_RETRY") res.setHeader("Retry-After", "1");
+  if (error.code === "SHIPPING_UNAVAILABLE") res.setHeader("Retry-After", "5");
   if (error.code === "RATE_LIMITED") {
     const after = error.detail?.retry_after_seconds;
     res.setHeader("Retry-After", String(typeof after === "number" ? after : 10));

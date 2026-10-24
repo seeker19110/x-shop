@@ -84,5 +84,7 @@ module.exports = defineConfig({
     { resolve: "./src/modules/catalog-index" },
     // Nhập CSV catalog: preview/commit idempotent theo import id (T-015).
     { resolve: "./src/modules/catalog-import" },
+    // Giao vận: vận đơn GHN + sự kiện callback đã lọc PII (T-026, SPEC-fulfillment S-301…S-305).
+    { resolve: "./src/modules/shipping" },
   ],
 });

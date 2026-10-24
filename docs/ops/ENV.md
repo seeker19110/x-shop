@@ -40,10 +40,21 @@ VNPAY_HASH_SECRET=thay-bang-khoa-bi-mat-vnpay-it-nhat-32-ky-tu   # ≥ 32 ký t�
 VNPAY_PAYMENT_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
 VNPAY_API_URL=https://sandbox.vnpayment.vn/merchant_webapi/api/transaction
 VNPAY_RETURN_URL=https://shop.example.vn/thanh-toan/ket-qua
+
+# GHN — giao vận (T-026, SPEC-fulfillment). mock = GHN giả lập cục bộ (mặc định dev/test, biểu phí P0 cố định) ·
+# sandbox | live = HTTP tới GHN_BASE_URL. sandbox|live → BẮT BUỘC đủ GHN_BASE_URL, GHN_TOKEN, GHN_SHOP_ID. Production:
+# BẮT BUỘC khai rõ GHN_MODE=sandbox|live (không được mock), URL phải https. Token CHỈ ở server (header `Token`).
+# Đường dẫn API/URL sandbox: CHƯA XÁC MINH với tài liệu GHN (developer.ghn.vn 403 lúc nghiên cứu) — đối chiếu khi có khoá.
+# Callback: cấu hình ở GHN trỏ về POST <MEDUSA_BACKEND_URL>/x/webhooks/shipping/ghn (không chữ ký — hệ thống tra lại API).
+GHN_MODE=sandbox
+GHN_BASE_URL=https://dev-online-gateway.ghn.vn/shiip/public-api   # (chưa xác minh)
+GHN_TOKEN=thay-bang-token-ghn
+GHN_SHOP_ID=123456
 ```
 
 Thời hạn checkout (báo giá 10 phút, giữ hàng online 15 phút, xác nhận COD 24 giờ, lease attempt 2 phút, chờ khóa 15 giây)
-là hằng cấu hình trong `apps/backend/src/lib/checkout/config.ts` (D-002) — không phải biến môi trường.
+là hằng cấu hình trong `apps/backend/src/lib/checkout/config.ts` (D-002) — không phải biến môi trường. Hạn báo phí GHN
+(10 phút) và hạn chờ mỗi lời gọi GHN (10 giây) ở `apps/backend/src/lib/shipping/config.ts`.
 
 `medusa build` nạp config nên cần `DATABASE_URL` dù không kết nối — build image truyền URL giả (D-007).
 

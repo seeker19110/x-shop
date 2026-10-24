@@ -29,6 +29,8 @@ export const OPS_EXCEPTION_KINDS = [
   "cod_confirm_overdue",
   /** Sự kiện outbox gửi hỏng quá số lần tối đa. */
   "outbox_dead",
+  /** Thông báo khách (email/SMS) gửi hỏng quá số lần tối đa (T-029, AT18) — đơn không bị ảnh hưởng. */
+  "notification_failed",
 ] as const;
 export const OPS_EXCEPTION_STATES = ["open", "in_progress", "resolved"] as const;
 export const OPS_PRIORITIES = ["low", "normal", "high", "urgent"] as const;

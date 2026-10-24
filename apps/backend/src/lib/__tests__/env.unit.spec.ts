@@ -1,5 +1,6 @@
 import {
   DEV_CORS_DEFAULTS,
+  GHN_REQUIRED,
   formatEnvProblems,
   loadEnvOrExit,
   parseEnv,
@@ -30,6 +31,10 @@ const production = {
   VNPAY_API_URL: "https://pay.vnpay.example/merchant_webapi/api/transaction",
   VNPAY_RETURN_URL: "https://shop.example.vn/thanh-toan/ket-qua",
   VNPAY_MODE: "live",
+  GHN_MODE: "live",
+  GHN_BASE_URL: "https://ghn.example.vn/shiip/public-api",
+  GHN_TOKEN: "ghn-token-0123456789abcdef",
+  GHN_SHOP_ID: "123456",
 };
 
 const problemsOf = (source: Record<string, string | undefined>) => {
@@ -144,6 +149,16 @@ describe("parseEnv — development/test", () => {
   });
 });
 
+describe("parseEnv — GHN ở dev/test", () => {
+  it("vắng GHN_MODE → mock, không đòi token; sandbox thiếu token → lỗi", () => {
+    const result = parseEnv({ DATABASE_URL: DB });
+    if (!result.ok) throw new Error("mong đợi hợp lệ");
+    expect(result.env.ghn.mode).toBe("mock");
+    expect(variablesOf({ DATABASE_URL: DB, GHN_MODE: "sandbox" }).sort()).toEqual([...GHN_REQUIRED].sort());
+    expect(variablesOf({ DATABASE_URL: DB, GHN_MODE: "that" })).toEqual(["GHN_MODE"]);
+  });
+});
+
 describe("parseEnv — production", () => {
   it("đủ biến hợp lệ → ok, giữ đúng CORS đã đặt", () => {
     const result = parseEnv(production);
@@ -160,7 +175,7 @@ describe("parseEnv — production", () => {
 
   it("vắng tất cả → liệt kê đủ mọi biến bắt buộc (VNPAY bật mặc định)", () => {
     expect(variablesOf({ NODE_ENV: "production", DATABASE_URL: DB }).sort()).toEqual(
-      [...PRODUCTION_REQUIRED, ...VNPAY_REQUIRED, "VNPAY_MODE"].sort(),
+      [...PRODUCTION_REQUIRED, ...VNPAY_REQUIRED, "VNPAY_MODE", "GHN_MODE"].sort(),
     );
   });
 
@@ -206,6 +221,27 @@ describe("parseEnv — production", () => {
     expect(variablesOf({ ...production, VNPAY_MODE: "mock" })).toEqual(["VNPAY_MODE"]);
     expect(variablesOf({ ...production, VNPAY_MODE: "that" })).toEqual(["VNPAY_MODE"]);
     expect(parseEnv({ ...production, VNPAY_MODE: "sandbox" }).ok).toBe(true);
+  });
+
+  it("GHN: production thiếu mode hoặc mock → lỗi; live/sandbox thiếu token/shop/URL → nêu đúng tên; URL http → lỗi", () => {
+    expect(variablesOf({ ...production, GHN_MODE: undefined })).toEqual(["GHN_MODE"]);
+    expect(variablesOf({ ...production, GHN_MODE: "mock" })).toEqual(["GHN_MODE"]);
+    for (const key of GHN_REQUIRED) {
+      expect(variablesOf({ ...production, [key]: undefined })).toEqual([key]);
+      expect(variablesOf({ ...production, GHN_MODE: "sandbox", [key]: undefined })).toEqual([key]);
+    }
+    expect(variablesOf({ ...production, GHN_BASE_URL: "http://ghn.example.vn/api" })).toEqual([
+      "GHN_BASE_URL",
+    ]);
+    expect(variablesOf({ ...production, GHN_SHOP_ID: "abc" })).toEqual(["GHN_SHOP_ID"]);
+    const result = parseEnv(production);
+    if (!result.ok) throw new Error("mong đợi hợp lệ");
+    expect(result.env.ghn).toEqual({
+      mode: "live",
+      baseUrl: production.GHN_BASE_URL,
+      token: production.GHN_TOKEN,
+      shopId: production.GHN_SHOP_ID,
+    });
   });
 
   it("bí mật mặc định công khai/quá ngắn bị từ chối", () => {
