@@ -55,5 +55,5 @@ thu/hoàn đúng một lần.
 | Tiền | `vnp_Amount` = VND × 100 | so khớp số nguyên tuyệt đối |
 
 ## 4. Quyết định
-- Trạng thái tài chính đơn điệu: không lùi từ `captured` về `pending` (D-008).
+- Trạng thái tài chính đơn điệu: không lùi từ `captured` về `pending` (D-003).
 - Dev/CI dùng `MockVnpayServer` cùng thuật toán chữ ký; sandbox thật khi có khoá (RK-006).

@@ -54,4 +54,4 @@ Là khách, tôi lọc "đen, M, dưới 500.000đ" và chỉ thấy sản phẩ
 
 ## 4. Quyết định
 - Read model `catalog_variant_index` trong Postgres: một dòng/SKU đã publish (product_id, color, size, price, in_stock,
-  material, category, search_text không dấu) + trigram index; truy vấn GROUP BY product trên các SKU thỏa đủ điều kiện (D-009).
+  material, category, search_text không dấu) + trigram index; truy vấn GROUP BY product trên các SKU thỏa đủ điều kiện (D-004).

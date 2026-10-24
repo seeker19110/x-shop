@@ -77,7 +77,7 @@ lần, để không bị thu thêm ngầm và không mất hàng đã giữ.
 | Tiền | VND số nguyên; giảm > subtotal | giảm bị kẹp ≤ subtotal; không tổng âm | S-001 |
 
 ## 4. Quyết định lấp chỗ hở
-- Idempotency key: phạm vi (session/cart, `checkout.submit`), lưu `sha256(payload chuẩn hóa)`; giữ 24 giờ (D-005).
+- Idempotency key: phạm vi (session/cart, `checkout.submit`), lưu `sha256(payload chuẩn hóa)`; giữ 24 giờ (D-002).
 - Khóa: Locking Module của Medusa theo key `inventory_item:<id>` sắp tăng dần + khóa `cart:<id>`; ràng buộc UNIQUE
-  `(cart_id, cart_version)` trên checkout attempt là lớp đỡ cuối (D-006).
-- Làm tròn phân bổ giảm giá: largest remainder theo giá trị dòng, hòa thì theo thứ tự dòng (D-007).
+  `(cart_id, cart_version)` trên checkout attempt là lớp đỡ cuối (D-002).
+- Làm tròn phân bổ giảm giá: largest remainder theo giá trị dòng, hòa thì theo thứ tự dòng (D-002).

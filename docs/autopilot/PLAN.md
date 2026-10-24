@@ -1,6 +1,6 @@
 # docs/autopilot/PLAN.md — x-shop · P0 (đợt 1)
 
-> Duyệt: D-010 (phiên chính tự duyệt 2026-10-24) · Spec gốc: `docs/specs/DAC-TA-GOC.md` + `docs/specs/SPEC-*.md` (F-001…F-012) · Blueprint: BLUEPRINT.md · ADR-0001 (stack)
+> Duyệt: D-006 (phiên chính tự duyệt 2026-10-24) · Spec gốc: `docs/specs/DAC-TA-GOC.md` + `docs/specs/SPEC-*.md` (F-001…F-012) · Blueprint: BLUEPRINT.md · ADR-0001 (stack)
 
 ## Tóm tắt duyệt (≤ 30 dòng)
 - **Mục tiêu đợt 1:** P0 chạy được cục bộ/CI với provider mock theo protocol: 6 màn hình cốt lõi + đơn chờ thanh toán có giữ
@@ -11,8 +11,8 @@
   → catalog/search read model (RK-002) → storefront 6 màn → vận hành (RBAC/MFA RK-003, GHN, đổi trả, đối soát) → hoàn thiện.
 - **Quyết định đổi so với đặc tả (góp ý đã nêu):** (1) Lát 3 là spike có cổng dừng — nếu Medusa không giữ được AT04/AT05/AT35
   thì ADR đổi hướng trước khi làm UI giao dịch; (2) read model lọc cùng SKU là bắt buộc P0, không "nếu cần"; (3) MFA/RBAC
-  làm như module riêng ở Lát 6, không đợi hoàn thiện; (4) VND 0 chữ số thập phân + phân bổ largest-remainder có test thuộc tính;
-  (5) đối soát P0 = nhập batch COD/sao kê + đối chiếu có lịch sử (tự động hóa sâu ở P1).
+  làm như module riêng ở Lát 6, không đợi hoàn thiện; (4) RBAC native của Medusa là Enterprise → tự xây; MFA dùng TOTP native; webhook payment native tự hoàn tất giỏ → IPN route riêng; (5) VND 0 chữ số thập phân + phân bổ largest-remainder có test thuộc tính;
+  (6) đối soát P0 = nhập batch COD/sao kê + đối chiếu có lịch sử (tự động hóa sâu ở P1).
 - **Blueprint MUST:** 490 mục (web-app + ecommerce, M) — tick dần theo task; mục không áp dụng ghi `[~]` có điều kiện.
 - **Ngoài phiên (việc chờ người):** khoá VNPAY/GHN sandbox+live, hợp đồng, chính sách đổi trả/thuế, ảnh/dữ liệu thật,
   hạ tầng production, UAT với người mua thật, rà soát pháp lý — `loop defer`.
@@ -44,7 +44,7 @@
 ## Task
 
 ### Lát 1 — Nền tảng (F-001)
-- [ ] `T-001` Monorepo pnpm + TypeScript strict + ESLint/Prettier + Vitest + `packages/domain` khung; điền lệnh thật `xt.yaml`; CI có Postgres/Redis; `.env.example` + `.nvmrc` (files: package.json, pnpm-workspace.yaml, packages/domain/, xt.yaml, .github/workflows/ci.yml, tsconfig.base.json, eslint.config.mjs) — Gate: `.xtemplates/scripts/dev-task.sh gate`
+- [x] `T-001` Monorepo pnpm + TypeScript strict + ESLint/Prettier + Vitest + `packages/domain` khung; điền lệnh thật `xt.yaml`; CI có Postgres/Redis; `.env.example` + `.nvmrc` (files: package.json, pnpm-workspace.yaml, packages/domain/, xt.yaml, .github/workflows/ci.yml, tsconfig.base.json, eslint.config.mjs) — Gate: `.xtemplates/scripts/dev-task.sh gate`
 - [ ] `T-002` Medusa v2 backend `apps/backend` (config Postgres/Redis qua env đã validate, VND store/region seed, health) + test tích hợp chạy được với DB thật (sau: T-001; files: apps/backend/, scripts/dev-services.sh; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration`
 - [ ] `T-003` Next.js storefront `apps/storefront` + `DESIGN.md` + token CSS (đặc tả §3.1) + font Be Vietnam Pro tự host; cổng tương phản token (sau: T-001; files: apps/storefront/, DESIGN.md) — Gate: `python3 .xtemplates/scripts/xt.py contrast apps/storefront/src/styles/tokens.css --pairs apps/storefront/contrast-pairs.txt && pnpm --filter @x-shop/storefront build`
 
@@ -77,7 +77,7 @@
 
 ### Lát 6 — Vận hành (F-008, F-009, F-010)
 - [ ] `T-023` RBAC: ma trận vai trò dữ liệu + middleware mọi `/admin/x/*` + test sinh tự động phủ route × vai trò (AT21) (sau: T-002; files: apps/backend/src/modules/rbac/, apps/backend/src/api/middlewares.ts; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- rbac`
-- [ ] `T-024` MFA TOTP admin + chính sách phiên + xác thực lại thao tác nhạy cảm (SEC02) (sau: T-023; files: apps/backend/src/modules/mfa/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- mfa`
+- [ ] `T-024` MFA admin bằng TOTP native của Auth Module (`requireMfa` cho route nhạy cảm) + chính sách phiên + xác thực lại thao tác nhạy cảm (SEC02) (sau: T-023; files: apps/backend/src/modules/mfa/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- mfa`
 - [ ] `T-025` Audit log append-only + che PII; điều chỉnh tồn có lý do/idempotency, không dưới reserved (INV03) (sau: T-023; files: apps/backend/src/modules/audit/, apps/backend/src/api/admin/x/inventory/) — Gate: `pnpm --filter @x-shop/backend test:integration -- audit inventory-adjust`
 - [ ] `T-026` Giao vận GHN: báo phí trong quote, tạo vận đơn idempotent, callback xác minh bằng query, COD amount, xác nhận COD (AT11, AT13, AT14, AT23, AT34) (sau: T-012, T-008; files: apps/backend/src/modules/shipping-ghn/, apps/backend/src/api/x/webhooks/shipping/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- shipping`
 - [ ] `T-027` Hủy đơn, đổi trả theo dòng, kiểm định trước restock, hoàn tiền một phần theo giá thực trả, đổi size bằng đơn thay thế (POST02–03, AT15, AT16, AT17) (sau: T-026, T-025; files: apps/backend/src/modules/returns/, apps/backend/src/workflows/returns/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- returns refunds`

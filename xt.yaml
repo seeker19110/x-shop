@@ -4,15 +4,15 @@
 # gate = build → typecheck → lint → test (CI mẫu chạy cùng lệnh qua gate-par: typecheck ∥ lint ∥ build → test song song
 # trong job `gate`, ADR-0039/D-128); gate-fast = format_check → lint → typecheck → test_fast.
 # Autopilot đang chạy mà lint/test rỗng hay no-op (true, :, echo …) = cổng ĐỎ (ADR-0011); CI mẫu đỏ tới khi có lệnh thật.
-lint: ""
-typecheck: ""
-test: ""
-build: ""
-format: ""
-setup: ""             # cài phụ thuộc trước mỗi job CI (npm ci · pip install …); trống = bỏ qua
-format_check: ""      # sàn M/L: kiểm format không ghi file, đỏ khi lệch
-coverage: ""          # sàn M/L: test có ngưỡng coverage; artefact ra mktemp, không `|| true`
-format_file: ""       # format MỘT file (hook PostToolUse), `{}` = đường dẫn; trống = mẫu dựng sẵn của khung
+lint: "pnpm lint"
+typecheck: "pnpm typecheck"
+test: "pnpm test"
+build: "pnpm build"
+format: "pnpm format"
+setup: "corepack enable && pnpm install --frozen-lockfile"             # cài phụ thuộc trước mỗi job CI (npm ci · pip install …); trống = bỏ qua
+format_check: "pnpm format:check"      # sàn M/L: kiểm format không ghi file, đỏ khi lệch
+coverage: "pnpm -r --if-present test:coverage"          # sàn M/L: test có ngưỡng coverage; artefact ra mktemp, không `|| true`
+format_file: "pnpm exec prettier --write --ignore-unknown {}"       # format MỘT file (hook PostToolUse), `{}` = đường dẫn; trống = mẫu dựng sẵn của khung
 # commit_gate: hook trước `git commit` — fast = gate-fast · full = gate; diff đụng cấu hình cổng → mọi lớp test
 commit_gate: fast
 test_fast: ""         # test liên quan file đổi (XT_CHANGED_FILES, mỗi dòng một file); trống → test
@@ -38,7 +38,7 @@ delivery_phase: build
 e2e: ""               # suite E2E, CI chạy (`dev-task.sh e2e I N`); dùng $XT_SHARD để chia shard, vd npx playwright test --shard=${XT_SHARD:-1/1}
 e2e_setup: ""         # trước e2e: cài trình duyệt (vd npx playwright install --with-deps chromium)
 e2e_affected: ""      # chỉ spec của lát đang làm (Gate mỗi task); trống = e2e
-audit: ""             # audit phụ thuộc (npm audit · pip-audit …)
+audit: "pnpm audit --prod --audit-level high"             # audit phụ thuộc (npm audit · pip-audit …)
 # Trước phát hành (pha harden, `release-check` chạy — ADR-0042): đỏ = NO-GO; trống ở M/L = người ký lý do không áp.
 attack: ""            # tấn công thử: DAST (ZAP baseline/API scan) · fuzz API (schemathesis run …) trên bản chạy cục bộ/staging
 perf: ""              # kiểm tải có ngưỡng, đỏ khi vượt ngân sách (vd k6 run với thresholds)

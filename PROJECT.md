@@ -94,6 +94,6 @@ Next.js App Router + TypeScript (storefront) · Medusa v2 (commerce + Admin) · 
 
 ## 10. Câu hỏi mở (đặc tả §16.3) — mặc định thiết kế, chủ dự án đổi được qua cấu hình
 - [ ] Tên/nhận diện shop — [không chặn] — token + nội dung thay được (D-002)
-- [ ] Email hay SMS là kênh bắt buộc — [không chặn] — P0: email tùy chọn khi có SĐT; adapter thông báo dạng log/outbox (D-003)
-- [ ] TTL giữ hàng online / hạn xác nhận COD — [không chặn] — 15 phút / 24 giờ, cấu hình (D-004)
+- [ ] Email hay SMS là kênh bắt buộc — [không chặn] — P0: email tùy chọn khi có SĐT; adapter thông báo dạng log/outbox (D-002)
+- [ ] TTL giữ hàng online / hạn xác nhận COD — [không chặn] — 15 phút / 24 giờ, cấu hình (D-002)
 - [ ] Chính sách đổi trả, thuế/hóa đơn, phí ship — [chặn ra mắt, không chặn build] — cấu hình có version
