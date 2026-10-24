@@ -29,6 +29,7 @@ const production = {
   VNPAY_PAYMENT_URL: "https://pay.vnpay.example/paymentv2/vpcpay.html",
   VNPAY_API_URL: "https://pay.vnpay.example/merchant_webapi/api/transaction",
   VNPAY_RETURN_URL: "https://shop.example.vn/thanh-toan/ket-qua",
+  VNPAY_MODE: "live",
 };
 
 const problemsOf = (source: Record<string, string | undefined>) => {
@@ -125,6 +126,7 @@ describe("parseEnv — development/test", () => {
       paymentUrl: VNPAY_DEV_DEFAULTS.VNPAY_PAYMENT_URL,
       apiUrl: VNPAY_DEV_DEFAULTS.VNPAY_API_URL,
       returnUrl: VNPAY_DEV_DEFAULTS.VNPAY_RETURN_URL,
+      mode: "mock",
     });
     expect(variablesOf({ DATABASE_URL: DB, VNPAY_ENABLED: "co" })).toEqual(["VNPAY_ENABLED"]);
     expect(variablesOf({ DATABASE_URL: DB, VNPAY_TMN_CODE: "mã có dấu" })).toEqual(["VNPAY_TMN_CODE"]);
@@ -158,7 +160,7 @@ describe("parseEnv — production", () => {
 
   it("vắng tất cả → liệt kê đủ mọi biến bắt buộc (VNPAY bật mặc định)", () => {
     expect(variablesOf({ NODE_ENV: "production", DATABASE_URL: DB }).sort()).toEqual(
-      [...PRODUCTION_REQUIRED, ...VNPAY_REQUIRED].sort(),
+      [...PRODUCTION_REQUIRED, ...VNPAY_REQUIRED, "VNPAY_MODE"].sort(),
     );
   });
 
@@ -171,6 +173,7 @@ describe("parseEnv — production", () => {
   it("VNPAY_ENABLED=false → không đòi biến VNPAY, cấu hình vnpay = null", () => {
     const source: Record<string, string | undefined> = { ...production, VNPAY_ENABLED: "false" };
     for (const key of VNPAY_REQUIRED) source[key] = undefined;
+    source.VNPAY_MODE = undefined;
     const result = parseEnv(source);
     if (!result.ok) throw new Error("mong đợi hợp lệ");
     expect(result.env.vnpay).toBeNull();
@@ -194,7 +197,15 @@ describe("parseEnv — production", () => {
       paymentUrl: production.VNPAY_PAYMENT_URL,
       apiUrl: production.VNPAY_API_URL,
       returnUrl: production.VNPAY_RETURN_URL,
+      mode: "live",
     });
+  });
+
+  it("VNPAY_MODE: production thiếu hoặc mock → lỗi; sai giá trị → lỗi", () => {
+    expect(variablesOf({ ...production, VNPAY_MODE: undefined })).toEqual(["VNPAY_MODE"]);
+    expect(variablesOf({ ...production, VNPAY_MODE: "mock" })).toEqual(["VNPAY_MODE"]);
+    expect(variablesOf({ ...production, VNPAY_MODE: "that" })).toEqual(["VNPAY_MODE"]);
+    expect(parseEnv({ ...production, VNPAY_MODE: "sandbox" }).ok).toBe(true);
   });
 
   it("bí mật mặc định công khai/quá ngắn bị từ chối", () => {

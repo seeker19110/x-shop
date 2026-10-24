@@ -19,6 +19,7 @@ export const CHECKOUT_ERROR_STATUS = {
   IDEMPOTENCY_CONFLICT: 409,
   BUSY_RETRY: 409,
   ATTEMPT_ABORTED: 409,
+  RATE_LIMITED: 429,
   INTERNAL: 500,
 } as const;
 
@@ -43,6 +44,7 @@ const DEFAULT_MESSAGES: Record<CheckoutErrorCode, string> = {
   IDEMPOTENCY_CONFLICT: "Yêu cầu trùng khóa nhưng khác nội dung với lần gửi trước",
   BUSY_RETRY: "Hệ thống đang bận xử lý đơn khác, vui lòng thử lại sau giây lát",
   ATTEMPT_ABORTED: "Lần đặt hàng trước bị gián đoạn, vui lòng đặt lại",
+  RATE_LIMITED: "Bạn thao tác quá nhanh, vui lòng thử lại sau ít giây",
   INTERNAL: "Không thể xử lý yêu cầu lúc này",
 };
 
@@ -57,6 +59,7 @@ const ACTIONS: Partial<Record<CheckoutErrorCode, string>> = {
   DISCOUNT_EXHAUSTED: "remove_discount",
   BUSY_RETRY: "retry_same_key",
   ATTEMPT_ABORTED: "resubmit_new_key",
+  RATE_LIMITED: "retry_later",
 };
 
 export type CheckoutErrorDetail = Record<string, unknown>;
@@ -141,5 +144,9 @@ export function sendProblem(res: ProblemResponse, error: CheckoutError): void {
   res.setHeader("Content-Type", "application/problem+json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   if (error.code === "BUSY_RETRY") res.setHeader("Retry-After", "1");
+  if (error.code === "RATE_LIMITED") {
+    const after = error.detail?.retry_after_seconds;
+    res.setHeader("Retry-After", String(typeof after === "number" ? after : 10));
+  }
   res.status(error.status).json(toProblem(error));
 }

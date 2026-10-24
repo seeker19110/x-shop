@@ -1,6 +1,19 @@
 import type { SqlEntityManager } from "@medusajs/framework/mikro-orm/knex";
 import { generateEntityId, MedusaService } from "@medusajs/framework/utils";
-import { ACTIVE_ATTEMPT_STATES, COUNTED_COUPON_STATES, type PaymentMethod } from "./models/constants";
+import {
+  decideOnCapture,
+  orderMachine,
+  type CaptureDecision,
+  type LedgerEntry,
+  type OrderState,
+  type RefundState,
+} from "@x-shop/domain";
+import {
+  ACTIVE_ATTEMPT_STATES,
+  COUNTED_COUPON_STATES,
+  OPS_EXCEPTION_KINDS,
+  type PaymentMethod,
+} from "./models/constants";
 import {
   CartVersion,
   CheckoutAttempt,
@@ -44,6 +57,19 @@ export interface FinalizeAttemptInput {
   cod_confirm_by: Date | null;
   outbox: { event_key: string; type: string; payload: Record<string, unknown> };
 }
+
+export interface OpsExceptionInput {
+  kind: (typeof OPS_EXCEPTION_KINDS)[number];
+  dedupe_key: string;
+  order_id?: string | null;
+  amount?: number | null;
+  priority?: "low" | "normal" | "high" | "urgent";
+  due_at?: Date | null;
+  detail?: Record<string, unknown> | null;
+}
+
+export type CaptureOutcome =
+  { duplicate: true } | { duplicate: false; decision: CaptureDecision; state_before: OrderState };
 
 const json = (value: unknown) => JSON.stringify(value ?? null);
 
@@ -359,6 +385,227 @@ class CheckoutModuleService extends MedusaService({
         em,
       );
     });
+  }
+
+  /* ------------------------------------------------------------ thanh toán (T-011) */
+
+  /**
+   * Lưu thông báo TRƯỚC khi xử lý (§4 bước 2). Trùng (provider, event_key) → trả bản ghi đã có (kèm kết quả nếu đã
+   * xử lý) để caller trả lại kết quả cũ.
+   */
+  async recordInbox(input: {
+    provider: string;
+    event_key: string;
+    source: string;
+    payload: Record<string, unknown>;
+    payload_hash: string;
+    verified: boolean;
+  }): Promise<{ id: string; inserted: boolean; result: Record<string, unknown> | null }> {
+    const inserted = await this.exec(
+      `INSERT INTO webhook_inbox (id, provider, event_key, source, payload, payload_hash, verified)
+       VALUES (?, ?, ?, ?, ?::jsonb, ?, ?)
+       ON CONFLICT (provider, event_key) DO NOTHING RETURNING id`,
+      [
+        generateEntityId(undefined, "whin"),
+        input.provider,
+        input.event_key,
+        input.source,
+        json(input.payload),
+        input.payload_hash,
+        input.verified,
+      ],
+    );
+    if (inserted[0]) return { id: String(inserted[0].id), inserted: true, result: null };
+    const rows = await this.exec(
+      `SELECT id, result, processed_at FROM webhook_inbox WHERE provider = ? AND event_key = ?`,
+      [input.provider, input.event_key],
+    );
+    const row = rows[0] ?? {};
+    return {
+      id: String(row.id),
+      inserted: false,
+      result: row.processed_at ? ((row.result as Record<string, unknown> | null) ?? null) : null,
+    };
+  }
+
+  /** Ghi kết quả xử lý (lần đầu thắng). */
+  async markInboxProcessed(id: string, result: Record<string, unknown>): Promise<void> {
+    await this.exec(
+      `UPDATE webhook_inbox SET result = ?::jsonb, processed_at = now(), updated_at = now()
+       WHERE id = ? AND processed_at IS NULL`,
+      [json(result), id],
+    );
+  }
+
+  /** Mở ngoại lệ vận hành; trùng `dedupe_key` → không mở thêm. Trả true nếu vừa mở. */
+  async openOpsException(input: OpsExceptionInput, em?: SqlEntityManager): Promise<boolean> {
+    const rows = await this.exec(
+      `INSERT INTO ops_exception (id, kind, dedupe_key, order_id, amount, priority, due_at, detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+       ON CONFLICT DO NOTHING RETURNING id`,
+      [
+        generateEntityId(undefined, "opx"),
+        input.kind,
+        input.dedupe_key,
+        input.order_id ?? null,
+        input.amount ?? null,
+        input.priority ?? "normal",
+        input.due_at ?? null,
+        json(input.detail ?? null),
+      ],
+      em,
+    );
+    return rows.length === 1;
+  }
+
+  /** Attempt còn mở (created/pending/unknown) → `to` (failed|unknown) theo máy trạng thái thanh toán. */
+  async movePaymentAttempt(
+    id: string,
+    to: "failed" | "unknown",
+    providerTxnNo: string | null = null,
+    em?: SqlEntityManager,
+  ): Promise<boolean> {
+    const from = to === "failed" ? ["created", "pending", "unknown"] : ["created", "pending"];
+    const rows = await this.exec(
+      `UPDATE payment_attempt SET state = ?, provider_txn_no = COALESCE(?, provider_txn_no), updated_at = now()
+       WHERE id = ? AND state IN (${from.map(() => "?").join(", ")}) RETURNING id`,
+      [to, providerTxnNo, id, ...from],
+      em,
+    );
+    return rows.length === 1;
+  }
+
+  /**
+   * Ghi MỘT khoản thu đã xác minh và áp quyết định của domain trong cùng transaction (§4 bước 5). Gọi dưới khóa
+   * `order:<id>`. UNIQUE(provider, provider_txn_id, kind) va → `duplicate` (đã ghi, không làm gì thêm — AT06).
+   */
+  async applyCapture(input: {
+    order_id: string;
+    payment_attempt_id: string;
+    provider: string;
+    provider_txn_id: string;
+    amount: number;
+    now: Date;
+  }): Promise<CaptureOutcome> {
+    return this.repo_.transaction(async (em) => {
+      const ins = await this.exec(
+        `INSERT INTO payment_ledger (id, order_id, kind, amount, provider, provider_txn_id, state)
+         VALUES (?, ?, 'capture', ?, ?, ?, 'succeeded')
+         ON CONFLICT (provider, provider_txn_id, kind) DO NOTHING RETURNING id`,
+        [
+          generateEntityId(undefined, "pled"),
+          input.order_id,
+          input.amount,
+          input.provider,
+          input.provider_txn_id,
+        ],
+        em,
+      );
+      if (ins.length === 0) return { duplicate: true } as const;
+      const finRows = await this.exec(
+        `SELECT state, total FROM order_finance WHERE order_id = ? FOR UPDATE`,
+        [input.order_id],
+        em,
+      );
+      const fin = finRows[0];
+      if (!fin) throw new Error(`Không có order_finance cho đơn ${input.order_id}`);
+      const ledgerRows = await this.exec(
+        `SELECT kind, amount, provider_txn_id, refund_id, state FROM payment_ledger WHERE order_id = ?`,
+        [input.order_id],
+        em,
+      );
+      const entries: LedgerEntry[] = ledgerRows.map((r) =>
+        r.kind === "capture"
+          ? { kind: "capture", amount: Number(r.amount), providerTxnId: String(r.provider_txn_id) }
+          : {
+              kind: "refund",
+              amount: Number(r.amount),
+              refundId: String(r.refund_id ?? ""),
+              state: String(r.state) as RefundState,
+            },
+      );
+      const stateBefore = String(fin.state) as OrderState;
+      const total = Number(fin.total);
+      const decision = decideOnCapture(stateBefore, total, entries, input.amount);
+      await this.exec(
+        `UPDATE payment_attempt SET state = 'captured', provider_txn_no = ?, updated_at = now()
+         WHERE id = ? AND state IN ('created', 'pending', 'unknown', 'authorized')`,
+        [input.provider_txn_id, input.payment_attempt_id],
+        em,
+      );
+      const exception = (kind: OpsExceptionInput["kind"], amount: number, priority: "normal" | "high") =>
+        this.openOpsException(
+          {
+            kind,
+            dedupe_key: `${kind}:${input.provider}:${input.provider_txn_id}`,
+            order_id: input.order_id,
+            amount,
+            priority,
+            due_at: new Date(input.now.getTime() + 24 * 3600_000),
+            detail: { provider_txn_id: input.provider_txn_id, order_state: stateBefore, total },
+          },
+          em,
+        );
+      if (decision.action === "confirm_order") {
+        const t = orderMachine.transition(stateBefore, "confirmed");
+        if (!t.ok) throw new Error(t.message);
+        await this.exec(
+          `UPDATE order_finance SET state = 'confirmed', version = version + 1, updated_at = now()
+           WHERE order_id = ? AND state = ?`,
+          [input.order_id, stateBefore],
+          em,
+        );
+        await this.exec(
+          `UPDATE coupon_usage SET state = 'used', updated_at = now() WHERE order_id = ? AND state = 'held'`,
+          [input.order_id],
+          em,
+        );
+        await this.insertOutbox(
+          `order.confirmed:${input.order_id}`,
+          input.order_id,
+          "order.confirmed",
+          { order_id: input.order_id, provider_txn_id: input.provider_txn_id },
+          em,
+        );
+        await this.insertOutbox(
+          `payment.native_sync:${input.order_id}`,
+          input.order_id,
+          "payment.native_sync",
+          { order_id: input.order_id, amount: total },
+          em,
+        );
+        if (decision.overpaid > 0) await exception("overpayment", decision.overpaid, "high");
+      } else if (decision.action === "exception") {
+        await exception(decision.reason, decision.amount, "high");
+      } else {
+        await exception("payment_unknown", input.amount, "normal");
+      }
+      return { duplicate: false, decision, state_before: stateBefore } as const;
+    });
+  }
+
+  /** Đánh dấu sự kiện outbox đã xong khi việc của nó đã được làm ngay (không chờ dispatcher). */
+  async markOutboxSentByKey(eventKey: string): Promise<void> {
+    await this.exec(
+      `UPDATE outbox_event SET state = 'sent', updated_at = now() WHERE event_key = ? AND state IN ('pending', 'failed')`,
+      [eventKey],
+    );
+  }
+
+  async insertOutbox(
+    eventKey: string,
+    aggregateId: string,
+    type: string,
+    payload: Record<string, unknown>,
+    em?: SqlEntityManager,
+  ): Promise<void> {
+    await this.exec(
+      `INSERT INTO outbox_event (id, event_key, aggregate_id, type, payload, state, next_attempt_at)
+       VALUES (?, ?, ?, ?, ?::jsonb, 'pending', now())
+       ON CONFLICT (event_key) DO NOTHING`,
+      [generateEntityId(undefined, "obx"), eventKey, aggregateId, type, json(payload)],
+      em,
+    );
   }
 }
 
