@@ -21,6 +21,7 @@ export function NavLinks({ items, onNavigate }: { items: readonly NavItem[]; onN
           <li key={c.handle}>
             <Link
               href={href}
+              prefetch={false}
               className={styles.navLink}
               aria-current={pathname === href ? "page" : undefined}
               onClick={onNavigate}

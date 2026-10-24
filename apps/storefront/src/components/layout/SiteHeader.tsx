@@ -24,11 +24,11 @@ export function SiteHeader({ categories, cartCount = 0 }: SiteHeaderProps) {
           </nav>
         ) : null}
         <div className={styles.actions}>
-          <Link href="/tim-kiem" className={styles.iconLink}>
+          <Link href="/tim-kiem" prefetch={false} className={styles.iconLink}>
             <SearchIcon />
             <span className="visually-hidden">Tìm kiếm</span>
           </Link>
-          <Link href="/gio-hang" className={styles.iconLink}>
+          <Link href="/gio-hang" prefetch={false} className={styles.iconLink}>
             <CartIcon />
             <span aria-hidden="true" className={styles.count}>
               {cartCount}

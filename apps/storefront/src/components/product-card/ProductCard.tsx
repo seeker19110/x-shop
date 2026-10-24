@@ -74,7 +74,7 @@ export function ProductCard({
       </div>
       <div className={styles.info}>
         <h3 className={styles.name}>
-          <Link href={`/san-pham/${encodeURIComponent(slug)}`} className={styles.link}>
+          <Link href={`/san-pham/${encodeURIComponent(slug)}`} prefetch={false} className={styles.link}>
             {name}
           </Link>
         </h3>
