@@ -2,11 +2,15 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import {
   createInventoryLevelsWorkflow,
-  createProductsWorkflow,
   createPromotionsWorkflow,
   updateInventoryLevelsWorkflow,
+  updateProductsWorkflow,
   updateProductVariantsWorkflow,
 } from "@medusajs/medusa/core-flows";
+import { OPTION_COLOR, OPTION_SIZE } from "../../src/lib/catalog/constants";
+import { createSizeChartWorkflow } from "../../src/workflows/fashion/size-chart";
+import { setProductFashionWorkflow } from "../../src/workflows/fashion/set-product-fashion";
+import { createTestProduct, TEST_CHART } from "./catalog";
 import seedXShop, { type SeedResult } from "../../src/scripts/seed";
 
 /**
@@ -30,57 +34,68 @@ export const PRICES: Record<string, number> = {
 /** Địa chỉ hợp lệ theo danh mục 2 cấp: Thành phố Hà Nội / Phường Ba Đình. */
 export const HANOI_ADDRESS = { province_code: "01", ward_code: "00004", line: "12 Phố Điện Biên Phủ" };
 
+/** Khoá fixture "Đen/M" → slug option của mô hình thời trang (T-013): màu `den|trang`, size `s|m`. */
+const COLOR_SLUG: Record<string, string> = { Đen: "den", Trắng: "trang" };
+const variantKey = (color: string, size: string) =>
+  `${Object.keys(COLOR_SLUG).find((k) => COLOR_SLUG[k] === color)}/${size.toUpperCase()}`;
+
+/**
+ * Sản phẩm đi ĐÚNG đường xuất bản thật: tạo draft đủ dữ liệu (helper chung với test catalog-model) → gắn thuộc tính
+ * thời trang + bảng size → chuyển `published` qua updateProductsWorkflow (hook kiểm trước xuất bản vẫn chạy).
+ */
 export async function seedCatalog(
   container: MedusaContainer,
   opts: { stock?: Partial<Record<string, number>>; title?: string } = {},
 ): Promise<CatalogFixture> {
   const seed = await seedXShop({ container });
   const apiKey = await container.resolve(Modules.API_KEY).retrieveApiKey(seed.publishableKeyId);
-  const title = opts.title ?? "Áo thun cổ tròn";
-  const { result } = await createProductsWorkflow(container).run({
+  const product = await createTestProduct(container, {
+    title: opts.title ?? "Áo thun cổ tròn",
+    salesChannelId: seed.salesChannelId,
+    manageInventory: true,
+    variants: Object.entries(PRICES).map(([key, price]) => {
+      const [color, size] = key.split("/") as [string, string];
+      return { color: COLOR_SLUG[color]!, size: size.toLowerCase(), price };
+    }),
+    images: [
+      ["den", "Áo thun đen mặt trước"],
+      ["den", "Áo thun đen mặt sau"],
+      ["trang", "Áo thun trắng mặt trước"],
+    ],
+  });
+  const { result: chart } = await createSizeChartWorkflow(container).run({
+    input: { code: `ao-thun-${product.suffix}`, ...TEST_CHART },
+  });
+  await setProductFashionWorkflow(container).run({
     input: {
-      products: [
-        {
-          title,
-          handle: `ao-thun-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
-          status: "published",
-          options: [
-            { title: "Màu", values: ["Đen", "Trắng"] },
-            { title: "Size", values: ["S", "M"] },
-          ],
-          sales_channels: [{ id: seed.salesChannelId }],
-          variants: Object.entries(PRICES).map(([key, amount]) => {
-            const [color, size] = key.split("/") as [string, string];
-            return {
-              title: key,
-              sku: `AT-${color === "Đen" ? "DEN" : "TRANG"}-${size}-${Math.floor(Math.random() * 1e9)}`,
-              options: { Màu: color, Size: size },
-              manage_inventory: true,
-              allow_backorder: false,
-              prices: [{ amount, currency_code: "vnd" }],
-            };
-          }),
-        },
-      ],
+      product_id: product.id,
+      attributes: { kind: "apparel", material: "cotton", material_label: "Cotton" },
+      size_chart_id: chart.id,
     },
   });
-  const product = result[0]!;
+  await updateProductsWorkflow(container).run({
+    input: { selector: { id: product.id }, update: { status: "published" } },
+  });
+
   const query = container.resolve(ContainerRegistrationKeys.QUERY);
   const { data } = await query.graph({
     entity: "variant",
-    fields: ["id", "title", "inventory_items.inventory_item_id"],
+    fields: ["id", "options.value", "options.option.title", "inventory_items.inventory_item_id"],
     filters: { product_id: product.id },
   });
   const variants: CatalogFixture["variants"] = {};
-  for (const v of data as Array<{
+  type Row = {
     id: string;
-    title: string;
+    options: Array<{ value: string; option?: { title?: string } | null }>;
     inventory_items: Array<{ inventory_item_id: string }>;
-  }>) {
-    variants[v.title] = {
+  };
+  for (const v of data as Row[]) {
+    const opt = (title: string) => v.options.find((o) => o.option?.title === title)?.value ?? "";
+    const key = variantKey(opt(OPTION_COLOR), opt(OPTION_SIZE));
+    variants[key] = {
       id: v.id,
       inventoryItemId: v.inventory_items[0]!.inventory_item_id,
-      price: PRICES[v.title]!,
+      price: PRICES[key]!,
     };
   }
   await createInventoryLevelsWorkflow(container).run({

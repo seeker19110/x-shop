@@ -19,6 +19,8 @@ export interface TestProductInput {
   /** Mỗi phần tử: [màu | null, alt | null]. */
   images?: [string | null, string | null][];
   categoryIds?: string[];
+  /** Mặc định false (catalog không cần tồn kho); checkout cần true để có inventory item. */
+  manageInventory?: boolean;
 }
 
 /** Tạo sản phẩm qua workflow lõi (cùng đường Admin API dùng). Mặc định: draft, đủ 3 ảnh đen, 2 SKU đen. */
@@ -58,7 +60,7 @@ export async function createTestProduct(container: MedusaContainer, input: TestP
           variants: variants.map((v) => ({
             title: `${v.color} / ${v.size}`,
             sku: `T-${suffix}-${v.color}-${v.size}`.toUpperCase(),
-            manage_inventory: false,
+            manage_inventory: input.manageInventory ?? false,
             options: { [OPTION_COLOR]: v.color, [OPTION_SIZE]: v.size },
             prices: v.price === null ? [] : [{ amount: v.price, currency_code: CURRENCY }],
           })),
