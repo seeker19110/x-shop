@@ -1,21 +1,21 @@
 import type { MedusaRequest } from "@medusajs/framework/http";
 import { MedusaError } from "@medusajs/framework/utils";
-import type { Permission } from "@x-shop/domain";
-
-type WithAuth = MedusaRequest & { auth_context?: { actor_id?: string; actor_type?: string } };
+import { can, type Permission } from "@x-shop/domain";
+import { adminAccessOf } from "../admin-security/guard";
 
 /**
- * ĐIỂM GẮN RBAC (T-023): mọi route `/admin/x/*` cần quyền gọi hàm này với quyền cụ thể. Hiện chỉ đòi actor là admin
- * đã đăng nhập (Medusa đã chặn chưa đăng nhập ở /admin/*); T-023 thay thân hàm bằng tra vai trò → quyền
- * (`ROLE_GRANTS`, packages/domain/src/access) và trả 403 khi thiếu. Trả actor_id để ghi người thao tác.
+ * Kiểm quyền TRONG route (lớp phòng thủ thứ hai, T-023). Lớp chính là guard `/admin/*` (lib/admin-security/guard.ts)
+ * theo map `api/admin/x/permissions.ts`; hàm này đòi guard ĐÃ chạy cho request (có vai trò đã nạp) và vai trò có ĐỦ mọi
+ * quyền nêu ra — route bị gỡ khỏi map hay map khai quyền lỏng hơn route cần vẫn bị chặn. Trả actor_id để ghi người làm.
  */
 export function requirePermission(req: MedusaRequest, ...permissions: Permission[]): string {
-  const auth = (req as WithAuth).auth_context;
-  if (!auth?.actor_id || auth.actor_type !== "user") {
-    throw new MedusaError(
-      MedusaError.Types.UNAUTHORIZED,
-      `Cần đăng nhập quản trị (${permissions.join(", ")})`,
-    );
+  const access = adminAccessOf(req);
+  if (!access) {
+    throw new MedusaError(MedusaError.Types.UNAUTHORIZED, "Cần đăng nhập quản trị");
   }
-  return auth.actor_id;
+  const missing = permissions.filter((p) => !can(access.roles, p));
+  if (missing.length > 0) {
+    throw new MedusaError(MedusaError.Types.FORBIDDEN, `Thiếu quyền: ${missing.join(", ")}`);
+  }
+  return access.userId;
 }

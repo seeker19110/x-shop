@@ -84,5 +84,9 @@ module.exports = defineConfig({
     { resolve: "./src/modules/catalog-index" },
     // Nhập CSV catalog: preview/commit idempotent theo import id (T-015).
     { resolve: "./src/modules/catalog-import" },
+    // Vai trò admin `user_role` — RBAC tự xây, không dùng RBAC Enterprise (T-023).
+    { resolve: "./src/modules/rbac" },
+    // Audit log chỉ ghi thêm + sổ điều chỉnh tồn (T-025).
+    { resolve: "./src/modules/audit" },
   ],
 });
