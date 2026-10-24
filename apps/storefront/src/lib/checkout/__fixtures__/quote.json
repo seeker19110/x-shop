@@ -1,0 +1,46 @@
+{
+  "quote": {
+    "id": "cqt_01M5QKNFYMJ615YBYS4TWEGSS0",
+    "cart_id": "cart_01M5QKNFAMKKGYE535VVHKZQJQ",
+    "cart_version": 1,
+    "payment_method": "cod",
+    "discount_code": null,
+    "expires_at": "2026-10-24T18:54:43.583Z",
+    "currency_code": "vnd",
+    "lines": [
+      {
+        "line_item_id": "cali_01M5QKNFK304YPMHJGZF5HPQDJ",
+        "variant_id": "variant_01M5QJKMDEVMP3WQ1YAD27G46V",
+        "unit_price": 700000,
+        "quantity": 1,
+        "subtotal": 700000,
+        "discount": 0,
+        "total": 700000
+      },
+      {
+        "line_item_id": "cali_01M5QKNFS99BEQ7YZ54933GBEM",
+        "variant_id": "variant_01M5QJKMDFGJN5FE8H4A05MMAE",
+        "unit_price": 300000,
+        "quantity": 2,
+        "subtotal": 600000,
+        "discount": 0,
+        "total": 600000
+      }
+    ],
+    "subtotal": 1300000,
+    "discount_total": 0,
+    "shipping_fee": 30000,
+    "shipping_discount": 0,
+    "shipping_total": 30000,
+    "total": 1330000,
+    "address": {
+      "provinceCode": "01",
+      "provinceName": "Thành phố Hà Nội",
+      "wardCode": "00004",
+      "wardName": "Phường Ba Đình",
+      "line": "12 Pho Dien Bien Phu",
+      "original": null,
+      "datasetVersion": "thanglequoc/vietnamese-provinces-database@8b78ba5 (2026-09-22)"
+    }
+  }
+}

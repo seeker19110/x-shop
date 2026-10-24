@@ -120,11 +120,13 @@ describe("ScrollRestorer (CAT03)", () => {
     render(
       <>
         <ScrollRestorer />
-        <a href="/san-pham/x">PDP</a>
+        <button type="button">PDP</button>
       </>,
     );
     setY(1500);
-    document.querySelector("a")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    document
+      .querySelector("button")!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     expect(loadScroll(window.sessionStorage, "/danh-muc/ao?color=den")).toBe(1500);
   });
 
