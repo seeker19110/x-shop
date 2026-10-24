@@ -19,6 +19,8 @@ export const CHECKOUT_ERROR_STATUS = {
   IDEMPOTENCY_CONFLICT: 409,
   BUSY_RETRY: 409,
   ATTEMPT_ABORTED: 409,
+  NOT_CANCELLABLE: 409,
+  PAYMENT_PENDING: 409,
   RATE_LIMITED: 429,
   INTERNAL: 500,
 } as const;
@@ -44,6 +46,8 @@ const DEFAULT_MESSAGES: Record<CheckoutErrorCode, string> = {
   IDEMPOTENCY_CONFLICT: "Yêu cầu trùng khóa nhưng khác nội dung với lần gửi trước",
   BUSY_RETRY: "Hệ thống đang bận xử lý đơn khác, vui lòng thử lại sau giây lát",
   ATTEMPT_ABORTED: "Lần đặt hàng trước bị gián đoạn, vui lòng đặt lại",
+  NOT_CANCELLABLE: "Đơn hàng không còn hủy được ở trạng thái hiện tại",
+  PAYMENT_PENDING: "Đang xác nhận thanh toán với cổng, vui lòng thử lại sau ít phút",
   RATE_LIMITED: "Bạn thao tác quá nhanh, vui lòng thử lại sau ít giây",
   INTERNAL: "Không thể xử lý yêu cầu lúc này",
 };
@@ -60,6 +64,8 @@ const ACTIONS: Partial<Record<CheckoutErrorCode, string>> = {
   BUSY_RETRY: "retry_same_key",
   ATTEMPT_ABORTED: "resubmit_new_key",
   RATE_LIMITED: "retry_later",
+  PAYMENT_PENDING: "retry_later",
+  NOT_CANCELLABLE: "contact_support",
 };
 
 export type CheckoutErrorDetail = Record<string, unknown>;

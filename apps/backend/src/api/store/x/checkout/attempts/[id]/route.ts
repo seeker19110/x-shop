@@ -3,6 +3,7 @@ import { assertCartAccess, loadCheckoutCart } from "../../../../../../lib/checko
 import { CheckoutError } from "../../../../../../lib/checkout/errors";
 import { accessContext, handleRouteError } from "../../../../../../lib/checkout/http";
 import { presentAttempt } from "../../../../../../lib/checkout/submit";
+import { orderAccessFor } from "../../../../../../lib/orders/http";
 
 /**
  * GET /store/x/checkout/attempts/:id?cart_id=… — trạng thái một lần submit (phục hồi sau timeout, đặc tả §9.1). Chỉ
@@ -21,7 +22,9 @@ export const GET = async (req: MedusaStoreRequest, res: MedusaResponse): Promise
       throw new CheckoutError("NOT_FOUND", "Không tìm thấy lần đặt hàng");
     }
     res.setHeader("Cache-Control", "no-store");
-    res.status(200).json(view);
+    // Đơn đã tạo → kèm token phiên đơn như 200 của submit (T-021).
+    const access = view.state === "ready" && view.order ? orderAccessFor(view.order.id) : {};
+    res.status(200).json({ ...view, ...access });
   } catch (error) {
     handleRouteError(req, res, error);
   }

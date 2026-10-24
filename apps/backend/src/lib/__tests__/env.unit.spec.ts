@@ -4,6 +4,7 @@ import {
   loadEnvOrExit,
   parseEnv,
   PRODUCTION_REQUIRED,
+  ORDER_LOOKUP_DEV_SECRET,
   VNPAY_DEV_DEFAULTS,
   VNPAY_REQUIRED,
   type ExitHooks,
@@ -21,6 +22,7 @@ const production = {
   JWT_SECRET: JWT,
   COOKIE_SECRET: COOKIE,
   AUTH_MFA_ENCRYPTION_KEY: MFA,
+  ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
   STORE_CORS: "https://shop.example.vn",
   ADMIN_CORS: "https://admin.example.vn,http://localhost:9000",
   AUTH_CORS: "https://admin.example.vn,/\\.example\\.vn$/",
@@ -269,5 +271,22 @@ describe("loadEnvOrExit", () => {
     expect(loadEnvOrExit(production, h).NODE_ENV).toBe("production");
     expect(writes).toEqual([]);
     expect(exits).toEqual([]);
+  });
+});
+
+describe("ORDER_LOOKUP_SECRET (T-021)", () => {
+  it("dev/test vắng → khoá giả của dev; production dùng đúng giá trị đã đặt", () => {
+    const dev = parseEnv({ DATABASE_URL: DB });
+    expect(dev.ok && dev.env.orderLookupSecret).toBe(ORDER_LOOKUP_DEV_SECRET);
+    const prod = parseEnv(production);
+    expect(prod.ok && prod.env.orderLookupSecret).toBe(production.ORDER_LOOKUP_SECRET);
+  });
+
+  it("production: thiếu, ngắn hoặc dùng khoá giả của dev → lỗi đúng tên biến", () => {
+    expect(variablesOf({ ...production, ORDER_LOOKUP_SECRET: undefined })).toEqual(["ORDER_LOOKUP_SECRET"]);
+    expect(variablesOf({ ...production, ORDER_LOOKUP_SECRET: "ngan-qua" })).toEqual(["ORDER_LOOKUP_SECRET"]);
+    expect(variablesOf({ ...production, ORDER_LOOKUP_SECRET: ORDER_LOOKUP_DEV_SECRET })).toEqual([
+      "ORDER_LOOKUP_SECRET",
+    ]);
   });
 });

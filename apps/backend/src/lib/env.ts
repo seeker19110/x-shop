@@ -28,7 +28,14 @@ export const PRODUCTION_REQUIRED = [
   "ADMIN_CORS",
   "AUTH_CORS",
   "AUTH_MFA_ENCRYPTION_KEY",
+  "ORDER_LOOKUP_SECRET",
 ] as const;
+
+/**
+ * Khoá ký token phiên đơn/tra cứu đơn (POST01, T-021). Dev/test vắng → giá trị GIẢ dưới; production bắt buộc ≥ 32 ký tự
+ * và từ chối giá trị giả này.
+ */
+export const ORDER_LOOKUP_DEV_SECRET = "xshop-dev-order-lookup-secret-khong-dung-production";
 
 /**
  * VNPAY (SPEC-payment): bật mặc định. Production + VNPAY_ENABLED=true → bắt buộc đủ các biến dưới. Dev/test vắng → dùng
@@ -127,6 +134,7 @@ const schema = z
     JWT_SECRET: optionalText.pipe(secret.optional()),
     COOKIE_SECRET: optionalText.pipe(secret.optional()),
     AUTH_MFA_ENCRYPTION_KEY: optionalText.pipe(secret.optional()),
+    ORDER_LOOKUP_SECRET: optionalText.pipe(secret.optional()),
     STORE_CORS: optionalText.pipe(corsList.optional()),
     ADMIN_CORS: optionalText.pipe(corsList.optional()),
     AUTH_CORS: optionalText.pipe(corsList.optional()),
@@ -166,6 +174,9 @@ const schema = z
     }
     if (env.JWT_SECRET !== undefined && env.JWT_SECRET === env.COOKIE_SECRET) {
       ctx.addIssue({ code: "custom", path: ["COOKIE_SECRET"], message: "phải khác JWT_SECRET" });
+    }
+    if (env.ORDER_LOOKUP_SECRET === ORDER_LOOKUP_DEV_SECRET) {
+      ctx.addIssue({ code: "custom", path: ["ORDER_LOOKUP_SECRET"], message: "không được dùng khoá giả của dev" });
     }
     if (env.VNPAY_ENABLED) {
       for (const key of VNPAY_REQUIRED) {
@@ -211,6 +222,7 @@ const schema = z
       STORE_CORS: env.STORE_CORS ?? DEV_CORS_DEFAULTS.STORE_CORS,
       ADMIN_CORS: env.ADMIN_CORS ?? DEV_CORS_DEFAULTS.ADMIN_CORS,
       AUTH_CORS: env.AUTH_CORS ?? DEV_CORS_DEFAULTS.AUTH_CORS,
+      orderLookupSecret: env.ORDER_LOOKUP_SECRET ?? (env.NODE_ENV === "production" ? "" : ORDER_LOOKUP_DEV_SECRET),
       vnpay: env.VNPAY_ENABLED
         ? {
             tmnCode: pick("VNPAY_TMN_CODE"),
