@@ -46,7 +46,7 @@
 ### Lát 1 — Nền tảng (F-001)
 - [x] `T-001` Monorepo pnpm + TypeScript strict + ESLint/Prettier + Vitest + `packages/domain` khung; điền lệnh thật `xt.yaml`; CI có Postgres/Redis; `.env.example` + `.nvmrc` (files: package.json, pnpm-workspace.yaml, packages/domain/, xt.yaml, .github/workflows/ci.yml, tsconfig.base.json, eslint.config.mjs) — Gate: `.xtemplates/scripts/dev-task.sh gate`
 - [ ] `T-002` Medusa v2 backend `apps/backend` (config Postgres/Redis qua env đã validate, VND store/region seed, health) + test tích hợp chạy được với DB thật (sau: T-001; files: apps/backend/, scripts/dev-services.sh; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration`
-- [ ] `T-003` Next.js storefront `apps/storefront` + `DESIGN.md` + token CSS (đặc tả §3.1) + font Be Vietnam Pro tự host; cổng tương phản token (sau: T-001; files: apps/storefront/, DESIGN.md) — Gate: `python3 .xtemplates/scripts/xt.py contrast apps/storefront/src/styles/tokens.css --pairs apps/storefront/contrast-pairs.txt && pnpm --filter @x-shop/storefront build`
+- [x] `T-003` Next.js storefront `apps/storefront` + `DESIGN.md` + token CSS (đặc tả §3.1) + font Be Vietnam Pro tự host; cổng tương phản token (sau: T-001; files: apps/storefront/, DESIGN.md) — Gate: `python3 .xtemplates/scripts/xt.py contrast apps/storefront/src/styles/tokens.css --pairs apps/storefront/contrast-pairs.txt && pnpm --filter @x-shop/storefront build`
 
 ### Lát 2 — Lõi domain thuần (RK-004)
 - [x] `T-004` Tiền VND số nguyên, phân bổ giảm giá largest-remainder, tính quote (subtotal/giảm/ship/tổng), kẹp giảm ≤ subtotal; test thuộc tính (sau: T-001; files: packages/domain/src/money/, packages/domain/src/pricing/) — Gate: `pnpm --filter @x-shop/domain test -- money pricing`
