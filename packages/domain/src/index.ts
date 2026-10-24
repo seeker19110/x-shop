@@ -4,3 +4,4 @@ export * from "./pricing/index.js";
 export * from "./catalog/index.js";
 export * from "./state/index.js";
 export * from "./ledger/index.js";
+export * as vnpay from "./providers/vnpay/index.js";
