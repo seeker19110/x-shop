@@ -10,7 +10,7 @@ import { storeHeaders } from "../helpers/auth";
 jest.setTimeout(300 * 1000);
 
 type Cat = { handle: string; name: string; parent_handle: string | null; product_count: number };
-type Res = { status: number; data: Record<string, any>; headers: Record<string, string> };
+type Res = { status: number; data: { categories: Cat[] }; headers: Record<string, string> };
 
 /** Oracle độc lập: đếm sản phẩm demo theo danh mục (gồm tổ tiên), bỏ những sản phẩm không published. */
 function expectedCounts(published: (handle: string) => boolean): Map<string, number> {
@@ -33,7 +33,7 @@ medusaIntegrationTestRunner({
     let seed: CatalogSeedResult;
     let headers: Record<string, string>;
     const categories = async () =>
-      ((await api.get("/store/x/categories", { headers })) as Res).data.categories as Cat[];
+      ((await api.get("/store/x/categories", { headers })) as Res).data.categories;
 
     beforeAll(async () => {
       container = getContainer();
@@ -46,7 +46,7 @@ medusaIntegrationTestRunner({
       expect(res.status).toBe(200);
       expect(res.headers["cache-control"]).toBe("public, s-maxage=60, stale-while-revalidate=300");
       const want = expectedCounts(() => true);
-      const got = new Map((res.data.categories as Cat[]).map((c) => [c.handle, c]));
+      const got = new Map(res.data.categories.map((c) => [c.handle, c]));
       expect([...got.keys()].sort()).toEqual([...want.keys()].sort());
       for (const [handle, n] of want) {
         const c = got.get(handle) as Cat;
@@ -55,7 +55,8 @@ medusaIntegrationTestRunner({
         expect(c.parent_handle).toBe(demo?.parent ?? null);
         expect(c.name).toBe(demo?.name);
       }
-      for (const c of DEMO_CATEGORIES.filter((d) => !want.has(d.handle))) expect(got.has(c.handle)).toBe(false);
+      for (const c of DEMO_CATEGORIES.filter((d) => !want.has(d.handle)))
+        expect(got.has(c.handle)).toBe(false);
     });
 
     it("danh mục nội bộ/không hoạt động không lộ ra", async () => {

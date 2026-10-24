@@ -5,7 +5,16 @@ import { storeHeaders } from "../helpers/auth";
 
 jest.setTimeout(300 * 1000);
 
-type Res = { status: number; data: Record<string, any>; headers: Record<string, string> };
+type Res = {
+  status: number;
+  data: {
+    provinces: unknown[];
+    province_code: string;
+    wards: { code: string; name: string }[];
+    code: string;
+  };
+  headers: Record<string, string>;
+};
 
 medusaIntegrationTestRunner({
   testSuite: ({ api, getContainer }) => {
@@ -45,12 +54,15 @@ medusaIntegrationTestRunner({
         expect(res.headers["cache-control"]).toMatch(/^public, .*s-maxage=\d{5,}/);
       });
 
-      it.each(["99", "abc", "0", "01%20", "1".repeat(40)])("mã tỉnh %p không có → 404 problem+json", async (code) => {
-        const res = await getErr(`/store/x/addresses/provinces/${code}/wards`);
-        expect(res.status).toBe(404);
-        expect(res.data.code).toBe("NOT_FOUND");
-        expect(res.headers["cache-control"]).toBe("no-store");
-      });
+      it.each(["99", "abc", "0", "01%20", "1".repeat(40)])(
+        "mã tỉnh %p không có → 404 problem+json",
+        async (code) => {
+          const res = await getErr(`/store/x/addresses/provinces/${code}/wards`);
+          expect(res.status).toBe(404);
+          expect(res.data.code).toBe("NOT_FOUND");
+          expect(res.headers["cache-control"]).toBe("no-store");
+        },
+      );
 
       it("thiếu publishable key → bị Medusa từ chối", async () => {
         const res = await getErr("/store/x/addresses/provinces", {});
