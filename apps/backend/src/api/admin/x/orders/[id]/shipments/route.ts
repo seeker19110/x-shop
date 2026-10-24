@@ -5,8 +5,7 @@ import { createShipmentForOrder } from "../../../../../../lib/shipping/shipments
 
 /**
  * POST /admin/x/orders/:id/shipments — tạo vận đơn GHN cho đơn đã xác nhận (SPEC-fulfillment S-302, S-303; AT11, AT13,
- * AT34). Quyền `fulfillment.create` (TODO RBAC: route đi qua `requirePermission` — điểm gắn duy nhất; agent RBAC map
- * quyền này vào `src/api/admin/x/permissions.ts` khi file đó có trên nhánh chính).
+ * AT34). Quyền `fulfillment.create` (khai trong src/api/admin/x/permissions.ts — RBAC chặn trước khi vào handler).
  * 201 = vừa tạo · 200 = đã có (gọi lại idempotent) · 202 = chưa rõ kết quả ở hãng (timeout) — gọi lại sau, hệ thống tra
  * theo client_order_code trước khi gửi lại.
  */

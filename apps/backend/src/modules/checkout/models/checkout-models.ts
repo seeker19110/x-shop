@@ -291,3 +291,46 @@ export const CouponUsage = model
     },
     { name: "IDX_coupon_usage_code_state", on: ["promotion_code", "state"], where: null },
   ]);
+
+/**
+ * Token liên kết tra cứu đơn đã đổi thành phiên (POST01, T-021): mỗi token chỉ đổi MỘT lần — UNIQUE(token_hash) ở DB,
+ * lần đổi thứ hai va UNIQUE. Chỉ lưu SHA-256 của token (không lưu token). `expires_at` = hạn của token, để dọn dòng cũ.
+ */
+export const OrderAccessRedemption = model
+  .define("order_access_redemption", {
+    id: model.id({ prefix: "oacr" }).primaryKey(),
+    token_hash: model.text(),
+    order_id: model.text(),
+    expires_at: model.dateTime(),
+  })
+  .indexes([
+    {
+      name: "IDX_order_access_redemption_token_hash_unique",
+      on: ["token_hash"],
+      unique: true,
+      where: null,
+    },
+    { name: "IDX_order_access_redemption_expires_at", on: ["expires_at"], where: null },
+  ]);
+
+/**
+ * Bộ đếm giới hạn tần suất cửa sổ cố định, dùng chung giữa các instance (tra cứu/xem/hủy đơn — AT20): một câu UPSERT
+ * `count = count + 1 RETURNING count` nên đồng thời vẫn đếm đúng. `bucket` = loại + khóa đã băm (không lưu SĐT thô).
+ */
+export const RateLimitCounter = model
+  .define("rate_limit_counter", {
+    id: model.id({ prefix: "rlc" }).primaryKey(),
+    bucket: model.text(),
+    window_start: model.dateTime(),
+    count: model.number().default(0),
+  })
+  .indexes([
+    {
+      name: "IDX_rate_limit_counter_bucket_window_unique",
+      on: ["bucket", "window_start"],
+      unique: true,
+      where: null,
+    },
+    { name: "IDX_rate_limit_counter_window_start", on: ["window_start"], where: null },
+  ])
+  .checks([{ name: "rate_limit_counter_count_nonneg", expression: (c) => `${c.count} >= 0` }]);

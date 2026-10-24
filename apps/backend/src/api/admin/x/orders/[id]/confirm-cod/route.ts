@@ -5,7 +5,7 @@ import { confirmCodOrder } from "../../../../../../lib/shipping/shipments";
 
 /**
  * POST /admin/x/orders/:id/confirm-cod — nhân viên xác nhận đơn COD (đặc tả §6.3): `placed` → `confirmed` một lần,
- * outbox `order.confirmed`. Quyền `order.confirm` (TODO RBAC: map ở `src/api/admin/x/permissions.ts` khi có).
+ * outbox `order.confirmed`. Quyền `order.confirm` (khai trong `src/api/admin/x/permissions.ts`).
  * Gọi lại khi đã xác nhận → 200 `changed: false`.
  */
 export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {

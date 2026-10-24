@@ -72,3 +72,17 @@
 - Chọn: Chỉ owner (settings.manage); kho dùng /admin/x/inventory/adjustments có lý do + idempotency + khóa + không dưới reserved
 - Lý do (tiêu chí chất lượng cuối): Mọi điều chỉnh tồn phải có lý do/người/khóa (INV03, đặc tả §6.2); mất tiện ích sửa tồn trên dashboard native cho vai trò kho là chấp nhận được
 - Đường lùi: Đổi 2 dòng trong native-permissions.ts
+
+### D-011 · 2026-10-24T20:13:24+00:00 · GHN_MODE ở production
+
+- Phương án: (1) Cho mock ở production, chỉ cảnh báo · (2) Production bắt buộc sandbox|live, cấm mock, URL https
+- Chọn: Production bắt buộc sandbox|live, cấm mock, URL https
+- Lý do (tiêu chí chất lượng cuối): Production chạy mock sẽ tạo vận đơn giả — fail-closed như VNPAY
+- Đường lùi: Nới schema env
+
+### D-012 · 2026-10-24T20:13:25+00:00 · Khách hủy đơn đã thu tiền (POST02)
+
+- Phương án: (1) Gọi cancelOrderWorkflow native ngay (ghi refund native giả) · (2) order_finance=cancelled + nhả reservation + mở refund_request; đơn native hủy cùng lúc hoàn tiền thật ở T-027; fulfillment chặn theo order_finance.state · (3) Không cho khách tự hủy đơn đã trả
+- Chọn: order_finance=cancelled + nhả reservation + mở refund_request; đơn native hủy cùng lúc hoàn tiền thật ở T-027; fulfillment chặn theo order_finance.state
+- Lý do (tiêu chí chất lượng cuối): Ledger không được báo đã hoàn khi tiền chưa hoàn; khách vẫn tự hủy được trước giao
+- Đường lùi: Chặn tự hủy đơn đã trả ở route cancel

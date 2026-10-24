@@ -52,7 +52,7 @@ medusaIntegrationTestRunner({
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
       clearShippingFeeCache();
-      staff = await adminHeaders(api as unknown as HttpClient, container);
+      staff = await adminHeaders(api as unknown as HttpClient, container, { roles: ["order_staff"] });
     });
 
     const adminCfg = (headers: Record<string, string>) => ({ headers, validateStatus: () => true });

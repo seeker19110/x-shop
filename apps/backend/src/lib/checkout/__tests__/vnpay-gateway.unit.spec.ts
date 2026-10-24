@@ -35,7 +35,9 @@ describe("HttpVnpayGateway (querydr) — kết quả mơ hồ luôn là unknown 
   it("VNPAY không trả lời trong hạn → unknown/timeout", async () => {
     const s = await fakeVnpay(() => undefined);
     try {
-      const r = await new HttpVnpayGateway({ ...cfg, apiUrl: s.url }, 150).queryStatus(input);
+      // Hạn chờ 1 s (máy chủ giả không bao giờ trả lời): 150 ms quá sát — khi máy tải nặng, client hủy trước lúc máy
+      // chủ giả kịp đọc xong body nên kiểm `s.bodies[0]` đỏ không ổn định.
+      const r = await new HttpVnpayGateway({ ...cfg, apiUrl: s.url }, 1000).queryStatus(input);
       expect(r).toEqual({ outcome: "unknown", transactionNo: null, reason: "timeout" });
       expect(s.bodies[0]).toMatchObject({
         vnp_Command: "querydr",

@@ -89,6 +89,8 @@
 - [ ] `T-029` Outbox thông báo email/SMS có message key + retry, adapter log (AT18) (sau: T-012; files: apps/backend/src/modules/notify/) — Gate: `pnpm --filter @x-shop/backend test:integration -- notify`
 - [ ] `T-030` Admin UI mở rộng: trang ngoại lệ, duyệt hoàn tiền 2 người, kiểm định hàng trả, nhập CSV (sau: T-028, T-015; files: apps/backend/src/admin/) — Gate: `pnpm --filter @x-shop/backend build`
 
+- [ ] `T-041` Vá sau T-021/T-033: tra cứu đơn thời gian đồng đều (luôn cùng công việc dù khớp hay không — chống dò tồn tại), bắn `purchase` ở trang đơn khi thanh toán/đặt COD đã xác nhận (dedupe order_id), `VNPAY_RETURN_URL` kèm `attempt`, audit cho import CSV, giới hạn tần suất ghi audit lần bị từ chối (sau: T-021, T-033, T-025; files: apps/backend/src/lib/orders/, apps/storefront/src/components/orders/, apps/backend/src/api/admin/x/imports/) — Gate: `pnpm --filter @x-shop/backend test:integration -- order-lookup catalog-import audit && pnpm --filter @x-shop/storefront test -- order analytics`
+
 ### Lát 7 — Hoàn thiện (F-011, F-012)
 - [x] `T-031` SEO: metadata, canonical, sitemap, robots, noindex lọc tùy ý, 404/410 (AT26) (sau: T-018, T-017; files: apps/storefront/src/app/sitemap.ts, apps/storefront/src/app/robots.ts) — Gate: `pnpm --filter @x-shop/storefront test -- seo`
 - [ ] `T-032` PWA: manifest, icon, service worker chỉ cache công khai, `/offline`, header no-store riêng tư (AT22, AT24) (sau: T-021; files: apps/storefront/public/, apps/storefront/src/app/offline/) — Gate: `pnpm --filter @x-shop/storefront test -- pwa cache`

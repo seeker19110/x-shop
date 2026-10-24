@@ -20,10 +20,12 @@ import {
   CheckoutQuote,
   CouponUsage,
   OpsException,
+  OrderAccessRedemption,
   OrderFinance,
   OutboxEvent,
   PaymentAttempt,
   PaymentLedger,
+  RateLimitCounter,
   WebhookInbox,
 } from "./models/checkout-models";
 
@@ -99,6 +101,8 @@ class CheckoutModuleService extends MedusaService({
   OutboxEvent,
   OpsException,
   CouponUsage,
+  OrderAccessRedemption,
+  RateLimitCounter,
 }) {
   protected readonly repo_: BaseRepositoryLike;
 
@@ -822,6 +826,151 @@ class CheckoutModuleService extends MedusaService({
       `UPDATE outbox_event SET state = 'sent', updated_at = now() WHERE event_key = ? AND state IN ('pending', 'failed')`,
       [eventKey],
     );
+  }
+
+  /* ------------------------------------------------------------ đơn sau mua (T-021) */
+
+  /**
+   * Tăng bộ đếm của `bucket` trong cửa sổ cố định chứa `now` và trả số đếm SAU khi tăng — một câu UPSERT nên nhiều
+   * instance/request đồng thời vẫn đếm đúng (AT20).
+   */
+  async hitRateCounter(bucket: string, windowMs: number, now: Date): Promise<number> {
+    const windowStart = new Date(Math.floor(now.getTime() / windowMs) * windowMs);
+    const rows = await this.exec(
+      `INSERT INTO rate_limit_counter (id, bucket, window_start, count) VALUES (?, ?, ?, 1)
+       ON CONFLICT (bucket, window_start) DO UPDATE SET count = rate_limit_counter.count + 1, updated_at = now()
+       RETURNING count`,
+      [generateEntityId(undefined, "rlc"), bucket, windowStart],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  /** Đọc số đếm hiện tại (không tăng) — dùng cho giới hạn chỉ đếm lần thất bại. */
+  async peekRateCounter(bucket: string, windowMs: number, now: Date): Promise<number> {
+    const windowStart = new Date(Math.floor(now.getTime() / windowMs) * windowMs);
+    const rows = await this.exec(
+      `SELECT count FROM rate_limit_counter WHERE bucket = ? AND window_start = ?`,
+      [bucket, windowStart],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  /** Đánh dấu token tra cứu đã đổi thành phiên. false = token đã được dùng (UNIQUE token_hash). */
+  async redeemOrderAccessToken(tokenHash: string, orderId: string, expiresAt: Date): Promise<boolean> {
+    const rows = await this.exec(
+      `INSERT INTO order_access_redemption (id, token_hash, order_id, expires_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (token_hash) DO NOTHING RETURNING id`,
+      [generateEntityId(undefined, "oacr"), tokenHash, orderId, expiresAt],
+    );
+    return rows.length === 1;
+  }
+
+  /** Dọn bộ đếm cửa sổ cũ và dấu đổi token đã hết hạn (token hết hạn không còn đổi được nên dấu không cần nữa). */
+  async purgeOrderAccessRecords(now: Date): Promise<{ counters: number; redemptions: number }> {
+    const counters = await this.exec(`DELETE FROM rate_limit_counter WHERE window_start < ? RETURNING id`, [
+      new Date(now.getTime() - 2 * 24 * 3600_000),
+    ]);
+    const redemptions = await this.exec(
+      `DELETE FROM order_access_redemption WHERE expires_at < ? RETURNING id`,
+      [new Date(now.getTime() - 24 * 3600_000)],
+    );
+    return { counters: counters.length, redemptions: redemptions.length };
+  }
+
+  /** Tổng ledger của đơn (dạng LedgerEntry của domain). */
+  async ledgerEntriesOf(orderId: string, em?: SqlEntityManager): Promise<LedgerEntry[]> {
+    const rows = await this.exec(
+      `SELECT kind, amount, provider_txn_id, refund_id, state FROM payment_ledger
+       WHERE order_id = ? AND deleted_at IS NULL`,
+      [orderId],
+      em,
+    );
+    return rows.map((r) =>
+      r.kind === "capture"
+        ? { kind: "capture", amount: Number(r.amount), providerTxnId: String(r.provider_txn_id) }
+        : {
+            kind: "refund",
+            amount: Number(r.amount),
+            refundId: String(r.refund_id ?? ""),
+            state: String(r.state) as RefundState,
+          },
+    );
+  }
+
+  /**
+   * Khách hủy đơn (POST02, S-309) — MỘT transaction, chỉ khi đơn còn ở `from` (khóa lạc quan theo trạng thái):
+   * order_finance → cancelled, payment attempt mở → failed, lượt mã (held/used) → released, checkout attempt → failed
+   * (nhả phiên bản giỏ), outbox `order.cancelled`; đơn đã thu tiền (`refund_amount` > 0) → ngoại lệ `refund_request`
+   * (hoàn thật + hủy native ở T-027). Trả false nếu đơn đã rời `from` (nhánh khác thắng).
+   */
+  async cancelOrderByCustomer(input: {
+    order_id: string;
+    from: OrderState;
+    refund_amount: number;
+    display_ref: string;
+    now: Date;
+  }): Promise<boolean> {
+    const t = orderMachine.transition(input.from, "cancelled");
+    if (!t.ok) return false;
+    return this.repo_.transaction(async (em) => {
+      const fin = await this.exec(
+        `UPDATE order_finance SET state = 'cancelled', version = version + 1, updated_at = now()
+         WHERE order_id = ? AND state = ? RETURNING id`,
+        [input.order_id, input.from],
+        em,
+      );
+      if (fin.length !== 1) return false;
+      await this.exec(
+        `UPDATE payment_attempt SET state = 'failed', updated_at = now()
+         WHERE order_id = ? AND state IN ('created', 'pending', 'unknown')`,
+        [input.order_id],
+        em,
+      );
+      await this.exec(
+        `UPDATE coupon_usage SET state = 'released', updated_at = now()
+         WHERE order_id = ? AND state IN ('held', 'used')`,
+        [input.order_id],
+        em,
+      );
+      await this.exec(
+        `UPDATE checkout_attempt SET state = 'failed', error_code = 'CUSTOMER_CANCELLED', updated_at = now()
+         WHERE order_id = ? AND state = 'ready'`,
+        [input.order_id],
+        em,
+      );
+      await this.insertOutbox(
+        `order.cancelled:${input.order_id}`,
+        input.order_id,
+        "order.cancelled",
+        {
+          order_id: input.order_id,
+          reason: "CUSTOMER_CANCELLED",
+          from: input.from,
+          refund_amount: input.refund_amount,
+        },
+        em,
+      );
+      if (input.refund_amount > 0) {
+        await this.openOpsException(
+          {
+            kind: "refund_request",
+            dedupe_key: `refund_request:${input.order_id}`,
+            order_id: input.order_id,
+            amount: input.refund_amount,
+            priority: "high",
+            due_at: new Date(input.now.getTime() + 24 * 3600_000),
+            detail: {
+              reason: "CUSTOMER_CANCELLED",
+              display_ref: input.display_ref,
+              order_state_before: input.from,
+              native_cancel_pending: true,
+            },
+          },
+          em,
+        );
+      }
+      return true;
+    });
   }
 
   async insertOutbox(

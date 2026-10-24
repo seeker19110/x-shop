@@ -31,6 +31,8 @@ export const OPS_EXCEPTION_KINDS = [
   "outbox_dead",
   /** Thông báo khách (email/SMS) gửi hỏng quá số lần tối đa (T-029, AT18) — đơn không bị ảnh hưởng. */
   "notification_failed",
+  /** Khách hủy đơn đã trả tiền (POST02, T-021) — chờ hoàn tiền + hủy native ở luồng hoàn tiền (T-027). */
+  "refund_request",
 ] as const;
 export const OPS_EXCEPTION_STATES = ["open", "in_progress", "resolved"] as const;
 export const OPS_PRIORITIES = ["low", "normal", "high", "urgent"] as const;

@@ -1,6 +1,7 @@
 import { readCartId } from "../cart/cookie";
 import { StoreApiError, storeApi } from "../cart/medusa";
 import { cartEnabled } from "../cart/service";
+import { writeOrderAccess } from "../orders/cookie";
 import { mapAttemptResponse, mapQuoteResponse, mapSubmitResponse } from "./map";
 import type {
   AddressInput,
@@ -102,6 +103,7 @@ export async function requestSubmit(input: SubmitInput): Promise<SubmitResult> {
     },
   });
   const result = mapSubmitResponse(call1.status, call1.body, call1.retryAfter);
+  if (result.kind === "placed") await rememberOrderAccess(result.ref, call1.body);
   // Giỏ đổi/báo giá hết hạn không kèm báo giá mới: lấy báo giá mới để khách xác nhận lại (không thu ngầm, CHK04).
   if (result.kind === "changed" && result.quote === null) {
     const fresh = await requestQuote({
@@ -123,5 +125,20 @@ export async function requestAttempt(attemptId: string): Promise<PollResult> {
     `/store/x/checkout/attempts/${encodeURIComponent(attemptId)}?cart_id=${encodeURIComponent(cartId)}`,
     {},
   );
-  return mapAttemptResponse(r.status, r.body);
+  const result = mapAttemptResponse(r.status, r.body);
+  if (result.kind === "placed") await rememberOrderAccess(result.ref, r.body);
+  return result;
+}
+
+/**
+ * Đơn vừa tạo: đổi token phiên đơn của backend thành cookie HttpOnly (POST01) để xem `/don-hang/:ref` — token không
+ * bao giờ tới trình duyệt qua JS hay URL. Lỗi ghi cookie không chặn luồng đặt hàng (khách vẫn tra cứu được).
+ */
+async function rememberOrderAccess(ref: string, body: unknown): Promise<void> {
+  const b = (body ?? {}) as { order_access?: unknown; order_access_expires_at?: unknown };
+  try {
+    await writeOrderAccess(ref, b.order_access, b.order_access_expires_at);
+  } catch {
+    // ngoài ngữ cảnh ghi cookie (không phải Server Action) — bỏ qua
+  }
 }

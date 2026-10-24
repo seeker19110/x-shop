@@ -163,11 +163,24 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
       res.setHeader("Retry-After", String(attempt.retryAfterSeconds));
       return deny(res, 429, "RATE_LIMITED", { retry_after: attempt.retryAfterSeconds });
     }
-    res.on("finish", () => {
+    // Ghi sổ thành công/hoàn lại TRƯỚC khi phản hồi rời máy chủ: làm ở sự kiện `finish` (bất đồng bộ, sau khi khách đã
+    // nhận phản hồi) thì một lần thành công có thể xoá bộ đếm SAU KHI các lần thử kế tiếp của cùng định danh đã được
+    // đếm — mất đếm thất bại (race tái hiện ở test mfa khi máy tải nặng).
+    const originalEnd = res.end.bind(res) as (...a: unknown[]) => MedusaResponse;
+    let settled = false;
+    (res as unknown as { end: (...a: unknown[]) => MedusaResponse }).end = (...args: unknown[]) => {
+      if (settled) return originalEnd(...args);
+      settled = true;
       const s = res.statusCode;
-      if (s < 400) registerSuccess(store, scope, identity, ip).catch(() => undefined);
-      else if (s >= 500) registerRefund(store, scope, identity, ip).catch(() => undefined);
-    });
+      const book =
+        s < 400
+          ? registerSuccess(store, scope, identity, ip)
+          : s >= 500
+            ? registerRefund(store, scope, identity, ip)
+            : Promise.resolve();
+      book.catch(() => undefined).finally(() => originalEnd(...args));
+      return res;
+    };
     return next();
   };
 }

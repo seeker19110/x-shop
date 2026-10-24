@@ -13,12 +13,14 @@ import {
   toAddressSnapshot,
 } from "../../../../../lib/checkout/http";
 import { submitCheckout } from "../../../../../lib/checkout/submit";
+import { orderAccessFor } from "../../../../../lib/orders/http";
 
 /**
  * POST /store/x/checkout/submit — header `Idempotency-Key` (16–128 ký tự [A-Za-z0-9_-]); body: cart_id, cart_version,
  * quote_id, payment_method (cod|vnpay), contact {name, phone, email?}, address {province_code, ward_code, line}.
  * 200 = đơn đã tạo (COD `placed` / VNPAY `awaiting_payment` + payment_url); 202 = đang xử lý (xem Location);
- * lỗi = application/problem+json với `code` ổn định (đặc tả §9.1).
+ * lỗi = application/problem+json với `code` ổn định (đặc tả §9.1). 200 kèm `order_access` + `order_access_expires_at`
+ * (token phiên đơn, T-021) để storefront đặt cookie HttpOnly xem `/don-hang/:ref`.
  */
 export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promise<void> => {
   try {
@@ -63,7 +65,9 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
       res.status(202).json({ ...outcome.view, status_url: statusUrl });
       return;
     }
-    res.status(200).json({ ...outcome.view, status_url: statusUrl });
+    // Phiên đơn (POST01): token ngắn hạn để storefront đổi thành cookie HttpOnly — không bao giờ đặt trên URL.
+    const orderAccess = outcome.view.order ? orderAccessFor(outcome.view.order.id) : {};
+    res.status(200).json({ ...outcome.view, status_url: statusUrl, ...orderAccess });
   } catch (error) {
     handleRouteError(req, res, error);
   }
