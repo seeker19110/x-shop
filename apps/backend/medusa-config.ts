@@ -74,5 +74,9 @@ module.exports = defineConfig({
     disable: env.DISABLE_MEDUSA_ADMIN,
     ...(env.MEDUSA_BACKEND_URL !== undefined && { backendUrl: env.MEDUSA_BACKEND_URL }),
   },
-  modules: redisModules,
+  modules: [
+    ...redisModules,
+    // Module tùy biến: checkout attempt, idempotency, quote, ledger, inbox/outbox, ngoại lệ (docs/design/checkout-flow.md).
+    { resolve: "./src/modules/checkout" },
+  ],
 });
