@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { CatalogView } from "../../../../components/catalog/CatalogView";
-import { CATALOG_PAGE_SIZE } from "../../../../lib/catalog/client";
+import { CATALOG_PAGE_SIZE, getCategoryName } from "../../../../lib/catalog/client";
 import { loadListing, toQueryString, type RawParams } from "../../../../lib/catalog/listing";
-import { categoryHref, categoryName } from "../../../../lib/content/navigation";
+import { categoryHref } from "../../../../lib/content/navigation";
 import { catalogMetadata } from "../../../../lib/seo/catalog-meta";
 
 interface Props {
@@ -13,7 +13,7 @@ interface Props {
 
 export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
   const { slug } = await params;
-  const name = categoryName(slug);
+  const name = await getCategoryName(slug);
   if (!name) return { title: "Không tìm thấy danh mục", robots: { index: false } };
   const { filter, result } = await loadListing("category", slug, toQueryString(await searchParams));
   return catalogMetadata({
@@ -28,7 +28,7 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
 
 export default async function CategoryPage({ params, searchParams }: Props) {
   const { slug } = await params;
-  const name = categoryName(slug);
+  const name = await getCategoryName(slug);
   if (!name) notFound();
   const { filter, issues, result, error } = await loadListing(
     "category",

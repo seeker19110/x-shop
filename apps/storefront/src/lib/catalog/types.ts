@@ -105,7 +105,7 @@ export interface ProductDetail {
   description: string;
   kind: string;
   attributes: ProductAttributes;
-  category: { handle: string; name: string };
+  category: { handle: string; name: string } | null;
   options: { color: ColorOption[]; size: SizeOption[] };
   variants: ProductVariant[];
   images: ProductImage[];

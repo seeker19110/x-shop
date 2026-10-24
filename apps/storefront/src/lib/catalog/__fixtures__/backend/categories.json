@@ -1,0 +1,76 @@
+{
+  "categories": [
+    {
+      "handle": "ao-nam",
+      "name": "Áo nam",
+      "parent_handle": "nam",
+      "product_count": 4
+    },
+    {
+      "handle": "ao-nu",
+      "name": "Áo nữ",
+      "parent_handle": "nu",
+      "product_count": 5
+    },
+    {
+      "handle": "nu",
+      "name": "Nữ",
+      "parent_handle": null,
+      "product_count": 11
+    },
+    {
+      "handle": "tui",
+      "name": "Túi",
+      "parent_handle": "phu-kien",
+      "product_count": 2
+    },
+    {
+      "handle": "mu-non",
+      "name": "Mũ nón",
+      "parent_handle": "phu-kien",
+      "product_count": 1
+    },
+    {
+      "handle": "nam",
+      "name": "Nam",
+      "parent_handle": null,
+      "product_count": 7
+    },
+    {
+      "handle": "quan-nam",
+      "name": "Quần nam",
+      "parent_handle": "nam",
+      "product_count": 3
+    },
+    {
+      "handle": "quan-nu",
+      "name": "Quần nữ",
+      "parent_handle": "nu",
+      "product_count": 3
+    },
+    {
+      "handle": "giay",
+      "name": "Giày",
+      "parent_handle": null,
+      "product_count": 2
+    },
+    {
+      "handle": "that-lung",
+      "name": "Thắt lưng",
+      "parent_handle": "phu-kien",
+      "product_count": 1
+    },
+    {
+      "handle": "vay-dam",
+      "name": "Váy & đầm",
+      "parent_handle": "nu",
+      "product_count": 3
+    },
+    {
+      "handle": "phu-kien",
+      "name": "Phụ kiện",
+      "parent_handle": null,
+      "product_count": 4
+    }
+  ]
+}
