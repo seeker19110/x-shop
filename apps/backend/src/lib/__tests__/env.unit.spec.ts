@@ -4,6 +4,8 @@ import {
   loadEnvOrExit,
   parseEnv,
   PRODUCTION_REQUIRED,
+  VNPAY_DEV_DEFAULTS,
+  VNPAY_REQUIRED,
   type ExitHooks,
 } from "../env";
 
@@ -22,6 +24,11 @@ const production = {
   STORE_CORS: "https://shop.example.vn",
   ADMIN_CORS: "https://admin.example.vn,http://localhost:9000",
   AUTH_CORS: "https://admin.example.vn,/\\.example\\.vn$/",
+  VNPAY_TMN_CODE: "XSHOPPROD",
+  VNPAY_HASH_SECRET: "vnpay-0123456789abcdef0123456789abcd",
+  VNPAY_PAYMENT_URL: "https://pay.vnpay.example/paymentv2/vpcpay.html",
+  VNPAY_API_URL: "https://pay.vnpay.example/merchant_webapi/api/transaction",
+  VNPAY_RETURN_URL: "https://shop.example.vn/thanh-toan/ket-qua",
 };
 
 const problemsOf = (source: Record<string, string | undefined>) => {
@@ -109,6 +116,20 @@ describe("parseEnv — development/test", () => {
     expect(variablesOf({ DATABASE_URL: DB, STORE_CORS: "http://a.vn,,http://b.vn" })).toEqual(["STORE_CORS"]);
   });
 
+  it("VNPAY: dev/test vắng biến → cấu hình giả mặc định; VNPAY_ENABLED sai định dạng → lỗi", () => {
+    const result = parseEnv({ DATABASE_URL: DB, NODE_ENV: "test" });
+    if (!result.ok) throw new Error("mong đợi hợp lệ");
+    expect(result.env.vnpay).toEqual({
+      tmnCode: VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE,
+      hashSecret: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET,
+      paymentUrl: VNPAY_DEV_DEFAULTS.VNPAY_PAYMENT_URL,
+      apiUrl: VNPAY_DEV_DEFAULTS.VNPAY_API_URL,
+      returnUrl: VNPAY_DEV_DEFAULTS.VNPAY_RETURN_URL,
+    });
+    expect(variablesOf({ DATABASE_URL: DB, VNPAY_ENABLED: "co" })).toEqual(["VNPAY_ENABLED"]);
+    expect(variablesOf({ DATABASE_URL: DB, VNPAY_TMN_CODE: "mã có dấu" })).toEqual(["VNPAY_TMN_CODE"]);
+  });
+
   it("DISABLE_MEDUSA_ADMIN=true → true", () => {
     const result = parseEnv({ DATABASE_URL: DB, DISABLE_MEDUSA_ADMIN: "true" });
     expect(result.ok && result.env.DISABLE_MEDUSA_ADMIN).toBe(true);
@@ -135,10 +156,45 @@ describe("parseEnv — production", () => {
     }
   });
 
-  it("vắng tất cả → liệt kê đủ mọi biến bắt buộc", () => {
+  it("vắng tất cả → liệt kê đủ mọi biến bắt buộc (VNPAY bật mặc định)", () => {
     expect(variablesOf({ NODE_ENV: "production", DATABASE_URL: DB }).sort()).toEqual(
-      [...PRODUCTION_REQUIRED].sort(),
+      [...PRODUCTION_REQUIRED, ...VNPAY_REQUIRED].sort(),
     );
+  });
+
+  it("vắng từng biến VNPAY khi bật → nêu đúng tên biến đó", () => {
+    for (const key of VNPAY_REQUIRED) {
+      expect(variablesOf({ ...production, [key]: undefined })).toEqual([key]);
+    }
+  });
+
+  it("VNPAY_ENABLED=false → không đòi biến VNPAY, cấu hình vnpay = null", () => {
+    const source: Record<string, string | undefined> = { ...production, VNPAY_ENABLED: "false" };
+    for (const key of VNPAY_REQUIRED) source[key] = undefined;
+    const result = parseEnv(source);
+    if (!result.ok) throw new Error("mong đợi hợp lệ");
+    expect(result.env.vnpay).toBeNull();
+  });
+
+  it("khoá VNPAY giả của dev hoặc URL không https bị từ chối", () => {
+    expect(variablesOf({ ...production, VNPAY_HASH_SECRET: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET })).toEqual([
+      "VNPAY_HASH_SECRET",
+    ]);
+    expect(variablesOf({ ...production, VNPAY_RETURN_URL: "http://shop.example.vn/ket-qua" })).toEqual([
+      "VNPAY_RETURN_URL",
+    ]);
+  });
+
+  it("đủ biến VNPAY → cấu hình đúng giá trị đã đặt", () => {
+    const result = parseEnv(production);
+    if (!result.ok) throw new Error("mong đợi hợp lệ");
+    expect(result.env.vnpay).toEqual({
+      tmnCode: production.VNPAY_TMN_CODE,
+      hashSecret: production.VNPAY_HASH_SECRET,
+      paymentUrl: production.VNPAY_PAYMENT_URL,
+      apiUrl: production.VNPAY_API_URL,
+      returnUrl: production.VNPAY_RETURN_URL,
+    });
   });
 
   it("bí mật mặc định công khai/quá ngắn bị từ chối", () => {
