@@ -1,4 +1,5 @@
 import { ADMIN_X_PERMISSIONS } from "../../../api/admin/x/permissions";
+import { requirePermission } from "../../access/require-permission";
 import { AUTH_RATE_LIMITS } from "../config";
 import { resolveAdminRule } from "../policy";
 import { registerAttempt, registerRefund, registerSuccess } from "../rate-limit";
@@ -187,5 +188,22 @@ describe("rate limit nhiều tín hiệu", () => {
       Array.from({ length: 20 }, () => registerAttempt(store, "mfa", "ai_1", "5.5.5.5")),
     );
     expect(results.filter((r) => r.allowed)).toHaveLength(AUTH_RATE_LIMITS.mfa.perIdentityIp);
+  });
+});
+
+describe("requirePermission (lớp thứ hai trong route)", () => {
+  const req = (access?: { userId: string; roles: string[] }) => ({ x_admin_access: access }) as never;
+
+  it("guard chưa chạy → 401; thiếu một trong các quyền → 403; đủ → trả actor id", () => {
+    expect(() => requirePermission(req(), "catalog.import")).toThrow(
+      expect.objectContaining({ type: "unauthorized" }),
+    );
+    const cm = req({ userId: "u1", roles: ["catalog_manager"] });
+    expect(requirePermission(cm, "catalog.import", "price.write")).toBe("u1");
+    expect(() => requirePermission(cm, "catalog.import", "price.write", "inventory.adjust")).toThrow(
+      /inventory\.adjust/,
+    );
+    const both = req({ userId: "u2", roles: ["catalog_manager", "warehouse"] });
+    expect(requirePermission(both, "catalog.import", "price.write", "inventory.adjust")).toBe("u2");
   });
 });

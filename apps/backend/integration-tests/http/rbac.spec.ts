@@ -4,7 +4,11 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { can, ROLES, type Role } from "@x-shop/domain";
-import { ADMIN_X_PERMISSIONS, type AdminXRoute } from "../../src/api/admin/x/permissions";
+import {
+  ADMIN_X_PERMISSIONS,
+  requiredPermissions,
+  type AdminXRoute,
+} from "../../src/api/admin/x/permissions";
 import { NATIVE_ADMIN_ROUTES } from "../../src/lib/admin-security/native-permissions";
 import { resolveAdminRule } from "../../src/lib/admin-security/policy";
 import { AUDIT_MODULE } from "../../src/modules/audit";
@@ -68,28 +72,29 @@ medusaIntegrationTestRunner({
       route.path.replace(/:id\b/g, accounts.warehouse.userId).replace(/:(\w+)/g, "khong-co-$1");
 
     describe("map quyền /admin/x/* × 6 vai trò (sinh tự động từ ADMIN_X_PERMISSIONS)", () => {
-      it.each(ADMIN_X_PERMISSIONS.map((r) => [`${r.method} ${r.path} → ${r.permission}`, r] as const))(
-        "%s",
-        async (_name, route) => {
-          for (const role of ROLES) {
-            const res = await call(route.method, concrete(route), accounts[role].headers);
-            const allowed = can([role], route.permission);
-            if (allowed) {
-              expect({ role, status: res.status }).not.toEqual({ role, status: 403 });
-            } else {
-              expect({ role, status: res.status, code: res.data.code }).toEqual({
-                role,
-                status: 403,
-                code: "FORBIDDEN",
-              });
-              expect(res.headers["content-type"]).toContain("application/problem+json");
-            }
+      it.each(
+        ADMIN_X_PERMISSIONS.map(
+          (r) => [`${r.method} ${r.path} → ${requiredPermissions(r).join(" + ")}`, r] as const,
+        ),
+      )("%s", async (_name, route) => {
+        for (const role of ROLES) {
+          const res = await call(route.method, concrete(route), accounts[role].headers);
+          const allowed = requiredPermissions(route).every((p) => can([role], p));
+          if (allowed) {
+            expect({ role, status: res.status }).not.toEqual({ role, status: 403 });
+          } else {
+            expect({ role, status: res.status, code: res.data.code }).toEqual({
+              role,
+              status: 403,
+              code: "FORBIDDEN",
+            });
+            expect(res.headers["content-type"]).toContain("application/problem+json");
           }
-          // User chưa có vai trò nào: không có quyền gì ở /admin/x.
-          const none = await call(route.method, concrete(route), noRole.headers);
-          expect(none.status).toBe(403);
-        },
-      );
+        }
+        // User chưa có vai trò nào: không có quyền gì ở /admin/x.
+        const none = await call(route.method, concrete(route), noRole.headers);
+        expect(none.status).toBe(403);
+      });
     });
 
     describe("AT21 + fail-closed", () => {

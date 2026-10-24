@@ -15,8 +15,16 @@ export interface AdminXRoute {
   /** Mẫu Express: `:param` khớp một đoạn. */
   path: string;
   permission: Permission;
+  /** Quyền bổ sung — cần ĐỦ cả `permission` lẫn mọi quyền ở đây (vd. commit import ghi cả giá và tồn). */
+  also?: readonly Permission[];
   reauth?: boolean;
 }
+
+/** Mọi quyền một route đòi (chính + bổ sung). */
+export const requiredPermissions = (r: Pick<AdminXRoute, "permission" | "also">): Permission[] => [
+  r.permission,
+  ...(r.also ?? []),
+];
 
 export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   // Catalog thời trang (T-013/T-015)
@@ -25,6 +33,16 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   { method: "POST", path: "/admin/x/size-charts/:code/revise", permission: "catalog.write" },
   { method: "POST", path: "/admin/x/products/:id/fashion", permission: "catalog.write" },
   { method: "GET", path: "/admin/x/products/:id/publish-check", permission: "catalog.read" },
+  // Nhập/xuất CSV catalog (T-015). Commit ghi cả giá và tồn → cần đủ ba quyền (ý định của route, ADM02).
+  { method: "POST", path: "/admin/x/imports/preview", permission: "catalog.import" },
+  { method: "GET", path: "/admin/x/imports/:id", permission: "catalog.import" },
+  {
+    method: "POST",
+    path: "/admin/x/imports/:id/commit",
+    permission: "catalog.import",
+    also: ["price.write", "inventory.adjust"],
+  },
+  { method: "GET", path: "/admin/x/exports/products.csv", permission: "catalog.read" },
   // Vai trò (T-023)
   { method: "GET", path: "/admin/x/users/:id/roles", permission: "user.manage" },
   { method: "POST", path: "/admin/x/users/:id/roles", permission: "user.manage", reauth: true },

@@ -29,7 +29,9 @@ medusaIntegrationTestRunner({
     });
 
     beforeEach(async () => {
-      const a = await adminHeaders(api, container);
+      // Quyền tối thiểu cho nhập CSV (RBAC T-023): catalog.import + price.write (catalog_manager) + inventory.adjust
+      // (warehouse) — commit ghi cả giá và tồn.
+      const a = await adminHeaders(api, container, { roles: ["catalog_manager", "warehouse"] });
       admin = a.headers;
       adminId = a.userId;
     });

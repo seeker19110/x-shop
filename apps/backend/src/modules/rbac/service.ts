@@ -1,5 +1,6 @@
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { ROLES, type Role } from "@x-shop/domain";
+import { createSecurityStore, type SecurityStore } from "../../lib/admin-security/store";
 
 const TABLE = "user_role";
 
@@ -20,9 +21,25 @@ export const isRole = (v: unknown): v is Role =>
 export default class RbacModuleService {
   protected readonly db: Knex;
 
+  private store_: SecurityStore | null = null;
+
   constructor({ __pg_connection__ }: { __pg_connection__: Knex }) {
     this.db = __pg_connection__;
   }
+
+  /** Kho trạng thái bảo mật admin (nhàn rỗi phiên, rate limit) — Redis dùng chung giữa các instance. */
+  securityStore(): SecurityStore {
+    this.store_ ??= createSecurityStore();
+    return this.store_;
+  }
+
+  __hooks = {
+    onApplicationShutdown: async () => {
+      const s = this.store_;
+      this.store_ = null;
+      await s?.close();
+    },
+  };
 
   async rolesOf(userId: string): Promise<Role[]> {
     if (!userId) return [];

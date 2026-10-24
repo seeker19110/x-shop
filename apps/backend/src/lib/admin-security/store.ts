@@ -13,6 +13,8 @@ export interface SecurityStore {
   decr(key: string): Promise<void>;
   del(key: string): Promise<void>;
   ttl(key: string): Promise<number>;
+  /** Đóng kết nối (khi ứng dụng tắt). */
+  close(): Promise<void>;
 }
 
 export const KEY_PREFIX = "xs:sec:";
@@ -42,6 +44,9 @@ class RedisStore implements SecurityStore {
   }
   async ttl(key: string) {
     return this.redis.ttl(KEY_PREFIX + key);
+  }
+  async close() {
+    await this.redis.quit().catch(() => this.redis.disconnect());
   }
 }
 
@@ -81,15 +86,19 @@ export class MemoryStore implements SecurityStore {
     const e = this.live(key);
     return e ? Math.ceil((e.expiresAt - Date.now()) / 1000) : -2;
   }
+  async close() {
+    this.data.clear();
+  }
 }
 
-let store: SecurityStore | null = null;
-
-export function getSecurityStore(): SecurityStore {
-  if (store) return store;
-  const url = process.env.REDIS_URL?.trim();
-  store = url
-    ? new RedisStore(new Redis(url, { maxRetriesPerRequest: 2, connectionName: "x-shop-admin-security" }))
+/**
+ * Tạo kho theo REDIS_URL. Chủ sở hữu là module `xRbac` (một kho / ứng dụng, đóng ở onApplicationShutdown) — không dùng
+ * biến toàn cục: kết nối mồ côi giữ cả đồ thị module sống (rò bộ nhớ khi chạy nhiều ứng dụng trong một tiến trình test).
+ */
+export function createSecurityStore(redisUrl = process.env.REDIS_URL?.trim()): SecurityStore {
+  return redisUrl
+    ? new RedisStore(
+        new Redis(redisUrl, { maxRetriesPerRequest: 2, connectionName: "x-shop-admin-security" }),
+      )
     : new MemoryStore();
-  return store;
 }

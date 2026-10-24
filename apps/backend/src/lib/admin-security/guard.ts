@@ -10,9 +10,10 @@ import { resolveAdminRule } from "./policy";
 import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
 import { normalizeAdminPath, normalizeMethod } from "./route-match";
 import { checkAndTouchSession, evaluateMfa, mfaCompletedAtMs, type AdminAuthContext } from "./session";
-import { getSecurityStore } from "./store";
 
 type AuthedRequest = MedusaRequest & { auth_context?: AdminAuthContext };
+
+const storeOf = (req: MedusaRequest) => req.scope.resolve<RbacModuleService>(RBAC_MODULE).securityStore();
 
 /** Thông tin RBAC đã kiểm, gắn vào request cho route dùng tiếp (vd. che PII theo vai trò). */
 export interface AdminAccess {
@@ -85,7 +86,7 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
   }
 
   const policy = getAdminSessionPolicy();
-  const session = await checkAndTouchSession(getSecurityStore(), ctx, policy);
+  const session = await checkAndTouchSession(storeOf(req), ctx, policy);
   if (!session.ok) return deny(res, 401, session.code);
 
   const rbac = req.scope.resolve<RbacModuleService>(RBAC_MODULE);
@@ -93,17 +94,18 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
   const allowed =
     rule.kind === "self" ||
     (rule.kind === "any_role" && roles.length > 0) ||
-    (rule.kind === "permission" && can(roles, rule.permission));
+    (rule.kind === "permission" && [rule.permission, ...rule.also].every((perm) => can(roles, perm)));
   if (!allowed) {
     await auditDenied(req, method, path, {
       reason: rule.kind === "deny" ? rule.reason : "missing_permission",
       permission: rule.kind === "permission" ? rule.permission : null,
+      ...(rule.kind === "permission" && rule.also.length > 0 && { also: rule.also }),
       roles,
     });
     return deny(res, 403, "FORBIDDEN", rule.kind === "permission" ? { permission: rule.permission } : {});
   }
 
-  if (rule.kind === "permission" && (isSensitive(rule.permission) || rule.reauth)) {
+  if (rule.kind === "permission" && ([rule.permission, ...rule.also].some(isSensitive) || rule.reauth)) {
     const mfa = evaluateMfa(ctx, Date.now(), rule.reauth ? policy.reauthMaxAgeSeconds : null);
     if (!mfa.ok) {
       return deny(res, 403, mfa.code, {
@@ -142,7 +144,7 @@ export async function adminRefreshGuard(req: MedusaRequest, res: MedusaResponse,
   const ctx = (req as AuthedRequest).auth_context;
   if (!ctx || ctx.actor_type !== "user" || !ctx.actor_id) return next();
   if (mfaCompletedAtMs(ctx) === null) return deny(res, 401, "SESSION_EXPIRED", { action: "login" });
-  const session = await checkAndTouchSession(getSecurityStore(), ctx, getAdminSessionPolicy());
+  const session = await checkAndTouchSession(storeOf(req), ctx, getAdminSessionPolicy());
   if (!session.ok) return deny(res, 401, session.code);
   return next();
 }
@@ -153,7 +155,7 @@ export async function adminRefreshGuard(req: MedusaRequest, res: MedusaResponse,
  */
 export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest) => string | null) {
   return async (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => {
-    const store = getSecurityStore();
+    const store = storeOf(req);
     const identity = identityOf(req);
     const ip = req.ip ?? "unknown";
     const attempt = await registerAttempt(store, scope, identity, ip);
