@@ -20,6 +20,8 @@ export interface SizeSelectorProps {
   error?: string | null;
   /** Liên kết "Hướng dẫn chọn size" đặt cạnh nhãn. */
   sizeGuideHref?: string;
+  /** Thay cho `sizeGuideHref` khi bảng size mở trong Dialog (nút, không điều hướng). */
+  onSizeGuide?: () => void;
   legend?: string;
 }
 
@@ -30,6 +32,7 @@ export function SizeSelector({
   onChange,
   error,
   sizeGuideHref,
+  onSizeGuide,
   legend = "Size",
 }: SizeSelectorProps) {
   const uid = useId();
@@ -41,7 +44,11 @@ export function SizeSelector({
         <span id={labelId} className={styles.legend}>
           {legend}
         </span>
-        {sizeGuideHref ? (
+        {onSizeGuide ? (
+          <button type="button" className={styles.guide} onClick={onSizeGuide} aria-haspopup="dialog">
+            Hướng dẫn chọn size
+          </button>
+        ) : sizeGuideHref ? (
           <Link href={sizeGuideHref} className={styles.guide}>
             Hướng dẫn chọn size
           </Link>
