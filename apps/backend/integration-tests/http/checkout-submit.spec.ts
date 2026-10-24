@@ -4,6 +4,7 @@ import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { vnpay } from "@x-shop/domain";
 import Redis from "ioredis";
+import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
 import { VNPAY_DEV_DEFAULTS } from "../../src/lib/env";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
@@ -89,8 +90,12 @@ async function leakedLocks(keys: string[]): Promise<string[]> {
     await redis.quit();
   }
 }
+/** Giỏ → độ trễ (ms) trước khi chốt — giữ attempt ở `preparing` để kiểm nhánh 202. */
+const slowBeforeFinalize = new Map<string, number>();
 submitCheckoutWorkflow.hooks.orderPrepared(async ({ cart_id }) => {
   if (failBeforeFinalize.has(cart_id)) throw new Error("lỗi giả lập trước khi chốt đơn");
+  const delay = slowBeforeFinalize.get(cart_id);
+  if (delay) await new Promise((r) => setTimeout(r, delay));
 });
 
 medusaIntegrationTestRunner({
@@ -464,6 +469,37 @@ medusaIntegrationTestRunner({
         const res = await submit(submitBody(q), "ngan");
         expect(res.status).toBe(422);
         expect(res.data).toMatchObject({ code: "VALIDATION", field: "Idempotency-Key" });
+      });
+    });
+
+    describe("202 — đã nhận, đang xử lý", () => {
+      it("request trùng khi attempt còn preparing quá thời gian chờ → 202 + Location; xong thì status trả ready", async () => {
+        const cartId = await createCart([["Đen/S", 1]]);
+        const q = await quoteOk(cartId);
+        const mutableConfig = CHECKOUT_CONFIG as { replayWaitMs: number };
+        const oldWait = mutableConfig.replayWaitMs;
+        mutableConfig.replayWaitMs = 200;
+        slowBeforeFinalize.set(cartId, 2_000);
+        try {
+          const key = newKey();
+          const first = submit(submitBody(q), key);
+          await new Promise((r) => setTimeout(r, 500));
+          const second = await submit(submitBody(q), key);
+          expect(second.status).toBe(202);
+          expect(second.data.state).toBe("preparing");
+          const statusUrl = `/store/x/checkout/attempts/${second.data.checkout_attempt_id}?cart_id=${cartId}`;
+          expect(second.headers.location).toBe(statusUrl);
+          expect(second.headers["retry-after"]).toBe("1");
+          const done = await first;
+          expect(done.status).toBe(200);
+          expect(done.data.checkout_attempt_id).toBe(second.data.checkout_attempt_id);
+          const status = await api.get(statusUrl, cfg());
+          expect(status.data).toMatchObject({ state: "ready", order: { id: done.data.order.id } });
+          expect(await countOrders(container)).toBe(1);
+        } finally {
+          mutableConfig.replayWaitMs = oldWait;
+          slowBeforeFinalize.delete(cartId);
+        }
       });
     });
 
