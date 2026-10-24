@@ -998,7 +998,9 @@
             "payment_unknown",
             "refund_unknown",
             "webhook_rejected",
-            "checkout_stuck"
+            "checkout_stuck",
+            "cod_confirm_overdue",
+            "outbox_dead"
           ],
           "mappedType": "enum"
         },

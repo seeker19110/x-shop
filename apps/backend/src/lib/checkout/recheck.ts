@@ -17,6 +17,7 @@ export type QueryCheck = { outcome: vnpay.QueryOutcome | "skipped"; reason: stri
 export async function queryAndProcess(
   container: MedusaContainer,
   orderId: string,
+  opts: { orderLockHeld?: boolean } = {},
 ): Promise<QueryCheck & { raw?: QueryStatusResult }> {
   const s = service(container);
   const cfg = getVnpayConfig();
@@ -42,12 +43,18 @@ export async function queryAndProcess(
   }
   if (raw.outcome === "paid" || raw.outcome === "failed") {
     const n = notificationFromQuery(cfg, pa.txn_ref, pa.amount, raw.outcome, raw.transactionNo);
-    await processVerified(container, n, "query", {
-      vnp_TxnRef: pa.txn_ref,
-      vnp_TransactionNo: raw.transactionNo ?? "",
-      source: "querydr",
-      outcome: raw.outcome,
-    });
+    await processVerified(
+      container,
+      n,
+      "query",
+      {
+        vnp_TxnRef: pa.txn_ref,
+        vnp_TransactionNo: raw.transactionNo ?? "",
+        source: "querydr",
+        outcome: raw.outcome,
+      },
+      opts,
+    );
   }
   return { outcome: raw.outcome, reason: raw.reason, raw };
 }

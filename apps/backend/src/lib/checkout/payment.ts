@@ -84,6 +84,7 @@ export async function processVerified(
   n: vnpay.VerifiedNotification,
   source: NotificationSource,
   payload: Record<string, string>,
+  opts: { orderLockHeld?: boolean } = {},
 ): Promise<IpnResponse> {
   const s = service(container);
   const eventKey = `${n.txnRef}|${n.transactionNo}|${n.responseCode}|${n.transactionStatus}`;
@@ -102,7 +103,7 @@ export async function processVerified(
       ? R.alreadyConfirmed
       : (pickResponse(prev.RspCode) ?? R.unknownError);
   }
-  const result = await processUnderOrderLock(container, n);
+  const result = await processUnderOrderLock(container, n, opts.orderLockHeld === true);
   if (result !== R.unknownError) await s.markInboxProcessed(inbox.id, { ...result });
   return result;
 }
@@ -111,9 +112,11 @@ function pickResponse(code: string | undefined): IpnResponse | null {
   return Object.values(R).find((r) => r.RspCode === code) ?? null;
 }
 
+/** `lockHeld` = caller (job hết hạn) đã giữ khóa `order:<id>` — không lấy lại (khóa không tái nhập theo chủ khác). */
 async function processUnderOrderLock(
   container: MedusaContainer,
   n: vnpay.VerifiedNotification,
+  lockHeld: boolean,
 ): Promise<IpnResponse> {
   const s = service(container);
   const [attempt] = await s.listPaymentAttempts({ txn_ref: n.txnRef, provider: PROVIDER });
@@ -133,12 +136,14 @@ async function processUnderOrderLock(
   const locking = container.resolve(Modules.LOCKING);
   const owner = `pay:${randomUUID()}`;
   try {
-    await acquireOrdered(locking, [lockKeys.order(attempt.order_id)], {
-      ownerId: owner,
-      waitMs: CHECKOUT_CONFIG.orderLockWaitMs,
-      ttlSeconds: CHECKOUT_CONFIG.lockTtlSeconds,
-      scope: "order",
-    });
+    if (!lockHeld) {
+      await acquireOrdered(locking, [lockKeys.order(attempt.order_id)], {
+        ownerId: owner,
+        waitMs: CHECKOUT_CONFIG.orderLockWaitMs,
+        ttlSeconds: CHECKOUT_CONFIG.lockTtlSeconds,
+        scope: "order",
+      });
+    }
   } catch (e) {
     if (readCheckoutError(e)?.code === "BUSY_RETRY") return R.unknownError; // VNPAY gửi lại sau
     throw e;
@@ -164,7 +169,7 @@ async function processUnderOrderLock(
     }
     return R.success;
   } finally {
-    await releaseOwned(locking, owner, null);
+    if (!lockHeld) await releaseOwned(locking, owner, null);
   }
 }
 

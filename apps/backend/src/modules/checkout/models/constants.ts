@@ -25,6 +25,10 @@ export const OPS_EXCEPTION_KINDS = [
   "refund_unknown",
   "webhook_rejected",
   "checkout_stuck",
+  /** Đơn COD quá hạn xác nhận (D-004) — nhân viên đơn gọi khách, không tự hủy. */
+  "cod_confirm_overdue",
+  /** Sự kiện outbox gửi hỏng quá số lần tối đa. */
+  "outbox_dead",
 ] as const;
 export const OPS_EXCEPTION_STATES = ["open", "in_progress", "resolved"] as const;
 export const OPS_PRIORITIES = ["low", "normal", "high", "urgent"] as const;

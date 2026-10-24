@@ -68,6 +68,16 @@ export interface OpsExceptionInput {
   detail?: Record<string, unknown> | null;
 }
 
+export interface OutboxClaim {
+  id: string;
+  event_key: string;
+  aggregate_id: string;
+  type: string;
+  payload: Record<string, unknown>;
+  /** Số lần đã thử TRƯỚC lần này. */
+  attempts: number;
+}
+
 export type CaptureOutcome =
   { duplicate: true } | { duplicate: false; decision: CaptureDecision; state_before: OrderState };
 
@@ -584,6 +594,178 @@ class CheckoutModuleService extends MedusaService({
     });
   }
 
+  /* ------------------------------------------------------------ job (T-012) */
+
+  /** Đơn online còn chờ thanh toán đã quá hạn giữ hàng (biên: now >= hold_expires_at là hết hạn — DATA04). */
+  async listExpiredHoldOrderIds(now: Date, limit: number): Promise<string[]> {
+    const rows = await this.exec(
+      `SELECT order_id FROM order_finance
+       WHERE state = 'awaiting_payment' AND hold_expires_at <= ? AND deleted_at IS NULL
+       ORDER BY hold_expires_at LIMIT ?`,
+      [now, limit],
+    );
+    return rows.map((r) => String(r.order_id));
+  }
+
+  /**
+   * Hủy đơn hết hạn (S-005) — MỘT transaction, chỉ khi đơn còn `awaiting_payment`: order_finance → cancelled, payment
+   * attempt còn mở → failed, lượt mã → released, checkout attempt → failed (nhả phiên bản giỏ để checkout lại),
+   * outbox `order.cancelled`. Trả false nếu đơn không còn chờ (một nhánh khác đã thắng).
+   */
+  async cancelExpiredOrder(orderId: string, reason: string): Promise<boolean> {
+    return this.repo_.transaction(async (em) => {
+      const fin = await this.exec(
+        `UPDATE order_finance SET state = 'cancelled', version = version + 1, updated_at = now()
+         WHERE order_id = ? AND state = 'awaiting_payment' RETURNING id`,
+        [orderId],
+        em,
+      );
+      if (fin.length !== 1) return false;
+      await this.exec(
+        `UPDATE payment_attempt SET state = 'failed', updated_at = now()
+         WHERE order_id = ? AND state IN ('created', 'pending', 'unknown')`,
+        [orderId],
+        em,
+      );
+      await this.exec(
+        `UPDATE coupon_usage SET state = 'released', updated_at = now() WHERE order_id = ? AND state = 'held'`,
+        [orderId],
+        em,
+      );
+      await this.exec(
+        `UPDATE checkout_attempt SET state = 'failed', error_code = ?, updated_at = now()
+         WHERE order_id = ? AND state = 'ready'`,
+        [reason, orderId],
+        em,
+      );
+      await this.insertOutbox(
+        `order.cancelled:${orderId}`,
+        orderId,
+        "order.cancelled",
+        { order_id: orderId, reason },
+        em,
+      );
+      return true;
+    });
+  }
+
+  /** Attempt `preparing` quá lease, hoặc đã nhận bù trừ nhưng chưa xong (`COMPENSATING`) — để job đối chiếu (AT10). */
+  async listStaleAttempts(now: Date, limit: number): Promise<Array<{ id: string; cart_id: string }>> {
+    const rows = await this.exec(
+      `SELECT id, cart_id FROM checkout_attempt
+       WHERE ((state = 'preparing' AND lease_until < ?) OR (state = 'compensated' AND error_code = 'COMPENSATING'))
+         AND deleted_at IS NULL
+       ORDER BY lease_until LIMIT ?`,
+      [now, limit],
+    );
+    return rows.map((r) => ({ id: String(r.id), cart_id: String(r.cart_id) }));
+  }
+
+  /**
+   * Nhận quyền bù trừ: preparing (quá lease) → compensated/COMPENSATING. Sau bước này submit "xác sống" không chốt được
+   * nữa (finalize đòi `preparing`). Đã COMPENSATING (lần trước dở) → vẫn trả true để làm tiếp.
+   */
+  async claimStaleAttempt(attemptId: string, now: Date): Promise<boolean> {
+    const rows = await this.exec(
+      `UPDATE checkout_attempt SET state = 'compensated', error_code = 'COMPENSATING', updated_at = now()
+       WHERE id = ? AND ((state = 'preparing' AND lease_until < ?) OR (state = 'compensated' AND error_code = 'COMPENSATING'))
+       RETURNING id`,
+      [attemptId, now],
+    );
+    return rows.length === 1;
+  }
+
+  /** Dọn phần module của attempt đã nhận bù trừ: order_finance preparing → cancelled, payment → failed, mã → released. */
+  async compensateAttemptRecords(attemptId: string, orderIds: string[]): Promise<void> {
+    await this.repo_.transaction(async (em) => {
+      if (orderIds.length > 0) {
+        const marks = orderIds.map(() => "?").join(", ");
+        await this.exec(
+          `UPDATE order_finance SET state = 'cancelled', version = version + 1, updated_at = now()
+           WHERE order_id IN (${marks}) AND state = 'preparing'`,
+          orderIds,
+          em,
+        );
+        await this.exec(
+          `UPDATE payment_attempt SET state = 'failed', updated_at = now()
+           WHERE order_id IN (${marks}) AND state IN ('created', 'pending', 'unknown')`,
+          orderIds,
+          em,
+        );
+      }
+      await this.exec(
+        `UPDATE coupon_usage SET state = 'released', updated_at = now()
+         WHERE checkout_attempt_id = ? AND state = 'held'`,
+        [attemptId],
+        em,
+      );
+      await this.exec(
+        `UPDATE checkout_attempt SET error_code = 'LEASE_EXPIRED', updated_at = now()
+         WHERE id = ? AND state = 'compensated' AND error_code = 'COMPENSATING'`,
+        [attemptId],
+        em,
+      );
+    });
+  }
+
+  /** Đơn COD quá hạn xác nhận mà vẫn `placed`. */
+  async listOverdueCodOrders(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ order_id: string; display_ref: string }>> {
+    const rows = await this.exec(
+      `SELECT order_id, display_ref FROM order_finance
+       WHERE state = 'placed' AND payment_method = 'cod' AND cod_confirm_by <= ? AND deleted_at IS NULL
+       ORDER BY cod_confirm_by LIMIT ?`,
+      [now, limit],
+    );
+    return rows.map((r) => ({ order_id: String(r.order_id), display_ref: String(r.display_ref) }));
+  }
+
+  /**
+   * Nhận MỘT sự kiện outbox đến hạn (pending/failed, next_attempt_at <= now) — `FOR UPDATE SKIP LOCKED` + đẩy
+   * next_attempt_at ra sau `leaseMs` nên hai dispatcher không nhận trùng; tiến trình chết → hết lease thì nhận lại.
+   */
+  async claimDueOutbox(now: Date, leaseMs: number): Promise<OutboxClaim | null> {
+    const rows = await this.exec(
+      `UPDATE outbox_event SET next_attempt_at = ?, updated_at = now()
+       WHERE id = (
+         SELECT id FROM outbox_event
+         WHERE state IN ('pending', 'failed') AND next_attempt_at <= ? AND deleted_at IS NULL
+         ORDER BY next_attempt_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
+       RETURNING id, event_key, aggregate_id, type, payload, attempts`,
+      [new Date(now.getTime() + leaseMs), now],
+    );
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: String(r.id),
+      event_key: String(r.event_key),
+      aggregate_id: String(r.aggregate_id),
+      type: String(r.type),
+      payload: (r.payload ?? {}) as Record<string, unknown>,
+      attempts: Number(r.attempts),
+    };
+  }
+
+  async markOutboxSent(id: string): Promise<void> {
+    await this.exec(
+      `UPDATE outbox_event SET state = 'sent', last_error = NULL, updated_at = now() WHERE id = ?`,
+      [id],
+    );
+  }
+
+  /** Lỗi gửi: attempts + 1, hẹn lại (lũy thừa) hoặc `dead` khi hết lượt. */
+  async markOutboxFailed(id: string, error: string, nextAttemptAt: Date | null): Promise<void> {
+    await this.exec(
+      `UPDATE outbox_event
+       SET attempts = attempts + 1, state = ?, last_error = ?, next_attempt_at = COALESCE(?, next_attempt_at),
+           updated_at = now()
+       WHERE id = ?`,
+      [nextAttemptAt ? "failed" : "dead", error.slice(0, 2000), nextAttemptAt, id],
+    );
+  }
+
   /** Đánh dấu sự kiện outbox đã xong khi việc của nó đã được làm ngay (không chờ dispatcher). */
   async markOutboxSentByKey(eventKey: string): Promise<void> {
     await this.exec(
@@ -598,12 +780,13 @@ class CheckoutModuleService extends MedusaService({
     type: string,
     payload: Record<string, unknown>,
     em?: SqlEntityManager,
+    nextAttemptAt: Date | null = null,
   ): Promise<void> {
     await this.exec(
       `INSERT INTO outbox_event (id, event_key, aggregate_id, type, payload, state, next_attempt_at)
-       VALUES (?, ?, ?, ?, ?::jsonb, 'pending', now())
+       VALUES (?, ?, ?, ?, ?::jsonb, 'pending', COALESCE(?, now()))
        ON CONFLICT (event_key) DO NOTHING`,
-      [generateEntityId(undefined, "obx"), eventKey, aggregateId, type, json(payload)],
+      [generateEntityId(undefined, "obx"), eventKey, aggregateId, type, json(payload), nextAttemptAt],
       em,
     );
   }
