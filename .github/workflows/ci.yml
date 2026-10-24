@@ -1,0 +1,176 @@
+# CI mẫu cho dự án đích — `install.py --with-github` chép vào `.github/workflows/ci.yml` (copy-if-absent: dự án đã có
+# ci.yml thì giữ nguyên, bản khung ghi `ci.yml.xtemplates-new` để gộp tay). KHÔNG phụ thuộc stack: mọi lệnh lấy từ
+# `xt.yaml` qua `.xtemplates/scripts/dev-task.sh <task>` (WF-CI-002); toolchain/phụ thuộc cài bằng khoá `setup:` của xt.yaml
+# (vd `setup: npm ci`, `setup: pip install -r requirements.txt`) — runner ubuntu-latest đã có node/python/go/java.
+# Tối thiểu số job, song song tối đa trong số đó (ADR-0039, D-128, WF-CI-025): `gate` (một lần cài phụ thuộc,
+# `dev-task.sh gate-par` = typecheck ∥ lint ∥ build → test kèm coverage chạy nền cùng lúc TRONG job, rồi kiểm của khung) ·
+# `e2e` (job dài) — hai job không `needs`, bắt đầu cùng lúc · `quality` (TỔNG HỢP với `if: always()`, WF-CI-001, kèm bước
+# protection-guard). Các repo cùng tài khoản dùng chung trần job đồng thời: job ngắn tách riêng làm job dài xếp hàng chờ
+# runner — không tách lại build/typecheck/lint/test thành job riêng.
+# Ruleset mẫu (D-116, D-117, D-122) chỉ đòi 2 check: `quality`, `gitleaks` (secret-scan.yml), không đòi "up to date" — PR
+# merge song song, lỗi kết hợp hai PR bị CI trên `main` bắt (merge của steward: `push` khi có `XT_STEWARD_TOKEN`,
+# không thì steward gọi `workflow_dispatch` — xem pr-steward.yml). Thêm kiểm ngắn (vd `dep-audit` theo ngôn ngữ): thêm BƯỚC vào `gate`; thêm job dài và độc lập
+# (DAST, Lighthouse…): thêm job và tên nó vào `quality.needs` — không thêm required check.
+# Đổi tên job là required check: sửa ruleset cùng PR (bước protection-guard của `quality` đỏ).
+name: CI
+
+on:
+  push: { branches: [master] }
+  # Không `edited`: sửa tiêu đề/thân PR không đổi SHA mà chạy lại cả CI nặng (rồi `concurrency` huỷ run cũ). Kiểm tiêu đề PR
+  # ở `pr-title.yml` (nghe `edited`, vài giây).
+  pull_request: { branches: [master], types: [opened, synchronize, reopened] }
+  # pr-steward merge bằng GITHUB_TOKEN (thiếu XT_STEWARD_TOKEN) không kích `push` → steward gọi dispatch trên nhánh đích
+  # (biến XT_CI_WORKFLOW nếu file CI đổi tên). Run dispatch chạy đủ job như `push`; đừng lọc job theo `github.event_name`.
+  workflow_dispatch: {}
+
+# Mặc định tối thiểu cho MỌI job (GITHUB_TOKEN chỉ đọc). Job nào cần hơn tự khai ở job-level.
+permissions:
+  contents: read
+
+# PR: push mới hủy run cũ cùng PR. `main`: mỗi commit một group riêng (run_id), không hủy — giữ bằng chứng CI từng commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Một job cho mọi kiểm ngắn: `gate-par` chạy cùng các lệnh của cổng cục bộ `dev-task.sh gate` nhưng các nhóm độc lập
+  # song song trong job (log từng nhóm in lại nguyên khối; nhóm nào đỏ thì bước đỏ). Nhóm ghi chung file (vd typecheck
+  # sinh mã mà build đọc) → đổi bước thành `dev-task.sh gate` (tuần tự). Coverage: ngưỡng nằm trong chính lệnh `test` của
+  # xt.yaml (vd `--fail-under`) — `gate-par` chạy `test` (và `test_floor` nếu khai), không chia shard;
+  # `test_list`/`test_unit`/`test_combine` chỉ dùng khi đo thấy `gate` là đường dài nhất và tách test ra job riêng.
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # PROGRESS.md: SHA bàn giao phải là tổ tiên HEAD (doctor kiểm)
+          persist-credentials: false
+      # D-096: `dev-task.sh gate-par` bỏ qua (`skip`, xanh) task để rỗng → `quality` xanh mà không chạy gì. Bước này đỏ (mọi
+      # `delivery_phase`) tới khi xt.yaml khai lệnh thật cho `lint` và `test`; typecheck/build rỗng vẫn được. Đặt trước
+      # `setup` để đỏ sớm, không tốn thời gian cài phụ thuộc.
+      - name: Cổng bắt buộc đã khai — `lint` và `test` trong xt.yaml không rỗng/no-op
+        run: bash .xtemplates/scripts/dev-task.sh require lint test
+      - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      - name: gate-par — typecheck ∥ lint ∥ build → test (kèm ngưỡng coverage của `test`) đúng lệnh trong xt.yaml
+        run: bash .xtemplates/scripts/dev-task.sh gate-par
+      # Sàn M/L (LOOP-HARNESS-023): khoá sàn khai riêng trong xt.yaml (`format_check`, `coverage`, kiểm kiểu theo stack) —
+      # trước chỉ `loop verify` chạy nên CI xanh khi sàn đỏ (AUD-XFEAT-020). Lệnh trùng lệnh của gate-par bỏ qua; `e2e` có
+      # job riêng; quy mô S/không blueprint → không áp; khoá thiếu chỉ cảnh báo (như doctor).
+      - name: Sàn Gate M/L — `xt.py floor --run` (khoá sàn đã khai đỏ → bước đỏ)
+        run: python3 .xtemplates/scripts/xt.py floor --run --skip e2e
+      - name: Khung đã cài còn nguyên — `xt.py doctor` (đỏ khi có lỗi; cảnh báo không chặn)
+        run: python3 .xtemplates/scripts/xt.py doctor
+      - name: Workflow (ghim SHA, quyền, timeout, secret trên PR) + cấu hình xt.yaml — `xt.py ci-check`
+        run: python3 .xtemplates/scripts/xt.py ci-check
+
+  # E2E (QA-E2E-001, QA-E2E-029): chạy CÙNG LÚC với `gate`, không `needs` — lệnh `e2e` tự build và phục vụ (vd `webServer`
+  # của Playwright). `e2e-mode`: `off` (chưa khai `e2e`) → bỏ qua; `shard` (lệnh dùng $XT_SHARD, vd
+  # `npx playwright test --shard=${XT_SHARD:-1/1}`) → mỗi shard một phần; `whole` → shard 1 chạy cả suite.
+  e2e:
+    name: e2e ${{ matrix.shard }}/${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false # shard khác vẫn chạy hết để thấy mọi chỗ đỏ; kết quả gộp của job vẫn là `failure`
+      matrix:
+        # Một shard. Thêm shard (vd [1, 2]) chỉ khi đo thấy e2e là đường dài nhất của CI (WF-CI-025, ADR-0039).
+        shard: [1]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: mode
+        name: e2e-mode — có suite E2E không, chia shard được không (đọc xt.yaml)
+        run: |
+          set -euo pipefail
+          mode="$(bash .xtemplates/scripts/dev-task.sh e2e-mode)"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "e2e-mode: $mode"
+      - if: steps.mode.outputs.mode == 'shard' || (steps.mode.outputs.mode == 'whole' && matrix.shard == 1)
+        name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      - if: steps.mode.outputs.mode == 'shard' || (steps.mode.outputs.mode == 'whole' && matrix.shard == 1)
+        name: e2e — `e2e_setup` rồi `e2e` với XT_SHARD=I/N
+        env:
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ strategy.job-total }}
+        run: bash .xtemplates/scripts/dev-task.sh e2e "$SHARD" "$TOTAL"
+
+  # Required check `quality` (ruleset `.github/rulesets/main.json`): TỔNG HỢP mọi job con (WF-CI-001). `always()` — không
+  # phải `!cancelled()`: run bị huỷ thì `quality` vẫn chạy và ĐỎ (job con `cancelled`/`skipped` ≠ `success`). Với
+  # `!cancelled()`, run bị huỷ làm `quality` thành `skipped`, mà required check `skipped` được GitHub tính là ĐẠT →
+  # auto-merge có thể merge mã chưa qua test. Job matrix: `needs.<job>.result` là kết quả gộp.
+  # Bước protection-guard — hàng rào cho hàng rào: (1) mọi required check trong ruleset mẫu phải là job có thật (chặn
+  # khoá-nhánh-do-đổi-tên-job; context thêm tay mà chưa có job → đỏ tới khi viết job đó hoặc bỏ khỏi ruleset); (2) ruleset
+  # trên nhánh mặc định có đang hiệu lực không — chỉ CẢNH BÁO (không đỏ) để repo mới chưa import vẫn merge được. API
+  # `rules/branches` chỉ cần quyền đọc metadata mà GITHUB_TOKEN luôn có — `contents: read` của workflow là đủ.
+  quality:
+    name: quality
+    needs: [gate, e2e]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: protection-guard — required check trong ruleset ↔ job có thật
+        run: |
+          set -euo pipefail
+          if [ ! -f .github/rulesets/main.json ]; then
+            echo "::warning::Không có .github/rulesets/main.json — không có required check để đối chiếu."; exit 0
+          fi
+          jobs=$(python3 - <<'PY'
+          import glob, re
+          names = set()
+          for f in glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml"):
+              txt = open(f, encoding="utf-8").read()
+              m = re.search(r"^jobs:\n(.*)", txt, re.S | re.M)
+              if not m: continue
+              for jm in re.finditer(r"^  ([A-Za-z0-9_-]+):\n((?:    .*\n|\n)*)", m.group(1), re.M):
+                  key, body = jm.group(1), jm.group(2)
+                  nm = re.search(r"^    name:\s*(.+?)\s*$", body, re.M)
+                  names.add(nm.group(1).strip('"\'') if nm else key)
+          print("\n".join(sorted(names)))
+          PY
+          )
+          fail=0
+          for c in $(python3 -c "import json;[print(x['context']) for r in json.load(open('.github/rulesets/main.json'))['rules'] if r['type']=='required_status_checks' for x in r['parameters']['required_status_checks']]"); do
+            grep -qx "$c" <<<"$jobs" || { echo "::error::Required check '$c' không khớp job nào trong .github/workflows/"; fail=1; }
+          done
+          [ "$fail" = 0 ] && echo "OK — mọi required check đều là job có thật."
+          exit $fail
+      - name: protection-guard — ruleset trên nhánh mặc định đang hiệu lực? (cảnh báo)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -uo pipefail
+          rules=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/rules/branches/$BRANCH" || echo "[]")
+          for t in pull_request required_status_checks deletion non_fast_forward; do
+            if ! python3 -c "import json,sys; r=json.loads(sys.argv[1]); sys.exit(0 if any(x.get('type')==sys.argv[2] for x in r) else 1)" "$rules" "$t"; then
+              echo "::warning::Nhánh $BRANCH chưa có rule '$t' — import .github/rulesets/main.json (Settings → Rules → Rulesets → Import)."
+            fi
+          done
+          echo "Đã kiểm ruleset (cảnh báo nếu thiếu)."
+      # `always()`: bước tổng hợp chạy cả khi bước protection-guard đỏ hay checkout lỗi — log luôn nêu job con nào đỏ.
+      - name: Mọi job con phải `success`
+        if: ${{ always() }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTS"])
+          bad = {job: v.get("result") for job, v in needs.items() if v.get("result") != "success"}
+          for job, v in sorted(needs.items()):
+              print(f"{job}={v.get('result')}")
+          if not needs or bad:
+              print(f"::error::Job con không `success`: {bad or 'không có job con nào'}")
+              sys.exit(1)
+          PY

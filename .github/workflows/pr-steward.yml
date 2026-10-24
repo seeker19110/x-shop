@@ -1,0 +1,106 @@
+name: pr-steward
+
+# Quản PR không cần phiên agent (ADR-0027, D-054): PR đủ tiêu chuẩn theo "merge theo làn" (ADR-0024/0025) phải vào nhánh
+# chính kể cả khi phiên agent đã dừng, container khởi động lại hay PR do phiên khác mở. Job gọi `xt.py pr steward --apply`:
+# với MỌI PR đang mở → `pr next` (cùng luật với phiên agent: làn chuẩn cần review sạch ở đúng head — review đọc từ comment
+# `pr reviewed` đã đăng lên PR) → merge GHIM head (`PUT pulls/N/merge` với `sha=<head>`, chỉ khi `merge-check` = `merge` ở
+# đúng head đó) / tắt auto-merge do người bật / cập nhật nhánh tụt sau nhánh đích (D-061, chỉ khi có XT_STEWARD_TOKEN); CI
+# chưa xong → `wait` (lượt `workflow_run` của CI hoặc lịch 10 phút xét lại). Máy KHÔNG bao giờ bật auto-merge của GitHub
+# (D-122, ADR-0036 — auto-merge không ghim head): không cần "Allow auto-merge" ở Settings → General, nên TẮT để không ai
+# bật nhầm. Việc cần người hoặc agent (review, sửa, ngoại lệ cứng) chỉ ghi vào bản tóm tắt.
+#
+# An toàn: không trigger `pull_request*`, job chỉ checkout NHÁNH MẶC ĐỊNH (không code của PR) và chạy `xt.py` ở đó;
+# `issue_comment` chỉ chạy khi comment mang dấu review của OWNER/COLLABORATOR/MEMBER (MEMBER: `xt.py` hỏi quyền ghi repo
+# trước khi tin dấu). PR từ fork hoặc của tác giả không có quyền
+# ghi repo không bao giờ được steward tự merge (chỉ báo — người merge). PR từng vào làn chuẩn được gắn nhãn
+# `xt-standard-lane` để giữ chặt (cần review sạch ở head) kể cả khi diff thu nhỏ sau đó.
+# Token: NÊN đặt `XT_STEWARD_TOKEN` (fine-grained PAT hoặc GitHub App: contents + pull requests: write) — merge do token
+# này kích workflow `push` trên nhánh chính (CI chạy lại trên commit merge, lớp đỡ khi ruleset không đòi "up to date";
+# trước D-122 việc này do auto-merge của GitHub kích). Không có thì dùng GITHUB_TOKEN: merge vẫn vào, nhưng GitHub không
+# chạy workflow `push` cho commit do GITHUB_TOKEN tạo (trừ `workflow_dispatch`/`repository_dispatch`) → sau merge thành
+# công steward gọi `workflow_dispatch` của `ci.yml` trên nhánh đích (T-2402; job cần `actions: write`; tên khác: biến
+# `XT_CI_WORKFLOW`); dispatch lỗi → merge giữ nguyên, job đỏ kèm lý do ở summary. GitHub cũng không chạy `pull_request`
+# cho commit cập nhật nhánh do GITHUB_TOKEN tạo → không có XT_STEWARD_TOKEN thì steward không tự cập nhật nhánh, chỉ báo.
+#
+# Theo sự kiện (AUTO-05, T-1517): xét lại PR ngay khi check xong thay vì chờ lịch — `workflow_run` khi workflow `CI` (job
+# `quality`) chạy xong (check của GitHub Actions; `check_suite` KHÔNG kích workflow cho check suite do Actions tạo — chống
+# đệ quy; stub `merge-gate` không mang thông tin nên không kích, D-122), `check_suite: completed` cho check của app ngoài
+# (CI bên thứ ba). Payload chỉ chọn PR
+# (`pull_requests`; trống khi push lên nhánh đích hay PR từ fork → xét mọi PR mở); head, auto-merge, check, review luôn
+# đọc lại từ GitHub, và `xt.py` đọc lại PR ngay trước mỗi hành động — khoá (repo, PR, head, hành động): sự kiện lặp, sai
+# thứ tự, re-run sau restart không lặp tác dụng phụ. Lịch 10 phút là lưới bù. Dự án đích đặt tên workflow CI khác thì
+# sửa danh sách `workflows:` (tên không khớp = không bao giờ kích). Hai trigger này đều chạy trên nhánh mặc định, không
+# code của PR (như `issue_comment`); job không tải artifact của run kích nó.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  issue_comment: # zizmor: ignore[dangerous-triggers] — chỉ checkout nhánh mặc định, không chạy code PR; comment phải mang dấu review của người có quyền ghi
+    types: [created]
+  check_suite:
+    types: [completed]
+  workflow_run: # zizmor: ignore[dangerous-triggers] — chỉ checkout nhánh mặc định, không chạy code PR, không tải artifact của run kích nó
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Chỉ PR này (số); để trống = mọi PR mở"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# Nhóm theo PR của sự kiện (lịch/không gắn PR: `all`): GitHub chỉ giữ MỘT lượt chờ mỗi nhóm — nhóm chung thì sự kiện
+# của PR khác thay mất lượt đang chờ. Lượt `all` có thể chạy song song lượt của một PR: an toàn vì mỗi hành động đọc lại
+# trạng thái PR ngay trước khi làm (head đã đổi, auto-merge đã tắt, PR đã merge → bỏ qua).
+concurrency:
+  group: pr-steward-${{ inputs.pr || github.event.issue.number || github.event.check_suite.pull_requests[0].number || github.event.workflow_run.pull_requests[0].number || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  steward:
+    name: pr-steward
+    # issue_comment: chỉ comment trên PR, mang dấu review, của người có quyền ghi repo (dấu giả của người ngoài bỏ qua).
+    if: >-
+      github.event_name != 'issue_comment' || (
+        github.event.issue.pull_request &&
+        contains(github.event.comment.body, 'xt-review v1') &&
+        (
+          contains(fromJSON('["OWNER","COLLABORATOR","MEMBER"]'), github.event.comment.author_association) ||
+          (vars.XT_REVIEW_IDENTITY != '' && github.event.comment.user.login == vars.XT_REVIEW_IDENTITY)
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # merge
+      actions: write # CHỈ để dispatch `ci.yml` trên nhánh đích sau merge bằng GITHUB_TOKEN (push không kích CI) — T-2402
+      pull-requests: write # tắt auto-merge do người bật, cập nhật nhánh, đọc PR
+      issues: write # đọc comment review; gắn nhãn xt-standard-lane
+      checks: read # merge-check đọc check-run
+      statuses: read # và commit status
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # merge-check đọc xt.yaml đã commit ở origin/<nhánh đích>
+
+      - name: pr steward — merge ghim head cho PR đủ tiêu chuẩn
+        env:
+          GH_TOKEN: ${{ secrets.XT_STEWARD_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          XT_STEWARD_UPDATE: ${{ secrets.XT_STEWARD_TOKEN != '' && 'on' || 'off' }}
+          PR: ${{ inputs.pr || github.event.issue.number || '' }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          xt=scripts/xt.py
+          [ -f "$xt" ] || xt=.xtemplates/scripts/xt.py # dự án đích cài khung vào .xtemplates/
+          if [ -n "$PR" ]; then
+            python3 "$xt" pr steward --apply --repo "$GH_REPO" --pr "$PR"
+          elif [ "$EVENT" = check_suite ] || [ "$EVENT" = workflow_run ]; then
+            python3 "$xt" pr steward --apply --repo "$GH_REPO" --event "$GITHUB_EVENT_PATH"
+          else
+            python3 "$xt" pr steward --apply --repo "$GH_REPO"
+          fi
