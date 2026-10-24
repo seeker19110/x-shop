@@ -103,7 +103,12 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
     <div className={styles.section}>
       <div className={styles.actions}>
         {canRecheck ? (
-          <Button onClick={recheck} loading={busy === "recheck"} loadingLabel="Đang kiểm tra" disabled={busy !== null}>
+          <Button
+            onClick={recheck}
+            loading={busy === "recheck"}
+            loadingLabel="Đang kiểm tra"
+            disabled={busy !== null}
+          >
             Kiểm tra lại
           </Button>
         ) : null}

@@ -138,10 +138,7 @@ const CANCEL_LABELS: Record<string, string> = {
   HOLD_EXPIRED: "Đơn đã hủy do quá hạn thanh toán",
 };
 
-export async function presentOrder(
-  container: MedusaContainer,
-  fin: OrderFinanceRow,
-): Promise<OrderView> {
+export async function presentOrder(container: MedusaContainer, fin: OrderFinanceRow): Promise<OrderView> {
   const s = service(container);
   const orderId = fin.order_id;
   const [entries, ledgerRows, outbox, payments, refundRequests, native] = await Promise.all([
@@ -208,7 +205,11 @@ export async function presentOrder(
   }
   for (const f of native.fulfillments.filter((x) => !x.canceled_at)) {
     if (f.shipped_at) {
-      timeline.push({ at: iso(f.shipped_at) as string, kind: "shipped", label: "Đã giao cho đơn vị vận chuyển" });
+      timeline.push({
+        at: iso(f.shipped_at) as string,
+        kind: "shipped",
+        label: "Đã giao cho đơn vị vận chuyển",
+      });
     }
     if (f.delivered_at) {
       timeline.push({ at: iso(f.delivered_at) as string, kind: "delivered", label: "Đã giao hàng" });

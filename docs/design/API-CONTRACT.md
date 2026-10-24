@@ -56,8 +56,28 @@ Storefront: id giỏ luôn lấy từ cookie HttpOnly ở server (client không 
 - `GET /x/webhooks/vnpay/ipn` — chỉ VNPAY gọi; phản hồi JSON `{ RspCode, Message }`.
 - Trang return storefront `/thanh-toan/ket-qua?attempt=…` KHÔNG đổi trạng thái; gọi `POST /store/x/checkout/attempts/:id/recheck` (giới hạn tần suất) → server có thể `querydr`.
 
-## Đơn hàng sau mua (T-021)
-- `GET /store/x/orders/:display_ref` — chỉ khi cookie phiên đơn hợp lệ (đặt trong lúc submit) hoặc sau khi đổi token tra cứu.
-- `POST /store/x/orders/lookup` `{ display_ref, phone }` → luôn 202 "Nếu thông tin đúng, chúng tôi đã gửi liên kết…" (không lộ tồn tại) — gửi link/OTP qua outbox.
-- `POST /store/x/orders/session` `{ token }` → đặt cookie phiên đơn HttpOnly, trả `{ display_ref }`; token dùng một lần, rời khỏi URL.
-- Đơn trả về: `{ display_ref, state, payment_state, shipment_state, timeline: [{ at, kind, label }], lines, totals, address (đã che một phần khi phiên chưa xác thực đầy đủ) }`.
+## Đơn hàng sau mua (T-021) — shape thật (test: `apps/backend/integration-tests/http/order-lookup.spec.ts`)
+Mọi route: `Cache-Control: private, no-store`. Quyền xem/thao tác đơn = header `x-order-access: <token phiên đơn>` (storefront đọc từ
+cookie HttpOnly `xs_order_<mã đơn>` ở server; token KHÔNG bao giờ nằm trên URL). Token thiếu/sai/hết hạn/của đơn khác → 404
+`NOT_FOUND` giống hệt mã không tồn tại (AT20). Token: HMAC (`signLookupToken`, khóa dẫn xuất theo loại từ `ORDER_LOOKUP_SECRET`) —
+`access` 7 ngày dùng lại được; `link` 15 phút, đổi một lần.
+- `POST /store/x/checkout/submit` (200) và `GET /store/x/checkout/attempts/:id` (khi `state:"ready"`) trả thêm
+  `order_access`, `order_access_expires_at` để storefront đặt cookie.
+- `GET /store/x/orders/:display_ref` → 200
+  `{ display_ref, state, payment_method, payment_state: cod|pending|unknown|paid|refund_pending|expired|void,
+  shipment_state: unfulfilled|picking|packed|shipped|delivered, created_at, hold_expires_at|null, cod_confirm_by|null,
+  cancel_reason|null, timeline: [{ at, kind, label }], lines: [{ title, variant_title, quantity, unit_price, total, thumbnail }],
+  totals: { subtotal, discount_total, shipping_total, total, paid }, address: { province_name, ward_name, line },
+  contact: { name, phone (đã che: 0912***678) }, actions: { can_cancel, can_recheck } }` — không trả email/id nội bộ.
+- `POST /store/x/orders/:display_ref/recheck` → cùng shape + `payment_check` (`paid|not_paid|failed|unknown|skipped`); server
+  querydr CÙNG giao dịch, không đổi trạng thái theo tham số trình duyệt; 1 lần/10 giây mỗi lần đặt (429 `RATE_LIMITED`).
+- `POST /store/x/orders/:display_ref/cancel` → cùng shape + `cancel: { outcome: cancelled|already_cancelled, refund_requested }`
+  (idempotent). 409 `NOT_CANCELLABLE` (đã có vận đơn / trạng thái kết thúc) · 409 `PAYMENT_PENDING` (cổng chưa trả lời rõ).
+  Đơn đã thu tiền → ngoại lệ `refund_request`; hủy native + hoàn thật ở T-027.
+- `POST /store/x/orders/lookup` `{ display_ref, phone }` → luôn 202 `{ accepted: true, message }` cùng thông điệp; khớp → outbox
+  `order.lookup_link` `{ order_id, display_ref, token, expires_at }` (gửi thật ở T-029, URL `/tra-cuu-don/xac-thuc?token=…`).
+  422 `VALIDATION` (`field`: `display_ref|phone`) khi sai định dạng · 429 khi vượt 5/giờ/SĐT, 10/giờ/mã, 20/giờ/IP.
+- `POST /store/x/orders/session` `{ token }` → 200 `{ display_ref, order_access, order_access_expires_at }`; token hết hạn/giả/đã
+  dùng → 404. Storefront đổi bằng Server Action (khách bấm nút, không tự đổi khi GET) rồi chuyển tới `/don-hang/:ref`.
+- Giới hạn tần suất dùng chung ở Postgres (`rate_limit_counter`): (IP, mã) 60/10 phút cho xem/kiểm tra lại, 10/10 phút cho hủy;
+  20 lần bị từ chối/10 phút mỗi IP → 429.

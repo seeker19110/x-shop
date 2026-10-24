@@ -10,7 +10,11 @@ import styles from "./Order.module.css";
 function Block({ block, id }: { block: StatusBlock; id: string }) {
   return (
     <li
-      className={cx(styles.block, block.tone === "success" && styles.success, block.tone === "warning" && styles.warning)}
+      className={cx(
+        styles.block,
+        block.tone === "success" && styles.success,
+        block.tone === "warning" && styles.warning,
+      )}
       aria-labelledby={id}
     >
       <h2 id={id}>{block.title}</h2>
@@ -52,8 +56,8 @@ export function OrderDetail({ order, now = new Date() }: { order: OrderDetails; 
         <div className={styles.section}>
           <h2>Đặt lại đơn</h2>
           <p>
-            Hàng giữ cho đơn này đã được trả về kho. Bạn có thể chọn lại sản phẩm và đặt đơn mới — giá và tồn kho sẽ được
-            kiểm tra lại trước khi bạn xác nhận.
+            Hàng giữ cho đơn này đã được trả về kho. Bạn có thể chọn lại sản phẩm và đặt đơn mới — giá và tồn
+            kho sẽ được kiểm tra lại trước khi bạn xác nhận.
           </p>
           <div className={styles.actions}>
             <Button href="/tim-kiem" variant="secondary">

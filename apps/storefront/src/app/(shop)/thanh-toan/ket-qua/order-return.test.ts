@@ -17,7 +17,8 @@ vi.mock("../../../../lib/orders/service", () => ({ recheckOrder: m.recheckOrder 
 import { GET } from "./route";
 
 /** Tham số VNPAY "thành công" do trình duyệt mang về (chưa có IPN) — route không được tin. */
-const VNP = "vnp_ResponseCode=00&vnp_TransactionStatus=00&vnp_TxnRef=PA_1&vnp_OrderInfo=Thanh+toan+don+XS-ABC123";
+const VNP =
+  "vnp_ResponseCode=00&vnp_TransactionStatus=00&vnp_TxnRef=PA_1&vnp_OrderInfo=Thanh+toan+don+XS-ABC123";
 const req = (qs: string) => new Request(`https://shop.test/thanh-toan/ket-qua?${qs}`);
 
 beforeEach(() => {
@@ -64,13 +65,20 @@ describe("/thanh-toan/ket-qua (AT08, AT24): không đổi trạng thái theo URL
 describe("next.config: trang đơn/tra cứu riêng tư, token không rò qua Referer", () => {
   it("tra cứu + xác thực + kết quả thanh toán: private, no-store; no-referrer đặt SAU quy tắc chung", async () => {
     expect(PRIVATE_SOURCES).toEqual(
-      expect.arrayContaining(["/don-hang/:path*", "/tra-cuu-don", "/tra-cuu-don/:path*", "/thanh-toan/:path*"]),
+      expect.arrayContaining([
+        "/don-hang/:path*",
+        "/tra-cuu-don",
+        "/tra-cuu-don/:path*",
+        "/thanh-toan/:path*",
+      ]),
     );
     const rules = await nextConfig.headers!();
     const global = rules.findIndex((r) => r.source === "/:path*");
     for (const source of NO_REFERRER_SOURCES) {
       const i = rules.findIndex(
-        (r) => r.source === source && r.headers.some((h) => h.key === "Referrer-Policy" && h.value === "no-referrer"),
+        (r) =>
+          r.source === source &&
+          r.headers.some((h) => h.key === "Referrer-Policy" && h.value === "no-referrer"),
       );
       expect(i, source).toBeGreaterThan(global);
     }

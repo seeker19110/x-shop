@@ -53,7 +53,10 @@ export function issueOrderToken(
 ): { token: string; expires_at: string } {
   const ttl = purpose === "access" ? ORDER_ACCESS_CONFIG.accessTtlMs : ORDER_ACCESS_CONFIG.linkTtlMs;
   const expiresAt = new Date(now.getTime() + ttl);
-  return { token: signLookupToken(purposeKey(purpose), orderId, expiresAt), expires_at: expiresAt.toISOString() };
+  return {
+    token: signLookupToken(purposeKey(purpose), orderId, expiresAt),
+    expires_at: expiresAt.toISOString(),
+  };
 }
 
 /** Token hợp lệ (đúng loại, chữ ký, còn hạn) → { orderId, expiresAt }; ngược lại null (không phân biệt lý do). */

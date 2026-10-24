@@ -176,7 +176,11 @@ const schema = z
       ctx.addIssue({ code: "custom", path: ["COOKIE_SECRET"], message: "phải khác JWT_SECRET" });
     }
     if (env.ORDER_LOOKUP_SECRET === ORDER_LOOKUP_DEV_SECRET) {
-      ctx.addIssue({ code: "custom", path: ["ORDER_LOOKUP_SECRET"], message: "không được dùng khoá giả của dev" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["ORDER_LOOKUP_SECRET"],
+        message: "không được dùng khoá giả của dev",
+      });
     }
     if (env.VNPAY_ENABLED) {
       for (const key of VNPAY_REQUIRED) {
@@ -222,7 +226,8 @@ const schema = z
       STORE_CORS: env.STORE_CORS ?? DEV_CORS_DEFAULTS.STORE_CORS,
       ADMIN_CORS: env.ADMIN_CORS ?? DEV_CORS_DEFAULTS.ADMIN_CORS,
       AUTH_CORS: env.AUTH_CORS ?? DEV_CORS_DEFAULTS.AUTH_CORS,
-      orderLookupSecret: env.ORDER_LOOKUP_SECRET ?? (env.NODE_ENV === "production" ? "" : ORDER_LOOKUP_DEV_SECRET),
+      orderLookupSecret:
+        env.ORDER_LOOKUP_SECRET ?? (env.NODE_ENV === "production" ? "" : ORDER_LOOKUP_DEV_SECRET),
       vnpay: env.VNPAY_ENABLED
         ? {
             tmnCode: pick("VNPAY_TMN_CODE"),

@@ -30,7 +30,9 @@ async function releaseReservations(container: MedusaContainer, orderId: string):
     (o.items ?? []).flatMap((i) => (i ? [i.id] : [])),
   );
   if (lineIds.length === 0) return;
-  const reservations = await container.resolve(Modules.INVENTORY).listReservationItems({ line_item_id: lineIds });
+  const reservations = await container
+    .resolve(Modules.INVENTORY)
+    .listReservationItems({ line_item_id: lineIds });
   if (reservations.length > 0) {
     await deleteReservationsWorkflow(container).run({ input: { ids: reservations.map((r) => r.id) } });
   }

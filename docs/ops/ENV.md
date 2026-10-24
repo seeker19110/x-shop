@@ -23,6 +23,9 @@ AUTH_MFA_ENCRYPTION_KEY=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-mfa
 STORE_CORS=http://localhost:3000
 ADMIN_CORS=http://localhost:5173,http://localhost:9000
 AUTH_CORS=http://localhost:5173,http://localhost:9000,http://localhost:3000
+# Khoá ký token phiên đơn / liên kết tra cứu đơn (T-021). ≥ 32 ký tự ngẫu nhiên; production bắt buộc, khác khoá giả của dev
+# (dev/test vắng → ORDER_LOOKUP_DEV_SECRET trong env.ts). Đổi khoá = mọi phiên đơn/liên kết đang có mất hiệu lực.
+ORDER_LOOKUP_SECRET=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-order
 # Tùy chọn
 # MEDUSA_BACKEND_URL=http://localhost:9000
 # MEDUSA_WORKER_MODE=shared   # shared | server | worker (production tách server và worker)

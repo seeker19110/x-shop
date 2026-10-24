@@ -32,8 +32,8 @@ export default async function OrderPage({ params }: { params: Promise<{ ref: str
       {r.kind === "not_found" ? (
         <>
           <p>
-            Bạn cần xác thực để xem đơn này. Nhập mã đơn và số điện thoại đặt hàng — chúng tôi sẽ gửi liên kết xem đơn tới
-            liên hệ đã dùng khi đặt.
+            Bạn cần xác thực để xem đơn này. Nhập mã đơn và số điện thoại đặt hàng — chúng tôi sẽ gửi liên kết
+            xem đơn tới liên hệ đã dùng khi đặt.
           </p>
           <div className={styles.actions}>
             <Button href={`/tra-cuu-don?ma=${encodeURIComponent(ref)}`}>Tra cứu đơn hàng</Button>

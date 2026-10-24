@@ -24,7 +24,8 @@ export default async function LookupPage({
 }) {
   const sp = await searchParams;
   const ma = typeof sp.ma === "string" ? sp.ma.trim().toUpperCase() : "";
-  const notice = typeof sp.loi === "string" ? NOTICES[sp.loi] : typeof sp.tu === "string" ? NOTICES[sp.tu] : undefined;
+  const notice =
+    typeof sp.loi === "string" ? NOTICES[sp.loi] : typeof sp.tu === "string" ? NOTICES[sp.tu] : undefined;
   return (
     <section className={styles.page} aria-labelledby="tra-cuu-tieu-de">
       <h1 id="tra-cuu-tieu-de" className={styles.title}>
@@ -32,8 +33,8 @@ export default async function LookupPage({
       </h1>
       {notice ? <p className={styles.section}>{notice}</p> : null}
       <p>
-        Vì lý do bảo mật, mã đơn và số điện thoại không đủ để hiển thị đơn. Chúng tôi sẽ gửi liên kết xem đơn (hiệu lực 15
-        phút, dùng một lần) tới số điện thoại/email đã dùng khi đặt hàng.
+        Vì lý do bảo mật, mã đơn và số điện thoại không đủ để hiển thị đơn. Chúng tôi sẽ gửi liên kết xem đơn
+        (hiệu lực 15 phút, dùng một lần) tới số điện thoại/email đã dùng khi đặt hàng.
       </p>
       <LookupForm defaultRef={ORDER_REF_RE.test(ma) ? ma : ""} />
     </section>

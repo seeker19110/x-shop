@@ -16,7 +16,13 @@ const UNAVAILABLE = "Không tải được thông tin đơn lúc này. Vui lòng
 /** Mã đơn hiển thị (XS-xxxxxx) — kiểm chặt trước khi đưa vào URL/cookie/lời gọi backend. */
 export const ORDER_REF_RE = /^XS-[A-Z0-9]{4,12}$/;
 
-const ORDER_STATES: readonly OrderState[] = ["placed", "awaiting_payment", "confirmed", "cancelled", "completed"];
+const ORDER_STATES: readonly OrderState[] = [
+  "placed",
+  "awaiting_payment",
+  "confirmed",
+  "cancelled",
+  "completed",
+];
 const PAYMENT_STATES: readonly PaymentState[] = [
   "cod",
   "pending",
@@ -26,7 +32,13 @@ const PAYMENT_STATES: readonly PaymentState[] = [
   "expired",
   "void",
 ];
-const SHIPMENT_STATES: readonly ShipmentState[] = ["unfulfilled", "picking", "packed", "shipped", "delivered"];
+const SHIPMENT_STATES: readonly ShipmentState[] = [
+  "unfulfilled",
+  "picking",
+  "packed",
+  "shipped",
+  "delivered",
+];
 
 export function mapOrder(raw: unknown): OrderDetails | null {
   if (!isObj(raw)) return null;
@@ -95,7 +107,11 @@ export function mapOrder(raw: unknown): OrderDetails | null {
 }
 
 /** (status, body) của GET/POST đơn → kết quả có kiểm soát. */
-export function mapOrderResponse(status: number, body: unknown, retryAfter: string | null = null): OrderResult {
+export function mapOrderResponse(
+  status: number,
+  body: unknown,
+  retryAfter: string | null = null,
+): OrderResult {
   if (status === 0) return { kind: "network" };
   if (status === 200) {
     const order = mapOrder(body);

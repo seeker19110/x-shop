@@ -31,7 +31,9 @@ export async function requireOrderAccess(req: MedusaStoreRequest, rateName: "vie
     await recordDenied(req.scope, "deniedIp", ip, now);
     req.scope
       .resolve(ContainerRegistrationKeys.LOGGER)
-      .warn(`[orders] từ chối truy cập đơn ${req.method} ip#${ipTag(ip)} (token thiếu/sai/hết hạn hoặc khác đơn)`);
+      .warn(
+        `[orders] từ chối truy cập đơn ${req.method} ip#${ipTag(ip)} (token thiếu/sai/hết hạn hoặc khác đơn)`,
+      );
     throw orderNotFound();
   }
   return fin;

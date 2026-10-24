@@ -817,10 +817,9 @@ class CheckoutModuleService extends MedusaService({
 
   /** Dọn bộ đếm cửa sổ cũ và dấu đổi token đã hết hạn (token hết hạn không còn đổi được nên dấu không cần nữa). */
   async purgeOrderAccessRecords(now: Date): Promise<{ counters: number; redemptions: number }> {
-    const counters = await this.exec(
-      `DELETE FROM rate_limit_counter WHERE window_start < ? RETURNING id`,
-      [new Date(now.getTime() - 2 * 24 * 3600_000)],
-    );
+    const counters = await this.exec(`DELETE FROM rate_limit_counter WHERE window_start < ? RETURNING id`, [
+      new Date(now.getTime() - 2 * 24 * 3600_000),
+    ]);
     const redemptions = await this.exec(
       `DELETE FROM order_access_redemption WHERE expires_at < ? RETURNING id`,
       [new Date(now.getTime() - 24 * 3600_000)],

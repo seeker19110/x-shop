@@ -27,7 +27,11 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
     const claim = readOrderToken("link", token, now);
     const s = req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
     const [fin] = claim ? await s.listOrderFinances({ order_id: claim.orderId }) : [];
-    if (!claim || !fin || !(await s.redeemOrderAccessToken(tokenHash(token), fin.order_id, claim.expiresAt))) {
+    if (
+      !claim ||
+      !fin ||
+      !(await s.redeemOrderAccessToken(tokenHash(token), fin.order_id, claim.expiresAt))
+    ) {
       await recordDenied(req.scope, "deniedIp", ip, now);
       req.scope
         .resolve(ContainerRegistrationKeys.LOGGER)

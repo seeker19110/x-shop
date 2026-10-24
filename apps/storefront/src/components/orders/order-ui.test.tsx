@@ -31,7 +31,16 @@ const RAW = {
   cod_confirm_by: null,
   cancel_reason: null,
   timeline: [{ at: "2026-10-24T10:00:00.000Z", kind: "placed", label: "Đã đặt đơn" }],
-  lines: [{ title: "Áo thun", variant_title: "Đen / M", quantity: 1, unit_price: 700000, total: 700000, thumbnail: null }],
+  lines: [
+    {
+      title: "Áo thun",
+      variant_title: "Đen / M",
+      quantity: 1,
+      unit_price: 700000,
+      total: 700000,
+      thumbnail: null,
+    },
+  ],
   totals: { subtotal: 700000, discount_total: 0, shipping_total: 30000, total: 730000, paid: 0 },
   address: { province_name: "Thành phố Hà Nội", ward_name: "Phường Ba Đình", line: "12 Điện Biên Phủ" },
   contact: { name: "Nguyễn Văn An", phone: "0912***678" },
@@ -88,9 +97,15 @@ describe("OrderDetail (CHK06): 3 khối riêng, đang xác nhận thanh toán", 
     m.cancel.mockResolvedValueOnce({ kind: "error", code: "PAYMENT_PENDING", message: "x" });
     fireEvent.click(screen.getByRole("button", { name: "Hủy đơn" }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Xác nhận hủy" }));
-    expect(await screen.findByText(/Đang xác nhận thanh toán với cổng nên chưa hủy được/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Đang xác nhận thanh toán với cổng nên chưa hủy được/),
+    ).toBeInTheDocument();
 
-    m.cancel.mockResolvedValueOnce({ kind: "ok", order: order({ state: "cancelled" }), refundRequested: false });
+    m.cancel.mockResolvedValueOnce({
+      kind: "ok",
+      order: order({ state: "cancelled" }),
+      refundRequested: false,
+    });
     fireEvent.click(screen.getByRole("button", { name: "Hủy đơn" }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Xác nhận hủy" }));
     await waitFor(() => expect(m.refresh).toHaveBeenCalled());

@@ -2,7 +2,11 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { vnpay } from "@x-shop/domain";
-import { setVnpayGatewayForTest, type QueryStatusResult, type VnpayGateway } from "../../src/lib/checkout/vnpay-gateway";
+import {
+  setVnpayGatewayForTest,
+  type QueryStatusResult,
+  type VnpayGateway,
+} from "../../src/lib/checkout/vnpay-gateway";
 import { issueOrderToken, ORDER_ACCESS_CONFIG } from "../../src/lib/orders/access";
 import { ORDER_RATE_LIMITS } from "../../src/lib/orders/rate-limit";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
@@ -22,7 +26,9 @@ jest.setTimeout(300 * 1000);
 class ScriptedGateway implements VnpayGateway {
   readonly results = new Map<string, QueryStatusResult>();
   async queryStatus(input: { txnRef: string }): Promise<QueryStatusResult> {
-    return this.results.get(input.txnRef) ?? { outcome: "not_paid", transactionNo: null, reason: "status_01" };
+    return (
+      this.results.get(input.txnRef) ?? { outcome: "not_paid", transactionNo: null, reason: "status_01" }
+    );
   }
 }
 
@@ -86,7 +92,9 @@ medusaIntegrationTestRunner({
     const nativeStatus = async (orderId: string) =>
       (await container.resolve(Modules.ORDER).retrieveOrder(orderId)).status;
     const lookupLinks = async (orderId: string) =>
-      (await service().listOutboxEvents({ aggregate_id: orderId })).filter((e) => e.type === "order.lookup_link");
+      (await service().listOutboxEvents({ aggregate_id: orderId })).filter(
+        (e) => e.type === "order.lookup_link",
+      );
 
     describe("phiên đơn từ submit + GET /store/x/orders/:ref", () => {
       it("submit cấp order_access; xem đơn tách 3 trạng thái, timeline, che SĐT, không lộ email; private no-store", async () => {
@@ -108,14 +116,25 @@ medusaIntegrationTestRunner({
           hold_expires_at: null,
           cancel_reason: null,
           totals: { subtotal: 1_400_000, total: o.total, paid: 0 },
-          address: { province_name: "Thành phố Hà Nội", ward_name: "Phường Ba Đình", line: "12 Phố Điện Biên Phủ" },
+          address: {
+            province_name: "Thành phố Hà Nội",
+            ward_name: "Phường Ba Đình",
+            line: "12 Phố Điện Biên Phủ",
+          },
           contact: { name: CONTACT.name, phone: "0912***678" },
           actions: { can_cancel: true, can_recheck: false },
         });
         expect(res.data.lines).toEqual([
-          expect.objectContaining({ quantity: 2, unit_price: 700_000, total: 1_400_000, title: expect.any(String) }),
+          expect.objectContaining({
+            quantity: 2,
+            unit_price: 700_000,
+            total: 1_400_000,
+            title: expect.any(String),
+          }),
         ]);
-        expect(res.data.timeline).toEqual([expect.objectContaining({ kind: "placed", at: expect.any(String) })]);
+        expect(res.data.timeline).toEqual([
+          expect.objectContaining({ kind: "placed", at: expect.any(String) }),
+        ]);
         const raw = JSON.stringify(res.data);
         expect(raw).not.toContain(CONTACT.email);
         expect(raw).not.toContain("0912345678");
@@ -134,7 +153,11 @@ medusaIntegrationTestRunner({
         const a = await place([["Đen/S", 1]], "cod");
         const b = await place([["Trắng/S", 1]], "cod");
         const forged = `${Buffer.from(`${a.orderId}.${Math.floor(Date.now() / 1000) + 3600}`).toString("base64url")}.AAAA`;
-        const expired = issueOrderToken("access", a.orderId, new Date(Date.now() - ORDER_ACCESS_CONFIG.accessTtlMs - 1000));
+        const expired = issueOrderToken(
+          "access",
+          a.orderId,
+          new Date(Date.now() - ORDER_ACCESS_CONFIG.accessTtlMs - 1000),
+        );
         const linkAsAccess = issueOrderToken("link", a.orderId).token;
         const attempts: Array<[string, string | undefined]> = [
           [a.ref, undefined],
@@ -202,8 +225,16 @@ medusaIntegrationTestRunner({
         const re = (await api.post(`/store/x/orders/${o.ref}/recheck`, {}, withAccess(o.access))) as Res<J>;
         expect(re.status).toBe(200);
         expect(re.headers["cache-control"]).toBe("private, no-store");
-        expect(re.data).toMatchObject({ payment_check: "not_paid", state: "awaiting_payment", payment_state: "pending" });
-        const again = (await api.post(`/store/x/orders/${o.ref}/recheck`, {}, withAccess(o.access))) as Res<J>;
+        expect(re.data).toMatchObject({
+          payment_check: "not_paid",
+          state: "awaiting_payment",
+          payment_state: "pending",
+        });
+        const again = (await api.post(
+          `/store/x/orders/${o.ref}/recheck`,
+          {},
+          withAccess(o.access),
+        )) as Res<J>;
         expect(again.status).toBe(429);
         expect(await service().listPaymentAttempts({ order_id: o.orderId })).toHaveLength(1);
         // Recheck không có token → 404.
@@ -275,7 +306,11 @@ medusaIntegrationTestRunner({
         expect((await getOrder(o.ref, won.data.order_access)).status).toBe(200);
         expect((await session(token)).status).toBe(404);
 
-        const expired = issueOrderToken("link", o.orderId, new Date(Date.now() - ORDER_ACCESS_CONFIG.linkTtlMs - 1000));
+        const expired = issueOrderToken(
+          "link",
+          o.orderId,
+          new Date(Date.now() - ORDER_ACCESS_CONFIG.linkTtlMs - 1000),
+        );
         for (const bad of [expired.token, o.access, "rac.rac", `${token}x`]) {
           const r = await session(bad);
           expect(r.status).toBe(404);
@@ -292,7 +327,10 @@ medusaIntegrationTestRunner({
 
         const [c1, c2] = await Promise.all([cancel(o.ref, o.access), cancel(o.ref, o.access)]);
         expect([c1.status, c2.status]).toEqual([200, 200]);
-        expect([c1.data.cancel.outcome, c2.data.cancel.outcome].sort()).toEqual(["already_cancelled", "cancelled"]);
+        expect([c1.data.cancel.outcome, c2.data.cancel.outcome].sort()).toEqual([
+          "already_cancelled",
+          "cancelled",
+        ]);
         expect(c1.data).toMatchObject({
           state: "cancelled",
           payment_state: "void",
@@ -316,7 +354,9 @@ medusaIntegrationTestRunner({
         const again = await cancel(o.ref, o.access);
         expect(again.status).toBe(200);
         expect(again.data.cancel).toEqual({ outcome: "already_cancelled", refund_requested: false });
-        expect(await service().listOpsExceptions({ order_id: o.orderId, kind: "refund_request" })).toHaveLength(0);
+        expect(
+          await service().listOpsExceptions({ order_id: o.orderId, kind: "refund_request" }),
+        ).toHaveLength(0);
       });
 
       it("đơn đã thanh toán: hủy → yêu cầu hoàn tiền (một lần), nhả reservation, KHÔNG ghi hoàn native giả", async () => {
@@ -353,7 +393,9 @@ medusaIntegrationTestRunner({
           outcome: "already_cancelled",
           refund_requested: true,
         });
-        expect(await service().listOpsExceptions({ order_id: o.orderId, kind: "refund_request" })).toHaveLength(1);
+        expect(
+          await service().listOpsExceptions({ order_id: o.orderId, kind: "refund_request" }),
+        ).toHaveLength(1);
       });
 
       it("đang chờ thanh toán: cổng chưa rõ → 409 PAYMENT_PENDING (không hủy); chưa trả → hủy, payment attempt failed", async () => {

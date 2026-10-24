@@ -38,7 +38,14 @@ const BACKEND_ORDER = {
   cancel_reason: null,
   timeline: [{ at: "2026-10-24T10:00:00.000Z", kind: "placed", label: "Đã đặt đơn" }],
   lines: [
-    { title: "Áo thun", variant_title: "Đen / M", quantity: 2, unit_price: 700000, total: 1400000, thumbnail: null },
+    {
+      title: "Áo thun",
+      variant_title: "Đen / M",
+      quantity: 2,
+      unit_price: 700000,
+      total: 1400000,
+      thumbnail: null,
+    },
   ],
   totals: { subtotal: 1400000, discount_total: 0, shipping_total: 30000, total: 1430000, paid: 0 },
   address: { province_name: "Thành phố Hà Nội", ward_name: "Phường Ba Đình", line: "12 Điện Biên Phủ" },
@@ -47,7 +54,10 @@ const BACKEND_ORDER = {
 };
 const TOKEN = "b3JkZXJfMDFBQkMuMTc2MTMwMDAwMA.abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
 
-const order = (patch: Partial<OrderDetails> = {}): OrderDetails => ({ ...mapOrder(BACKEND_ORDER)!, ...patch });
+const order = (patch: Partial<OrderDetails> = {}): OrderDetails => ({
+  ...mapOrder(BACKEND_ORDER)!,
+  ...patch,
+});
 
 describe("map: phản hồi đơn của backend", () => {
   it("đủ trường, tiền nguyên, 3 trạng thái tách riêng", () => {
@@ -74,7 +84,10 @@ describe("map: phản hồi đơn của backend", () => {
 
   it("mã trạng thái → kết quả có kiểm soát (404 không phân biệt, 429 có thời gian chờ, 0 = mạng)", () => {
     expect(mapOrderResponse(404, { code: "NOT_FOUND" })).toEqual({ kind: "not_found" });
-    expect(mapOrderResponse(429, { retry_after_seconds: 600 })).toEqual({ kind: "rate_limited", retryAfterS: 600 });
+    expect(mapOrderResponse(429, { retry_after_seconds: 600 })).toEqual({
+      kind: "rate_limited",
+      retryAfterS: 600,
+    });
     expect(mapOrderResponse(0, null)).toEqual({ kind: "network" });
     expect(mapOrderResponse(409, { code: "PAYMENT_PENDING", detail: "Đang xác nhận" })).toEqual({
       kind: "error",
@@ -104,7 +117,9 @@ describe("present: 3 khối Đặt đơn / Thanh toán / Giao hàng (CHK06)", ()
   });
 
   it("chỉ nói đã thanh toán khi server báo paid", () => {
-    const paid = presentOrder(order({ state: "confirmed", paymentState: "paid", totals: { ...order().totals, paid: 1430000 } }));
+    const paid = presentOrder(
+      order({ state: "confirmed", paymentState: "paid", totals: { ...order().totals, paid: 1430000 } }),
+    );
     expect(paid.payment.status).toBe("Đã thanh toán 1.430.000 ₫");
     expect(paid.showRecheck).toBe(false);
   });
@@ -117,7 +132,9 @@ describe("present: 3 khối Đặt đơn / Thanh toán / Giao hàng (CHK06)", ()
     expect(expired.payment.status).toBe("Hết thời hạn thanh toán");
     expect(expired.shipment.status).toBe("Không giao (đơn đã hủy)");
     expect(expired.showReorder).toBe(true);
-    const cod = presentOrder(order({ state: "placed", paymentMethod: "cod", paymentState: "cod", canRecheck: false }));
+    const cod = presentOrder(
+      order({ state: "placed", paymentMethod: "cod", paymentState: "cod", canRecheck: false }),
+    );
     expect(cod.payment.status).toBe("Thanh toán khi nhận hàng");
     expect(cod.shipment.status).toContain("Chưa giao");
     const refund = presentOrder(order({ state: "cancelled", paymentState: "refund_pending" }));
@@ -189,7 +206,10 @@ describe("service: token phiên đơn chỉ ở cookie HttpOnly + header, không
     await recheckOrder("XS-ABC123");
     expect(calls[0]!.url).toMatch(/\/store\/x\/orders\/XS-ABC123\/recheck$/);
     expect(calls[0]!.init!.method).toBe("POST");
-    reply = { status: 200, body: { ...BACKEND_ORDER, state: "cancelled", cancel: { refund_requested: true } } };
+    reply = {
+      status: 200,
+      body: { ...BACKEND_ORDER, state: "cancelled", cancel: { refund_requested: true } },
+    };
     const c = await cancelOrder("XS-ABC123");
     expect(c).toMatchObject({ kind: "ok", refundRequested: true });
     reply = { status: 409, body: { code: "NOT_CANCELLABLE", detail: "Không hủy được" } };
@@ -203,13 +223,22 @@ describe("service: token phiên đơn chỉ ở cookie HttpOnly + header, không
       f.set("sdt", sdt);
       return f;
     };
-    reply = { status: 202, body: { accepted: true, message: "Nếu thông tin đúng, chúng tôi đã gửi liên kết…" } };
+    reply = {
+      status: 202,
+      body: { accepted: true, message: "Nếu thông tin đúng, chúng tôi đã gửi liên kết…" },
+    };
     expect(await lookupOrderAction({ status: "idle" }, form("xs-abc123", "0912345678"))).toEqual({
       status: "sent",
       message: "Nếu thông tin đúng, chúng tôi đã gửi liên kết…",
     });
-    expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({ display_ref: "XS-ABC123", phone: "0912345678" });
-    reply = { status: 422, body: { code: "VALIDATION", field: "phone", detail: "Số điện thoại không hợp lệ" } };
+    expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({
+      display_ref: "XS-ABC123",
+      phone: "0912345678",
+    });
+    reply = {
+      status: 422,
+      body: { code: "VALIDATION", field: "phone", detail: "Số điện thoại không hợp lệ" },
+    };
     expect(await lookupOrderAction({ status: "idle" }, form("XS-ABC123", "1"))).toMatchObject({
       status: "invalid",
       field: "phone",
@@ -225,7 +254,10 @@ describe("service: token phiên đơn chỉ ở cookie HttpOnly + header, không
 
   it("đổi liên kết: thành công → cookie + chuyển tới /don-hang/:ref (không token); thất bại → /tra-cuu-don?loi=lien-ket", async () => {
     const exp = new Date(Date.now() + 3600_000).toISOString();
-    reply = { status: 200, body: { display_ref: "XS-ABC123", order_access: TOKEN, order_access_expires_at: exp } };
+    reply = {
+      status: 200,
+      body: { display_ref: "XS-ABC123", order_access: TOKEN, order_access_expires_at: exp },
+    };
     const f = new FormData();
     f.set("token", "link-token.abc");
     await expect(redeemLinkAction(f)).rejects.toThrow("REDIRECT /don-hang/XS-ABC123");

@@ -1,7 +1,5 @@
 {
-  "namespaces": [
-    "public"
-  ],
+  "namespaces": ["public"],
   "name": "public",
   "tables": [
     {
@@ -158,9 +156,7 @@
         },
         {
           "keyName": "cart_version_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -304,12 +300,7 @@
           "scale": null,
           "default": "'preparing'",
           "comment": null,
-          "enumItems": [
-            "preparing",
-            "ready",
-            "failed",
-            "compensated"
-          ],
+          "enumItems": ["preparing", "ready", "failed", "compensated"],
           "mappedType": "enum"
         },
         "order_id": {
@@ -357,10 +348,7 @@
           "scale": null,
           "default": null,
           "comment": null,
-          "enumItems": [
-            "cod",
-            "vnpay"
-          ],
+          "enumItems": ["cod", "vnpay"],
           "mappedType": "enum"
         },
         "hold_expires_at": {
@@ -517,9 +505,7 @@
         },
         {
           "keyName": "checkout_attempt_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -599,10 +585,7 @@
           "scale": null,
           "default": null,
           "comment": null,
-          "enumItems": [
-            "cod",
-            "vnpay"
-          ],
+          "enumItems": ["cod", "vnpay"],
           "mappedType": "enum"
         },
         "discount_code": {
@@ -757,9 +740,7 @@
         },
         {
           "keyName": "checkout_quote_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -876,11 +857,7 @@
           "scale": null,
           "default": "'held'",
           "comment": null,
-          "enumItems": [
-            "held",
-            "used",
-            "released"
-          ],
+          "enumItems": ["held", "used", "released"],
           "mappedType": "enum"
         },
         "created_at": {
@@ -973,9 +950,7 @@
         },
         {
           "keyName": "coupon_usage_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -1091,11 +1066,7 @@
           "scale": null,
           "default": "'open'",
           "comment": null,
-          "enumItems": [
-            "open",
-            "in_progress",
-            "resolved"
-          ],
+          "enumItems": ["open", "in_progress", "resolved"],
           "mappedType": "enum"
         },
         "owner": {
@@ -1127,12 +1098,7 @@
           "scale": null,
           "default": "'normal'",
           "comment": null,
-          "enumItems": [
-            "low",
-            "normal",
-            "high",
-            "urgent"
-          ],
+          "enumItems": ["low", "normal", "high", "urgent"],
           "mappedType": "enum"
         },
         "due_at": {
@@ -1248,9 +1214,7 @@
         },
         {
           "keyName": "ops_exception_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -1414,9 +1378,7 @@
         },
         {
           "keyName": "order_access_redemption_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -1522,14 +1484,7 @@
           "scale": null,
           "default": null,
           "comment": null,
-          "enumItems": [
-            "preparing",
-            "awaiting_payment",
-            "placed",
-            "confirmed",
-            "cancelled",
-            "completed"
-          ],
+          "enumItems": ["preparing", "awaiting_payment", "placed", "confirmed", "cancelled", "completed"],
           "mappedType": "enum"
         },
         "total": {
@@ -1561,10 +1516,7 @@
           "scale": null,
           "default": null,
           "comment": null,
-          "enumItems": [
-            "cod",
-            "vnpay"
-          ],
+          "enumItems": ["cod", "vnpay"],
           "mappedType": "enum"
         },
         "hold_expires_at": {
@@ -1769,9 +1721,7 @@
         },
         {
           "keyName": "order_finance_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -1888,12 +1838,7 @@
           "scale": null,
           "default": "'pending'",
           "comment": null,
-          "enumItems": [
-            "pending",
-            "sent",
-            "failed",
-            "dead"
-          ],
+          "enumItems": ["pending", "sent", "failed", "dead"],
           "mappedType": "enum"
         },
         "attempts": {
@@ -2025,9 +1970,7 @@
         },
         {
           "keyName": "outbox_event_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -2139,14 +2082,7 @@
           "scale": null,
           "default": "'created'",
           "comment": null,
-          "enumItems": [
-            "created",
-            "pending",
-            "authorized",
-            "captured",
-            "failed",
-            "unknown"
-          ],
+          "enumItems": ["created", "pending", "authorized", "captured", "failed", "unknown"],
           "mappedType": "enum"
         },
         "payment_url": {
@@ -2278,9 +2214,7 @@
         },
         {
           "keyName": "payment_attempt_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -2344,10 +2278,7 @@
           "scale": null,
           "default": null,
           "comment": null,
-          "enumItems": [
-            "capture",
-            "refund"
-          ],
+          "enumItems": ["capture", "refund"],
           "mappedType": "enum"
         },
         "amount": {
@@ -2511,9 +2442,7 @@
         },
         {
           "keyName": "payment_ledger_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -2677,9 +2606,7 @@
         },
         {
           "keyName": "rate_limit_counter_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,
@@ -2914,9 +2841,7 @@
         },
         {
           "keyName": "webhook_inbox_pkey",
-          "columnNames": [
-            "id"
-          ],
+          "columnNames": ["id"],
           "composite": false,
           "constraint": true,
           "primary": true,

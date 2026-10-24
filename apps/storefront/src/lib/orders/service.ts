@@ -18,7 +18,11 @@ async function clientIpHeader(): Promise<Record<string, string>> {
   try {
     const h = await headers();
     const real = h.get("x-real-ip")?.trim();
-    const xff = h.get("x-forwarded-for")?.split(",").map((s) => s.trim()).filter(Boolean);
+    const xff = h
+      .get("x-forwarded-for")
+      ?.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     const ip = real || xff?.[xff.length - 1];
     return ip && /^[0-9a-fA-F:.]{2,45}$/.test(ip) ? { "x-forwarded-for": ip } : {};
   } catch {
@@ -31,7 +35,10 @@ async function call(
   req: Parameters<typeof storeApi>[1] = {},
 ): Promise<{ status: number; body: unknown }> {
   try {
-    const r = await storeApi<unknown>(path, { ...req, headers: { ...(await clientIpHeader()), ...req.headers } });
+    const r = await storeApi<unknown>(path, {
+      ...req,
+      headers: { ...(await clientIpHeader()), ...req.headers },
+    });
     return { status: r.status, body: r.data };
   } catch (e) {
     if (e instanceof StoreApiError) return { status: e.status, body: e.body };
@@ -112,7 +119,11 @@ export async function redeemLink(token: string): Promise<string | null> {
   if (!cartEnabled() || typeof token !== "string" || token.length === 0 || token.length > 512) return null;
   const r = await call("/store/x/orders/session", { method: "POST", body: { token } });
   if (r.status !== 200) return null;
-  const b = (r.body ?? {}) as { display_ref?: unknown; order_access?: unknown; order_access_expires_at?: unknown };
+  const b = (r.body ?? {}) as {
+    display_ref?: unknown;
+    order_access?: unknown;
+    order_access_expires_at?: unknown;
+  };
   const ref = typeof b.display_ref === "string" ? b.display_ref : "";
   return (await writeOrderAccess(ref, b.order_access, b.order_access_expires_at)) ? ref : null;
 }
