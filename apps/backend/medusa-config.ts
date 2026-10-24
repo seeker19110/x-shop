@@ -78,5 +78,7 @@ module.exports = defineConfig({
     ...redisModules,
     // Module tùy biến: checkout attempt, idempotency, quote, ledger, inbox/outbox, ngoại lệ (docs/design/checkout-flow.md).
     { resolve: "./src/modules/checkout" },
+    // Catalog thời trang: bảng size có version, thuộc tính, bảng màu/size (T-013).
+    { resolve: "./src/modules/fashion" },
   ],
 });

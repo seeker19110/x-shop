@@ -5,10 +5,11 @@
   "description": "Medusa v2 backend của x-shop (server + worker + Admin).",
   "license": "UNLICENSED",
   "scripts": {
-    "build": "medusa build",
+    "build": "pnpm --filter @x-shop/domain build && medusa build",
     "start": "medusa start",
     "dev": "medusa develop",
     "seed": "medusa exec ./src/scripts/seed.ts",
+    "seed:catalog": "medusa exec ./src/scripts/seed-catalog.ts",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "test": "TEST_TYPE=unit NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit --passWithNoTests",
     "test:integration": "TEST_TYPE=integration:http NODE_OPTIONS=--experimental-vm-modules jest --silent=false --runInBand --forceExit"

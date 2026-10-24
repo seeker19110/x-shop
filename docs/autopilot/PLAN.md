@@ -64,7 +64,7 @@
 - [ ] `T-012` Job hết hạn + đối chiếu + bù trừ worker chết + tiền đến sau hủy (AT09, AT10, AT11, AT12) (sau: T-011; files: apps/backend/src/jobs/, apps/backend/src/workflows/expiry/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- checkout-expiry`
 
 ### Lát 4 — Catalog & tìm kiếm (RK-002)
-- [ ] `T-013` Mô hình sản phẩm màu × size, ảnh theo màu, module `size_chart`, thuộc tính (chất liệu/form/bảo quản), kiểm trước xuất bản (ADM01, ADM03) + seed dữ liệu demo (sau: T-002; files: apps/backend/src/modules/fashion/, apps/backend/src/scripts/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- catalog-model`
+- [x] `T-013` Mô hình sản phẩm màu × size, ảnh theo màu, module `size_chart`, thuộc tính (chất liệu/form/bảo quản), kiểm trước xuất bản (ADM01, ADM03) + seed dữ liệu demo (sau: T-002; files: apps/backend/src/modules/fashion/, apps/backend/src/scripts/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- catalog-model`
 - [ ] `T-014` Read model `catalog_variant_index` + đồng bộ theo sự kiện + API list/search/facets (AT01, AT31, CAT01–04) (sau: T-013, T-005; files: apps/backend/src/modules/catalog-index/, apps/backend/src/api/store/x/products/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- catalog-search`
 - [ ] `T-015` Import CSV preview/commit idempotent + export chống công thức (ADM02) (sau: T-013; files: apps/backend/src/modules/catalog-import/, apps/backend/src/api/admin/x/imports/) — Gate: `pnpm --filter @x-shop/backend test:integration -- catalog-import`
 
