@@ -90,7 +90,7 @@
 - [ ] `T-030` Admin UI mở rộng: trang ngoại lệ, duyệt hoàn tiền 2 người, kiểm định hàng trả, nhập CSV (sau: T-028, T-015; files: apps/backend/src/admin/) — Gate: `pnpm --filter @x-shop/backend build`
 
 ### Lát 7 — Hoàn thiện (F-011, F-012)
-- [ ] `T-031` SEO: metadata, canonical, sitemap, robots, noindex lọc tùy ý, 404/410 (AT26) (sau: T-018, T-017; files: apps/storefront/src/app/sitemap.ts, apps/storefront/src/app/robots.ts) — Gate: `pnpm --filter @x-shop/storefront test -- seo`
+- [x] `T-031` SEO: metadata, canonical, sitemap, robots, noindex lọc tùy ý, 404/410 (AT26) (sau: T-018, T-017; files: apps/storefront/src/app/sitemap.ts, apps/storefront/src/app/robots.ts) — Gate: `pnpm --filter @x-shop/storefront test -- seo`
 - [ ] `T-032` PWA: manifest, icon, service worker chỉ cache công khai, `/offline`, header no-store riêng tư (AT22, AT24) (sau: T-021; files: apps/storefront/public/, apps/storefront/src/app/offline/) — Gate: `pnpm --filter @x-shop/storefront test -- pwa cache`
 - [ ] `T-033` Telemetry sự kiện §13.1 không PII, purchase dedupe (AT29) (sau: T-021; files: apps/storefront/src/lib/analytics/) — Gate: `pnpm --filter @x-shop/storefront test -- analytics`
 - [ ] `T-034` Bảo mật: security headers/CSP, rate limit (search, coupon, checkout, lookup), CORS allowlist, CSRF, upload kiểm MIME (SEC01–05, AT20) (sau: T-021, T-023; files: apps/storefront/src/middleware.ts, apps/backend/src/api/middlewares.ts; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- security && pnpm --filter @x-shop/storefront test -- security`
