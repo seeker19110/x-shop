@@ -12,6 +12,22 @@ export const POLICY_LINKS = [
   { href: "/bao-mat", label: "Chính sách bảo mật" },
 ] as const;
 
+/** Tóm tắt giao hàng/đổi trả đặt gần CTA ở PDP (PDP05): chỉ nói điều đã chắc chắn, chi tiết ở trang chính sách. */
+export const PDP_SUMMARY = [
+  {
+    title: "Giao hàng",
+    text: "Phí và thời gian giao hàng hiển thị ở bước thanh toán, trước khi bạn xác nhận đơn.",
+    href: "/giao-hang",
+    linkLabel: "Chi tiết giao hàng",
+  },
+  {
+    title: "Đổi trả",
+    text: "Điều kiện đổi trả được công bố đầy đủ trước khi mua.",
+    href: "/doi-tra-hoan-tien",
+    linkLabel: "Chi tiết đổi trả",
+  },
+] as const;
+
 export const POLICY_PENDING_NOTICE =
   "Nội dung chờ chủ shop duyệt — trang này là bản giữ chỗ, chưa phải điều khoản chính thức.";
 

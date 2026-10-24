@@ -20,7 +20,13 @@
   display: inline-flex;
   align-items: center;
   min-height: var(--touch-min);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
   font-size: var(--text-small);
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .group {

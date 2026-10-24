@@ -1,0 +1,209 @@
+.root {
+  display: grid;
+  gap: var(--space-6);
+  /* Chừa chỗ cho sticky CTA ở mobile để không che nội dung cuối trang. */
+  padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+}
+
+.gallery {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.swipeHint {
+  color: var(--muted);
+  font-size: var(--text-small);
+}
+
+/* Mobile: dải ảnh vuốt ngang (scroll-snap, không thư viện carousel). */
+.track {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  gap: var(--space-2);
+}
+
+.slide {
+  flex: 0 0 100%;
+  scroll-snap-align: start;
+}
+
+.zoomButton {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: var(--surface);
+  cursor: zoom-in;
+}
+
+.image {
+  width: 100%;
+  height: auto;
+  aspect-ratio: var(--aspect-product);
+  object-fit: cover;
+}
+
+.zoomImage {
+  width: 100%;
+  height: auto;
+  max-height: 80dvh;
+  object-fit: contain;
+}
+
+.info {
+  display: grid;
+  gap: var(--space-8);
+  align-content: start;
+  min-width: 0;
+}
+
+.buy {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.title {
+  font-size: var(--text-h2);
+}
+
+.price {
+  font-size: 1.25rem;
+}
+
+.notice {
+  min-height: 1.5em;
+  color: var(--warning);
+  font-weight: var(--weight-medium);
+}
+
+.notice:empty {
+  display: none;
+}
+
+.modelNote,
+.note {
+  color: var(--muted);
+  font-size: var(--text-small);
+}
+
+.summary {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-4);
+  list-style: none;
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  font-size: var(--text-small);
+}
+
+.details {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.details h2 {
+  font-size: 1.25rem;
+}
+
+.attrs {
+  display: grid;
+  margin: 0;
+}
+
+.attrRow {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--divider);
+}
+
+.attrRow dt {
+  color: var(--muted);
+}
+
+.attrRow dd {
+  margin: 0;
+}
+
+/* Bảng size */
+.chartScroll {
+  overflow-x: auto;
+}
+
+.chart {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.chart caption {
+  padding-bottom: var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-small);
+  text-align: left;
+}
+
+.chart th,
+.chart td {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--divider);
+  text-align: left;
+}
+
+.chart thead th {
+  background: var(--background);
+}
+
+/* Sticky CTA (mobile) */
+.sticky {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--page-margin) calc(var(--space-3) + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--divider);
+  background: var(--surface);
+}
+
+.stickyPrice {
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
+.stickyButton {
+  flex: 1;
+}
+
+@media (min-width: 64em) {
+  .root {
+    grid-template-columns: 6fr 4fr;
+    gap: var(--space-8);
+    align-items: start;
+    padding-bottom: 0;
+  }
+
+  .swipeHint {
+    display: none;
+  }
+
+  .track {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .sticky {
+    display: none;
+  }
+}
