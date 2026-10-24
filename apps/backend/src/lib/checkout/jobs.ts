@@ -8,6 +8,7 @@ import type { OutboxClaim } from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG } from "./config";
 import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwned } from "./locks";
+import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
 import { syncNativePayment } from "./payment";
 import { queryAndProcess } from "./recheck";
 
@@ -227,8 +228,9 @@ export function outboxBackoffMs(failedAttempts: number): number {
   return Math.min(OUTBOX_POLICY.baseDelayMs * 2 ** Math.max(0, failedAttempts - 1), OUTBOX_POLICY.maxDelayMs);
 }
 
-/** Bộ xử lý mặc định. Thông báo khách (email/SMS) là adapter log tới T-029. */
+/** Bộ xử lý mặc định. Thông báo khách (email/SMS) đi qua `lib/notify` (T-029) theo message key duy nhất. */
 export const DEFAULT_OUTBOX_HANDLERS: Record<string, OutboxHandler> = {
+  ...Object.fromEntries(NOTIFICATION_EVENT_TYPES.map((t) => [t, notificationHandler] as const)),
   "payment.native_sync": async (container, event) => {
     const orderId = String(event.payload.order_id ?? event.aggregate_id);
     const r = await withLock(
@@ -243,7 +245,7 @@ export const DEFAULT_OUTBOX_HANDLERS: Record<string, OutboxHandler> = {
 };
 
 const logHandler: OutboxHandler = async (container, event) => {
-  logger(container).info(`[outbox] ${event.type} ${event.event_key} (adapter log — gửi thật ở T-029)`);
+  logger(container).info(`[outbox] ${event.type} ${event.event_key} (không có bộ xử lý — chỉ ghi log)`);
 };
 
 export interface DispatchSummary {
@@ -272,9 +274,11 @@ export async function dispatchOutbox(
       const message = e instanceof Error ? e.message : String(e);
       if (failed >= OUTBOX_POLICY.maxAttempts) {
         await s.markOutboxFailed(event.id, message, null);
+        // Thông báo khách hỏng → ngoại lệ riêng cho người theo dõi gửi tin (AT18); đơn không bị ảnh hưởng.
+        const kind = isNotificationEvent(event.type) ? "notification_failed" : "outbox_dead";
         await s.openOpsException({
-          kind: "outbox_dead",
-          dedupe_key: `outbox_dead:${event.event_key}`,
+          kind,
+          dedupe_key: `${kind}:${event.event_key}`,
           order_id: event.aggregate_id.startsWith("order_") ? event.aggregate_id : null,
           priority: "high",
           detail: { event_key: event.event_key, type: event.type, last_error: message.slice(0, 500) },

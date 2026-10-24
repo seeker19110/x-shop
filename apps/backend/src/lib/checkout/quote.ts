@@ -11,11 +11,13 @@ import type { CheckoutCart } from "./cart";
 import { toSafeInteger } from "./cart";
 import { MAX_MONEY_VND } from "./config";
 import { CheckoutError } from "./errors";
-import { cartWeightGrams, quoteShipping, type ShippingQuote } from "./shipping";
+import { quoteShippingFee, type ShippingFeeQuote } from "../shipping/rates";
+import { cartWeightGrams } from "./shipping";
 
 /**
  * Báo giá do server tính (S-001, PRICE01): giá HIỆN HÀNH đọc trực tiếp Pricing Module (không cache, không nhận giá từ
- * client, không dùng unit_price đã lưu trong giỏ), mã giảm đọc Promotion Module, phí ship từ `quoteShipping`; số học
+ * client, không dùng unit_price đã lưu trong giỏ), mã giảm đọc Promotion Module, phí ship báo từ GHN (`quoteShippingFee`,
+ * có hạn); số học
  * tiền nằm trọn trong `computeQuote` của domain.
  */
 export interface LoadedDiscount {
@@ -30,7 +32,7 @@ export interface LoadedDiscount {
 export interface BuiltQuote {
   breakdown: QuoteBreakdown;
   discount: LoadedDiscount | null;
-  shipping: ShippingQuote;
+  shipping: ShippingFeeQuote;
 }
 
 /** Dòng không bán được (biến thể mất/ẩn/không có giá) → 409 CART_CHANGED kèm danh sách (S-010). */
@@ -189,9 +191,15 @@ export async function buildQuote(
   const prices = await currentUnitPrices(container, cart);
   assertLinesSellable(cart, prices);
   const discount = discountCode ? await loadDiscount(container, discountCode, cart.currency_code, now) : null;
-  const shipping = quoteShipping(
+  const goodsValue = cart.items.reduce(
+    (sum, l) => sum + (prices.get(l.variant_id as string) as number) * l.quantity,
+    0,
+  );
+  const shipping = await quoteShippingFee(
     address,
     cartWeightGrams(cart.items.map((l) => ({ weightGrams: l.weight_grams, quantity: l.quantity }))),
+    Number.isSafeInteger(goodsValue) ? Math.min(goodsValue, MAX_MONEY_VND) : MAX_MONEY_VND,
+    now,
   );
   const result = computeQuote({
     lines: cart.items.map((l) => ({
@@ -227,6 +235,8 @@ export function presentQuote(q: {
   expires_at: Date | string;
   breakdown: QuoteBreakdown;
   address: AddressSnapshot;
+  /** Báo phí của hãng (thời điểm + hạn) — chỉ có khi vừa hỏi hãng. */
+  shipping?: ShippingFeeQuote;
 }) {
   const b = q.breakdown;
   return {
@@ -253,5 +263,14 @@ export function presentQuote(q: {
     shipping_total: b.shippingTotal,
     total: b.total,
     address: q.address,
+    ...(q.shipping && {
+      shipping_quote: {
+        provider: q.shipping.provider,
+        service: q.shipping.service,
+        weight_grams: q.shipping.weightGrams,
+        quoted_at: q.shipping.quotedAt,
+        expires_at: q.shipping.expiresAt,
+      },
+    }),
   };
 }

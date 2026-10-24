@@ -1000,7 +1000,8 @@
             "webhook_rejected",
             "checkout_stuck",
             "cod_confirm_overdue",
-            "outbox_dead"
+            "outbox_dead",
+            "notification_failed"
           ],
           "mappedType": "enum"
         },

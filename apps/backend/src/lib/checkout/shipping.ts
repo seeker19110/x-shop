@@ -1,8 +1,8 @@
 import type { AddressSnapshot } from "@x-shop/domain";
 
 /**
- * Phí vận chuyển P0: bảng phí cố định theo khối lượng (GHN thật thay ở T-026 — chỉ thay thân hàm `quoteShipping`,
- * giữ chữ ký). Hàm thuần, số nguyên VND.
+ * Bảng phí cố định theo khối lượng — từ T-026 chỉ còn là biểu phí của GHN giả lập (`MockModeGhnClient`, GHN_MODE=mock)
+ * để tổng đơn dev/test ổn định; quote thật hỏi GHN qua `lib/shipping/rates.ts`. Hàm thuần, số nguyên VND.
  */
 export interface ShippingFeeTable {
   /** Phí cho khối lượng tới `baseWeightGrams`. */

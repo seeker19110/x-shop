@@ -594,6 +594,56 @@ class CheckoutModuleService extends MedusaService({
     });
   }
 
+  /* ------------------------------------------------------------ xác nhận COD (T-026) */
+
+  /**
+   * Nhân viên xác nhận đơn COD (§6.3): `placed` → `confirmed` MỘT lần, trong một transaction cùng lượt mã → used và
+   * outbox `order.confirmed`. Chỉ đơn COD; đơn chưa finalization (`preparing`) hay đã hủy không xác nhận được (AT34).
+   * Gọi dưới khóa `order:<id>`.
+   */
+  async confirmCodOrder(
+    orderId: string,
+    actorId: string,
+  ): Promise<"confirmed" | "already_confirmed" | "not_cod" | "invalid_state" | "not_found"> {
+    return this.repo_.transaction(async (em) => {
+      const rows = await this.exec(
+        `SELECT state, payment_method, display_ref FROM order_finance WHERE order_id = ? FOR UPDATE`,
+        [orderId],
+        em,
+      );
+      const fin = rows[0];
+      if (!fin) return "not_found";
+      if (fin.payment_method !== "cod") return "not_cod";
+      const state = String(fin.state) as OrderState;
+      if (state === "confirmed" || state === "completed") return "already_confirmed";
+      if (!orderMachine.canTransition(state, "confirmed") || state !== "placed") return "invalid_state";
+      await this.exec(
+        `UPDATE order_finance SET state = 'confirmed', version = version + 1, updated_at = now()
+         WHERE order_id = ? AND state = 'placed'`,
+        [orderId],
+        em,
+      );
+      await this.exec(
+        `UPDATE coupon_usage SET state = 'used', updated_at = now() WHERE order_id = ? AND state = 'held'`,
+        [orderId],
+        em,
+      );
+      await this.insertOutbox(
+        `order.confirmed:${orderId}`,
+        orderId,
+        "order.confirmed",
+        {
+          order_id: orderId,
+          display_ref: String(fin.display_ref),
+          payment_method: "cod",
+          confirmed_by: actorId,
+        },
+        em,
+      );
+      return "confirmed";
+    });
+  }
+
   /* ------------------------------------------------------------ job (T-012) */
 
   /** Đơn online còn chờ thanh toán đã quá hạn giữ hàng (biên: now >= hold_expires_at là hết hạn — DATA04). */

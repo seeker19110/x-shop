@@ -58,6 +58,7 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
         discount_code: quote.discount_code ?? null,
         breakdown: built.breakdown,
         address,
+        shipping: built.shipping,
       }),
     });
   } catch (error) {

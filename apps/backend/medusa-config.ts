@@ -88,5 +88,9 @@ module.exports = defineConfig({
     { resolve: "./src/modules/rbac" },
     // Audit log chỉ ghi thêm + sổ điều chỉnh tồn (T-025).
     { resolve: "./src/modules/audit" },
+    // Giao vận: vận đơn GHN + sự kiện callback đã lọc PII (T-026, SPEC-fulfillment S-301…S-305).
+    { resolve: "./src/modules/shipping" },
+    // Thông báo giao dịch: outbound_message theo message key duy nhất, adapter log mặc định (T-029).
+    { resolve: "./src/modules/notify" },
   ],
 });
