@@ -1,6 +1,5 @@
 import { parseFilter } from "@x-shop/domain";
-import { listProducts } from "../../../../lib/catalog/client";
-import { categoryName } from "../../../../lib/content/navigation";
+import { getCategoryName, listProducts } from "../../../../lib/catalog/client";
 
 /**
  * Đếm kết quả cho nút "Xem N sản phẩm" của drawer lọc (nháp chưa áp dụng). Công khai, chỉ trả `{ total }`.
@@ -10,7 +9,7 @@ export async function GET(request: Request): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const { filter, issues } = parseFilter(params);
   const category = params.get("category");
-  if (issues.length > 0 || (category !== null && categoryName(category) === null)) {
+  if (issues.length > 0 || (category !== null && (await getCategoryName(category)) === null)) {
     return Response.json({ total: null }, { status: 422 });
   }
   try {

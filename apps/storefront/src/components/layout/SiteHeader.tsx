@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CartBadge } from "../cart/CartBadge";
 import { CartIcon, SearchIcon } from "./icons";
 import styles from "./Header.module.css";
 import { MobileMenu } from "./MobileMenu";
@@ -6,7 +7,7 @@ import { NavLinks, type NavItem } from "./NavLinks";
 
 export interface SiteHeaderProps {
   categories: readonly NavItem[];
-  /** Số dòng trong giỏ; giữ 0 tới khi giỏ thật (T-019) nối vào. */
+  /** Số ban đầu khi dựng; số thật do `CartBadge` lấy từ `/api/cart/count` sau khi tải. */
   cartCount?: number;
 }
 
@@ -30,10 +31,7 @@ export function SiteHeader({ categories, cartCount = 0 }: SiteHeaderProps) {
           </Link>
           <Link href="/gio-hang" prefetch={false} className={styles.iconLink}>
             <CartIcon />
-            <span aria-hidden="true" className={styles.count}>
-              {cartCount}
-            </span>
-            <span className="visually-hidden">{`Giỏ hàng, ${cartCount} sản phẩm`}</span>
+            <CartBadge initial={cartCount} className={styles.count} />
           </Link>
         </div>
       </div>

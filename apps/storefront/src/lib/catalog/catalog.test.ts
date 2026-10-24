@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { EMPTY_FILTER, parseFilter, type CatalogFilter } from "@x-shop/domain";
 import { resetEnvCacheForTests } from "../env";
-import { getMenuCategories, getProduct, listProducts, search } from "./client";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { getCategoryName, getMenuCategories, getProduct, listProducts, search } from "./client";
 import { FIXTURE_PRODUCTS } from "./fixtures";
 import { CatalogError } from "./types";
 
@@ -215,5 +217,33 @@ describe("backend (XS_DATA_SOURCE=backend)", () => {
   it("getMenuCategories: lỗi nguồn → danh sách rỗng, không ném", async () => {
     vi.stubGlobal("fetch", async () => new Response("x", { status: 500 }));
     expect(await getMenuCategories()).toEqual([]);
+  });
+
+  const real = (name: string): unknown =>
+    JSON.parse(
+      readFileSync(fileURLToPath(new URL(`./__fixtures__/backend/${name}.json`, import.meta.url)), "utf8"),
+    );
+
+  it("menu lấy từ /store/x/categories: chỉ nhóm gốc; getCategoryName tra cả nhóm con; không có → null", async () => {
+    const fetchMock = vi.fn(async () => ok(real("categories")));
+    vi.stubGlobal("fetch", fetchMock);
+    const menu = await getMenuCategories();
+    expect(menu.length).toBeGreaterThan(0);
+    const calls = fetchMock.mock.calls as unknown as [string][];
+    expect(new URL(calls[0]![0]).pathname).toBe("/store/x/categories");
+    expect(menu.every((m) => ["nu", "nam", "giay", "phu-kien"].includes(m.handle))).toBe(true);
+    expect(await getCategoryName("ao-nu")).toBe("Áo nữ");
+    expect(await getCategoryName("khong-co")).toBeNull();
+  });
+
+  it("phản hồi thật của danh sách/chi tiết/tìm kiếm đi qua lớp ánh xạ", async () => {
+    vi.stubGlobal("fetch", async () => ok(real("list")));
+    const l = await listProducts(EMPTY_FILTER);
+    expect(l.items[0]!.thumbnail.url).toBe("http://backend.test:9000/static/demo/den.svg?view=front");
+    vi.stubGlobal("fetch", async () => ok(real("product")));
+    const p = await getProduct("ao-so-mi-lua");
+    expect(p?.options.size.map((x) => x.value)).toEqual(["s", "m"]);
+    vi.stubGlobal("fetch", async () => ok(real("search-empty")));
+    expect((await search(f("q=zzzzqq"))).suggestions?.[0]?.type).toBe("category");
   });
 });

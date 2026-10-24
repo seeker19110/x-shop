@@ -1,0 +1,18 @@
+{
+  "checkout_attempt_id": "chk_01M5QKP37VC9ZJKE0QYZTCPK9A",
+  "state": "ready",
+  "cart_id": "cart_01M5QKNFAMKKGYE535VVHKZQJQ",
+  "cart_version": 1,
+  "payment_method": "cod",
+  "order": {
+    "id": "order_01M5QKP3B5JJZTHFY4DF5QRDHM",
+    "display_ref": "XS-34JSE3",
+    "state": "placed",
+    "total": 1330000,
+    "payment_method": "cod",
+    "hold_expires_at": null,
+    "cod_confirm_by": "2026-10-25T18:45:03.364Z"
+  },
+  "payment_url": null,
+  "error": null
+}

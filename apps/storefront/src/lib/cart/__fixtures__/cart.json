@@ -1,0 +1,36 @@
+{
+  "cart": {
+    "id": "cart_01M5QK1HPZZPMKC9CD5WJG1PQC",
+    "currency_code": "vnd",
+    "completed_at": null,
+    "item_subtotal": 1700000,
+    "subtotal": 1700000,
+    "total": 1700000,
+    "items": [
+      {
+        "id": "cali_01M5QK1J09X460PW208TKZNQG6",
+        "title": "Áo sơ mi lụa",
+        "product_title": "Áo sơ mi lụa",
+        "thumbnail": "/static/demo/den.svg?view=front",
+        "quantity": 2,
+        "variant_id": "variant_01M5QJKMDEVMP3WQ1YAD27G46V",
+        "product_handle": "ao-so-mi-lua",
+        "variant_title": "Đen / M",
+        "unit_price": 700000,
+        "total": 1400000
+      },
+      {
+        "id": "cali_01M5QK1J7RXZT2104JWGGJ9J8C",
+        "title": "Áo sơ mi lụa",
+        "product_title": "Áo sơ mi lụa",
+        "thumbnail": "/static/demo/den.svg?view=front",
+        "quantity": 1,
+        "variant_id": "variant_01M5QJKMDFGJN5FE8H4A05MMAE",
+        "product_handle": "ao-so-mi-lua",
+        "variant_title": "Trắng / S",
+        "unit_price": 300000,
+        "total": 300000
+      }
+    ]
+  }
+}

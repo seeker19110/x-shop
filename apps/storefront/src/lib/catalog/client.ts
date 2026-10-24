@@ -1,6 +1,7 @@
 import { EMPTY_FILTER, serializeFilter, type CatalogFilter } from "@x-shop/domain";
 import { cache } from "react";
-import { NAV_CATEGORIES } from "../content/navigation";
+import { categoryName, NAV_CATEGORIES } from "../content/navigation";
+import { mapCategories, mapList, mapProduct, mapSearch, type CategoryEntry } from "./backend-map";
 import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
 import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
@@ -20,7 +21,7 @@ interface ListOptions {
   pageSize?: number;
 }
 
-async function backendGet<T>(path: string, params?: URLSearchParams): Promise<T> {
+async function backendGet<T>(path: string, params?: URLSearchParams, fresh = false): Promise<T> {
   const base = getServerEnv().MEDUSA_BACKEND_URL;
   const qs = params && params.size > 0 ? `?${params.toString()}` : "";
   let res: Response;
@@ -31,7 +32,7 @@ async function backendGet<T>(path: string, params?: URLSearchParams): Promise<T>
         "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
       },
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      next: { revalidate: 60 },
+      ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: 60 } }),
     });
   } catch {
     throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");
@@ -51,6 +52,10 @@ async function backendGet<T>(path: string, params?: URLSearchParams): Promise<T>
   throw new CatalogError("UNAVAILABLE", "Máy chủ dữ liệu đang gặp sự cố.", res.status);
 }
 
+function backendBase(): string {
+  return getServerEnv().MEDUSA_BACKEND_URL;
+}
+
 function listParams(filter: CatalogFilter, opts: ListOptions): URLSearchParams {
   const p = new URLSearchParams(serializeFilter(filter));
   if (opts.category) p.set("category", opts.category);
@@ -68,7 +73,7 @@ export async function listProducts(
     }
     return fixtureList(filter, { category: opts.category, pageSize: opts.pageSize ?? CATALOG_PAGE_SIZE });
   }
-  return backendGet<ProductListResponse>("/store/x/products", listParams(filter, opts));
+  return mapList(await backendGet<unknown>("/store/x/products", listParams(filter, opts)), backendBase());
 }
 
 export async function search(
@@ -81,19 +86,35 @@ export async function search(
     }
     return fixtureSearch(filter, { pageSize: opts.pageSize ?? CATALOG_PAGE_SIZE });
   }
-  return backendGet<SearchResponse>("/store/x/search", listParams(filter, opts));
+  return mapSearch(await backendGet<unknown>("/store/x/search", listParams(filter, opts)), backendBase());
 }
 
 /** `null` khi không có hoặc chưa publish (404). Bọc `cache` để `generateMetadata` và trang dùng chung một lần gọi. */
 export const getProduct = cache(async (handle: string): Promise<ProductDetail | null> => {
   if (resolveDataSource() === "fixtures") return fixtureProduct(handle);
   try {
-    return await backendGet<ProductDetail>(`/store/x/products/${encodeURIComponent(handle)}`);
+    const raw = await backendGet<unknown>(`/store/x/products/${encodeURIComponent(handle)}`);
+    return mapProduct(raw, backendBase());
   } catch (e) {
     if (e instanceof CatalogError && e.code === "NOT_FOUND") return null;
     throw e;
   }
 });
+
+/**
+ * Như `getProduct` nhưng KHÔNG cache — cho giỏ/thêm vào giỏ cần giá và tồn hiện hành (đặc tả §7.4: "kiểm tra lại khi
+ * checkout"). `null` = không còn bán; lỗi nguồn → ném `CatalogError` để nơi gọi quyết định.
+ */
+export async function getProductFresh(handle: string): Promise<ProductDetail | null> {
+  if (resolveDataSource() === "fixtures") return fixtureProduct(handle);
+  try {
+    const raw = await backendGet<unknown>(`/store/x/products/${encodeURIComponent(handle)}`, undefined, true);
+    return mapProduct(raw, backendBase());
+  } catch (e) {
+    if (e instanceof CatalogError && e.code === "NOT_FOUND") return null;
+    throw e;
+  }
+}
 
 export interface MenuCategory {
   handle: string;
@@ -101,19 +122,41 @@ export interface MenuCategory {
 }
 
 /**
- * Menu danh mục: cấu hình (`content/navigation.ts`) lọc theo dữ liệu — chỉ nhóm có sản phẩm (đặc tả §3.3).
- * Lỗi nguồn dữ liệu → trả danh sách rỗng (header vẫn dựng được, không 500).
+ * Mọi danh mục có sản phẩm. Backend: `GET /store/x/categories` (D-008). Fixtures: danh mục cấu hình có hàng.
+ * Lỗi nguồn → danh sách rỗng (header/trang danh mục vẫn dựng được, không 500).
  */
-export const getMenuCategories = cache(async (): Promise<MenuCategory[]> => {
+export const getCategories = cache(async (): Promise<CategoryEntry[]> => {
+  if (resolveDataSource() === "backend") {
+    try {
+      return mapCategories(await backendGet<unknown>("/store/x/categories"));
+    } catch {
+      return [];
+    }
+  }
   const checks = await Promise.all(
-    NAV_CATEGORIES.map(async (c): Promise<MenuCategory | null> => {
+    NAV_CATEGORIES.map(async (c): Promise<CategoryEntry | null> => {
       try {
         const r = await listProducts(EMPTY_FILTER, { category: c.handle, pageSize: 1 });
-        return r.total > 0 ? { handle: c.handle, name: c.name } : null;
+        return r.total > 0
+          ? { handle: c.handle, name: c.name, parent_handle: null, product_count: r.total }
+          : null;
       } catch {
         return null;
       }
     }),
   );
-  return checks.filter((c): c is MenuCategory => c !== null);
+  return checks.filter((c): c is CategoryEntry => c !== null);
 });
+
+/** Menu: nhóm gốc có sản phẩm (đặc tả §3.3), lấy từ dữ liệu — không còn danh sách cứng ở nguồn backend. */
+export const getMenuCategories = cache(async (): Promise<MenuCategory[]> =>
+  (await getCategories())
+    .filter((c) => c.parent_handle === null)
+    .map(({ handle, name }) => ({ handle, name })),
+);
+
+/** Tên danh mục theo handle, `null` nếu không có (404). Backend: từ endpoint; fixtures: cấu hình tĩnh. */
+export async function getCategoryName(handle: string): Promise<string | null> {
+  if (resolveDataSource() === "fixtures") return categoryName(handle);
+  return (await getCategories()).find((c) => c.handle === handle)?.name ?? null;
+}

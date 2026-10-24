@@ -28,7 +28,7 @@ function index(products: readonly ProductDetail[]): IndexedProduct[] {
   return products.map((p) => ({
     productId: p.product_id,
     // Tên danh mục đưa vào văn bản tìm kiếm (CAT01: tìm theo tên, SKU, danh mục).
-    title: `${p.title} ${p.category.name}`,
+    title: `${p.title} ${p.category?.name ?? ""}`,
     material: p.attributes.material ? slugify(p.attributes.material) : null,
     createdAt: p.updated_at,
     variants: p.variants.map((v) => ({
@@ -43,7 +43,7 @@ function index(products: readonly ProductDetail[]): IndexedProduct[] {
 }
 
 function inCategory(category: string | null | undefined): ProductDetail[] {
-  return FIXTURE_PRODUCTS.filter((p) => !category || p.category.handle === category);
+  return FIXTURE_PRODUCTS.filter((p) => !category || p.category?.handle === category);
 }
 
 function labelsFor(products: readonly ProductDetail[], facet: FacetName): Map<string, string> {
@@ -121,6 +121,6 @@ export function fixtureCategories(): { handle: string; name: string; count: numb
   return FIXTURE_CATEGORIES.map((c) => ({
     handle: c.handle,
     name: c.name,
-    count: FIXTURE_PRODUCTS.filter((p) => p.category.handle === c.handle).length,
+    count: FIXTURE_PRODUCTS.filter((p) => p.category?.handle === c.handle).length,
   })).filter((c) => c.count > 0);
 }
