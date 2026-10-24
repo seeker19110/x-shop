@@ -76,6 +76,7 @@ function mapItem(raw: unknown, base: string): ProductListItem[] {
       colors: arr(raw.colors).map(mapColor),
       thumbnail,
       in_stock: raw.in_stock === true,
+      ...(typeof raw.updated_at === "string" && raw.updated_at ? { updated_at: raw.updated_at } : {}),
     },
   ];
 }

@@ -4,6 +4,9 @@ import { CatalogView } from "../../../../components/catalog/CatalogView";
 import { CATALOG_PAGE_SIZE, getCategoryName } from "../../../../lib/catalog/client";
 import { loadListing, toQueryString, type RawParams } from "../../../../lib/catalog/listing";
 import { categoryHref } from "../../../../lib/content/navigation";
+import { buildBreadcrumbJsonLd } from "../../../../lib/seo/breadcrumb-jsonld";
+import { serializeJsonLd } from "../../../../lib/seo/product-jsonld";
+import { getClientEnv } from "../../../../lib/env";
 import { catalogMetadata } from "../../../../lib/seo/catalog-meta";
 
 interface Props {
@@ -35,15 +38,27 @@ export default async function CategoryPage({ params, searchParams }: Props) {
     slug,
     toQueryString(await searchParams),
   );
+  const crumbsLd = serializeJsonLd(
+    buildBreadcrumbJsonLd(
+      [
+        { name: "Trang chủ", path: "/" },
+        { name: name, path: categoryHref(slug) },
+      ],
+      getClientEnv().NEXT_PUBLIC_SITE_URL,
+    ),
+  );
   return (
-    <CatalogView
-      basePath={categoryHref(slug)}
-      heading={name}
-      filter={filter}
-      issues={issues}
-      result={result}
-      error={error}
-      category={slug}
-    />
+    <>
+      <CatalogView
+        basePath={categoryHref(slug)}
+        heading={name}
+        filter={filter}
+        issues={issues}
+        result={result}
+        error={error}
+        category={slug}
+      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: crumbsLd }} />
+    </>
   );
 }

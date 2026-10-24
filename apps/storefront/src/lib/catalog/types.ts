@@ -28,6 +28,8 @@ export interface ProductListItem {
   colors: ColorOption[];
   thumbnail: ImageRef;
   in_stock: boolean;
+  /** Lần sửa gần nhất (ISO UTC) — dùng cho `lastmod` của sitemap; nguồn không có thì bỏ trống (không bịa). */
+  updated_at?: string;
 }
 
 export interface FacetValue {

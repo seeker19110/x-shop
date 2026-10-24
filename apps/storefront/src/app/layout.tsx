@@ -12,6 +12,7 @@ export function generateMetadata(): Metadata {
     metadataBase: new URL(getClientEnv().NEXT_PUBLIC_SITE_URL),
     title: { default: "X-Shop", template: "%s | X-Shop" },
     description: "Cửa hàng thời trang X-Shop.",
+    openGraph: { type: "website", siteName: "X-Shop", locale: "vi_VN" },
   };
 }
 

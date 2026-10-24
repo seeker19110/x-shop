@@ -93,6 +93,7 @@ export function fixtureList(
       colors: p.options.color,
       thumbnail: { url: thumb.url, alt: thumb.alt, width: thumb.width, height: thumb.height },
       in_stock: matched.some((v) => v.in_stock),
+      updated_at: p.updated_at,
     };
   });
   const facets: Facets = {
