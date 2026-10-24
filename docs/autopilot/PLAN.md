@@ -66,7 +66,7 @@
 ### Lát 4 — Catalog & tìm kiếm (RK-002)
 - [x] `T-013` Mô hình sản phẩm màu × size, ảnh theo màu, module `size_chart`, thuộc tính (chất liệu/form/bảo quản), kiểm trước xuất bản (ADM01, ADM03) + seed dữ liệu demo (sau: T-002; files: apps/backend/src/modules/fashion/, apps/backend/src/scripts/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- catalog-model`
 - [x] `T-014` Read model `catalog_variant_index` + đồng bộ theo sự kiện + API list/search/facets (AT01, AT31, CAT01–04) (sau: T-013, T-005; files: apps/backend/src/modules/catalog-index/, apps/backend/src/api/store/x/products/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- catalog-search`
-- [ ] `T-015` Import CSV preview/commit idempotent + export chống công thức (ADM02) (sau: T-013; files: apps/backend/src/modules/catalog-import/, apps/backend/src/api/admin/x/imports/) — Gate: `pnpm --filter @x-shop/backend test:integration -- catalog-import`
+- [x] `T-015` Import CSV preview/commit idempotent + export chống công thức (ADM02) (sau: T-013; files: apps/backend/src/modules/catalog-import/, apps/backend/src/api/admin/x/imports/) — Gate: `pnpm --filter @x-shop/backend test:integration -- catalog-import`
 
 ### Lát 5 — Storefront 6 màn hình (F-002)
 - [x] `T-016` Lớp dữ liệu server (client Medusa/x-API, no-store cho riêng tư), layout, header/menu từ cấu hình, footer, trang chủ khối nội dung (WEB01) (sau: T-003, T-014; files: apps/storefront/src/app/, apps/storefront/src/lib/, apps/storefront/src/components/layout/) — Gate: `pnpm --filter @x-shop/storefront test -- home layout`
