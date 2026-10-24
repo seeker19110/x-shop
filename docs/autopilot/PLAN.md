@@ -45,7 +45,7 @@
 
 ### Lát 1 — Nền tảng (F-001)
 - [x] `T-001` Monorepo pnpm + TypeScript strict + ESLint/Prettier + Vitest + `packages/domain` khung; điền lệnh thật `xt.yaml`; CI có Postgres/Redis; `.env.example` + `.nvmrc` (files: package.json, pnpm-workspace.yaml, packages/domain/, xt.yaml, .github/workflows/ci.yml, tsconfig.base.json, eslint.config.mjs) — Gate: `.xtemplates/scripts/dev-task.sh gate`
-- [ ] `T-002` Medusa v2 backend `apps/backend` (config Postgres/Redis qua env đã validate, VND store/region seed, health) + test tích hợp chạy được với DB thật (sau: T-001; files: apps/backend/, scripts/dev-services.sh; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration`
+- [x] `T-002` Medusa v2 backend `apps/backend` (config Postgres/Redis qua env đã validate, VND store/region seed, health) + test tích hợp chạy được với DB thật (sau: T-001; files: apps/backend/, scripts/dev-services.sh; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration`
 - [x] `T-003` Next.js storefront `apps/storefront` + `DESIGN.md` + token CSS (đặc tả §3.1) + font Be Vietnam Pro tự host; cổng tương phản token (sau: T-001; files: apps/storefront/, DESIGN.md) — Gate: `python3 .xtemplates/scripts/xt.py contrast apps/storefront/src/styles/tokens.css --pairs apps/storefront/contrast-pairs.txt && pnpm --filter @x-shop/storefront build`
 
 - [x] `T-039` Bộ component UI storefront theo DESIGN.md (Button, IconButton, Price, SizeSelector, ColorSwatch, Chip, Drawer/Dialog có khóa focus, Toast aria-live, Skeleton, InlineError, EmptyState, ProductCard 4:5, Breadcrumb) + test hành vi/tiếp cận (sau: T-003; files: apps/storefront/src/components/ui/, apps/storefront/src/components/product-card/) — Gate: `pnpm --filter @x-shop/storefront test -- ui`
