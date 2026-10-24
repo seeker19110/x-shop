@@ -134,4 +134,6 @@ export const lockKeys = {
   cart: (cartId: string) => `cart:${cartId}`,
   inventoryItem: (inventoryItemId: string) => `inventory_item:${inventoryItemId}`,
   promotion: (code: string) => `promotion:${code}`,
+  /** Khóa trạng thái đơn: IPN, querydr, hết hạn, hủy (S-006 — chỉ một nhánh thắng). */
+  order: (orderId: string) => `order:${orderId}`,
 } as const;

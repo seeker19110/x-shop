@@ -1,5 +1,5 @@
 import type { vnpay } from "@x-shop/domain";
-import { parseEnv } from "../env";
+import { parseEnv, type VnpayMode } from "../env";
 
 /**
  * Tham số checkout (D-002): mọi thời hạn là cấu hình có tên, đổi một chỗ. Thời gian lưu UTC (DATA04).
@@ -20,6 +20,14 @@ export const CHECKOUT_CONFIG = {
   /** Request trùng (cùng key/phiên bản giỏ) chờ attempt đang chạy tối đa bấy nhiêu trước khi trả 202. */
   replayWaitMs: 8_000,
   replayPollMs: 100,
+  /** Chờ khóa đơn (`order:<id>`) ở IPN/recheck/job trước khi bỏ lượt (VNPAY gửi lại IPN). */
+  orderLockWaitMs: 15_000,
+  /** Hạn trả lời querydr của VNPAY trước khi coi là `unknown` (AT11). */
+  queryTimeoutMs: 10_000,
+  /** Khách bấm "Kiểm tra lại" tối đa 1 lần / 10 giây mỗi attempt. */
+  recheckIntervalSeconds: 10,
+  /** Ngoại lệ payment_unknown phải xử lý trong 30 phút. */
+  paymentUnknownDueMs: 30 * 60_000,
   /** Phiên bản chính sách bán hàng (đổi trả, COD…) chụp vào đơn (DATA05). */
   policyVersion: "2026-10-24",
 } as const;
@@ -27,7 +35,7 @@ export const CHECKOUT_CONFIG = {
 /** Giới hạn cột tiền `integer` của Postgres (xem migration module checkout) — vượt → 422 LIMIT, không tràn số. */
 export const MAX_MONEY_VND = 2_147_483_647;
 
-export type VnpayRuntimeConfig = vnpay.VnpayConfig;
+export type VnpayRuntimeConfig = vnpay.VnpayConfig & { mode: VnpayMode };
 
 let cachedVnpay: { value: VnpayRuntimeConfig | null } | null = null;
 

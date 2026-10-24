@@ -42,6 +42,10 @@ export const VNPAY_REQUIRED = [
   "VNPAY_RETURN_URL",
 ] as const;
 
+/** Cách gọi VNPAY (querydr…): mock = MockVnpayGateway cục bộ (mặc định dev/test); sandbox/live = HTTP tới VNPAY_API_URL. */
+export const VNPAY_MODES = ["mock", "sandbox", "live"] as const;
+export type VnpayMode = (typeof VNPAY_MODES)[number];
+
 export const VNPAY_DEV_DEFAULTS = {
   VNPAY_TMN_CODE: "XSHOPDEV",
   VNPAY_HASH_SECRET: "xshop-dev-vnpay-hash-secret-khong-dung-production",
@@ -139,6 +143,9 @@ const schema = z
       (v) => (v === undefined || v === "" ? "true" : v),
       z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
     ),
+    VNPAY_MODE: optionalText.pipe(
+      z.enum(VNPAY_MODES, { message: `phải là một trong ${VNPAY_MODES.join("|")}` }).optional(),
+    ),
     VNPAY_TMN_CODE: optionalText.pipe(
       z
         .string()
@@ -169,6 +176,15 @@ const schema = z
             message: "bắt buộc khi NODE_ENV=production và VNPAY_ENABLED=true",
           });
         }
+      }
+      if (env.VNPAY_MODE === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["VNPAY_MODE"],
+          message: "bắt buộc khai rõ (sandbox|live) khi NODE_ENV=production và VNPAY_ENABLED=true",
+        });
+      } else if (env.VNPAY_MODE === "mock") {
+        ctx.addIssue({ code: "custom", path: ["VNPAY_MODE"], message: "không được dùng mock ở production" });
       }
       if (env.VNPAY_HASH_SECRET === VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET) {
         ctx.addIssue({
@@ -202,6 +218,7 @@ const schema = z
             paymentUrl: pick("VNPAY_PAYMENT_URL"),
             apiUrl: pick("VNPAY_API_URL"),
             returnUrl: pick("VNPAY_RETURN_URL"),
+            mode: (env.VNPAY_MODE ?? "mock") as VnpayMode,
           }
         : null,
     };

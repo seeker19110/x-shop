@@ -32,6 +32,9 @@ AUTH_CORS=http://localhost:5173,http://localhost:9000,http://localhost:3000
 # không được dùng khoá giả của dev. Dev/test vắng biến → dùng giá trị GIẢ trong env.ts (VNPAY_DEV_DEFAULTS) — chỉ ký/kiểm
 # chữ ký cục bộ với MockVnpayGateway, không gọi cổng thật.
 # VNPAY_ENABLED=true
+# Cách gọi VNPAY từ server (querydr): mock = cổng giả lập cục bộ (mặc định dev/test) · sandbox | live = HTTP tới
+# VNPAY_API_URL. Production + bật: BẮT BUỘC khai rõ sandbox|live, không được mock.
+VNPAY_MODE=sandbox
 VNPAY_TMN_CODE=MAMERCHANT          # mã website do VNPAY cấp (chữ/số, ≤ 32 ký tự)
 VNPAY_HASH_SECRET=thay-bang-khoa-bi-mat-vnpay-it-nhat-32-ky-tu   # ≥ 32 ký tự (độ dài thật: chưa xác minh với tài liệu merchant)
 VNPAY_PAYMENT_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
