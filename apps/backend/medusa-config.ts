@@ -86,5 +86,7 @@ module.exports = defineConfig({
     { resolve: "./src/modules/catalog-import" },
     // Giao vận: vận đơn GHN + sự kiện callback đã lọc PII (T-026, SPEC-fulfillment S-301…S-305).
     { resolve: "./src/modules/shipping" },
+    // Thông báo giao dịch: outbound_message theo message key duy nhất, adapter log mặc định (T-029).
+    { resolve: "./src/modules/notify" },
   ],
 });
