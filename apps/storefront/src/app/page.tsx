@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Image, { getImageProps } from "next/image";
 import Link from "next/link";
 import { preload } from "react-dom";
@@ -11,6 +12,8 @@ import { EMPTY_FILTER } from "@x-shop/domain";
 import styles from "./home.module.css";
 
 export const revalidate = 60;
+
+export const metadata: Metadata = { alternates: { canonical: "/" } };
 
 async function loadNewArrivals(limit: number): Promise<ProductListItem[]> {
   try {

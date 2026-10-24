@@ -7,6 +7,7 @@ import { Breadcrumb } from "../../../../components/ui/Breadcrumb";
 import { getProduct } from "../../../../lib/catalog/client";
 import { categoryHref } from "../../../../lib/content/navigation";
 import { getClientEnv } from "../../../../lib/env";
+import { buildBreadcrumbJsonLd } from "../../../../lib/seo/breadcrumb-jsonld";
 import { buildProductJsonLd, productPath, serializeJsonLd } from "../../../../lib/seo/product-jsonld";
 
 interface Props {
@@ -48,6 +49,20 @@ export default async function ProductPage({ params, searchParams }: Props) {
   const initial = initialSelection(product, await searchParams);
   const jsonLd = serializeJsonLd(buildProductJsonLd(product, getClientEnv().NEXT_PUBLIC_SITE_URL));
 
+  const site = getClientEnv().NEXT_PUBLIC_SITE_URL;
+  const crumbsLd = serializeJsonLd(
+    buildBreadcrumbJsonLd(
+      [
+        { name: "Trang chủ", path: "/" },
+        ...(product.category
+          ? [{ name: product.category.name, path: categoryHref(product.category.handle) }]
+          : []),
+        { name: product.title, path: productPath(product.handle) },
+      ],
+      site,
+    ),
+  );
+
   return (
     <>
       <Breadcrumb
@@ -63,6 +78,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
         <ProductDetails product={product} />
       </ProductExperience>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: crumbsLd }} />
     </>
   );
 }
