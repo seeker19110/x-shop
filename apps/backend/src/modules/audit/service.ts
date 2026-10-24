@@ -3,6 +3,27 @@ import { generateEntityId } from "@medusajs/framework/utils";
 import { sanitizeChanges } from "../../lib/audit/sanitize";
 
 export const AUDIT_TABLE = "audit_log";
+export const ADJUSTMENT_TABLE = "inventory_adjustment";
+
+export interface InventoryAdjustment {
+  id: string;
+  idempotency_key: string;
+  payload_hash: string;
+  actor_id: string | null;
+  inventory_item_id: string;
+  location_id: string;
+  delta: number;
+  reason: string;
+  note: string | null;
+  stocked_before: number;
+  stocked_after: number;
+  reserved_quantity: number;
+  created_at: Date;
+}
+
+/** Vi phạm UNIQUE của Postgres (23505) — trùng Idempotency-Key khi hai request cùng khóa chạy song song. */
+export const isUniqueViolation = (e: unknown): boolean =>
+  typeof e === "object" && e !== null && (e as { code?: string }).code === "23505";
 
 export interface AuditEntryInput {
   actor_type: string;
@@ -89,5 +110,42 @@ export default class AuditModuleService {
       this.db(AUDIT_TABLE).where(where).count<{ count: string }[]>({ count: "*" }),
     ]);
     return { entries: entries as AuditEntry[], count: Number(counted[0]?.count ?? 0) };
+  }
+
+  async findAdjustmentByKey(key: string): Promise<InventoryAdjustment | null> {
+    const row = await this.db(ADJUSTMENT_TABLE).where({ idempotency_key: key }).first();
+    return (row as InventoryAdjustment | undefined) ?? null;
+  }
+
+  /** Ghi sổ điều chỉnh + dòng audit trong MỘT giao dịch (cả hai hoặc không). Trùng khóa → ném lỗi 23505. */
+  async recordAdjustment(
+    adjustment: Omit<InventoryAdjustment, "id" | "created_at">,
+    audit: Omit<AuditEntryInput, "resource_type" | "resource_id" | "action" | "changes">,
+  ): Promise<InventoryAdjustment> {
+    return this.db.transaction(async (trx) => {
+      const [saved] = await trx(ADJUSTMENT_TABLE)
+        .insert({ id: generateEntityId(undefined, "invadj"), ...adjustment })
+        .returning("*");
+      const row = saved as InventoryAdjustment;
+      await this.record(
+        {
+          ...audit,
+          action: "inventory.adjusted",
+          resource_type: "inventory_level",
+          resource_id: `${row.inventory_item_id}:${row.location_id}`,
+          reason: row.reason,
+          changes: {
+            adjustment_id: row.id,
+            delta: row.delta,
+            stocked_before: row.stocked_before,
+            stocked_after: row.stocked_after,
+            reserved_quantity: row.reserved_quantity,
+            note: row.note,
+          },
+        },
+        trx,
+      );
+      return row;
+    });
   }
 }

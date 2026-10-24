@@ -31,4 +31,7 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   { method: "DELETE", path: "/admin/x/users/:id/roles", permission: "user.manage", reauth: true },
   // Hoàn tiền (stub 501 tới T-027; xác thực lại khi vượt ngưỡng do T-027 kiểm theo số tiền)
   { method: "POST", path: "/admin/x/refunds", permission: "refund.execute" },
+  // Audit + điều chỉnh tồn (T-025)
+  { method: "GET", path: "/admin/x/audit", permission: "audit.read" },
+  { method: "POST", path: "/admin/x/inventory/adjustments", permission: "inventory.adjust" },
 ];

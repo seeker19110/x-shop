@@ -44,6 +44,12 @@ describe("sanitizeChanges (che PII trong audit)", () => {
     });
   });
 
+  it("email/số điện thoại lẫn trong văn bản tự do cũng bị che; số khác giữ nguyên", () => {
+    expect(sanitizeChanges({ reason: "Khách a.b@mail.vn gọi 0912345678 hỏi đơn 1234" })).toEqual({
+      reason: "Khách a***@mail.vn gọi 091****678 hỏi đơn 1234",
+    });
+  });
+
   it("giới hạn độ sâu/độ dài (không phình audit)", () => {
     const deep = { a: { b: { c: { d: { e: { f: { g: 1 } } } } } } };
     expect(JSON.stringify(sanitizeChanges(deep))).toContain("[…]");

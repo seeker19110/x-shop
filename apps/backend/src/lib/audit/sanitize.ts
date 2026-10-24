@@ -18,6 +18,10 @@ const EMAIL_VALUE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Số điện thoại VN: 0xxxxxxxxx / +84xxxxxxxxx (9–11 chữ số sau đầu số), cho phép khoảng trắng/chấm/gạch.
 const PHONE_VALUE = /^(\+?84|0)[\d .-]{8,13}$/;
 
+// Email/số điện thoại lẫn trong văn bản tự do (ghi chú, lý do) cũng bị che.
+const EMAIL_IN_TEXT = /[^\s@]+@[^\s@]+\.[^\s@]+/g;
+const PHONE_IN_TEXT = /(?<!\d)(?:\+?84|0)\d{8,10}(?!\d)/g;
+
 const MAX_DEPTH = 6;
 const MAX_ITEMS = 100;
 const MAX_STRING = 1000;
@@ -27,7 +31,10 @@ function maskString(key: string, value: string): string {
   if (PII_KEY.test(key)) return PII;
   if (EMAIL_KEY.test(key) || EMAIL_VALUE.test(value)) return maskEmail(value);
   if (PHONE_KEY.test(key) || PHONE_VALUE.test(value)) return maskPhone(value.replace(/[ .-]/g, ""));
-  return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…` : value;
+  const masked = value
+    .replace(EMAIL_IN_TEXT, (m) => maskEmail(m))
+    .replace(PHONE_IN_TEXT, (m) => maskPhone(m));
+  return masked.length > MAX_STRING ? `${masked.slice(0, MAX_STRING)}…` : masked;
 }
 
 function walk(key: string, value: unknown, depth: number): unknown {
