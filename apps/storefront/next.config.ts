@@ -19,9 +19,14 @@ export const PRIVATE_SOURCES = [
   "/thanh-toan",
   "/thanh-toan/:path*",
   "/don-hang/:path*",
+  "/tra-cuu-don",
+  "/tra-cuu-don/:path*",
   "/api/cart/:path*",
   "/api/checkout/:path*",
 ] as const;
+
+/** Đường mang token/tham số thanh toán trên URL: không bao giờ gửi Referer. */
+export const NO_REFERRER_SOURCES = ["/tra-cuu-don/xac-thuc", "/thanh-toan/ket-qua"] as const;
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
@@ -54,6 +59,12 @@ const nextConfig: NextConfig = {
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
       },
+      // Sau quy tắc chung (cùng khóa → quy tắc sau thắng): trang có token tra cứu trên URL và trang trở về từ cổng thanh
+      // toán không gửi Referer ra ngoài (POST01, AT24).
+      ...NO_REFERRER_SOURCES.map((source) => ({
+        source,
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      })),
     ];
   },
 };
