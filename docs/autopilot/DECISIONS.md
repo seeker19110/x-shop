@@ -193,3 +193,10 @@
 - Lý do (tiêu chí chất lượng cuối): Không chặn tiến độ vì tài liệu chính thức chưa truy cập được; parser chặt, đổi định dạng chỉ ở một chỗ (constants/csv)
 - Đường lùi: Thêm adapter định dạng thật khi có khoá merchant
 - Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Dùng file xuất thật VNPAY/GHN khi có hợp đồng merchant
+
+### D-028 · 2026-10-25T18:11:37+00:00 · T-030: Admin UI khi server đòi MFA/xác thực lại
+
+- Phương án: (1) Dựng form TOTP trong UI gọi auth API native · (2) UI chỉ hướng dẫn đăng nhập lại kèm TOTP (dùng luồng MFA native sẵn có của T-024)
+- Chọn: UI chỉ hướng dẫn đăng nhập lại kèm TOTP (dùng luồng MFA native sẵn có của T-024)
+- Lý do (tiêu chí chất lượng cuối): Không tạo đường xác thực thứ hai chưa được rà; luồng MFA native đã có test
+- Đường lùi: Thêm form TOTP vào components admin khi cần UX nhanh hơn
