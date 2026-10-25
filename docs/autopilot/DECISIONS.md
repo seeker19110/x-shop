@@ -228,3 +228,10 @@
 - Chọn: Trigger BEFORE INSERT x_refund từ chối nếu phiên không giữ pg_advisory_xact_lock của đúng đơn (tra pg_locks)
 - Lý do (tiêu chí chất lượng cuối): Bắt mọi đường ghi quên khóa (lỗi đã thấy chữ ký khi bỏ khóa), không đưa logic tiền ra khỏi domain; migration mới có down
 - Đường lùi: Migration down xoá trigger
+
+### D-033 · 2026-10-25T22:21:20+00:00 · T-049: quyền đọc hàng trả và hàng đợi hoàn tiền
+
+- Phương án: (1) Thêm quyền return.read cho kho + CSKH (đổi ma trận vai trò domain) · (2) Dùng return.receive (kho, owner); hàng hãng hoàn hiện kèm source; hàng đợi refund không order_id thì state bắt buộc, cũ nhất trước; tham số thừa/limit ngoài 1–100 → 422
+- Chọn: Dùng return.receive (kho, owner); hàng hãng hoàn hiện kèm source; hàng đợi refund không order_id thì state bắt buộc, cũ nhất trước; tham số thừa/limit ngoài 1–100 → 422
+- Lý do (tiêu chí chất lượng cuối): Không mở thêm quyền đọc dữ liệu đơn cho vai trò mới khi chưa có nhu cầu; 422 rõ ràng thay vì kẹp ngầm
+- Đường lùi: Thêm return.read vào ma trận khi CSKH cần duyệt yêu cầu trả
