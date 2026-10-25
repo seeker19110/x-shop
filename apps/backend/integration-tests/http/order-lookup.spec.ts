@@ -45,6 +45,17 @@ let ipSeq = 0;
 /** Mỗi ca một IP giả (x-forwarded-for, Express `trust proxy` = 1) → bộ đếm theo IP không lẫn giữa các ca. */
 const newIp = () => `10.21.${Math.floor(++ipSeq / 250)}.${(ipSeq % 250) + 1}`;
 
+/**
+ * Bộ đếm là cửa sổ CỐ ĐỊNH theo đồng hồ (bội của windowMs từ epoch): ca đếm vắt qua ranh giới thì bộ đếm về 0 và lần "phải
+ * bị chặn" nhận 200 (T-050: tái hiện được khi bắt đầu ca cách ranh giới ~60 ms). Ca kiểm ngưỡng gọi hàm này TRƯỚC khi
+ * đếm: cửa sổ chứa "bây giờ" còn ít hơn `needMs` thì đợi sang cửa sổ mới — tất định, không nới ngưỡng, không đổi mã chạy
+ * thật (cửa sổ cố định là thiết kế đã chọn).
+ */
+async function alignToRateWindow(windowMs: number, needMs = 30_000): Promise<void> {
+  const left = windowMs - (Date.now() % windowMs);
+  if (left < needMs) await new Promise((r) => setTimeout(r, left + 50));
+}
+
 medusaIntegrationTestRunner({
   testSuite: ({ api: rawApi, getContainer }) => {
     const api = rawApi as unknown as Api;
@@ -200,6 +211,7 @@ medusaIntegrationTestRunner({
       it("AT20: dò mã đơn — quá số lần bị từ chối theo IP → 429, IP khác không bị ảnh hưởng", async () => {
         const o = await place([["Đen/S", 1]], "cod");
         const limit = ORDER_RATE_LIMITS.deniedIp.limit;
+        await alignToRateWindow(ORDER_RATE_LIMITS.deniedIp.windowMs);
         for (let i = 0; i < limit; i++) {
           const ref = `XS-${String(100000 + i).replace(/[01]/g, "A")}`;
           expect((await getOrder(ref, o.access)).status).toBe(404);
@@ -405,6 +417,7 @@ medusaIntegrationTestRunner({
 
       it("rate limit: SĐT 5/giờ → lần 6 bị 429 kể cả khi khớp; IP khác vẫn bị chặn theo SĐT", async () => {
         const o = await place([["Đen/M", 1]], "cod");
+        await alignToRateWindow(ORDER_RATE_LIMITS.lookupPhone.windowMs);
         for (let i = 0; i < ORDER_RATE_LIMITS.lookupPhone.limit; i++) {
           expect((await lookup({ display_ref: "XS-ZZZZZZ", phone: "0912345678" })).status).toBe(202);
         }
