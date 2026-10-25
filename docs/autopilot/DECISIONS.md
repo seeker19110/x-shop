@@ -221,3 +221,10 @@
 - Chọn: Vận đơn về unfulfilled qua cạnh lùi hợp lệ; hàng đã trừ tồn vào Kho cách ly chờ kiểm định; hủy đơn + mở refund_request lúc returned; đánh dấu yêu cầu hàng hoàn bằng khóa carrier:; khách thấy SHOP_CANCELLED, lý do chi tiết trong audit; đơn native giữ làm lịch sử
 - Lý do (tiêu chí chất lượng cuối): Không bán âm, không đổi đặc tả §6.1, không cần migration; tiền theo D-012
 - Đường lùi: Thêm trạng thái cancelled + cột source khi cần báo cáo chi tiết
+
+### D-032 · 2026-10-25T20:20:00+00:00 · T-051: hàng rào phía DB cho bất biến hoàn tiền
+
+- Phương án: (1) Trigger BEFORE INSERT x_refund từ chối nếu phiên không giữ pg_advisory_xact_lock của đúng đơn (tra pg_locks) · (2) Trigger tự khóa và cộng Σ so với đã thu (chép logic tiền sang SQL) · (3) Không thêm, giữ khóa tầng ứng dụng + test tất định
+- Chọn: Trigger BEFORE INSERT x_refund từ chối nếu phiên không giữ pg_advisory_xact_lock của đúng đơn (tra pg_locks)
+- Lý do (tiêu chí chất lượng cuối): Bắt mọi đường ghi quên khóa (lỗi đã thấy chữ ký khi bỏ khóa), không đưa logic tiền ra khỏi domain; migration mới có down
+- Đường lùi: Migration down xoá trigger
