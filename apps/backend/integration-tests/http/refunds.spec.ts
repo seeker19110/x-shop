@@ -1,5 +1,5 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
@@ -58,6 +58,37 @@ medusaIntegrationTestRunner({
       note: "Hoàn bù chênh lệch",
       ...extra,
     });
+
+    /** status[:code] từng phản hồi, đã sắp — so cả nhóm một lần để lần đỏ in đủ chữ ký. */
+    const signature = (rs: Array<{ status: number; data: { code?: string } }>) =>
+      rs.map((r) => (r.status === 201 ? "201" : `${r.status}:${r.data?.code ?? ""}`)).sort();
+    /**
+     * Sổ tiền của đơn đọc thẳng từ DB (payment_ledger + x_refund), độc lập với mã đang được kiểm: đã thu, đã hoàn, đang
+     * giữ (mọi trạng thái trừ succeeded/rejected/cancelled), số dòng hoàn. Luôn kiểm bất biến S-108:
+     * Σ đã hoàn + Σ đang giữ ≤ Σ đã thu.
+     */
+    const moneyOf = async (orderId: string) => {
+      const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+      const cap = (await pg("payment_ledger")
+        .where({ order_id: orderId, kind: "capture" })
+        .whereNull("deleted_at")
+        .sum({ s: "amount" })
+        .first()) as { s: string | number | null } | undefined;
+      const rows = (await pg("x_refund").where({ order_id: orderId }).select("state", "amount")) as Array<{
+        state: string;
+        amount: string | number;
+      }>;
+      const sum = (pred: (state: string) => boolean) =>
+        rows.filter((r) => pred(r.state)).reduce((s, r) => s + Number(r.amount), 0);
+      const money = {
+        captured: Number(cap?.s ?? 0),
+        succeeded: sum((st) => st === "succeeded"),
+        held: sum((st) => !["succeeded", "rejected", "cancelled"].includes(st)),
+        rows: rows.length,
+      };
+      expect(money.succeeded + money.held).toBeLessThanOrEqual(money.captured);
+      return money;
+    };
 
     beforeAll(async () => {
       container = getContainer();
@@ -125,6 +156,7 @@ medusaIntegrationTestRunner({
         expect(exceptions.map((e) => e.state)).toEqual(["resolved"]);
         const ledger = await checkout().listPaymentLedgers({ order_id: o.orderId, kind: "refund" });
         expect(ledger.map((l) => [Number(l.amount), l.state])).toEqual([[730_000, "succeeded"]]);
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 730_000, held: 0, rows: 1 });
 
         // Gọi lại → đã xong, cổng không bị gọi thêm.
         const calls = refundGateway.calls;
@@ -175,20 +207,63 @@ medusaIntegrationTestRunner({
         const results = await Promise.all(
           Array.from({ length: 10 }, () => createRefund(A("accountant"), other(o, 100_000))),
         );
-        expect(results.filter((r) => r.status === 201)).toHaveLength(7);
-        expect(results.filter((r) => r.status === 422).map((r) => r.data.code)).toEqual(
-          Array(3).fill("REFUND_EXCEEDS_CAPTURED"),
-        );
-        const rows = await returns().listRefundsOfOrder(o.orderId);
-        expect(rows.reduce((s, r) => s + r.amount, 0)).toBe(700_000);
+        // Chữ ký đầy đủ (status:code từng yêu cầu) — lần đỏ nào cũng cho biết ngay là vượt tiền hay lỗi khác (500/409…).
+        expect(signature(results)).toEqual([
+          ...Array(7).fill("201"),
+          ...Array(3).fill("422:REFUND_EXCEEDS_CAPTURED"),
+        ]);
+        // Bất biến kiểm thẳng trên sổ (DB), không qua API đang được kiểm.
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 0, held: 700_000, rows: 7 });
         // Hai yêu cầu song song tranh 30.000 cuối → đúng một.
         const last = await Promise.all([
           createRefund(A("accountant"), other(o, 30_000)),
           createRefund(A("accountant"), other(o, 30_000)),
         ]);
-        expect(last.map((r) => r.status).sort()).toEqual([201, 422]);
+        expect(signature(last)).toEqual(["201", "422:REFUND_EXCEEDS_CAPTURED"]);
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 0, held: 730_000, rows: 8 });
         const summary = await flow.adminGet(`/admin/x/refunds?order_id=${o.orderId}`, A("accountant"));
         expect(summary.data).toMatchObject({ captured: 730_000, held: 730_000, refundable: 0 });
+      });
+
+      it("xen kẽ có kiểm soát (T-051): mọi yêu cầu đã đọc sổ rồi mới ghi — dưới khóa đơn vẫn đúng 7, Σ giữ ≤ đã thu", async () => {
+        // Ép cửa sổ đọc→ghi rộng tối đa: lần ghi chờ tới khi CẢ 10 yêu cầu đã đọc danh sách hoàn (hoặc hết 150 ms). Có khóa
+        // advisory theo đơn → chỉ một yêu cầu ở trong cửa sổ, chờ hết hạn rồi ghi, các yêu cầu sau đọc thấy bản đã ghi.
+        // Không có khóa (hoặc đọc ngoài transaction đang giữ khóa) → cả 10 cùng đọc "còn 730.000" rồi cùng ghi → đỏ.
+        const o = await flow.place([["Đen/M", 1]], "vnpay");
+        const svc = returns();
+        const listRefunds = svc.listRefundsOfOrder.bind(svc);
+        const insertRefund = svc.insertRefund.bind(svc);
+        let reads = 0;
+        /** Số lần đọc sổ đã xảy ra tại thời điểm từng lần ghi — có khóa: [1..7] (tuần tự); không khóa: toàn 10. */
+        const readsAtInsert: number[] = [];
+        const spies = [
+          jest.spyOn(svc, "listRefundsOfOrder").mockImplementation(async (...args) => {
+            const rows = await listRefunds(...args);
+            if (args[0] === o.orderId) reads += 1;
+            return rows;
+          }),
+          jest.spyOn(svc, "insertRefund").mockImplementation(async (...args) => {
+            const until = Date.now() + 150;
+            while (reads < 10 && Date.now() < until) await new Promise((r) => setTimeout(r, 5));
+            readsAtInsert.push(reads);
+            return insertRefund(...args);
+          }),
+        ];
+        let results: Awaited<ReturnType<typeof createRefund>>[];
+        try {
+          results = await Promise.all(
+            Array.from({ length: 10 }, () => createRefund(A("accountant"), other(o, 100_000))),
+          );
+        } finally {
+          for (const s of spies) s.mockRestore();
+        }
+        expect(signature(results)).toEqual([
+          ...Array(7).fill("201"),
+          ...Array(3).fill("422:REFUND_EXCEEDS_CAPTURED"),
+        ]);
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 0, held: 700_000, rows: 7 });
+        expect(reads).toBe(10);
+        expect(readsAtInsert).toEqual([1, 2, 3, 4, 5, 6, 7]);
       });
 
       it("cùng Idempotency-Key ×5 song song → một bản ghi (201 + 200×4); khác nội dung → 409", async () => {
@@ -330,8 +405,10 @@ medusaIntegrationTestRunner({
           data: { outcome: "failed", refund: { state: "failed" } },
         });
         expect((await createRefund(A("accountant"), other(o, 1))).status).toBe(422);
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 0, held: 730_000, rows: 1 });
         const retried = await execute(id);
         expect(retried.data.outcome).toBe("succeeded");
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 730_000, held: 0, rows: 1 });
         expect(refundGateway.totalRefunded()).toBe(730_000);
         expect(new Set(refundGateway.bodies.map((b) => b.vnp_RequestId)).size).toBe(1);
       });
