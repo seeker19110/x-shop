@@ -214,3 +214,10 @@
 - Chọn: reason=return + return_id, số tiền server tính theo kiểm định, chỉ khi bản cũ đã cancelled, unique chặn trùng
 - Lý do (tiêu chí chất lượng cuối): Tiền đúng, yêu cầu trả đóng được, không tạo trùng
 - Đường lùi: Bỏ nhánh reason=return trong RefundCreateBody
+
+### D-031 · 2026-10-25T19:06:29+00:00 · T-045: trạng thái vận đơn và tồn khi GHN cancel / hoàn về
+
+- Phương án: (1) Thêm trạng thái cancelled vào domain + migration; cộng tồn lại ngay vào kho bán · (2) Vận đơn về unfulfilled qua cạnh lùi hợp lệ; hàng đã trừ tồn vào Kho cách ly chờ kiểm định; hủy đơn + mở refund_request lúc returned; đánh dấu yêu cầu hàng hoàn bằng khóa carrier:; khách thấy SHOP_CANCELLED, lý do chi tiết trong audit; đơn native giữ làm lịch sử
+- Chọn: Vận đơn về unfulfilled qua cạnh lùi hợp lệ; hàng đã trừ tồn vào Kho cách ly chờ kiểm định; hủy đơn + mở refund_request lúc returned; đánh dấu yêu cầu hàng hoàn bằng khóa carrier:; khách thấy SHOP_CANCELLED, lý do chi tiết trong audit; đơn native giữ làm lịch sử
+- Lý do (tiêu chí chất lượng cuối): Không bán âm, không đổi đặc tả §6.1, không cần migration; tiền theo D-012
+- Đường lùi: Thêm trạng thái cancelled + cột source khi cần báo cáo chi tiết
