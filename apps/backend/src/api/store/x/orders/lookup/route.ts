@@ -3,11 +3,10 @@ import { normalizeVnPhone } from "@x-shop/domain";
 import { z } from "zod";
 import { CheckoutError } from "../../../../../lib/checkout/errors";
 import { clientIp, handleRouteError, parseBody } from "../../../../../lib/checkout/http";
-import { issueOrderToken, normalizeDisplayRef, safeEqual, tokenHash } from "../../../../../lib/orders/access";
+import { normalizeDisplayRef } from "../../../../../lib/orders/access";
 import { setPrivate } from "../../../../../lib/orders/http";
+import { lookupPortsFor, runOrderLookup } from "../../../../../lib/orders/lookup";
 import { consumeRate } from "../../../../../lib/orders/rate-limit";
-import { CHECKOUT_MODULE } from "../../../../../modules/checkout";
-import type CheckoutModuleService from "../../../../../modules/checkout/service";
 
 const bodySchema = z.strictObject({
   display_ref: z.string().max(32),
@@ -22,7 +21,8 @@ export const LOOKUP_ACCEPTED_MESSAGE =
  * POST /store/x/orders/lookup `{ display_ref, phone }` → luôn 202 cùng thông điệp. Mã đơn + SĐT KHÔNG trả dữ liệu đơn;
  * khớp → tạo liên kết một lần (15 phút) và ghi outbox `order.lookup_link` (gửi thật ở T-029). Token không bao giờ nằm
  * trong phản hồi. Giới hạn: 5/giờ/SĐT, 10/giờ/mã đơn, 20/giờ/IP — đếm TRƯỚC khi tra nên 429 không lộ tồn tại.
- * Định dạng sai (không phải mã đơn/SĐT di động VN) → 422 VALIDATION (không chạm DB).
+ * Định dạng sai (không phải mã đơn/SĐT di động VN) → 422 VALIDATION (không chạm DB). Không có đơn và sai SĐT chạy CÙNG
+ * các bước (`runOrderLookup`: một truy vấn, một so sánh băm hằng thời gian, một lần ký) — chống dò tồn tại qua thời gian.
  */
 export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promise<void> => {
   setPrivate(res);
@@ -38,24 +38,7 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
     await consumeRate(req.scope, "lookupPhone", phone.value, now);
     await consumeRate(req.scope, "lookupRef", ref, now);
 
-    const s = req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
-    const [fin] = await s.listOrderFinances({ display_ref: ref });
-    const storedPhone = String((fin?.contact as { phone?: unknown } | undefined)?.phone ?? "");
-    if (fin && safeEqual(storedPhone, phone.value)) {
-      const link = issueOrderToken("link", fin.order_id, now);
-      await s.insertOutbox(
-        `order.lookup_link:${fin.order_id}:${tokenHash(link.token).slice(0, 24)}`,
-        fin.order_id,
-        "order.lookup_link",
-        {
-          order_id: fin.order_id,
-          display_ref: fin.display_ref,
-          // Bên gửi (T-029) dựng URL `/tra-cuu-don/xac-thuc?token=…`; token một lần, 15 phút.
-          token: link.token,
-          expires_at: link.expires_at,
-        },
-      );
-    }
+    await runOrderLookup(lookupPortsFor(req.scope), ref, phone.value, now);
     res.status(202).json({ accepted: true, message: LOOKUP_ACCEPTED_MESSAGE });
   } catch (error) {
     handleRouteError(req, res, error);

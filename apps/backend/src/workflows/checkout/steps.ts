@@ -415,12 +415,17 @@ export function computeDeadlines(method: PaymentMethod, nowIso: string): Deadlin
   };
 }
 
-/** VNPAY: payment_attempt (txn_ref PA_<ulid>) + URL đã ký, vnp_ExpireDate = hold_expires_at. COD: không làm gì. */
+/**
+ * VNPAY: payment_attempt (txn_ref PA_<ulid>) + URL đã ký, vnp_ExpireDate = hold_expires_at, vnp_ReturnUrl kèm
+ * `?attempt=<checkout attempt id>`. COD: không làm gì.
+ */
 export const createPaymentAttemptStep = createStep(
   "x-checkout-create-payment-attempt",
   async (
     input: {
       payment_method: PaymentMethod;
+      /** Checkout attempt — gắn vào `vnp_ReturnUrl` (`?attempt=`) để trang kết quả tra đúng lần đặt/thanh toán. */
+      attempt_id: string;
       order_id: string;
       display_ref: string;
       amount: number;
@@ -455,6 +460,8 @@ export const createPaymentAttemptStep = createStep(
       ipAddr: input.ip,
       createdAt: new Date(input.now),
       expiresAt,
+      // Storefront `/thanh-toan/ket-qua?attempt=` (API-CONTRACT): attempt của giỏ trong phiên → đúng đơn, không lấy từ URL.
+      returnParams: { attempt: input.attempt_id },
     });
     await service.markPaymentAttemptPending(id, paymentUrl);
     return new StepResponse({ payment_attempt_id: id, txn_ref: txnRef, payment_url: paymentUrl }, { id });

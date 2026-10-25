@@ -84,6 +84,28 @@ export interface CreatePaymentInput {
   expiresAt: Date;
   locale?: "vn" | "en";
   bankCode?: string;
+  /**
+   * Tham số thêm vào `vnp_ReturnUrl` (vd `{ attempt: <checkout attempt id> }`) để trang trở về biết lần thanh toán nào.
+   * Chỉ định danh (chữ/số/`_-`, ≤ 128) — không bao giờ đặt dữ liệu cá nhân hay token vào URL đi qua cổng.
+   */
+  returnParams?: Readonly<Record<string, string>>;
+}
+
+const RETURN_PARAM_KEY = /^[a-z][a-z0-9_]{0,31}$/;
+const RETURN_PARAM_VALUE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** `cfg.returnUrl` + `returnParams` (giữ nguyên query sẵn có). Không có tham số → trả đúng chuỗi cấu hình. */
+export function buildReturnUrl(returnUrl: string, params?: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(params ?? {});
+  if (entries.length === 0) return returnUrl;
+  const url = new URL(returnUrl);
+  for (const [k, v] of entries) {
+    if (!RETURN_PARAM_KEY.test(k) || k.startsWith("vnp_"))
+      throw new Error(`returnParams: khóa không hợp lệ (${k})`);
+    if (!RETURN_PARAM_VALUE.test(v)) throw new Error(`returnParams: giá trị không hợp lệ cho ${k}`);
+    url.searchParams.set(k, v);
+  }
+  return url.toString();
 }
 
 /** Tạo URL chuyển khách sang VNPAY. Số tiền ×100 theo protocol; orderInfo không dấu, không ký tự đặc biệt. */
@@ -102,7 +124,7 @@ export function buildPaymentUrl(cfg: VnpayConfig, input: CreatePaymentInput): st
     vnp_OrderInfo: sanitizeOrderInfo(input.orderInfo),
     vnp_OrderType: "other",
     vnp_Locale: input.locale ?? "vn",
-    vnp_ReturnUrl: cfg.returnUrl,
+    vnp_ReturnUrl: buildReturnUrl(cfg.returnUrl, input.returnParams),
     vnp_IpAddr: input.ipAddr,
     vnp_CreateDate: toVnpDate(input.createdAt),
     vnp_ExpireDate: toVnpDate(input.expiresAt),

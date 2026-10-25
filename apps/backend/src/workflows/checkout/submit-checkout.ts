@@ -194,6 +194,7 @@ export const submitCheckoutWorkflow = createWorkflow(
 
     const payment = createPaymentAttemptStep({
       payment_method: input.payment_method,
+      attempt_id: input.attempt_id,
       order_id: verified.order_id,
       display_ref: finance.display_ref,
       amount: transform({ prepared }, ({ prepared }) => prepared.breakdown.total),
