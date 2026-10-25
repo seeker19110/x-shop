@@ -7,6 +7,7 @@ import {
   type LedgerEntry,
   type QuoteBreakdown,
   type RefundState,
+  type ShipmentState,
 } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
@@ -23,7 +24,8 @@ import { acquireOrdered, lockKeys, releaseOwned } from "../checkout/locks";
 import { SHIPPING_CONFIG } from "./config";
 import { FulfillmentSyncError, syncNativeProgress } from "./fulfillment";
 import { getGhnClient, GhnError, type GhnDetail } from "./ghn-client";
-import { planProgress } from "./progress";
+import { isCarrierCancelled, planCancel, planProgress, type ProgressPlan } from "./progress";
+import { settleCarrierReturn, type CarrierSettlement } from "./return-to-sender";
 
 /**
  * Tạo vận đơn GHN và xử lý callback (SPEC-fulfillment S-302…S-305, đặc tả §6.3–6.4). Mọi thay đổi chạy dưới khóa
@@ -421,13 +423,22 @@ export async function handleGhnCallback(
       await shipping.markEventApplied(ev.id, current.id, { ignored: "not_found_at_provider" });
       return { status: 200 as const, body: { ok: true, ignored: "not_found_at_provider" } };
     }
-    const target = ghn.mapGhnStatus(detail.status);
-    if (!target) {
-      const result = { ignored: "unmapped_status", provider_status: detail.status.slice(0, 50) };
+    const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+    const cancelledAtProvider = ghn.isGhnCancelled(detail.status);
+    const target = cancelledAtProvider ? null : ghn.mapGhnStatus(detail.status);
+    if (!cancelledAtProvider && !target) {
+      const result = {
+        ignored: "unmapped_status",
+        provider_status: detail.status.slice(0, 50),
+      };
       await shipping.markEventApplied(ev.id, current.id, result);
       return { status: 200 as const, body: { ok: true, ...result } };
     }
-    const plan = planProgress(current.state, target);
+    // Hãng hủy trước lấy hàng → về `unfulfilled` (T-045); vận đơn đã bị hủy thì không "sống lại" theo trạng thái khác.
+    let plan: ProgressPlan;
+    if (cancelledAtProvider) plan = planCancel(current.state);
+    else if (isCarrierCancelled(current)) plan = { steps: [], final: current.state, ignored: "out_of_order" };
+    else plan = planProgress(current.state, target as ShipmentState);
     let state = current.state;
     for (const step of plan.steps) {
       if (!(await shipping.moveState(current.id, step.from, step.to, now))) break;
@@ -445,22 +456,53 @@ export async function handleGhnCallback(
         },
       );
     }
+    if (cancelledAtProvider && plan.ignored === "out_of_order") {
+      logger.warn(
+        `[shipping] Hãng báo hủy vận đơn ${current.id} đang ở ${current.state} — đã lấy hàng, bỏ qua`,
+      );
+    }
+    const carrierCancelled = isCarrierCancelled({
+      state,
+      provider_order_code: current.provider_order_code,
+    });
     // Fulfillment native theo trạng thái đã đối chiếu (T-043). Lỗi tạm → 503, sự kiện chưa `applied` để hãng gửi lại
     // (bước trạng thái ở trên không lùi nên lần sau chỉ làm tiếp phần native); dữ liệu lệch → ghi lỗi, không chặn sự kiện.
-    let nativeSync: "ok" | FulfillmentSyncError["reason"] = "ok";
-    try {
-      const fresh = (await shipping.shipmentByClientCode(current.client_order_code)) as ShipmentRow;
-      await syncNativeProgress(container, fresh, SYSTEM_AUDIT);
-    } catch (e) {
-      const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
-      if (!(e instanceof FulfillmentSyncError)) {
-        logger.warn(
-          `[shipping] Chưa đồng bộ fulfillment native cho vận đơn ${current.id}: ${(e as Error).message}`,
-        );
-        return { status: 503 as const, body: { ok: false, code: "FULFILLMENT_SYNC_RETRY" } };
+    // Vận đơn bị hủy trước lấy hàng: KHÔNG đồng bộ (không tạo fulfillment/trừ tồn cho hàng chưa rời shop).
+    let nativeSync: "ok" | "skipped" | FulfillmentSyncError["reason"] = carrierCancelled ? "skipped" : "ok";
+    if (!carrierCancelled) {
+      try {
+        const fresh = (await shipping.shipmentByClientCode(current.client_order_code)) as ShipmentRow;
+        await syncNativeProgress(container, fresh, SYSTEM_AUDIT);
+      } catch (e) {
+        if (!(e instanceof FulfillmentSyncError)) {
+          logger.warn(
+            `[shipping] Chưa đồng bộ fulfillment native cho vận đơn ${current.id}: ${(e as Error).message}`,
+          );
+          return {
+            status: 503 as const,
+            body: { ok: false, code: "FULFILLMENT_SYNC_RETRY" },
+          };
+        }
+        logger.error(`[shipping] Không ghi nhận được xuất kho cho vận đơn ${current.id}: ${e.reason}`);
+        nativeSync = e.reason;
       }
-      logger.error(`[shipping] Không ghi nhận được xuất kho cho vận đơn ${current.id}: ${e.reason}`);
-      nativeSync = e.reason;
+    }
+    // Hàng hoàn/hủy (T-045): kho cách ly + hủy đơn + hoàn tiền chờ duyệt. Chạy mỗi lần vận đơn ở trạng thái kết thúc
+    // (kể cả callback trùng trạng thái) — idempotent, nên lần trước dở dang được làm tiếp. Lỗi → 503 để hãng gửi lại.
+    let carrier: CarrierSettlement | null = null;
+    const outcome = carrierCancelled ? "cancelled" : state === "returned" ? "returned" : null;
+    if (outcome) {
+      try {
+        carrier = await settleCarrierReturn(container, current, outcome, detail.status, SYSTEM_AUDIT, now);
+      } catch (e) {
+        logger.error(
+          `[shipping] Chưa xử lý được hàng hoàn của vận đơn ${current.id}: ${(e as Error).message}`,
+        );
+        return {
+          status: 503 as const,
+          body: { ok: false, code: "CARRIER_RETURN_RETRY" },
+        };
+      }
     }
     const result = {
       state,
@@ -469,6 +511,7 @@ export async function handleGhnCallback(
       ignored: plan.ignored,
       settlement_state: current.settlement_state,
       native_sync: nativeSync,
+      ...(carrier && { carrier }),
     };
     await shipping.markEventApplied(ev.id, current.id, result);
     return { status: 200 as const, body: { ok: true, ...result } };

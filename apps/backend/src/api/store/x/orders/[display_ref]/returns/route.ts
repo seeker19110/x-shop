@@ -8,7 +8,12 @@ import {
   returnsOf,
 } from "../../../../../../workflows/returns/order-context";
 import { SYSTEM_AUDIT } from "../../../../../../workflows/returns/refunds";
-import { presentReturn, requestReturn, returnableLines } from "../../../../../../workflows/returns/returns";
+import {
+  isCarrierReturn,
+  presentReturn,
+  requestReturn,
+  returnableLines,
+} from "../../../../../../workflows/returns/returns";
 
 /**
  * Đổi/trả của khách (POST03) — header `x-order-access` như mọi route đơn sau mua (token sai/thiếu → 404, AT20).
@@ -26,7 +31,10 @@ export const GET = async (req: MedusaStoreRequest, res: MedusaResponse): Promise
     } catch {
       canRequest = false;
     }
-    const returns = await returnsOf(req.scope).listReturnsOfOrder(fin.order_id);
+    // Hàng hoàn từ hãng (T-045) là việc nội bộ của kho — khách chỉ thấy yêu cầu đổi/trả của chính mình.
+    const returns = (await returnsOf(req.scope).listReturnsOfOrder(fin.order_id)).filter(
+      (r) => !isCarrierReturn(r),
+    );
     res.status(200).json({
       display_ref: fin.display_ref,
       can_request: canRequest,

@@ -1,6 +1,6 @@
 import { listWards, validateAddress } from "@x-shop/domain";
 import { GhnError, HttpGhnClient, MockModeGhnClient } from "../ghn-client";
-import { forwardPath, planProgress } from "../progress";
+import { forwardPath, isCarrierCancelled, planCancel, planProgress } from "../progress";
 
 const ward = listWards("01")[0]!;
 const addr = validateAddress({ provinceCode: "01", wardCode: ward.code, line: "1 Tràng Tiền" });
@@ -46,6 +46,42 @@ describe("planProgress — áp trạng thái hãng, không lùi", () => {
   it("giao lỗi rồi giao lại là hợp lệ", () => {
     expect(planProgress("shipped", "failed").final).toBe("failed");
     expect(planProgress("failed", "shipped").final).toBe("shipped");
+  });
+  it("hoàn về sau giao lỗi đi qua returning; đã giao thì KHÔNG sang hoàn về (T-045)", () => {
+    expect(planProgress("failed", "returned").steps.map((s) => s.to)).toEqual(["returning", "returned"]);
+    expect(planProgress("returning", "returned").final).toBe("returned");
+    expect(planProgress("delivered", "returning")).toEqual({
+      steps: [],
+      final: "delivered",
+      ignored: "out_of_order",
+    });
+    expect(planProgress("delivered", "returned").ignored).toBe("out_of_order");
+    expect(planProgress("delivered", "failed").ignored).toBe("out_of_order");
+  });
+});
+
+describe("planCancel — hãng hủy trước lấy hàng (T-045)", () => {
+  it("packed/picking → về unfulfilled qua cạnh lùi hợp lệ; đã unfulfilled → duplicate", () => {
+    expect(planCancel("packed")).toEqual({
+      steps: [
+        { from: "packed", to: "picking" },
+        { from: "picking", to: "unfulfilled" },
+      ],
+      final: "unfulfilled",
+      ignored: null,
+    });
+    expect(planCancel("picking").steps).toEqual([{ from: "picking", to: "unfulfilled" }]);
+    expect(planCancel("unfulfilled")).toMatchObject({ steps: [], ignored: "duplicate" });
+  });
+  it("đã lấy hàng/đã giao/đang hoàn → out_of_order, giữ nguyên", () => {
+    for (const s of ["shipped", "failed", "delivered", "returning", "returned"] as const) {
+      expect(planCancel(s)).toEqual({ steps: [], final: s, ignored: "out_of_order" });
+    }
+  });
+  it("isCarrierCancelled: unfulfilled + có mã hãng; giữ chỗ chưa có mã → false", () => {
+    expect(isCarrierCancelled({ state: "unfulfilled", provider_order_code: "GHN1" })).toBe(true);
+    expect(isCarrierCancelled({ state: "unfulfilled", provider_order_code: null })).toBe(false);
+    expect(isCarrierCancelled({ state: "packed", provider_order_code: "GHN1" })).toBe(false);
   });
 });
 

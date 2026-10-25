@@ -17,10 +17,11 @@ import { readCheckoutError } from "../../lib/checkout/errors";
 import { cancelNativeOrder } from "../../lib/checkout/jobs";
 import { lockKeys } from "../../lib/checkout/locks";
 import { adjustInventory } from "../../lib/inventory/adjust";
+import { shippedFromLocations } from "../../lib/shipping/fulfillment";
 import { SEED } from "../../scripts/seed";
 import { sizeChartsOfProducts } from "../../lib/catalog/size-chart-snapshot";
 import type { ReturnKind, ReturnReason } from "../../modules/returns/constants";
-import type { RefundRow, ReturnLineRow, ReturnWithLines } from "../../modules/returns/service";
+import type { RefundRow, ReturnLineRow, ReturnRow, ReturnWithLines } from "../../modules/returns/service";
 import type { CheckoutContact, InventoryRequirement } from "../checkout/steps";
 import { ReturnsError } from "./errors";
 import {
@@ -566,15 +567,232 @@ async function moveStock(
   }
 }
 
-/** Kho bán để nhập lại: kho đã giữ hàng cho dòng gốc, không có thì kho bán đầu tiên của kênh. */
-async function restockLocationOf(container: Scope, ctx: OrderContext, line: ReturnLineRow): Promise<string> {
+export type RestockSource = "fulfillment_stock" | "fulfillment" | "reservation" | "channel_default";
+
+/**
+ * Kho bán để nhập lại hàng đạt kiểm định, theo TỪNG inventory item của dòng gốc — thứ tự fallback rõ ràng (T-045):
+ *  1. `fulfillment_stock`: kho đã xuất của item theo fulfillment native (`metadata.x_stock`) — T-043 nhả reservation khi
+ *     xuất kho nên đây là nguồn đúng cho mọi đơn đã có vận đơn;
+ *  2. `fulfillment`: kho của fulfillment chứa dòng (item không có trong x_stock — vd fulfillment cũ);
+ *  3. `reservation`: kho đang giữ hàng (đơn chưa đi qua xuất kho T-043);
+ *  4. `channel_default`: kho bán đầu tiên (theo id) của kênh bán.
+ * Không có nguồn nào → 409. Nguồn đã dùng ghi vào audit kiểm định (`restocked_to`).
+ */
+export async function restockLocationsOf(
+  container: Scope,
+  ctx: Pick<OrderContext, "fin" | "native">,
+  line: Pick<ReturnLineRow, "order_line_item_id">,
+): Promise<(inventoryItemId: string) => { location_id: string; source: RestockSource }> {
+  const shipped = await shippedFromLocations(
+    container as MedusaContainer,
+    ctx.fin.order_id,
+    line.order_line_item_id,
+  );
   const reservations = await container
     .resolve(Modules.INVENTORY)
     .listReservationItems({ line_item_id: line.order_line_item_id });
-  const loc =
-    reservations[0]?.location_id ?? (await sellableLocations(container, ctx.native.sales_channel_id))[0];
-  if (!loc) throw new ReturnsError("INVALID_STATE", "Không xác định được kho bán để nhập lại");
-  return loc;
+  const fallback = (await sellableLocations(container, ctx.native.sales_channel_id))[0] ?? null;
+  return (inventoryItemId) => {
+    const fromStock = shipped.byItem.get(inventoryItemId);
+    if (fromStock) return { location_id: fromStock, source: "fulfillment_stock" };
+    if (shipped.fulfillmentLocation)
+      return {
+        location_id: shipped.fulfillmentLocation,
+        source: "fulfillment",
+      };
+    const held =
+      reservations.find((r) => r.inventory_item_id === inventoryItemId)?.location_id ??
+      reservations[0]?.location_id;
+    if (held) return { location_id: held, source: "reservation" };
+    if (fallback) return { location_id: fallback, source: "channel_default" };
+    throw new ReturnsError("INVALID_STATE", "Không xác định được kho bán để nhập lại", {
+      line_id: line.order_line_item_id,
+    });
+  };
+}
+
+/* ------------------------------------------------------------------ hàng hoàn từ hãng (T-045) */
+
+/** Người tạo/nhận của yêu cầu hàng hoàn do hệ thống mở theo trạng thái hãng đã đối chiếu API. */
+export const CARRIER_RETURN_ACTOR = "system:carrier";
+const CARRIER_KEY_PREFIX = "carrier:";
+
+/** Khóa chống trùng của yêu cầu hàng hoàn: một vận đơn (client_order_code) → tối đa một yêu cầu. */
+export const carrierReturnKey = (clientOrderCode: string) => `${CARRIER_KEY_PREFIX}${clientOrderCode}`;
+
+/**
+ * Yêu cầu hàng hoàn từ hãng (không do khách/CSKH tạo). Khóa do server đặt — khóa của khách/CSKH luôn là
+ * `<order_id>:<Idempotency-Key>` nên không thể trùng tiền tố.
+ */
+export const isCarrierReturn = (ret: Pick<ReturnRow, "idempotency_key">) =>
+  ret.idempotency_key.startsWith(CARRIER_KEY_PREFIX);
+
+export interface CarrierReturnInput {
+  order_id: string;
+  client_order_code: string;
+  provider: string;
+  /** cancelled = hãng hủy trước lấy hàng (hàng chưa rời shop) · returned = hãng đã hoàn hàng về shop. */
+  outcome: "cancelled" | "returned";
+  provider_status: string;
+  /** Dòng đơn → số lượng đã thực sự rời tồn bán (theo fulfillment native đã ghi sổ xuất kho). */
+  quantities: ReadonlyMap<string, number>;
+}
+
+/**
+ * Nhận hàng hoàn từ hãng vào KHO CÁCH LY chờ kiểm định (T-045, INV04, D-019) — KHÔNG cộng tồn bán. Tạo (một lần, theo
+ * `carrierReturnKey`) yêu cầu `kind=return` do hệ thống mở, đi đúng máy trạng thái requested → approved → received, nhập
+ * cách ly qua sổ điều chỉnh có khóa chống trùng theo dòng trả (cùng khóa `xret-recv-*` với nhận hàng tay — không cộng hai
+ * lần). Kiểm định dùng lại `inspectReturn` (đạt → kho bán gốc, lỗi → ở lại cách ly, không có/thiếu → rời cách ly);
+ * tiền KHÔNG tính ở đây (đơn hủy + hoàn tiền hủy đơn — lib/shipping/return-to-sender.ts).
+ * Gọi khi ĐANG giữ khóa `order:<id>`. Callback lặp/đồng thời → cùng một yêu cầu, tồn cách ly cộng đúng một lần.
+ */
+export async function receiveCarrierReturnLocked(
+  container: Scope,
+  input: CarrierReturnInput,
+  auditCtx: AuditCtx,
+): Promise<{ ret: ReturnWithLines; created: boolean; received: boolean }> {
+  const svc = returnsOf(container);
+  const key = carrierReturnKey(input.client_order_code);
+  const wanted = [...input.quantities.entries()]
+    .filter(([, q]) => Number.isSafeInteger(q) && q > 0)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const hash = payloadHash({ key, lines: wanted });
+
+  let created = false;
+  const prior = await svc.findReturnByKey(key);
+  let ret = prior ? await svc.getReturn(prior.id) : null;
+  if (!ret) {
+    if (wanted.length === 0) throw new ReturnsError("VALIDATION", "Không có hàng nào đã rời kho để nhận lại");
+    const ctx = await loadOrderContext(container, input.order_id);
+    const byId = new Map(ctx.lines.map((l) => [l.id, l]));
+    const now = new Date();
+    try {
+      const r = await svc.transaction(async (trx) => {
+        await svc.lockOrder(trx, input.order_id);
+        const again = await svc.findReturnByKey(key, trx);
+        if (again)
+          return {
+            ret: (await svc.getReturn(again.id, trx)) as ReturnWithLines,
+            created: false,
+          };
+        const note =
+          input.outcome === "cancelled"
+            ? `Hãng ${input.provider} hủy vận đơn ${input.client_order_code} trước khi lấy hàng — kiểm lại hàng trước khi bán`
+            : `Hãng ${input.provider} hoàn vận đơn ${input.client_order_code} về shop — chờ kiểm định`;
+        const row = await svc.insertReturn(
+          trx,
+          {
+            order_id: input.order_id,
+            kind: "return",
+            reason: "other",
+            note,
+            channel: "staff",
+            requested_by: CARRIER_RETURN_ACTOR,
+            idempotency_key: key,
+            payload_hash: hash,
+          },
+          wanted.map(([lineId, quantity]) => {
+            const line = byId.get(lineId);
+            if (!line) {
+              throw new ReturnsError("INVALID_STATE", "Dòng hàng hoàn không thuộc đơn", { line_id: lineId });
+            }
+            return {
+              order_line_item_id: lineId,
+              variant_id: line.variant_id,
+              quantity,
+              exchange_variant_id: null,
+              size_chart: line.size_chart,
+            };
+          }),
+        );
+        const approved = await svc.updateReturn(trx, row.id, ["requested"], {
+          state: "approved",
+          decided_by: CARRIER_RETURN_ACTOR,
+          decided_at: now,
+          decision_note: `${input.provider}: ${input.provider_status}`.slice(0, 200),
+        });
+        if (!approved) throw new ReturnsError("INVALID_STATE", "Không mở được yêu cầu hàng hoàn");
+        return {
+          ret: (await svc.getReturn(row.id, trx)) as ReturnWithLines,
+          created: true,
+        };
+      });
+      ret = r.ret;
+      created = r.created;
+    } catch (e) {
+      if (typeof e !== "object" || e === null || (e as { code?: string }).code !== "23505") throw e;
+      const winner = await svc.findReturnByKey(key);
+      if (!winner) throw e;
+      ret = (await svc.getReturn(winner.id)) as ReturnWithLines;
+    }
+    if (created) {
+      await audit(container, auditCtx, {
+        action: "return.requested",
+        resource_type: "return",
+        resource_id: ret.id,
+        reason: input.outcome === "cancelled" ? "CARRIER_CANCELLED" : "CARRIER_RETURNED",
+        changes: {
+          order_id: input.order_id,
+          source: "carrier",
+          provider: input.provider,
+          provider_status: input.provider_status.slice(0, 50),
+          lines: ret.lines.map((l) => ({
+            line_id: l.order_line_item_id,
+            quantity: l.quantity,
+          })),
+        },
+      });
+    }
+  }
+
+  // Nhập cách ly TRƯỚC khi chốt `received` (như nhận hàng tay): sập giữa chừng thì lần sau chỉ replay theo khóa dòng trả.
+  if (ret.state !== "approved") return { ret, created, received: false };
+  const current = ret;
+  const quarantine = await quarantineLocationId(container);
+  for (const l of current.lines) {
+    await moveStock(
+      container,
+      l,
+      current.id,
+      (inv) => [
+        {
+          step: "recv",
+          location_id: quarantine,
+          delta: l.quantity * inv.required_quantity,
+          reason: "return_received",
+        },
+      ],
+      auditCtx,
+    );
+  }
+  const moved = await svc.transaction(async (trx) => {
+    const m = await svc.updateReturn(trx, current.id, ["approved"], {
+      state: "received",
+      received_by: CARRIER_RETURN_ACTOR,
+      received_at: new Date(),
+    });
+    if (!m) return false;
+    for (const l of current.lines) await svc.updateLine(trx, l.id, { received_quantity: l.quantity });
+    return true;
+  });
+  const after = (await svc.getReturn(current.id)) as ReturnWithLines;
+  if (moved) {
+    await audit(container, auditCtx, {
+      action: "return.received",
+      resource_type: "return",
+      resource_id: current.id,
+      changes: {
+        order_id: input.order_id,
+        source: "carrier",
+        location: "quarantine",
+        lines: after.lines.map((l) => ({
+          line_id: l.order_line_item_id,
+          received: l.received_quantity,
+        })),
+      },
+    });
+  }
+  return { ret: after, created, received: moved };
 }
 
 /**
@@ -775,8 +993,20 @@ export async function inspectReturn(
     // Tồn TRƯỚC khi chốt trạng thái: mỗi bước một khóa chống trùng → chạy lại sau sự cố chỉ "replay". Đạt: cách ly →
     // kho bán; không đạt: rời kho cách ly (trả lại khách); lỗi: ở lại kho cách ly.
     const quarantine = await quarantineLocationId(container);
+    const restockedTo: Array<{
+      line_id: string;
+      inventory_item_id: string;
+      location_id: string;
+      source: string;
+    }> = [];
     for (const p of plan) {
-      const sellable = p.restock > 0 ? await restockLocationOf(container, ctx, p.line) : quarantine;
+      const locate = p.restock > 0 ? await restockLocationsOf(container, ctx, p.line) : null;
+      const sellable = (invId: string) => {
+        if (!locate) return quarantine;
+        const r = locate(invId);
+        restockedTo.push({ line_id: p.line.order_line_item_id, inventory_item_id: invId, ...r });
+        return r.location_id;
+      };
       await moveStock(
         container,
         p.line,
@@ -790,7 +1020,7 @@ export async function inspectReturn(
           },
           {
             step: "restock",
-            location_id: sellable,
+            location_id: sellable(inv.inventory_item_id),
             delta: p.restock * inv.required_quantity,
             reason: "return_restock",
           },
@@ -806,7 +1036,11 @@ export async function inspectReturn(
     }
 
     const orderLines = new Map(ctx.lines.map((l) => [l.id, l]));
-    const captures = cur.kind === "return" ? await capturesOf(container, ctx) : [];
+    // Hàng hoàn từ hãng (T-045): tiền đã xử lý khi hủy đơn (COD chưa thu → không thu/không hoàn; đã thu → hoàn tiền hủy
+    // đơn) — kiểm định chỉ quyết tồn, không mở thêm hoàn tiền.
+    const carrier = isCarrierReturn(cur);
+    const refundable = cur.kind === "return" && !carrier;
+    const captures = refundable ? await capturesOf(container, ctx) : [];
     const refund = await svc.transaction(async (trx) => {
       await svc.lockOrder(trx, cur.order_id);
       const moved = await svc.updateReturn(trx, id, ["received"], {
@@ -815,12 +1049,12 @@ export async function inspectReturn(
         inspected_at: new Date(),
       });
       if (!moved) throw new ReturnsError("INVALID_STATE", "Yêu cầu vừa được xử lý bởi người khác");
-      const prev = cur.kind === "return" ? await svc.acceptedByLine(trx, cur.order_id, id) : new Map();
+      const prev = refundable ? await svc.acceptedByLine(trx, cur.order_id, id) : new Map();
       const amounts: number[] = [];
       for (const p of plan) {
         let amount = 0;
         const accepted = p.restock + p.damaged;
-        if (cur.kind === "return" && accepted > 0) {
+        if (refundable && accepted > 0) {
           const ol = orderLines.get(p.line.order_line_item_id);
           if (!ol) throw new ReturnsError("INVALID_STATE", "Dòng đơn không còn tồn tại");
           const before = prev.get(p.line.order_line_item_id) ?? { accepted: 0, refunded: 0 };
@@ -832,13 +1066,13 @@ export async function inspectReturn(
           restock_quantity: p.restock,
           damaged_quantity: p.damaged,
           rejected_quantity: p.rejected,
-          refund_amount: cur.kind === "return" ? amount : null,
+          refund_amount: refundable ? amount : null,
           inspection_note: p.note,
         });
       }
       const total = sumVnd(amounts);
       if (cur.kind !== "return") return null;
-      if (total === 0) {
+      if (!refundable || total === 0) {
         await svc.updateReturn(trx, id, ["inspected"], { state: "closed", closed_at: new Date() });
         return null;
       }
@@ -875,6 +1109,8 @@ export async function inspectReturn(
           refund_amount: l.refund_amount,
         })),
         refund_id: refund?.id ?? null,
+        ...(carrier && { source: "carrier" }),
+        ...(restockedTo.length > 0 && { restocked_to: restockedTo }),
       },
     });
     return { ret: after, refund, changed: true };
@@ -919,6 +1155,7 @@ export async function presentReturn(container: Scope, ret: ReturnWithLines, opts
     created_at: new Date(ret.created_at).toISOString(),
     ...(!opts.customer && {
       order_id: ret.order_id,
+      source: isCarrierReturn(ret) ? ("carrier" as const) : ("request" as const),
       channel: ret.channel,
       requested_by: ret.requested_by,
       decided_by: ret.decided_by,

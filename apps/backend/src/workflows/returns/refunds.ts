@@ -20,7 +20,14 @@ import { RETURNS_CONFIG, type RefundMethod, type RefundReason } from "../../modu
 import type { RefundRow } from "../../modules/returns/service";
 import type ReturnsModuleService from "../../modules/returns/service";
 import { ReturnsError } from "./errors";
-import { checkoutOf, loadOrderContext, returnsOf, withOrderLock, type OrderContext } from "./order-context";
+import {
+  checkoutOf,
+  loadOrderContext,
+  returnsOf,
+  shippingOf,
+  withOrderLock,
+  type OrderContext,
+} from "./order-context";
 import { getRefundGateway, type ProviderRefundRequest, type ProviderRefundResult } from "./refund-gateway";
 
 type Scope = Pick<MedusaContainer, "resolve">;
@@ -549,7 +556,10 @@ async function afterRefundSucceeded(container: Scope, r: RefundRow): Promise<voi
   }
   if (r.reason === "cancellation") {
     try {
-      await cancelNativeOrder(container as MedusaContainer, r.order_id);
+      // Hãng đã lấy hàng rồi hoàn về (T-045): fulfillment native đã `shipped` không hủy được (Medusa chặn) nên đơn native
+      // giữ nguyên làm lịch sử giao/hoàn — chỉ đóng ngoại lệ. Còn lại: hủy đơn native khi tiền đã hoàn (D-012).
+      const shipment = await shippingOf(container).shipmentOfOrder(r.order_id);
+      if (shipment?.state !== "returned") await cancelNativeOrder(container as MedusaContainer, r.order_id);
     } catch (e) {
       container
         .resolve(ContainerRegistrationKeys.LOGGER)
