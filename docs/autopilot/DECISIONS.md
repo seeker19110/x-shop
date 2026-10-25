@@ -178,3 +178,18 @@
 - Chọn: Thêm services postgres/redis cho job e2e trong ci.yml; xt.yaml e2e: pnpm e2e, e2e_setup cài Chromium
 - Lý do (tiêu chí chất lượng cuối): Đặc tả §13.3 đòi E2E luồng trọng yếu trong CI; services giống job gate, không phụ thuộc docker trên runner, pnpm e2e tự reset DB
 - Đường lùi: Đặt lại e2e: "" trong xt.yaml (CI bỏ qua job e2e)
+
+### D-026 · 2026-10-25T17:44:48+00:00 · T-028: nghĩa 'giá trị đơn' trong báo cáo đối soát
+
+- Phương án: (1) Mọi đơn trừ đơn hủy, kể cả đang chờ thanh toán · (2) Chỉ đơn placed/confirmed/completed; đơn chờ thanh toán tách trường awaiting_payment_value
+- Chọn: Chỉ đơn placed/confirmed/completed; đơn chờ thanh toán tách trường awaiting_payment_value
+- Lý do (tiêu chí chất lượng cuối): Không thổi phồng giá trị đơn bằng đơn chưa chắc thành; kế toán vẫn thấy phần chờ
+- Đường lùi: Gộp lại hai trường trong báo cáo summary
+
+### D-027 · 2026-10-25T17:44:48+00:00 · T-028: định dạng file đối soát và quyền đóng chênh lệch
+
+- Phương án: (1) Chờ định dạng xuất thật VNPAY/GHN · (2) CSV nội bộ 4 cột (mã tham chiếu, số tiền VND nguyên, thời điểm, loại) ghi rõ là giả định; đóng chênh lệch cần exception.resolve + settlement.read; hãng chuyển dư → vận đơn disputed, ưu tiên normal
+- Chọn: CSV nội bộ 4 cột (mã tham chiếu, số tiền VND nguyên, thời điểm, loại) ghi rõ là giả định; đóng chênh lệch cần exception.resolve + settlement.read; hãng chuyển dư → vận đơn disputed, ưu tiên normal
+- Lý do (tiêu chí chất lượng cuối): Không chặn tiến độ vì tài liệu chính thức chưa truy cập được; parser chặt, đổi định dạng chỉ ở một chỗ (constants/csv)
+- Đường lùi: Thêm adapter định dạng thật khi có khoá merchant
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Dùng file xuất thật VNPAY/GHN khi có hợp đồng merchant
