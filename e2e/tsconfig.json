@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false,
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "allowJs": false
+  },
+  "include": ["./*.ts", "./*.d.mts", "../playwright.config.ts"]
+}
