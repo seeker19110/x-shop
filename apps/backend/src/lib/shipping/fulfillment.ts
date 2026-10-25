@@ -78,6 +78,7 @@ export interface StockEntry {
 
 interface OrderItemRow {
   id: string;
+  variant_id?: string | null;
   title?: string | null;
   variant_title?: string | null;
   variant_sku?: string | null;
@@ -116,6 +117,7 @@ async function loadOrder(container: MedusaContainer, orderId: string): Promise<O
       "status",
       "sales_channel_id",
       "items.id",
+      "items.variant_id",
       "items.title",
       "items.variant_title",
       "items.variant_sku",
@@ -141,8 +143,16 @@ async function loadOrder(container: MedusaContainer, orderId: string): Promise<O
 
 const activeFulfillments = (o: OrderRow) =>
   (o.fulfillments ?? []).flatMap((f) => (f && !f.canceled_at ? [f] : []));
-const fulfillmentOf = (o: OrderRow, shipmentId: string) =>
-  activeFulfillments(o).find((f) => f.metadata?.x_shipment_id === shipmentId) ?? null;
+/**
+ * Fulfillment của vận đơn: bản còn hiệu lực trước; không có thì bản ĐÃ HỦY (vận đơn bị hãng hủy trước khi lấy hàng —
+ * T-045) — để không bao giờ tạo fulfillment thứ hai (và trừ tồn lần hai) cho cùng vận đơn.
+ */
+const fulfillmentOf = (o: OrderRow, shipmentId: string) => {
+  const mine = (o.fulfillments ?? []).flatMap((f) =>
+    f && f.metadata?.x_shipment_id === shipmentId ? [f] : [],
+  );
+  return mine.find((f) => !f.canceled_at) ?? mine[0] ?? null;
+};
 const qty = (v: unknown): number => toSafeInteger(v) ?? 0;
 
 /** Đọc `metadata.x_stock` đã ghi lúc tạo (không tin mù: bỏ dòng sai kiểu). */
@@ -575,7 +585,8 @@ export async function ensureNativeFulfillment(
     ful = order ? fulfillmentOf(order, shipment.id) : null;
     if (!order || !ful) throw new Error(`Không đọc lại được fulfillment của vận đơn ${shipment.id}`);
   }
-  await applyStock(container, ful, audit);
+  // Fulfillment đã hủy (hãng hủy trước lấy hàng): không trừ tồn nữa — phần đã trừ (nếu có) đi luồng hàng hoàn (T-045).
+  if (!ful.canceled_at) await applyStock(container, ful, audit);
   return ful;
 }
 
@@ -600,6 +611,7 @@ export async function syncNativeProgress(
   audit: AuditCtx,
 ): Promise<{ fulfillment_id: string; shipped: boolean; delivered: boolean }> {
   const ful = await ensureNativeFulfillment(container, shipment, audit);
+  if (ful.canceled_at) return { fulfillment_id: ful.id, shipped: false, delivered: false };
   let shipped = Boolean(ful.shipped_at);
   let delivered = Boolean(ful.delivered_at);
   const reached = (s: ShipmentState) =>
@@ -623,4 +635,79 @@ export async function syncNativeProgress(
     delivered = true;
   }
   return { fulfillment_id: ful.id, shipped, delivered };
+}
+
+/* ---------------------------------------------------------------- hàng hoàn từ hãng (T-045) */
+
+/**
+ * Số lượng THỰC SỰ đã rời tồn bán theo fulfillment của vận đơn, theo dòng đơn: dòng có tồn quản lý được tính khi MỌI
+ * nhóm tồn của nó đã ghi sổ xuất kho (`xful-*`); dòng không quản lý tồn tính theo số giao. Chưa có fulfillment/chưa trừ →
+ * dòng không có trong kết quả (hàng vẫn nằm trong tồn bán — không nhập cách ly để khỏi đếm hai lần).
+ */
+export async function shippedOutQuantities(
+  container: MedusaContainer,
+  shipment: Pick<ShipmentRow, "id" | "order_id">,
+): Promise<{ fulfillment: NativeFulfillmentRow | null; lines: Map<string, number> }> {
+  const lines = new Map<string, number>();
+  const order = await loadOrder(container, shipment.order_id);
+  const ful = order ? fulfillmentOf(order, shipment.id) : null;
+  if (!order || !ful) return { fulfillment: null, lines };
+  const ledger = container.resolve<AuditModuleService>(AUDIT_MODULE);
+  const entries = stockEntriesOf(ful.metadata);
+  const applied = new Map<string, boolean>();
+  for (const e of entries) {
+    const k = stockKey(ful.id, e);
+    if (!applied.has(k)) applied.set(k, Boolean(await ledger.findAdjustmentByKey(k)));
+  }
+  const inFulfillment = new Set((ful.items ?? []).flatMap((i) => (i?.line_item_id ? [i.line_item_id] : [])));
+  for (const item of order.items ?? []) {
+    if (!item || !inFulfillment.has(item.id) || qty(item.quantity) <= 0) continue;
+    const mine = entries.filter((e) => e.line_item_id === item.id);
+    const left =
+      mine.length > 0
+        ? mine.every((e) => applied.get(stockKey(ful.id, e)) === true)
+        : !item.variant?.manage_inventory;
+    if (left) lines.set(item.id, qty(item.quantity));
+  }
+  return { fulfillment: ful, lines };
+}
+
+/**
+ * Hủy fulfillment native CHƯA giao cho hãng (GHN hủy trước lấy hàng). Chỉ ở mức module fulfillment — không đụng tồn
+ * (phần đã trừ đi luồng hàng hoàn vào kho cách ly). Đã lấy/đã giao → không hủy (Medusa cũng chặn). Idempotent.
+ */
+export async function cancelUnshippedFulfillment(
+  container: MedusaContainer,
+  ful: Pick<NativeFulfillmentRow, "id" | "canceled_at" | "shipped_at" | "delivered_at">,
+): Promise<boolean> {
+  if (ful.canceled_at || ful.shipped_at || ful.delivered_at) return false;
+  await container.resolve(Modules.FULFILLMENT).cancelFulfillment(ful.id);
+  return true;
+}
+
+/**
+ * Kho đã xuất hàng của một dòng đơn theo fulfillment native (T-045 — reservation đã bị nhả khi xuất kho nên không còn đọc
+ * được kho từ reservation): theo inventory item (`metadata.x_stock`, bản còn hiệu lực trước rồi bản đã hủy), kèm kho của
+ * fulfillment chứa dòng. Không thấy → map rỗng/null (caller tự chọn fallback rõ ràng).
+ */
+export async function shippedFromLocations(
+  container: MedusaContainer,
+  orderId: string,
+  lineItemId: string,
+): Promise<{ byItem: Map<string, string>; fulfillmentLocation: string | null }> {
+  const order = await loadOrder(container, orderId);
+  const byItem = new Map<string, string>();
+  let fulfillmentLocation: string | null = null;
+  const fs = (order?.fulfillments ?? []).flatMap((f) => (f ? [f] : []));
+  const ordered = [...fs.filter((f) => !f.canceled_at), ...fs.filter((f) => f.canceled_at)];
+  for (const f of ordered) {
+    const hasLine = (f.items ?? []).some((i) => i?.line_item_id === lineItemId);
+    for (const e of stockEntriesOf(f.metadata)) {
+      if (e.line_item_id === lineItemId && !byItem.has(e.inventory_item_id)) {
+        byItem.set(e.inventory_item_id, e.location_id);
+      }
+    }
+    if (hasLine && !fulfillmentLocation && f.location_id) fulfillmentLocation = f.location_id;
+  }
+  return { byItem, fulfillmentLocation };
 }

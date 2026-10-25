@@ -35,7 +35,7 @@ interface CoreResult extends CancelResult {
 }
 
 /** Nhả reservation theo line item của đơn mà KHÔNG hủy đơn native (đơn đã thu tiền — xem `cancelLocked`). */
-async function releaseReservations(container: MedusaContainer, orderId: string): Promise<void> {
+export async function releaseReservations(container: MedusaContainer, orderId: string): Promise<void> {
   const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
     entity: "order",
     fields: ["id", "items.id"],

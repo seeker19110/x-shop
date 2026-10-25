@@ -113,6 +113,17 @@ export function mapGhnStatus(status: string): ShipmentState | null {
   return STATUS_MAP[status] ?? null;
 }
 
+/**
+ * `cancel` = vận đơn bị hủy TRƯỚC khi hãng lấy hàng (hàng chưa rời shop). Máy vận đơn không có trạng thái "hủy" (đặc tả
+ * §6.1) nên KHÔNG nằm trong `mapGhnStatus`: caller đưa vận đơn chưa lấy về `unfulfilled` qua các cạnh lùi hợp lệ
+ * (packed → picking → unfulfilled) và hủy đơn; vận đơn đã lấy/đã giao → bỏ qua (không lùi).
+ */
+export const GHN_CANCELLED_STATUSES: readonly string[] = ["cancel"];
+
+export function isGhnCancelled(status: string): boolean {
+  return GHN_CANCELLED_STATUSES.includes(status);
+}
+
 export interface GhnCallback {
   orderCode: string;
   clientOrderCode: string | null;
