@@ -2,6 +2,8 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { recordAudit } from "../../src/lib/audit/record";
+import { AUDIT_MODULE } from "../../src/modules/audit";
+import type AuditModuleService from "../../src/modules/audit/service";
 import { createAdmin, noThrow, type AdminAccount } from "../helpers/auth";
 
 jest.setTimeout(300 * 1000);
@@ -61,6 +63,58 @@ medusaIntegrationTestRunner({
       // IP chỉ lưu dạng băm, không lưu thô.
       expect(row?.ip_hash).toMatch(/^[0-9a-f]{32}$/);
       expect(JSON.stringify(row)).not.toMatch(/127\.0\.0\.1|::1|::ffff/);
+    });
+
+    describe("giới hạn tần suất ghi audit lần bị từ chối (gộp theo actor, lớp route, lý do)", () => {
+      const deniedRows = async (actorId: string) =>
+        (
+          await container
+            .resolve<AuditModuleService>(AUDIT_MODULE)
+            .list({ action: "rbac.denied", actor_id: actorId }, { limit: 100, offset: 0 })
+        ).entries;
+      const occurrenceOf = (r: { changes: unknown }) =>
+        (r.changes as { throttle?: { occurrence?: unknown } }).throttle?.occurrence;
+
+      it("12 lần bị từ chối ĐỒNG THỜI cùng route → đúng 2 dòng (lần 1 và 10); mọi request vẫn 403", async () => {
+        const who = await createAdmin(rawApi, container, { roles: ["accountant"] });
+        const all = await Promise.all(Array.from({ length: 12 }, () => get("/admin/x/audit", who)));
+        expect(all.map((r) => r.status)).toEqual(Array(12).fill(403));
+        const rows = await deniedRows(who.userId);
+        expect(rows.map(occurrenceOf).sort((a, b) => Number(a) - Number(b))).toEqual([1, 10]);
+        expect(rows[0]).toMatchObject({
+          resource_id: "GET /admin/x/audit",
+          changes: {
+            reason: "missing_permission",
+            permission: "audit.read",
+            throttle: { window_seconds: 60 },
+          },
+        });
+      });
+
+      it("đổi id trên đường dẫn không lách được (cùng lớp route); route/lý do khác → dòng riêng; actor khác → dòng riêng", async () => {
+        const who = await createAdmin(rawApi, container, { roles: ["accountant"] });
+        for (const id of ["user_a", "user_b", "user_c", "user_d"]) {
+          expect((await get(`/admin/x/users/${id}/roles`, who)).status).toBe(403);
+        }
+        expect((await get("/admin/x/khong-khai-bao-1", who)).status).toBe(403);
+        expect((await get("/admin/x/khong-khai-bao-2", who)).status).toBe(403);
+        const rows = await deniedRows(who.userId);
+        expect(rows.map((r) => [r.resource_id, (r.changes as Row).reason, occurrenceOf(r)]).sort()).toEqual(
+          [
+            ["GET /admin/x/khong-khai-bao-1", "UNDECLARED_ROUTE", 1],
+            ["GET /admin/x/users/user_a/roles", "missing_permission", 1],
+          ].sort(),
+        );
+        const other = await createAdmin(rawApi, container, { roles: ["accountant"] });
+        expect((await get("/admin/x/users/user_a/roles", other)).status).toBe(403);
+        expect(await deniedRows(other.userId)).toHaveLength(1);
+      });
+
+      it("lần được phép không ghi rbac.denied và không tính vào nhóm", async () => {
+        const boss = await createAdmin(rawApi, container, { roles: ["owner"] });
+        for (let i = 0; i < 3; i++) expect((await get("/admin/x/audit", boss)).status).toBe(200);
+        expect(await deniedRows(boss.userId)).toHaveLength(0);
+      });
     });
 
     it("không có route sửa/xoá audit (403 fail-closed); DB chặn UPDATE/DELETE", async () => {

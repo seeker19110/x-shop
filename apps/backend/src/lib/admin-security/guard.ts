@@ -3,10 +3,13 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { can, type Permission, type Role } from "@x-shop/domain";
 import { RBAC_MODULE } from "../../modules/rbac";
 import type RbacModuleService from "../../modules/rbac/service";
+import { CHECKOUT_MODULE } from "../../modules/checkout";
+import type CheckoutModuleService from "../../modules/checkout/service";
+import { decideDenyAudit, type WindowCounter } from "../audit/deny-throttle";
 import { recordAudit } from "../audit/record";
 import { sendProblem } from "../http/problem";
 import { getAdminSessionPolicy, isSensitive } from "./config";
-import { resolveAdminRule } from "./policy";
+import { resolveAdminRule, type AdminRule } from "./policy";
 import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
 import { normalizeAdminPath, normalizeMethod } from "./route-match";
 import { checkAndTouchSession, evaluateMfa, mfaCompletedAtMs, type AdminAuthContext } from "./session";
@@ -44,22 +47,63 @@ function deny(
   sendProblem(res, status, code, MESSAGES[code], [], extra);
 }
 
+/** Lớp route để gộp audit từ chối (không dùng đường dẫn cụ thể — đổi id không lách được giới hạn). */
+export function routeClassOf(rule: AdminRule): string {
+  switch (rule.kind) {
+    case "permission":
+      return `perm:${[rule.permission, ...rule.also].join("+")}`;
+    case "deny":
+      return `deny:${rule.reason}`;
+    default:
+      return rule.kind;
+  }
+}
+
+/** Bộ đếm cửa sổ cố định ở Postgres (bảng `rate_limit_counter`, nguyên tử, chung mọi instance, có job dọn). */
+const denyCounter =
+  (req: MedusaRequest): WindowCounter =>
+  (bucket, windowMs, now) =>
+    req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE).hitRateCounter(bucket, windowMs, now);
+
 async function auditDenied(
   req: MedusaRequest,
   method: string,
   path: string,
-  detail: Record<string, unknown>,
+  rule: AdminRule,
+  detail: Record<string, unknown> & { reason: string },
 ) {
+  const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER);
+  const ctx = (req as AuthedRequest).auth_context;
   try {
+    // Chống ngập log: gộp theo (actor, lớp route, lý do) trong cửa sổ — chỉ ghi lần 1, 10, 100… (deny-throttle.ts).
+    const decision = await decideDenyAudit(
+      denyCounter(req),
+      {
+        actorType: ctx?.actor_type ?? "unknown",
+        actorId: ctx?.actor_id ?? null,
+        method,
+        routeClass: routeClassOf(rule),
+        reason: detail.reason,
+      },
+      new Date(),
+      (e) => logger.warn(`[rbac] Bộ đếm audit từ chối lỗi, vẫn ghi audit: ${(e as Error).message}`),
+    );
+    if (!decision.record) return;
     await recordAudit(
       req.scope,
-      { action: "rbac.denied", resource_type: "route", resource_id: `${method} ${path}`, changes: detail },
+      {
+        action: "rbac.denied",
+        resource_type: "route",
+        resource_id: `${method} ${path}`,
+        changes: {
+          ...detail,
+          throttle: { occurrence: decision.occurrence, window_seconds: decision.window_seconds },
+        },
+      },
       req,
     );
   } catch (e) {
-    req.scope
-      .resolve(ContainerRegistrationKeys.LOGGER)
-      .error(`[rbac] Không ghi được audit lần từ chối: ${(e as Error).message}`);
+    logger.error(`[rbac] Không ghi được audit lần từ chối: ${(e as Error).message}`);
   }
 }
 
@@ -81,7 +125,7 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
   const ctx = (req as AuthedRequest).auth_context;
   if (!ctx?.actor_id) return deny(res, 401, "UNAUTHORIZED");
   if (ctx.actor_type !== "user") {
-    await auditDenied(req, method, path, { reason: "actor_type", actor_type: ctx.actor_type ?? null });
+    await auditDenied(req, method, path, rule, { reason: "actor_type", actor_type: ctx.actor_type ?? null });
     return deny(res, 403, "FORBIDDEN");
   }
 
@@ -96,7 +140,7 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
     (rule.kind === "any_role" && roles.length > 0) ||
     (rule.kind === "permission" && [rule.permission, ...rule.also].every((perm) => can(roles, perm)));
   if (!allowed) {
-    await auditDenied(req, method, path, {
+    await auditDenied(req, method, path, rule, {
       reason: rule.kind === "deny" ? rule.reason : "missing_permission",
       permission: rule.kind === "permission" ? rule.permission : null,
       ...(rule.kind === "permission" && rule.also.length > 0 && { also: rule.also }),
