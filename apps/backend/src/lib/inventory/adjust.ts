@@ -25,6 +25,11 @@ export const ADJUST_REASONS = {
   lost: "decrease",
   return_to_supplier: "decrease",
   quarantine: "decrease",
+  /* Hàng trả (T-027, INV04) — luồng tự động của module returns, khóa chống trùng theo dòng trả:
+   * nhận → kho cách ly (không cấp bán); đạt kiểm định → chuyển cách ly → kho bán; không đạt → trả lại khách. */
+  return_received: "increase",
+  return_restock: "either",
+  return_rejected: "decrease",
 } as const;
 export type AdjustReason = keyof typeof ADJUST_REASONS;
 

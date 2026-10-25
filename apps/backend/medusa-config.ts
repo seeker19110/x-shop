@@ -92,5 +92,7 @@ module.exports = defineConfig({
     { resolve: "./src/modules/shipping" },
     // Thông báo giao dịch: outbound_message theo message key duy nhất, adapter log mặc định (T-029).
     { resolve: "./src/modules/notify" },
+    // Đổi trả theo dòng, kiểm định trước restock, hoàn tiền một phần (T-027, POST03, INV04, §6.5).
+    { resolve: "./src/modules/returns" },
   ],
 });
