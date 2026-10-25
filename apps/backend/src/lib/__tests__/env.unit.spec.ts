@@ -24,6 +24,7 @@ const production = {
   COOKIE_SECRET: COOKIE,
   AUTH_MFA_ENCRYPTION_KEY: MFA,
   ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
+  XS_TRUSTED_PROXIES: "10.0.0.0/8",
   STORE_CORS: "https://shop.example.vn",
   ADMIN_CORS: "https://admin.example.vn,http://localhost:9000",
   AUTH_CORS: "https://admin.example.vn,/\\.example\\.vn$/",

@@ -178,18 +178,23 @@ describe("service: token phiên đơn chỉ ở cookie HttpOnly + header, không
     expect(await writeOrderAccess("XS-ABC124", "rác; Path=/", exp)).toBe(false);
   });
 
-  it("không có cookie → not_found, không gọi backend; có cookie → header x-order-access + IP khách", async () => {
+  it("không có cookie → not_found, không gọi backend; có cookie → header x-order-access + IP khách (khi tin proxy)", async () => {
     expect(await fetchOrder("XS-ABC123")).toEqual({ kind: "not_found" });
     expect(calls).toHaveLength(0);
     jar.set(orderCookieName("XS-ABC123"), { value: TOKEN });
     reqHeaders.set("x-forwarded-for", "1.1.1.1, 203.0.113.9");
+    process.env.XS_TRUST_PROXY_HEADERS = "true";
     const r = await fetchOrder("XS-ABC123");
     expect(r.kind).toBe("ok");
+    delete process.env.XS_TRUST_PROXY_HEADERS;
     expect(calls[0]!.url).toBe("http://backend.test:9000/store/x/orders/XS-ABC123");
     expect(calls[0]!.url).not.toContain(TOKEN);
     const h = calls[0]!.init!.headers as Record<string, string>;
     expect(h["x-order-access"]).toBe(TOKEN);
     expect(h["x-forwarded-for"]).toBe("203.0.113.9");
+    // Mặc định không tin header proxy (client tự khai được) → không chuyển tiếp IP.
+    await fetchOrder("XS-ABC123");
+    expect((calls[1]!.init!.headers as Record<string, string>)["x-forwarded-for"]).toBeUndefined();
   });
 
   it("mất mạng → network (không hiển thị trạng thái cũ/đã thanh toán)", async () => {

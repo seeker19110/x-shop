@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { connection } from "next/server";
 import type { ReactNode } from "react";
 import { OfflineBanner } from "../components/pwa/OfflineBanner";
 import { ServiceWorkerRegister } from "../components/pwa/ServiceWorkerRegister";
@@ -26,6 +27,9 @@ export const viewport: Viewport = {
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
+  // CSP nonce mỗi request (src/proxy.ts) chỉ gắn được khi trang render lúc request — mọi trang dưới layout này động
+  // (dữ liệu catalog vẫn cache 60 giây ở tầng fetch). Trang tĩnh sẽ mang script không nonce → bị CSP chặn.
+  await connection();
   // Menu lấy từ dữ liệu (chỉ nhóm có sản phẩm); lỗi nguồn → danh sách rỗng, không làm hỏng trang.
   const categories = await getMenuCategories();
   return (

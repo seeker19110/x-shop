@@ -35,6 +35,11 @@ export const serverEnvSchema = z.object({
   MEDUSA_BACKEND_URL: httpUrl,
   /** Nguồn dữ liệu catalog. Bỏ trống: `backend` nếu `MEDUSA_BACKEND_URL` được đặt thật, ngược lại `fixtures`. */
   XS_DATA_SOURCE: z.enum(DATA_SOURCES).optional(),
+  /**
+   * `true` = storefront đứng sau proxy tin cậy (LB/CDN) đặt `x-real-ip`/`x-forwarded-for` → chuyển tiếp IP khách cho rate
+   * limit của backend. Vắng/`false` = không tin (client gọi thẳng tự khai được) — lib/security/client-ip.ts.
+   */
+  XS_TRUST_PROXY_HEADERS: z.enum(["true", "false"]).optional(),
 });
 
 export type ClientEnv = z.infer<typeof clientEnvSchema>;

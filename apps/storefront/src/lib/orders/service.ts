@@ -1,4 +1,3 @@
-import { headers } from "next/headers";
 import { StoreApiError, storeApi } from "../cart/medusa";
 import { cartEnabled } from "../cart/service";
 import { readOrderAccess, writeOrderAccess } from "./cookie";
@@ -10,35 +9,13 @@ import type { LookupState, OrderResult } from "./types";
  * bao giờ qua URL hay tới trình duyệt. Hàm không ném lỗi nghiệp vụ.
  */
 
-/**
- * IP khách chuyển tiếp cho backend để giới hạn tần suất theo IP (AT20). Ưu tiên `x-real-ip`, rồi mục CUỐI của
- * `x-forwarded-for` (mục do proxy tin cậy liền trước thêm vào — mục đầu do client tự khai được).
- */
-async function clientIpHeader(): Promise<Record<string, string>> {
-  try {
-    const h = await headers();
-    const real = h.get("x-real-ip")?.trim();
-    const xff = h
-      .get("x-forwarded-for")
-      ?.split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const ip = real || xff?.[xff.length - 1];
-    return ip && /^[0-9a-fA-F:.]{2,45}$/.test(ip) ? { "x-forwarded-for": ip } : {};
-  } catch {
-    return {};
-  }
-}
-
 async function call(
   path: string,
   req: Parameters<typeof storeApi>[1] = {},
 ): Promise<{ status: number; body: unknown }> {
   try {
-    const r = await storeApi<unknown>(path, {
-      ...req,
-      headers: { ...(await clientIpHeader()), ...req.headers },
-    });
+    // storeApi tự chuyển tiếp IP khách (lib/security/client-ip.ts) cho giới hạn theo IP ở backend (AT20).
+    const r = await storeApi<unknown>(path, req);
     return { status: r.status, body: r.data };
   } catch (e) {
     if (e instanceof StoreApiError) return { status: e.status, body: e.body };

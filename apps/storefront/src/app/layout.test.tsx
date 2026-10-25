@@ -1,4 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
+
+// `connection()` chỉ có nghĩa trong request thật (ép render động cho CSP nonce) — ngoài Next thì bỏ qua.
+const connectionMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("next/server", async (orig) => ({ ...(await orig<object>()), connection: connectionMock }));
 import RootLayout from "./layout";
 import NotFound from "./not-found";
 
@@ -9,6 +13,11 @@ function renderDoc(markup: string): Document {
 describe("RootLayout", async () => {
   // RootLayout là async server component (đọc menu từ dữ liệu): lấy cây phần tử rồi dựng HTML tĩnh.
   const doc = renderDoc(renderToStaticMarkup(await RootLayout({ children: "nội dung thử" })));
+  const connectionCalls = connectionMock.mock.calls.length;
+
+  it("ép render lúc request (connection) để CSP nonce gắn được vào script (T-034)", () => {
+    expect(connectionCalls).toBeGreaterThan(0);
+  });
 
   it("đặt lang=vi", () => {
     expect(doc.documentElement.getAttribute("lang")).toBe("vi");
