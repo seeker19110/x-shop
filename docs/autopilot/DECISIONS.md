@@ -142,3 +142,24 @@
 - Chọn: Mọi lỗi acquire không phải 'đang bận' → 503 LOCK_UNAVAILABLE; chặn mỗi lệnh khóa 3 s; Retry-After 60 s; không khóa in-memory
 - Lý do (tiêu chí chất lượng cuối): Fail-closed: lỗi hạ tầng khóa lạ nào cũng dừng bán thay vì bán bằng tồn không khóa; 3 s giữ request không treo
 - Đường lùi: Hằng số trong apps/backend/src/lib/checkout/locks.ts
+
+### D-021 · 2026-10-25T09:24:38+00:00 · T-034: CSP storefront
+
+- Phương án: (1) 'unsafe-inline' cho script để giữ trang tĩnh/ISR · (2) Nonce + strict-dynamic mọi trang (trang HTML render động, mất cache HTML CDN; giữ cache fetch 60 s); style-src 'unsafe-inline' vì next/image
+- Chọn: Nonce + strict-dynamic mọi trang (trang HTML render động, mất cache HTML CDN; giữ cache fetch 60 s); style-src 'unsafe-inline' vì next/image
+- Lý do (tiêu chí chất lượng cuối): Chặn XSS là tiêu chí an toàn đứng trên hiệu năng; ảnh hưởng hiệu năng đo lại ở T-035/T-036
+- Đường lùi: Bỏ nonce trong src/proxy.ts cho trang công khai
+
+### D-022 · 2026-10-25T09:24:39+00:00 · T-034: xác định IP khách sau proxy
+
+- Phương án: (1) Dùng req.ip (Express trust proxy=1 cứng của Medusa) · (2) Chỉ tin X-Forwarded-For khi socket thuộc XS_TRUSTED_PROXIES (bắt buộc ở production, giá trị none được phép); storefront chỉ chuyển IP khi XS_TRUST_PROXY_HEADERS=true
+- Chọn: Chỉ tin X-Forwarded-For khi socket thuộc XS_TRUSTED_PROXIES (bắt buộc ở production, giá trị none được phép); storefront chỉ chuyển IP khi XS_TRUST_PROXY_HEADERS=true
+- Lý do (tiêu chí chất lượng cuối): req.ip giả được bằng header → rate limit/audit vô hiệu
+- Đường lùi: Đặt XS_TRUSTED_PROXIES theo hạ tầng
+
+### D-023 · 2026-10-25T09:24:39+00:00 · T-043: tạo fulfillment native khi có vận đơn GHN
+
+- Phương án: (1) Workflow Medusa đầy đủ qua shipping option (cần seed shipping option/profile cho mọi sản phẩm) · (2) Ghép bước tương đương: fulfillment ở kho đã giữ, nhả reservation, trừ tồn dưới khóa có khóa chống trùng; trừ lúc tạo vận đơn
+- Chọn: Ghép bước tương đương: fulfillment ở kho đã giữ, nhả reservation, trừ tồn dưới khóa có khóa chống trùng; trừ lúc tạo vận đơn
+- Lý do (tiêu chí chất lượng cuối): Không đụng catalog/seed; lệch về phía thiếu tồn khi sự cố, không bán âm
+- Đường lùi: Chuyển sang workflow native khi catalog có shipping profile
