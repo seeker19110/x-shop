@@ -163,3 +163,11 @@
 - Chọn: Ghép bước tương đương: fulfillment ở kho đã giữ, nhả reservation, trừ tồn dưới khóa có khóa chống trùng; trừ lúc tạo vận đơn
 - Lý do (tiêu chí chất lượng cuối): Không đụng catalog/seed; lệch về phía thiếu tồn khi sự cố, không bán âm
 - Đường lùi: Chuyển sang workflow native khi catalog có shipping profile
+
+### D-024 · 2026-10-25T10:53:02+00:00 · T-046: X-Content-Type-Options nosniff cho /static (Medusa đăng ký express.static trước middleware dự án)
+
+- Phương án: (1) Header ở reverse proxy/CDN trước backend, ghi vào checklist triển khai · (2) Loader Express chạy trước static (đổi kiến trúc, chưa chắc Medusa hỗ trợ) · (3) Tắt /static ở production, ảnh qua file module S3/CDN
+- Chọn: Header ở reverse proxy/CDN trước backend, ghi vào checklist triển khai
+- Lý do (tiêu chí chất lượng cuối): Không vá framework, dễ lùi; ảnh production sẽ qua CDN nên header đặt ở biên là chuẩn
+- Đường lùi: Chuyển sang file module S3 khi chọn hạ tầng ảnh
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Ảnh qua S3-compatible + CDN đặt nosniff; tắt /static

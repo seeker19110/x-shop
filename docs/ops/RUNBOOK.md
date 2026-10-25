@@ -169,6 +169,10 @@ Sau khi chọn: diễn tập PITR thật trên staging (khôi phục tới `reco
 
 ## 6. Ảnh lỗi / CDN
 - Ảnh hỏng: storefront vẫn hiển thị alt + khung tỷ lệ cố định (không CLS); thay ảnh tạo URL mới (hash), không ghi đè URL cũ.
+- Header file tĩnh (D-024): Medusa phục vụ `/static` bằng `express.static` trước middleware dự án nên backend không gắn
+  được `X-Content-Type-Options: nosniff` cho đường này. Checklist triển khai: reverse proxy/CDN đặt `nosniff` cho
+  `/static/*` (và mọi file ảnh); production nên tắt `/static`, ảnh qua file module S3-compatible + CDN. Kiểm sau deploy:
+  `curl -sI https://<backend>/static/<file> | grep -i x-content-type-options`.
 
 ## 7. Tiền đến sau khi hủy / thu dư
 - `ops_exception late_payment|overpayment`: kế toán xác minh trên cổng → tạo refund (một refund, retry cùng id) → ghi chú khách. Không phục hồi đơn, không giao thay thế khi chưa có xác nhận mới của khách.
