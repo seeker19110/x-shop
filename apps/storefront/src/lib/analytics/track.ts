@@ -19,12 +19,22 @@ declare global {
 const memoryPurchases = new Set<string>();
 let memoryConsent = false;
 
-function storage(): Storage | null {
-  try {
-    return typeof window === "undefined" ? null : window.sessionStorage;
-  } catch {
-    return null;
+/**
+ * Kho dedupe `purchase`: localStorage (bền qua phiên trình duyệt — trang đơn mở lại nhiều ngày sau vẫn không bắn lại),
+ * không có thì sessionStorage, cuối cùng là bộ nhớ.
+ */
+function storages(): Storage[] {
+  if (typeof window === "undefined") return [];
+  const out: Storage[] = [];
+  for (const pick of [() => window.localStorage, () => window.sessionStorage]) {
+    try {
+      const s = pick();
+      if (s) out.push(s);
+    } catch {
+      // trình duyệt chặn kho này
+    }
   }
+  return out;
 }
 
 export function setAnalyticsConsent(granted: boolean): void {
@@ -46,18 +56,20 @@ export function hasAnalyticsConsent(): boolean {
   }
 }
 
-/** `true` nếu đây là lần đầu thấy `order_id` trong phiên (và ghi nhận luôn). Khóa chỉ chứa mã đơn hiển thị, không PII. */
+/**
+ * `true` nếu đây là lần đầu thấy `order_id` trên trình duyệt này (và ghi nhận luôn). Khóa chỉ chứa mã đơn hiển thị,
+ * không PII. Kho đầu tiên đọc/ghi được quyết định; kho hỏng → thử kho sau → bộ nhớ.
+ */
 function firstPurchase(orderId: string): boolean {
   const key = PURCHASE_KEY + orderId;
-  const s = storage();
-  try {
-    if (s) {
+  for (const s of storages()) {
+    try {
       if (s.getItem(key) !== null) return false;
       s.setItem(key, "1");
       return true;
+    } catch {
+      // kho này hỏng/đầy — thử kho tiếp theo
     }
-  } catch {
-    // rơi xuống bộ nhớ
   }
   if (memoryPurchases.has(key)) return false;
   memoryPurchases.add(key);
