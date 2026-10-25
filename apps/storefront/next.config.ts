@@ -65,13 +65,14 @@ const nextConfig: NextConfig = {
         ],
       })),
       {
+        // CSP (nonce mỗi request, frame-ancestors) và HSTS đặt ở src/proxy.ts (T-034).
         source: "/:path*",
         headers: [
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "X-Frame-Options", value: "DENY" },
-          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
         ],
       },
       // Sau quy tắc chung (cùng khóa → quy tắc sau thắng): trang có token tra cứu trên URL và trang trở về từ cổng thanh

@@ -8,6 +8,7 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import { decideDenyAudit, type WindowCounter } from "../audit/deny-throttle";
 import { recordAudit } from "../audit/record";
 import { sendProblem } from "../http/problem";
+import { clientIpOf } from "../security/config";
 import { getAdminSessionPolicy, isSensitive } from "./config";
 import { resolveAdminRule, type AdminRule } from "./policy";
 import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
@@ -201,7 +202,7 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
   return async (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => {
     const store = storeOf(req);
     const identity = identityOf(req);
-    const ip = req.ip ?? "unknown";
+    const ip = clientIpOf(req).ip ?? "unknown";
     const attempt = await registerAttempt(store, scope, identity, ip);
     if (!attempt.allowed) {
       res.setHeader("Retry-After", String(attempt.retryAfterSeconds));

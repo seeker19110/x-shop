@@ -8,9 +8,9 @@ import { CheckoutError } from "../checkout/errors";
  * Giới hạn tần suất của các route đơn sau mua (AT20) — bộ đếm cửa sổ cố định ở Postgres, đúng cả khi nhiều instance.
  * Khóa (IP, SĐT, mã đơn) được băm trước khi lưu: bảng đếm không chứa PII thô.
  *
- * Lưu ý IP: route đọc `req.ip` (Express `trust proxy` = 1 của Medusa → địa chỉ do proxy liền trước báo). Storefront
- * chuyển tiếp IP khách qua `x-forwarded-for`; gọi thẳng backend có thể giả IP → giới hạn theo SĐT/mã đơn mới là chặn
- * cứng, giới hạn theo IP là lớp phụ.
+ * Lưu ý IP: route đọc `clientIp` (lib/security/client-ip.ts) — chỉ tin `x-forwarded-for` khi socket là proxy trong
+ * `XS_TRUSTED_PROXIES` (mặc định không tin). Storefront chuyển tiếp IP khách qua `x-forwarded-for`; giới hạn theo SĐT/mã
+ * đơn là chặn cứng, giới hạn theo IP là lớp phụ.
  */
 export const ORDER_RATE_LIMITS = {
   /** POST /orders/lookup: mỗi SĐT 5 lần/giờ. */

@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { vnpay } from "@x-shop/domain";
 import { flattenQuery, handleVnpayIpn } from "../../../../../lib/checkout/payment";
 import { FixedWindowLimiter } from "../../../../../lib/http/rate-limit";
+import { clientIpOf } from "../../../../../lib/security/config";
 
 /** 300 IPN / 10 giây / IP — đủ cho VNPAY gửi lặp, chặn dội request rẻ tiền. */
 const limiter = new FixedWindowLimiter(300, 10_000);
@@ -13,7 +14,7 @@ const limiter = new FixedWindowLimiter(300, 10_000);
  */
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
-  if (!limiter.allow(req.ip ?? "unknown")) {
+  if (!limiter.allow(clientIpOf(req).ip ?? "unknown")) {
     res.status(429).json(vnpay.IPN_RESPONSES.unknownError);
     return;
   }

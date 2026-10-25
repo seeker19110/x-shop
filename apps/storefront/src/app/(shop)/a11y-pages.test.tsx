@@ -8,6 +8,8 @@ import PolicyGiaoHang from "./giao-hang/page";
 import ProductPage from "./san-pham/[slug]/page";
 import SearchPage from "./tim-kiem/page";
 
+// Root layout gọi `connection()` (ép render động cho CSP nonce) — chỉ có nghĩa trong request thật của Next.
+vi.mock("next/server", async (orig) => ({ ...(await orig<object>()), connection: async () => undefined }));
 vi.mock("next/navigation", async (importOriginal) => ({
   ...(await importOriginal<typeof import("next/navigation")>()),
   useRouter: () => ({ push: vi.fn() }),

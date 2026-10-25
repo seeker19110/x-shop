@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { FixedWindowLimiter } from "../../../../../lib/http/rate-limit";
+import { clientIpOf } from "../../../../../lib/security/config";
 import { handleGhnCallback, ShippingError } from "../../../../../lib/shipping/shipments";
 
 /** 300 callback / 10 giây / IP — đủ cho hãng gửi lặp, chặn dội request rẻ tiền. */
@@ -13,7 +14,7 @@ const limiter = new FixedWindowLimiter(300, 10_000);
  */
 export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
-  if (!limiter.allow(req.ip ?? "unknown")) {
+  if (!limiter.allow(clientIpOf(req).ip ?? "unknown")) {
     res.status(429).json({ ok: false, code: "RATE_LIMITED" });
     return;
   }

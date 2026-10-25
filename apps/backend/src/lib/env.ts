@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseTrustedProxies, TRUSTED_PROXY_KEYWORDS } from "./security/client-ip";
 
 /**
  * Cấu hình môi trường của backend, kiểm bằng zod khi nạp `medusa-config.ts` (BASE-CFG-002).
@@ -29,6 +30,9 @@ export const PRODUCTION_REQUIRED = [
   "AUTH_CORS",
   "AUTH_MFA_ENCRYPTION_KEY",
   "ORDER_LOOKUP_SECRET",
+  // Storefront luôn đứng trước backend (proxy) → phải khai rõ proxy tin cậy (hoặc `none`); thiếu thì mọi khách dùng
+  // chung một IP (của storefront) trong rate limit → nghẽn toàn site (T-034).
+  "XS_TRUSTED_PROXIES",
 ] as const;
 
 /**
@@ -116,7 +120,14 @@ const corsList = z.string().refine(
     raw.split(",").every((part) => {
       const entry = part.trim();
       if (entry === "") return false;
-      if (entry.length > 2 && entry.startsWith("/") && entry.endsWith("/")) return true;
+      if (entry.length > 2 && entry.startsWith("/") && entry.endsWith("/")) {
+        // Regex khớp origin "null" (iframe sandbox, file://, data:) = cho mọi trang độc đọc phản hồi có cookie.
+        try {
+          return !new RegExp(entry.slice(1, -1)).test("null");
+        } catch {
+          return false;
+        }
+      }
       try {
         const u = new URL(entry);
         return (u.protocol === "http:" || u.protocol === "https:") && u.pathname === "/" && u.search === "";
@@ -124,7 +135,9 @@ const corsList = z.string().refine(
         return false;
       }
     }),
-  { message: "phải là danh sách origin http(s) (hoặc /regex/) cách nhau dấu phẩy" },
+  {
+    message: 'phải là danh sách origin http(s) (hoặc /regex/ hợp lệ, không khớp "null") cách nhau dấu phẩy',
+  },
 );
 
 /** Số nguyên giây trong [min, max]; vắng/rỗng → mặc định. */
@@ -159,6 +172,15 @@ const schema = z
     ADMIN_CORS: optionalText.pipe(corsList.optional()),
     AUTH_CORS: optionalText.pipe(corsList.optional()),
     MEDUSA_BACKEND_URL: optionalText.pipe(urlWithProtocol(["http:", "https:"], "http(s)://").optional()),
+    // Proxy tin cậy (LB, storefront) được phép báo IP khách qua X-Forwarded-For. Vắng = không tin header nào (SEC03).
+    XS_TRUSTED_PROXIES: optionalText.pipe(
+      z
+        .string()
+        .refine((v) => parseTrustedProxies(v).ok, {
+          message: `phải là none hoặc danh sách IP/CIDR/${TRUSTED_PROXY_KEYWORDS.join("|")} cách nhau dấu phẩy (≤ 64 mục)`,
+        })
+        .optional(),
+    ),
     MEDUSA_WORKER_MODE: z.preprocess(
       (v) => (v === undefined || v === "" ? "shared" : v),
       z.enum(WORKER_MODES, { message: `phải là một trong ${WORKER_MODES.join("|")}` }),

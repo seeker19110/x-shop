@@ -24,13 +24,22 @@ AUTH_MFA_ENCRYPTION_KEY=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-mfa
 # ADMIN_SESSION_MAX_AGE_SECONDS=28800   # hết hạn tuyệt đối từ lúc xác thực (8 giờ); [300, 86400]
 # ADMIN_SESSION_IDLE_SECONDS=1800       # nhàn rỗi tối đa (30 phút); [60, 28800]
 # ADMIN_REAUTH_MAX_AGE_SECONDS=300      # xác thực lại cho đổi quyền / hoàn tiền vượt ngưỡng (5 phút); [30, 900]
-# Origin http(s) hoặc /regex/, phẩy, không đường dẫn.
+# Origin http(s) hoặc /regex/, phẩy, không đường dẫn. Regex khớp origin "null" bị từ chối. CÙNG danh sách dùng cho chống
+# CSRF (request ghi có cookie phải đến từ origin trong danh sách của namespace: /store, /admin, /auth — T-034). Admin
+# dashboard native phục vụ ở backend (/app) → ADMIN_CORS và AUTH_CORS phải có origin của chính backend.
 STORE_CORS=http://localhost:3000
 ADMIN_CORS=http://localhost:5173,http://localhost:9000
 AUTH_CORS=http://localhost:5173,http://localhost:9000,http://localhost:3000
 # Khoá ký token phiên đơn / liên kết tra cứu đơn (T-021). ≥ 32 ký tự ngẫu nhiên; production bắt buộc, khác khoá giả của dev
 # (dev/test vắng → ORDER_LOOKUP_DEV_SECRET trong env.ts). Đổi khoá = mọi phiên đơn/liên kết đang có mất hiệu lực.
 ORDER_LOOKUP_SECRET=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-order
+# Proxy tin cậy được phép báo IP khách qua X-Forwarded-For (rate limit theo IP, vnp_IpAddr, IP băm trong audit — T-034).
+# Danh sách IP/CIDR (v4/v6) hoặc từ khoá loopback|private|linklocal, phẩy; `none` = không tin proxy nào. Vắng (dev/test)
+# = không tin header nào: IP = địa chỉ socket. Production BẮT BUỘC khai: phải gồm LB/CDN phía trước backend VÀ địa chỉ
+# storefront (storefront gọi backend từ server) — thiếu storefront thì mọi khách dùng chung IP của storefront trong rate
+# limit (nghẽn toàn site). Request từ chính proxy tin cậy mà không có khách đứng sau (vd. storefront nạp catalog đã cache)
+# được miễn giới hạn theo IP; giới hạn theo giỏ/mã/SĐT vẫn áp. IPv6 được gộp theo /64 khi đếm.
+XS_TRUSTED_PROXIES=10.0.0.0/8
 # Tùy chọn
 # MEDUSA_BACKEND_URL=http://localhost:9000
 # MEDUSA_WORKER_MODE=shared   # shared | server | worker (production tách server và worker)
@@ -76,7 +85,14 @@ MEDUSA_BACKEND_URL=http://localhost:9000
 # Nguồn dữ liệu catalog: backend | fixtures. Bỏ trống → `backend` nếu MEDUSA_BACKEND_URL được đặt thật,
 # ngược lại `fixtures` (bộ demo cục bộ trong src/lib/catalog/fixtures.ts + ảnh SVG ở public/demo/).
 # XS_DATA_SOURCE=fixtures
+# true = storefront đứng sau proxy tin cậy (LB/CDN) đặt x-real-ip / x-forwarded-for → chuyển tiếp IP khách cho rate limit
+# của backend. Vắng/false = không tin (client gọi thẳng tự khai được): không chuyển tiếp IP (T-034).
+# XS_TRUST_PROXY_HEADERS=false
 ```
+
+Bảo mật HTTP (T-034, không phải biến môi trường): ngưỡng rate limit ở `apps/backend/src/lib/security/rate-limit.ts`
+(`STORE_RATE_LIMITS`) và `apps/backend/src/lib/orders/rate-limit.ts`; giới hạn upload ở `apps/backend/src/lib/security/upload.ts`
+(`UPLOAD_LIMITS`); CSP storefront ở `apps/storefront/src/lib/security/csp.ts` (nonce mỗi request qua `src/proxy.ts`).
 Chỉ tiền tố `NEXT_PUBLIC_` vào bundle client; bí mật không bao giờ có tiền tố này (BASE-CFG-008).
 
 ## Quản trị: vai trò, MFA, phiên (T-023/T-024)
