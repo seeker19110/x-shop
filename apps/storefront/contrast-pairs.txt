@@ -1,0 +1,24 @@
+# Cặp chữ/nền dùng thật (WCAG 2.2 AA): chữ thường 4.5:1, viền/focus/đồ hoạ 3:1.
+# Cú pháp: FG on BG [min N]
+foreground on background
+foreground on surface
+muted on background
+muted on surface
+accent on background
+accent on surface
+accent-hover on background
+on-accent on accent
+on-accent on accent-hover
+error on background
+error on surface
+error on error-bg
+success on background
+success on success-bg
+warning on background
+warning on warning-bg
+foreground on warning-bg
+# Viền điều khiển và focus ring (đồ hoạ, >= 3:1)
+border-strong on background min 3
+border-strong on surface min 3
+focus-ring on background min 3
+focus-ring on surface min 3

@@ -1,0 +1,83 @@
+# SPEC-checkout — Giỏ, báo giá, đơn chờ thanh toán, giữ hàng
+
+| Trường | Giá trị |
+|---|---|
+| ID tính năng | F-005, F-006 (yêu cầu gốc: CHK01–06, PRICE01–04, INV02–03, DATA01–06, §6.2, §9.1) |
+| Trạng thái | Approved for implementation (D-001) |
+| Nguồn | `docs/specs/DAC-TA-GOC.md` §4.4, §5.2–5.3, §6.1–6.2, §8, §9.1 — file này chỉ bổ sung tiêu chí kiểm được và quyết định lấp chỗ hở |
+
+## 1. User story
+Là khách (không cần tài khoản), tôi muốn xem đúng tổng tiền do server tính rồi đặt hàng một lần duy nhất dù bấm nhiều
+lần, để không bị thu thêm ngầm và không mất hàng đã giữ.
+
+## 2. Tiêu chí chấp nhận
+### S-001 Báo giá do server tính (CHK04, PRICE01)
+- Given giỏ có 2 dòng (đen-M 700.000đ ×1, trắng-S 300.000đ ×2), mã giảm 10% cấp đơn, phí ship GHN báo 30.000đ
+- When `POST /store/x/checkout/quote`
+- Then trả `quote_id`, `expires_at`, `cart_version`, breakdown số nguyên VND: `subtotal=1300000`, `discount=130000`
+  phân bổ theo dòng (tổng phân bổ = 130000 đúng tuyệt đối), `shipping=30000`, `total=1200000`.
+
+### S-002 Giá/phí đổi → xác nhận lại (AT03)
+- Given quote Q1 total 1.200.000đ; giá đen-M đổi thành 750.000đ
+- When submit với `quote_id=Q1`
+- Then `409 PRICE_CHANGED` kèm quote mới; không tạo đơn, không giữ hàng; khách phải xác nhận tổng mới.
+
+### S-003 Idempotency (AT05, DATA01–02)
+- Given cùng `Idempotency-Key` K và cùng payload
+- When submit 2 lần tuần tự, hoặc 10 lần song song, hoặc từ 2 tab cùng cart_version
+- Then đúng 1 đơn, 1 bộ reservation; mọi response cùng `checkout_attempt_id`/`order_id`.
+- And cùng K khác payload → `409 IDEMPOTENCY_CONFLICT`; khác K cùng cart_version đã tiêu thụ → trả lại attempt hiện có (không tạo đơn thứ hai).
+
+### S-004 Tranh món cuối (AT04)
+- Given SKU X còn `stocked=1, reserved=0`
+- When 50 giỏ khác nhau submit đồng thời
+- Then đúng 1 submit thành công; 49 nhận `409 INSUFFICIENT_STOCK` dạng hiểu được; `reserved_quantity=1`, không âm.
+
+### S-005 Hết hạn giữ hàng (INV02, §6.2 bước 8)
+- Given đơn online `awaiting_payment`, `hold_expires_at` đã qua, provider query trả "chưa trả"
+- When job expiry chạy (kể cả chạy 2 lần song song)
+- Then đơn `cancelled`, reservation được nhả đúng 1 lần, quota mã giảm hoàn lại 1 lần.
+- And nếu provider trả `unknown` → không hủy; đánh dấu ngoại lệ có hạn xử lý.
+
+### S-006 Expiry đồng thời callback paid (AT12)
+- Given đơn sắp hết hạn
+- When IPN paid và job expiry tới cùng lúc
+- Then theo khóa đơn chỉ một nhánh thắng: hoặc `confirmed` (paid trước), hoặc `cancelled` + khoản thu đến sau thành ngoại lệ hoàn (AT09). Ledger luôn có khoản thu.
+
+### S-007 Worker chết giữa chừng (AT10)
+- Given attempt đã tạo reservation cho 1/2 dòng rồi tiến trình chết
+- When job đối chiếu chạy
+- Then attempt `preparing` quá hạn được bù trừ: nhả reservation đã tạo, quota mã giảm hoàn lại, đơn không xuất kho.
+
+### S-008 Quota mã giảm cuối (AT33)
+- Given mã giảm còn 1 lượt
+- When 20 checkout đồng thời dùng mã
+- Then đúng 1 dùng được; đơn đó hủy → quota hoàn đúng 1 lần.
+
+### S-009 COD (§6.3)
+- Given payment_method=cod
+- When submit
+- Then đơn `placed` + reservation; hạn xác nhận COD riêng (mặc định 24 giờ, D-004), không dùng TTL online.
+
+### S-010 Giỏ (CHK01)
+- Given giỏ 3 dòng, một dòng SKU vừa bị ẩn
+- When xem giỏ
+- Then 2 dòng còn lại nguyên; dòng lỗi có giải thích và không chặn xóa; không cho checkout tới khi xử lý.
+
+## 3. Ca biên
+| Nhóm | Ca | Hành vi | Scenario |
+|---|---|---|---|
+| Rỗng/null | giỏ rỗng; quantity 0; thiếu SĐT | 422 `CART_EMPTY` / `VALIDATION` kèm trường | S-010 |
+| Cực đại | quantity > 99/dòng; > 50 dòng | 422 `LIMIT` | — |
+| Trùng/idempotency | double click, retry, 2 tab | S-003 | S-003 |
+| Song song | 50 checkout món cuối; quota mã | S-004, S-008 | |
+| Mất mạng | timeout sau submit | 202 + `GET status`; không tạo đơn mới | S-003 |
+| Thời gian | hạn giữ/khuyến mãi tính UTC; biên đúng giây hết hạn = hết hạn | `now >= expires_at` là hết | S-005 |
+| Quyền | khách A dùng cart_id của B | 404 (không lộ tồn tại) | — |
+| Tiền | VND số nguyên; giảm > subtotal | giảm bị kẹp ≤ subtotal; không tổng âm | S-001 |
+
+## 4. Quyết định lấp chỗ hở
+- Idempotency key: phạm vi (session/cart, `checkout.submit`), lưu `sha256(payload chuẩn hóa)`; giữ 24 giờ (D-002).
+- Khóa: Locking Module của Medusa theo key `inventory_item:<id>` sắp tăng dần + khóa `cart:<id>`; ràng buộc UNIQUE
+  `(cart_id, cart_version)` trên checkout attempt là lớp đỡ cuối (D-002).
+- Làm tròn phân bổ giảm giá: largest remainder theo giá trị dòng, hòa thì theo thứ tự dòng (D-002).

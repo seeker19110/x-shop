@@ -42,6 +42,25 @@ jobs:
     name: gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # x-shop: test tích hợp Medusa (giữ hàng, idempotency, IPN — AT04/AT05/AT35) chạy trên Postgres/Redis thật (đặc tả §13.3).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: xshop
+          POSTGRES_PASSWORD: xshop
+          POSTGRES_DB: xshop
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://xshop:xshop@localhost:5432/xshop
+      REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +69,10 @@ jobs:
       # D-096: `dev-task.sh gate-par` bỏ qua (`skip`, xanh) task để rỗng → `quality` xanh mà không chạy gì. Bước này đỏ (mọi
       # `delivery_phase`) tới khi xt.yaml khai lệnh thật cho `lint` và `test`; typecheck/build rỗng vẫn được. Đặt trước
       # `setup` để đỏ sớm, không tốn thời gian cài phụ thuộc.
+      # x-shop: Node ghim theo .nvmrc (Medusa 2.22 đòi >=22.22.0; ADR-0001).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
       - name: Cổng bắt buộc đã khai — `lint` và `test` trong xt.yaml không rỗng/no-op
         run: bash .xtemplates/scripts/dev-task.sh require lint test
       - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
@@ -82,6 +105,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # x-shop: Node ghim theo .nvmrc (Medusa 2.22 đòi >=22.22.0; ADR-0001).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
       - id: mode
         name: e2e-mode — có suite E2E không, chia shard được không (đọc xt.yaml)
         run: |

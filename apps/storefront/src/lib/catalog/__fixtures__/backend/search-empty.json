@@ -1,0 +1,196 @@
+{
+  "items": [],
+  "facets": {
+    "color": [
+      {
+        "value": "den",
+        "label": "Đen",
+        "count": 0,
+        "hex": "#1A1A1A"
+      },
+      {
+        "value": "trang",
+        "label": "Trắng",
+        "count": 0,
+        "hex": "#FFFFFF"
+      },
+      {
+        "value": "be",
+        "label": "Be",
+        "count": 0,
+        "hex": "#D8C3A5"
+      },
+      {
+        "value": "xam",
+        "label": "Xám",
+        "count": 0,
+        "hex": "#8C8C8C"
+      },
+      {
+        "value": "xanh-navy",
+        "label": "Xanh navy",
+        "count": 0,
+        "hex": "#1F2A44"
+      },
+      {
+        "value": "xanh-reu",
+        "label": "Xanh rêu",
+        "count": 0,
+        "hex": "#5B6B3A"
+      },
+      {
+        "value": "nau",
+        "label": "Nâu",
+        "count": 0,
+        "hex": "#6B4423"
+      },
+      {
+        "value": "do",
+        "label": "Đỏ",
+        "count": 0,
+        "hex": "#B3261E"
+      },
+      {
+        "value": "hong",
+        "label": "Hồng",
+        "count": 0,
+        "hex": "#E8A0B4"
+      }
+    ],
+    "size": [
+      {
+        "value": "s",
+        "label": "S",
+        "count": 0
+      },
+      {
+        "value": "m",
+        "label": "M",
+        "count": 0
+      },
+      {
+        "value": "l",
+        "label": "L",
+        "count": 0
+      },
+      {
+        "value": "xl",
+        "label": "XL",
+        "count": 0
+      },
+      {
+        "value": "36",
+        "label": "36",
+        "count": 0
+      },
+      {
+        "value": "37",
+        "label": "37",
+        "count": 0
+      },
+      {
+        "value": "38",
+        "label": "38",
+        "count": 0
+      },
+      {
+        "value": "39",
+        "label": "39",
+        "count": 0
+      },
+      {
+        "value": "40",
+        "label": "40",
+        "count": 0
+      },
+      {
+        "value": "41",
+        "label": "41",
+        "count": 0
+      },
+      {
+        "value": "42",
+        "label": "42",
+        "count": 0
+      },
+      {
+        "value": "onesize",
+        "label": "Một cỡ",
+        "count": 0
+      }
+    ],
+    "material": [
+      {
+        "value": "cotton",
+        "label": "Cotton",
+        "count": 0
+      },
+      {
+        "value": "da",
+        "label": "Da",
+        "count": 0
+      },
+      {
+        "value": "denim",
+        "label": "Denim",
+        "count": 0
+      },
+      {
+        "value": "kaki",
+        "label": "Kaki",
+        "count": 0
+      },
+      {
+        "value": "len",
+        "label": "Len",
+        "count": 0
+      },
+      {
+        "value": "linen",
+        "label": "Linen",
+        "count": 0
+      },
+      {
+        "value": "lua",
+        "label": "Lụa",
+        "count": 0
+      },
+      {
+        "value": "polyester",
+        "label": "Polyester",
+        "count": 0
+      },
+      {
+        "value": "voan",
+        "label": "Voan",
+        "count": 0
+      }
+    ]
+  },
+  "total": 0,
+  "page": 1,
+  "page_size": 24,
+  "filter": "q=zzzzqq",
+  "category": null,
+  "query": "zzzzqq",
+  "suggestions": {
+    "categories": [
+      {
+        "handle": "nu",
+        "name": "Nữ"
+      },
+      {
+        "handle": "nam",
+        "name": "Nam"
+      },
+      {
+        "handle": "giay",
+        "name": "Giày"
+      },
+      {
+        "handle": "phu-kien",
+        "name": "Phụ kiện"
+      }
+    ]
+  }
+}

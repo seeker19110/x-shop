@@ -1,0 +1,14 @@
+.xtemplates/
+.claude/
+.github/
+.autopilot/
+docs/
+*.md
+pnpm-lock.yaml
+**/node_modules/
+**/dist/
+**/.next/
+**/.medusa/
+coverage/
+xt.yaml
+packages/domain/data/

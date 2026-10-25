@@ -1,0 +1,225 @@
+{
+  "items": [
+    {
+      "product_id": "prod_01M5QJKWZH0D112K2YCXJ5148E",
+      "handle": "that-lung-da-bo",
+      "title": "Thắt lưng da bò",
+      "price_min": 450000,
+      "price_max": 450000,
+      "compare_at": null,
+      "colors": [
+        {
+          "value": "den",
+          "label": "Đen",
+          "hex": "#1A1A1A"
+        },
+        {
+          "value": "nau",
+          "label": "Nâu",
+          "hex": "#6B4423"
+        }
+      ],
+      "thumbnail": "/static/demo/den.svg?view=front",
+      "in_stock": true
+    },
+    {
+      "product_id": "prod_01M5QJKWQSTGYE3AYGYF91VYM4",
+      "handle": "mu-bucket-kaki",
+      "title": "Mũ bucket kaki",
+      "price_min": 220000,
+      "price_max": 240000,
+      "compare_at": null,
+      "colors": [
+        {
+          "value": "den",
+          "label": "Đen",
+          "hex": "#1A1A1A"
+        },
+        {
+          "value": "be",
+          "label": "Be",
+          "hex": "#D8C3A5"
+        },
+        {
+          "value": "xanh-reu",
+          "label": "Xanh rêu",
+          "hex": "#5B6B3A"
+        }
+      ],
+      "thumbnail": "/static/demo/be.svg?view=front",
+      "in_stock": true
+    }
+  ],
+  "facets": {
+    "color": [
+      {
+        "value": "den",
+        "label": "Đen",
+        "count": 19,
+        "hex": "#1A1A1A"
+      },
+      {
+        "value": "trang",
+        "label": "Trắng",
+        "count": 8,
+        "hex": "#FFFFFF"
+      },
+      {
+        "value": "be",
+        "label": "Be",
+        "count": 9,
+        "hex": "#D8C3A5"
+      },
+      {
+        "value": "xam",
+        "label": "Xám",
+        "count": 6,
+        "hex": "#8C8C8C"
+      },
+      {
+        "value": "xanh-navy",
+        "label": "Xanh navy",
+        "count": 5,
+        "hex": "#1F2A44"
+      },
+      {
+        "value": "xanh-reu",
+        "label": "Xanh rêu",
+        "count": 3,
+        "hex": "#5B6B3A"
+      },
+      {
+        "value": "nau",
+        "label": "Nâu",
+        "count": 3,
+        "hex": "#6B4423"
+      },
+      {
+        "value": "do",
+        "label": "Đỏ",
+        "count": 1,
+        "hex": "#B3261E"
+      },
+      {
+        "value": "hong",
+        "label": "Hồng",
+        "count": 1,
+        "hex": "#E8A0B4"
+      }
+    ],
+    "size": [
+      {
+        "value": "s",
+        "label": "S",
+        "count": 12
+      },
+      {
+        "value": "m",
+        "label": "M",
+        "count": 18
+      },
+      {
+        "value": "l",
+        "label": "L",
+        "count": 13
+      },
+      {
+        "value": "xl",
+        "label": "XL",
+        "count": 5
+      },
+      {
+        "value": "36",
+        "label": "36",
+        "count": 2
+      },
+      {
+        "value": "37",
+        "label": "37",
+        "count": 2
+      },
+      {
+        "value": "38",
+        "label": "38",
+        "count": 2
+      },
+      {
+        "value": "39",
+        "label": "39",
+        "count": 1
+      },
+      {
+        "value": "40",
+        "label": "40",
+        "count": 1
+      },
+      {
+        "value": "41",
+        "label": "41",
+        "count": 1
+      },
+      {
+        "value": "42",
+        "label": "42",
+        "count": 1
+      },
+      {
+        "value": "onesize",
+        "label": "Một cỡ",
+        "count": 4
+      }
+    ],
+    "material": [
+      {
+        "value": "cotton",
+        "label": "Cotton",
+        "count": 5
+      },
+      {
+        "value": "da",
+        "label": "Da",
+        "count": 4
+      },
+      {
+        "value": "denim",
+        "label": "Denim",
+        "count": 2
+      },
+      {
+        "value": "kaki",
+        "label": "Kaki",
+        "count": 3
+      },
+      {
+        "value": "len",
+        "label": "Len",
+        "count": 1
+      },
+      {
+        "value": "linen",
+        "label": "Linen",
+        "count": 2
+      },
+      {
+        "value": "lua",
+        "label": "Lụa",
+        "count": 2
+      },
+      {
+        "value": "polyester",
+        "label": "Polyester",
+        "count": 4
+      },
+      {
+        "value": "voan",
+        "label": "Voan",
+        "count": 1
+      }
+    ]
+  },
+  "total": 24,
+  "page": 1,
+  "page_size": 2,
+  "filter": "",
+  "category": null
+}

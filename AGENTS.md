@@ -3,8 +3,8 @@
 > Do `install.py` của khung X-Templates tạo (copy-if-absent). Sửa phần `[ĐIỀN]`; phần còn lại là luật chung của khung ở `.xtemplates/` (`framework/` = thư viện yêu cầu, `scripts/xt.py` = công cụ; `<XT>` dưới đây = `python3 .xtemplates/scripts/xt.py`). Dùng chung cho mọi agent; `CLAUDE.md` chỉ import file này. Hướng dẫn này **không thay cho hook/permission**: hàng rào thật là `.claude/settings.json` + hook guard.
 
 ## 1. Dự án này
-- **Tên / mục tiêu:** [ĐIỀN — một câu]
-- **Hồ sơ khung:** `[ĐIỀN slug, vd web-app]` · **Gói ngành:** `[ĐIỀN hoặc (không)]` · **Quy mô:** `[S|M|L]`
+- **Tên / mục tiêu:** x-shop — webapp shop thời trang Việt Nam (mobile-first, mua không cần tài khoản, COD + VNPAY, GHN, đổi trả, đối soát); đặc tả gốc `docs/specs/DAC-TA-GOC.md`.
+- **Hồ sơ khung:** `web-app` · **Gói ngành:** `ecommerce` · **Quy mô:** `M` (feature: auth, payment, pii)
 - **Blueprint:** `BLUEPRINT.md` (`<XT> compose …`).
 - **Stack thật:** đọc manifest/CI — **không hỏi người điều đã có trong code**. Lệnh chuẩn ở `xt.yaml`.
 - **Tài liệu:** `PROJECT.md` · `docs/specs/` · `docs/adr/` · `PROGRESS.md` · `docs/autopilot/PLAN.md`.
@@ -45,9 +45,9 @@ Máy chia ba nhóm, không hỏi người: **máy chặn** (không đảo ngư�
 `/autopilot` · `/blueprint` · `/gate` · `/research` · `/audit` · `/review` · `/adr` · `/handover`. Subagent: `researcher` · `executor`/`executor-deep` (tầng do `loop status` trả, ADR-0029) · `reviewer`/`reviewer-alt` (năng lực cao hơn người viết, `LOOP-ORCH-005`; không kết luận được → `pr reviewed --inconclusive`). Phiên chính điều phối; không lồng subagent; song song chỉ khi độc lập về file (trong sản phẩm: `AI-AGENTIC-007`).
 
 ## 9. Quy ước riêng của dự án
-- Cấu trúc thư mục: [ĐIỀN]
-- Đặt tên / kiến trúc / thư viện chính và lý do: [ĐIỀN hoặc trỏ ADR]
-- Môi trường & secrets: [ĐIỀN cách nạp — không ghi giá trị]
+- Cấu trúc thư mục: monorepo pnpm — `packages/domain` (lõi thuần TS: tiền, phân bổ, lọc, trạng thái, protocol VNPAY/GHN), `apps/backend` (Medusa v2 + module tùy biến), `apps/storefront` (Next.js App Router); `docs/` (specs, adr, ops, research).
+- Đặt tên / kiến trúc / thư viện chính và lý do: `docs/adr/` (ADR-0001 stack). Tiền = số nguyên VND (`number` an toàn ≤ 2^53, kiểm `Number.isSafeInteger`); logic tiền/tồn/trạng thái chỉ ở `packages/domain` + workflow backend, adapter không tính giá/tồn.
+- Môi trường & secrets: biến môi trường, mẫu ở `.env.example` từng app; validate bằng zod lúc khởi động; dev dùng Postgres/Redis cục bộ (`scripts/dev-services.sh`); khoá VNPAY/GHN chỉ ở server, dev/CI dùng mock.
 - UI (bỏ nếu không có giao diện): theo `DESIGN.md` và token; xong việc UI khi `<XT> contrast <theme.css> --pairs <file>` xanh (`UX-DS-003`, `UX-DS-020`).
 - Tên phiên **bắt buộc, đặt ngay đầu phiên**: `<Tên repo> — <tên nhánh>` (`LOOP-HARNESS-028`).
 - Giao tiếp: tiếng Việt có dấu, ngắn, dẫn đầu bằng kết quả; báo cáo cuối: đã làm · bằng chứng · D-NNN · còn treo · đề xuất.
