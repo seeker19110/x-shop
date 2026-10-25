@@ -81,7 +81,8 @@ function toOrderInput(input: SubmitCheckoutInput, prepared: PreparedCheckout): C
           q.allocatedDiscount > 0
             ? [{ amount: q.allocatedDiscount, description: `Mã giảm ${code}`, promotion_id: promotionId }]
             : [],
-        metadata: { cart_line_item_id: l.id },
+        // Snapshot bảng size đúng phiên bản lúc mua (ADM03) — đổi trả sai size đối chiếu được về sau (T-027).
+        metadata: { cart_line_item_id: l.id, ...l.size_chart },
       };
     }),
     shipping_methods: [

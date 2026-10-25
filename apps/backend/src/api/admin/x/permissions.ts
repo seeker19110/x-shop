@@ -47,8 +47,19 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   { method: "GET", path: "/admin/x/users/:id/roles", permission: "user.manage" },
   { method: "POST", path: "/admin/x/users/:id/roles", permission: "user.manage", reauth: true },
   { method: "DELETE", path: "/admin/x/users/:id/roles", permission: "user.manage", reauth: true },
-  // Hoàn tiền (stub 501 tới T-027; xác thực lại khi vượt ngưỡng do T-027 kiểm theo số tiền)
-  { method: "POST", path: "/admin/x/refunds", permission: "refund.execute" },
+  // Hoàn tiền (T-027, S-108, S-403): CSKH/kế toán tạo yêu cầu; người thứ hai có refund.approve duyệt; kế toán thực
+  // hiện. Xác thực lại MFA khi vượt ngưỡng kiểm TRONG route (biết số tiền mới biết vượt ngưỡng).
+  { method: "GET", path: "/admin/x/refunds", permission: "refund.request" },
+  { method: "POST", path: "/admin/x/refunds", permission: "refund.request" },
+  { method: "POST", path: "/admin/x/refunds/:id/approve", permission: "refund.approve" },
+  { method: "POST", path: "/admin/x/refunds/:id/reject", permission: "refund.approve" },
+  { method: "POST", path: "/admin/x/refunds/:id/execute", permission: "refund.execute" },
+  // Đổi trả theo dòng (T-027, POST03, INV04): CSKH tạo/duyệt, kho nhận + kiểm định.
+  { method: "POST", path: "/admin/x/returns", permission: "return.request" },
+  { method: "POST", path: "/admin/x/returns/:id/approve", permission: "return.approve" },
+  { method: "POST", path: "/admin/x/returns/:id/reject", permission: "return.approve" },
+  { method: "POST", path: "/admin/x/returns/:id/receive", permission: "return.receive" },
+  { method: "POST", path: "/admin/x/returns/:id/inspect", permission: "return.inspect" },
   // Đơn hàng + giao vận (T-026): nhân viên đơn xác nhận COD và tạo vận đơn (đặc tả §5.4).
   { method: "POST", path: "/admin/x/orders/:id/confirm-cod", permission: "order.confirm" },
   { method: "POST", path: "/admin/x/orders/:id/shipments", permission: "fulfillment.create" },

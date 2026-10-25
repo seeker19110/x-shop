@@ -4,6 +4,11 @@ import { createStep, StepResponse } from "@medusajs/framework/workflows-sdk";
 import { diffQuotes, orderMachine, vnpay, type AddressSnapshot, type QuoteBreakdown } from "@x-shop/domain";
 import { randomInt } from "node:crypto";
 import { cartFingerprint, loadCheckoutCart, toSafeInteger, type CheckoutCart } from "../../lib/checkout/cart";
+import {
+  NO_SIZE_CHART,
+  sizeChartsOfProducts,
+  type LineSizeChart,
+} from "../../lib/catalog/size-chart-snapshot";
 import { CHECKOUT_CONFIG, getVnpayConfig } from "../../lib/checkout/config";
 import { CheckoutError } from "../../lib/checkout/errors";
 import { acquireOrdered, lockKeys, releaseOwned } from "../../lib/checkout/locks";
@@ -75,7 +80,14 @@ export interface InventoryRequirement {
 export interface PreparedCheckout {
   now: string;
   cart: Pick<CheckoutCart, "id" | "region_id" | "currency_code" | "sales_channel_id">;
-  lines: Array<{ id: string; variant_id: string; title: string; quantity: number }>;
+  /** `size_chart`: bảng size (đúng phiên bản) gắn với sản phẩm lúc đặt — chụp vào dòng đơn (ADM03, T-027). */
+  lines: Array<{
+    id: string;
+    variant_id: string;
+    title: string;
+    quantity: number;
+    size_chart: LineSizeChart;
+  }>;
   breakdown: QuoteBreakdown;
   discount: LoadedDiscount | null;
   shipping_service: string;
@@ -157,6 +169,11 @@ export const prepareCheckoutStep = createStep(
       .flatMap((l) => (l?.id ? [l.id] : []))
       .sort();
 
+    const sizeCharts = await sizeChartsOfProducts(
+      container,
+      cart.items.flatMap((l) => (l.product_id ? [l.product_id] : [])),
+    );
+
     const prepared: PreparedCheckout = {
       now: now.toISOString(),
       cart: {
@@ -170,6 +187,7 @@ export const prepareCheckoutStep = createStep(
         variant_id: l.variant_id as string,
         title: l.title,
         quantity: l.quantity,
+        size_chart: (l.product_id && sizeCharts.get(l.product_id)) || NO_SIZE_CHART,
       })),
       breakdown: built.breakdown,
       discount: built.discount,

@@ -4,6 +4,9 @@ import { deleteReservationsWorkflow } from "@medusajs/medusa/core-flows";
 import { ledgerTotals, type OrderState } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
+import { SHIPPING_MODULE } from "../../modules/shipping";
+import type ShippingModuleService from "../../modules/shipping/service";
+import { openCancellationRefund } from "../../workflows/returns/refunds";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { CheckoutError, readCheckoutError } from "../checkout/errors";
@@ -48,7 +51,8 @@ async function releaseReservations(container: MedusaContainer, orderId: string):
  *   khi tiền có thể đã trừ).
  * - Chưa thu tiền: hủy đơn native (nhả reservation) rồi chốt trạng thái module.
  * - Đã thu tiền: KHÔNG gọi hủy native — `cancelOrderWorkflow` sẽ ghi refund native qua provider hệ thống trong khi tiền
- *   thật chưa hoàn; chỉ nhả reservation, chốt `cancelled` và mở ngoại lệ `refund_request` (hoàn thật + hủy native ở T-027).
+ *   thật chưa hoàn; chỉ nhả reservation, chốt `cancelled`, mở ngoại lệ `refund_request` + yêu cầu hoàn tiền (T-027);
+ *   đơn native được hủy khi tiền đã hoàn thật (workflows/returns/refunds.ts).
  */
 export async function cancelByCustomer(
   container: MedusaContainer,
@@ -81,6 +85,11 @@ export async function cancelByCustomer(
     }
     const native = await nativeOrderParts(container, orderId);
     if (shipmentStateOf(native.fulfillments) !== "unfulfilled") throw new CheckoutError("NOT_CANCELLABLE");
+    // Vận đơn GHN nằm ở module shipping (không tạo fulfillment native) — đã giữ chỗ/tạo vận đơn thì không còn "hủy" được
+    // nữa: đơn đã giao cho hãng/đã giao không hủy để xoá lịch sử (POST02, S-309) — đi luồng đổi trả (T-027).
+    if (await container.resolve<ShippingModuleService>(SHIPPING_MODULE).shipmentOfOrder(orderId)) {
+      throw new CheckoutError("NOT_CANCELLABLE");
+    }
 
     if (fin.state === "awaiting_payment") {
       const q = await queryAndProcess(container, orderId, { orderLockHeld: true });
@@ -104,6 +113,15 @@ export async function cancelByCustomer(
       now,
     });
     if (!done) throw new CheckoutError("BUSY_RETRY");
+    if (paid > 0) {
+      // Mở yêu cầu hoàn toàn bộ số đã thu ngay (không chờ hàng trả — §6.5); hoàn thật + hủy native khi tiền đã hoàn
+      // (T-027, D-012). Lỗi ở đây không làm hỏng việc hủy: ngoại lệ `refund_request` đã mở cùng transaction ở trên.
+      await openCancellationRefund(container, orderId).catch((e: unknown) =>
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .error(`[orders] Chưa mở được yêu cầu hoàn tiền cho đơn hủy ${orderId}: ${(e as Error).message}`),
+      );
+    }
     return { outcome: "cancelled", refund_requested: paid > 0 };
   } finally {
     await releaseOwned(locking, owner, null);
