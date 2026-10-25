@@ -54,6 +54,8 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   { method: "POST", path: "/admin/x/refunds/:id/approve", permission: "refund.approve" },
   { method: "POST", path: "/admin/x/refunds/:id/reject", permission: "refund.approve" },
   { method: "POST", path: "/admin/x/refunds/:id/execute", permission: "refund.execute" },
+  // T-044: hủy yêu cầu hoàn `failed` (nhả số đang giữ để tạo yêu cầu mới) — người thực hiện hoàn quyết.
+  { method: "POST", path: "/admin/x/refunds/:id/cancel", permission: "refund.execute" },
   // Đổi trả theo dòng (T-027, POST03, INV04): CSKH tạo/duyệt, kho nhận + kiểm định.
   { method: "POST", path: "/admin/x/returns", permission: "return.request" },
   { method: "POST", path: "/admin/x/returns/:id/approve", permission: "return.approve" },
@@ -63,6 +65,8 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   // Đơn hàng + giao vận (T-026): nhân viên đơn xác nhận COD và tạo vận đơn (đặc tả §5.4).
   { method: "POST", path: "/admin/x/orders/:id/confirm-cod", permission: "order.confirm" },
   { method: "POST", path: "/admin/x/orders/:id/shipments", permission: "fulfillment.create" },
+  // T-044: nhân viên hủy đơn (thay route native đã đóng) — lý do + Idempotency-Key bắt buộc, đơn đã thu → mở hoàn tiền.
+  { method: "POST", path: "/admin/x/orders/:id/cancel", permission: "order.cancel" },
   // Đối soát COD/sao kê + báo cáo/dashboard ngoại lệ (T-028, §5.5, AT14): kế toán nhập chứng từ (settlement.import —
   // nhạy cảm, đòi MFA) và đóng chênh lệch; báo cáo theo report.read, dashboard theo exception.read.
   { method: "POST", path: "/admin/x/settlements/batches", permission: "settlement.import" },

@@ -121,19 +121,37 @@ export const REFUND_STATES = [
   "succeeded",
   "failed",
   "unknown",
+  "cancelled",
 ] as const;
 export type RefundState = (typeof REFUND_STATES)[number];
 
-/** Hoàn tiền: retry dùng cùng bản ghi (failed → processing), không tạo refund mới (§6.5). */
+/**
+ * Hoàn tiền: retry dùng cùng bản ghi (failed → processing), không tạo refund mới (§6.5). Retry có giới hạn
+ * (`canRetryRefund`); hết lượt hoặc đổi cách hoàn → `failed → cancelled` (T-044): nhả số đang giữ để mở yêu cầu MỚI
+ * (duyệt lại từ đầu). Chỉ `failed` hủy được — `unknown`/`processing` có thể đã trừ tiền ở cổng, phải đối chiếu trước.
+ */
 export const refundMachine = defineMachine<RefundState>("refund", {
   requested: ["approved", "rejected"],
   approved: ["processing"],
   processing: ["succeeded", "failed", "unknown"],
   unknown: ["succeeded", "failed"],
-  failed: ["processing"],
+  // failed → succeeded: chỉ bằng ĐỐI CHIẾU với cổng (hỏi cùng mã trước khi hủy thấy cổng đã hoàn) — không hủy nhầm.
+  failed: ["processing", "succeeded", "cancelled"],
   rejected: [],
   succeeded: [],
+  cancelled: [],
 });
+
+/**
+ * Thử lại hoàn tiền có giới hạn (T-044): `failed → processing` chỉ khi số lần đã gửi (`attempts`, tăng mỗi lần vào
+ * `processing`) còn dưới `maxAttempts`. Hết lượt → hủy yêu cầu (`failed → cancelled`) rồi tạo yêu cầu mới.
+ */
+export function canRetryRefund(r: { state: RefundState; attempts: number }, maxAttempts: number): boolean {
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    throw new RangeError(`maxAttempts phải là số nguyên ≥ 1 (nhận ${maxAttempts})`);
+  }
+  return r.state === "failed" && Number.isSafeInteger(r.attempts) && r.attempts < maxAttempts;
+}
 
 export const SETTLEMENT_STATES = ["unsettled", "partially_settled", "settled", "disputed"] as const;
 export type SettlementState = (typeof SETTLEMENT_STATES)[number];

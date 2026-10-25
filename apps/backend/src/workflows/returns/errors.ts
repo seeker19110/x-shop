@@ -27,6 +27,8 @@ export const RETURNS_ERROR_STATUS = {
   FORBIDDEN: 403,
   REFUND_PROVIDER_DISABLED: 409,
   REFUND_IN_PROGRESS: 409,
+  REFUND_RETRY_EXHAUSTED: 409,
+  REFUND_PROVIDER_UNCONFIRMED: 409,
   BUSY_RETRY: 409,
 } as const;
 
@@ -49,7 +51,12 @@ export class ReturnsError extends Error {
 export function handleReturnsRouteError(req: MedusaRequest, res: MedusaResponse, error: unknown): void {
   res.setHeader("Cache-Control", "no-store");
   if (error instanceof ReturnsError) {
-    if (error.code === "BUSY_RETRY" || error.code === "REFUND_IN_PROGRESS") res.setHeader("Retry-After", "2");
+    if (
+      error.code === "BUSY_RETRY" ||
+      error.code === "REFUND_IN_PROGRESS" ||
+      error.code === "REFUND_PROVIDER_UNCONFIRMED"
+    )
+      res.setHeader("Retry-After", "2");
     return sendProblem(res, error.status, error.code, error.message, [], error.detail);
   }
   if (error instanceof AdjustError)

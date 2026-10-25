@@ -66,6 +66,8 @@ export const AdminReturnRequestBody = ReturnRequestBody.extend({ order_id: id })
 
 export const DecisionBody = z.object({ note: note.optional() }).strict();
 export const RejectBody = z.object({ reason: note.min(3) }).strict();
+/** Hủy (yêu cầu hoàn `failed`, đơn bởi nhân viên — T-044): lý do bắt buộc, ghi audit. */
+export const CancelBody = RejectBody;
 
 export const ReceiveBody = z
   .object({
@@ -98,13 +100,27 @@ export const InspectBody = z
 export const RefundCreateBody = z
   .object({
     order_id: id,
-    reason: z.enum(["cancellation", "overpayment", "late_payment", "other"]),
+    reason: z.enum(["return", "cancellation", "overpayment", "late_payment", "other"]),
+    /** Chỉ với `reason=return` (T-044): mở lại hoàn tiền cho yêu cầu trả đã kiểm định có hoàn tiền trước đã hủy. */
+    return_id: id.optional(),
     amount: z.number().int().positive().max(2_147_483_647).optional(),
     method: z.enum([...REFUND_METHODS, "auto"]).optional(),
     note: note.optional(),
   })
   .strict()
   .superRefine((b, ctx) => {
+    if (b.reason === "return") {
+      // Số tiền hoàn theo trả hàng do kiểm định chốt (AT15) — server tính, client không gửi.
+      if (!b.return_id)
+        ctx.addIssue({ code: "custom", path: ["return_id"], message: "bắt buộc với lý do này" });
+      if (b.amount !== undefined) {
+        ctx.addIssue({ code: "custom", path: ["amount"], message: "không gửi — lấy theo kết quả kiểm định" });
+      }
+      return;
+    }
+    if (b.return_id !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["return_id"], message: "chỉ dùng với reason=return" });
+    }
     if (b.reason !== "cancellation" && b.amount === undefined) {
       ctx.addIssue({ code: "custom", path: ["amount"], message: "bắt buộc với lý do này" });
     }

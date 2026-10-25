@@ -901,7 +901,8 @@ class CheckoutModuleService extends MedusaService({
    * Khách hủy đơn (POST02, S-309) — MỘT transaction, chỉ khi đơn còn ở `from` (khóa lạc quan theo trạng thái):
    * order_finance → cancelled, payment attempt mở → failed, lượt mã (held/used) → released, checkout attempt → failed
    * (nhả phiên bản giỏ), outbox `order.cancelled`; đơn đã thu tiền (`refund_amount` > 0) → ngoại lệ `refund_request`
-   * (hoàn thật + hủy native ở T-027). Trả false nếu đơn đã rời `from` (nhánh khác thắng).
+   * (hoàn thật + hủy native ở T-027). Trả false nếu đơn đã rời `from` (nhánh khác thắng). `reason`: khách tự hủy
+   * (mặc định) hay cửa hàng hủy (nhân viên `order.cancel` — T-044).
    */
   async cancelOrderByCustomer(input: {
     order_id: string;
@@ -909,7 +910,9 @@ class CheckoutModuleService extends MedusaService({
     refund_amount: number;
     display_ref: string;
     now: Date;
+    reason?: "CUSTOMER_CANCELLED" | "SHOP_CANCELLED";
   }): Promise<boolean> {
+    const reason = input.reason ?? "CUSTOMER_CANCELLED";
     const t = orderMachine.transition(input.from, "cancelled");
     if (!t.ok) return false;
     return this.repo_.transaction(async (em) => {
@@ -933,9 +936,9 @@ class CheckoutModuleService extends MedusaService({
         em,
       );
       await this.exec(
-        `UPDATE checkout_attempt SET state = 'failed', error_code = 'CUSTOMER_CANCELLED', updated_at = now()
+        `UPDATE checkout_attempt SET state = 'failed', error_code = ?, updated_at = now()
          WHERE order_id = ? AND state = 'ready'`,
-        [input.order_id],
+        [reason, input.order_id],
         em,
       );
       await this.insertOutbox(
@@ -944,7 +947,7 @@ class CheckoutModuleService extends MedusaService({
         "order.cancelled",
         {
           order_id: input.order_id,
-          reason: "CUSTOMER_CANCELLED",
+          reason,
           from: input.from,
           refund_amount: input.refund_amount,
         },
@@ -960,7 +963,7 @@ class CheckoutModuleService extends MedusaService({
             priority: "high",
             due_at: new Date(input.now.getTime() + 24 * 3600_000),
             detail: {
-              reason: "CUSTOMER_CANCELLED",
+              reason,
               display_ref: input.display_ref,
               order_state_before: input.from,
               native_cancel_pending: true,

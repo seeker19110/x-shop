@@ -7,6 +7,7 @@ import {
   ledgerTotals,
   overpaidAmount,
   reconcile,
+  refundOccupiesCapture,
   type LedgerEntry,
 } from "./ledger.js";
 
@@ -66,6 +67,32 @@ describe("checkRefundAllowed — AT16", () => {
         },
       ),
     );
+  });
+});
+
+describe("hủy yêu cầu hoàn failed (T-044)", () => {
+  it("failed giữ tiền; cancelled nhả → yêu cầu mới vừa đủ, không vượt", () => {
+    const held = [cap(730_000), ref(730_000, "failed", "a")];
+    expect(checkRefundAllowed(held, 1)).toMatchObject({ ok: false, code: "REFUND_EXCEEDS_CAPTURED" });
+    const released = [cap(730_000), ref(730_000, "cancelled", "a")];
+    expect(ledgerTotals(released)).toEqual({
+      captured: 730_000,
+      refundSucceeded: 0,
+      refundHeld: 0,
+      net: 730_000,
+    });
+    expect(checkRefundAllowed(released, 730_000)).toEqual({ ok: true, value: 0 });
+    expect(checkRefundAllowed([...released, ref(730_000, "requested", "b")], 1)).toMatchObject({
+      ok: false,
+      code: "REFUND_EXCEEDS_CAPTURED",
+    });
+  });
+  it("refundOccupiesCapture: chỉ rejected/cancelled nhả chỗ của giao dịch gốc", () => {
+    expect(refundOccupiesCapture("cancelled")).toBe(false);
+    expect(refundOccupiesCapture("rejected")).toBe(false);
+    for (const s of ["requested", "approved", "processing", "unknown", "failed", "succeeded"] as const) {
+      expect({ s, v: refundOccupiesCapture(s) }).toEqual({ s, v: true });
+    }
   });
 });
 
