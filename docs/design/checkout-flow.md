@@ -37,7 +37,7 @@ POST /store/x/checkout/submit   Idempotency-Key: <uuid>
 1. Xác thực quyền sở hữu giỏ (cart thuộc phiên/publishable key; không nhận customer_id từ client). Validate contact/address bằng domain (`normalizeVnPhone`, `validateAddress`).
 2. **Idempotency**: tìm `checkout_attempt` theo (scope=`cart:<id>`, key). Có → cùng `payload_hash` thì trả kết quả hiện có (200/202), khác → `409 IDEMPOTENCY_CONFLICT`. Có attempt cho (cart_id, cart_version) với key khác → trả attempt đó (DATA02).
 3. INSERT attempt `preparing` (lease_until = now + 2 phút). Va UNIQUE → quay lại bước 2 (đua giữa 2 request cùng key).
-4. Khóa: `acquireLockStep` (Locking Module, provider Redis) theo `cart:<id>` + từng `inventory_item:<id>` **sắp tăng dần** (tránh deadlock), timeout ngắn → `409 BUSY_RETRY` có retry guidance.
+4. Khóa: `acquireLockStep` (Locking Module, provider Redis) theo `cart:<id>` + từng `inventory_item:<id>` **sắp tăng dần** (tránh deadlock), timeout ngắn → `409 BUSY_RETRY` có retry guidance. Hạ tầng khóa hỏng (lỗi kết nối Redis, lệnh khóa không trả lời > 3 s) → `503 LOCK_UNAVAILABLE` + `Retry-After`, dừng trước khi đọc tồn/giữ hàng, không khóa in-memory thay thế (đặc tả §13.2, T-042); attempt `failed` lỗi tạm → retry cùng key.
 5. Đọc lại giỏ + giá hiện hành + promotion + phí ship → `computeQuote`; so với quote khách đã xác nhận (`diffQuotes`) → khác → attempt `failed` + `409 PRICE_CHANGED|CART_CHANGED|SHIPPING_CHANGED|DISCOUNT_CHANGED` kèm quote mới.
 6. Kiểm tồn khả dụng (stocked − reserved) của mỗi inventory item tại location bán; thiếu → `409 INSUFFICIENT_STOCK` (dòng nào).
 7. Coupon: đếm `coupon_usage` held+used dưới khóa `promotion:<code>`; hết → `409 DISCOUNT_EXHAUSTED`; còn → INSERT `held`.
@@ -46,7 +46,7 @@ POST /store/x/checkout/submit   Idempotency-Key: <uuid>
 10. Online: tạo `payment_attempt` (txn_ref = `PA_<ulid>`), `buildPaymentUrl` với `vnp_ExpireDate = hold_expires_at`. Trả `payment_url`.
 11. Nhả khóa. Outbox `order.placed_pending` (thông báo chỉ gửi sau finalization — AT34).
 
-Lỗi ở bước 8–10 → bước bù trừ của workflow: xóa reservation đã tạo, hủy order native, `coupon_usage` → `released`, attempt `failed`. Tiến trình chết → job reconcile (mục 6).
+Lỗi ở bước 8–10 → bước bù trừ của workflow: xóa reservation đã tạo, hủy order native, `coupon_usage` → `released`, attempt `failed`. Tiến trình chết → job reconcile (mục 6). Bù trừ không xong (còn đơn native/reservation `checkout <attempt_id>` sau khi workflow trả lỗi — vd Redis mất nên không xoá được reservation) → attempt giữ `preparing`, không mở lại cho retry; job reconcile dọn sau lease. Nhả khóa ở bù trừ/bước 11 không ném (khóa tự hết hạn theo TTL).
 
 ## 4. IPN VNPAY (S-101…S-106, AT06–AT09, AT35, AT36) — route `GET /x/webhooks/vnpay/ipn`
 1. `verifyNotification` → sai chữ ký → inbox (verified=false) + `ops_exception webhook_rejected` + `{"RspCode":"97"}`.

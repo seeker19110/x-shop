@@ -1,5 +1,12 @@
-import { CheckoutError, readCheckoutError, toProblem } from "../errors";
-import { acquireOrdered, activeLeaseCount, releaseOwned, sortLockKeys, type LockingLike } from "../locks";
+import { CheckoutError, readCheckoutError, RETRYABLE_CODES, toProblem } from "../errors";
+import {
+  acquireOrdered,
+  activeLeaseCount,
+  releaseOwned,
+  releaseOwnedQuietly,
+  sortLockKeys,
+  type LockingLike,
+} from "../locks";
 import { cartWeightGrams, quoteShipping, SHIPPING_FEE_TABLE } from "../shipping";
 
 /** Khóa giả lập đúng ngữ nghĩa provider: SET NX theo owner, cùng owner = gia hạn; ghi lại thứ tự lấy. */
@@ -76,17 +83,73 @@ describe("locks", () => {
     expect(l.owners.get("k2")).toBe("OTHER");
   });
 
-  it("lỗi không phải 'đang bận' (vd Redis mất kết nối) → ném nguyên lỗi, nhả khóa đã lấy", async () => {
+  it("lỗi không phải 'đang bận' (Redis mất kết nối) → LOCK_UNAVAILABLE 503 ngay (không chờ hết waitMs), nhả khóa đã lấy", async () => {
     const l = new FakeLocking();
+    const cause = new Error("Connection is closed.");
     const broken: LockingLike = {
       acquire: async (keys, args) => {
-        if (keys === "k2") throw new Error("ECONNREFUSED");
+        if (keys === "k2") throw cause;
         return l.acquire(keys, args);
       },
       release: (keys, args) => l.release(keys, args),
     };
-    await expect(acquireOrdered(broken, ["k1", "k2"], opts("A"))).rejects.toThrow("ECONNREFUSED");
+    const started = Date.now();
+    const err = await acquireOrdered(broken, ["k1", "k2"], opts("A", 5_000)).catch((e: unknown) => e);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(err).toBeInstanceOf(CheckoutError);
+    expect(err).toMatchObject({ code: "LOCK_UNAVAILABLE", status: 503, detail: { lock_scope: "inventory" } });
+    // Nguyên nhân gốc chỉ để log server — không lọt vào thân problem.
+    expect((err as CheckoutError).cause).toBe(cause);
+    expect(JSON.stringify(toProblem(err as CheckoutError))).not.toContain("Connection is closed");
     expect(l.owners.size).toBe(0);
+  });
+
+  it("provider không trả lời → LOCK_UNAVAILABLE sau callTimeoutMs; lệnh tới muộn thì khóa được trả ngay", async () => {
+    const l = new FakeLocking();
+    let finishLate: (() => void) | undefined;
+    const hanging: LockingLike = {
+      acquire: (keys, args) =>
+        new Promise<void>((resolve) => {
+          // Lệnh nằm trong hàng đợi offline của client, chạy khi Redis trở lại.
+          finishLate = () => void l.acquire(keys, args).then(resolve);
+        }),
+      release: (keys, args) => l.release(keys, args),
+    };
+    const started = Date.now();
+    const err = await acquireOrdered(hanging, ["k1"], { ...opts("A", 10_000), callTimeoutMs: 50 }).catch(
+      (e: unknown) => e,
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(err).toMatchObject({ code: "LOCK_UNAVAILABLE" });
+    finishLate?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(l.owners.size).toBe(0);
+  });
+
+  it("releaseOwned lỗi hạ tầng → LOCK_UNAVAILABLE; releaseOwnedQuietly không ném và vẫn ngừng gia hạn", async () => {
+    const l = new FakeLocking();
+    await acquireOrdered(l, ["k1"], opts("A"));
+    const down: LockingLike = {
+      acquire: () => Promise.reject(new Error("Connection is closed.")),
+      release: () => Promise.reject(new Error("Connection is closed.")),
+    };
+    const quiet = await releaseOwnedQuietly(down, "A", null);
+    expect(quiet).toMatchObject({ code: "LOCK_UNAVAILABLE" });
+    expect(activeLeaseCount()).toBe(0);
+    await acquireOrdered(l, ["k2"], opts("B"));
+    await expect(releaseOwned(down, "B", null)).rejects.toMatchObject({ code: "LOCK_UNAVAILABLE" });
+    expect(await releaseOwnedQuietly(down, "khong-giu-gi", null)).toBeNull();
+  });
+
+  it("LOCK_UNAVAILABLE là lỗi tạm: cùng Idempotency-Key gửi lại được; BUSY_RETRY vẫn 409", () => {
+    expect(RETRYABLE_CODES).toContain("LOCK_UNAVAILABLE");
+    expect(new CheckoutError("BUSY_RETRY").status).toBe(409);
+    expect(toProblem(new CheckoutError("LOCK_UNAVAILABLE"))).toMatchObject({
+      status: 503,
+      code: "LOCK_UNAVAILABLE",
+      action: "retry_same_key",
+      detail: "Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít phút",
+    });
   });
 });
 

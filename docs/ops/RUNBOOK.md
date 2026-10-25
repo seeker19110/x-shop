@@ -32,10 +32,23 @@ Nguồn sự thật là Postgres: `checkout_attempt` (lease), `outbox_event` (`p
   `outbox_event` `pending` quá hạn tăng; cảnh báo "task quan trọng chờ > 60 giây".
 
 ### 3.2 Trong lúc Redis mất
-1. **Dừng tạo đơn** — submit không lấy được khóa thì không tạo đơn (an toàn), catalog vẫn đọc DB. (Chưa xác minh: mã HTTP/thông
-   điệp khách nhận khi Redis mất hẳn — `BUSY_RETRY` 409 chỉ áp cho chờ khóa quá hạn; lỗi kết nối Redis chưa được ánh xạ riêng
-   thành 503 có hướng dẫn — việc mở, xem báo cáo T-037.) KHÔNG bật lại checkout bằng khóa
-   in-memory (bỏ `REDIS_URL`) khi chạy > 1 instance: hai tiến trình giữ "cùng một khóa" → bán vượt tồn.
+1. **Checkout tự dừng, catalog vẫn chạy** (T-042, đặc tả §13.2) — không cần thao tác tay:
+   - `POST /store/x/checkout/submit` khi Locking Module không dùng được (ioredis từ chối lệnh — `Connection is closed.`,
+     `MaxRetriesPerRequestError`… — hoặc một lệnh khóa không trả lời trong 3 giây, `LOCK_CALL_TIMEOUT_MS`) → **503**
+     `application/problem+json` `code: LOCK_UNAVAILABLE`, `detail: "Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít
+     phút"`, `action: retry_same_key`, header `Retry-After: 60`. Không lời gọi nào treo theo hàng đợi ioredis (~10 s).
+   - Dừng TRƯỚC khi đọc tồn/giữ hàng: không tạo đơn, không reservation, không bán bằng tồn đọc ngoài khóa; không có khóa
+     in-memory thay thế. Khóa đang bận khi Redis khỏe vẫn là **409** `BUSY_RETRY` (`Retry-After: 1`) — 503 chỉ cho hạ tầng khóa.
+   - Attempt kết thúc rõ ràng `failed/LOCK_UNAVAILABLE` (lỗi tạm): khách gửi lại **cùng Idempotency-Key** sau khi Redis về →
+     attempt được mở lại và đặt đúng một đơn (nhiều request đồng thời cùng key vẫn một đơn).
+   - Redis mất giữa workflow: bù trừ chạy hết → như trên. Nếu bù trừ không xong (vd reservation cần khóa native để xoá) →
+     attempt giữ `preparing` (không mở lại cho retry, gửi lại cùng key nhận 202), job `x-reconcile-attempts` dọn đơn +
+     reservation (tìm cả theo mô tả `checkout <attempt_id>`) sau lease khi Redis về → `compensated` (gửi lại: 409
+     `ATTEMPT_ABORTED`, đặt bằng key mới). Khóa không nhả được không còn được gia hạn — tự hết hạn sau `lockTtlSeconds` (30 s).
+   - Log server: `[checkout] hạ tầng khóa không dùng được (<scope>)…` (error) kèm nguyên nhân gốc; khách không thấy chi tiết hạ tầng.
+   - Catalog (`/store/x/products`, `/store/products/:id`) vẫn 200.
+   KHÔNG bật lại checkout bằng khóa in-memory (bỏ `REDIS_URL`) khi chạy > 1 instance: hai tiến trình giữ "cùng một khóa" → bán
+   vượt tồn. Kiểm: `pnpm --filter @x-shop/backend test:integration -- checkout-lock-outage`.
 2. Giữ endpoint IPN VNPAY/callback GHN chạy: chúng ghi `webhook_inbox`/`shipment_event` vào Postgres trước khi xử lý; phần nào
    không xử lý xong do thiếu khóa sẽ được provider gửi lại hoặc job query bù.
 3. Khôi phục Redis (managed: failover/instance mới; tự host: khởi động lại). Redis **trống** là chấp nhận được — không cần khôi phục
@@ -78,7 +91,8 @@ Truy vấn ở 3.3.3 trả rỗng (hoặc chỉ còn việc chưa đến hạn);
 - **Giới hạn**: không mô phỏng Redis chết *giữa* một workflow Medusa đang chạy (dừng tiến trình giữa bước) mà mô phỏng trạng thái
   bền vững để lại sau đó (attempt `preparing` quá lease, outbox chưa đánh dấu dù đã gửi); không chạy cron thật (gọi thẳng hàm job);
   không có đơn native/reservation thật trong dữ liệu mẫu (nhánh nhả reservation có test tích hợp `checkout-expiry.spec.ts`);
-  không đo phản hồi của submit khi Redis đang mất.
+  phản hồi của submit khi Redis đang mất được kiểm riêng ở `checkout-lock-outage.spec.ts` (3.2.1; giả lập trên client ioredis
+  của provider locking-redis — event bus/cache/workflow engine vẫn chạy, nên đây không phải diễn tập mất cả Redis).
 
 ## 4. Database outage / khôi phục
 

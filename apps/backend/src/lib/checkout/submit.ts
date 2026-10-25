@@ -1,5 +1,5 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { decideIdempotency, payloadHash, type AddressSnapshot } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type { PaymentMethod } from "../../modules/checkout/models/constants";
@@ -7,6 +7,8 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import { submitCheckoutWorkflow } from "../../workflows/checkout/submit-checkout";
 import type { CheckoutContact } from "../../workflows/checkout/steps";
 import { CHECKOUT_CONFIG } from "./config";
+import { leftoversOfAttempt } from "./jobs";
+import { releaseOwnedQuietly } from "./locks";
 import {
   CheckoutError,
   readCheckoutError,
@@ -140,8 +142,15 @@ async function outcomeOf(container: MedusaContainer, attemptId: string): Promise
   return a.state === "ready" ? { kind: "ok", view } : { kind: "pending", view };
 }
 
+/**
+ * Lỗi kết nối của client Redis (ioredis) — từ khóa native của Medusa (vd `createReservationsStep` dùng `locking.execute`)
+ * khi Redis mất giữa workflow. Chỉ khớp thông điệp riêng của ioredis để không gán nhầm lỗi Postgres/GHN thành lỗi khóa.
+ */
+const REDIS_CONNECTION_ERROR =
+  /Connection is closed|Reached the max retries per request limit|Stream isn't writeable|Command timed out|MaxRetriesPerRequestError/;
+
 /** Lỗi native (ngoài CheckoutError) được ánh xạ về mã ổn định khi rõ nghĩa. */
-function classify(error: unknown): CheckoutError {
+export function classify(error: unknown): CheckoutError {
   const known = readCheckoutError(error);
   if (known) return known;
   const message =
@@ -150,6 +159,10 @@ function classify(error: unknown): CheckoutError {
     return new CheckoutError("INSUFFICIENT_STOCK");
   }
   if (/Failed to acquire lock|Timed-out acquiring lock/.test(message)) return new CheckoutError("BUSY_RETRY");
+  const name = typeof error === "object" && error !== null ? String((error as { name?: unknown }).name) : "";
+  if (REDIS_CONNECTION_ERROR.test(message) || REDIS_CONNECTION_ERROR.test(name)) {
+    return new CheckoutError("LOCK_UNAVAILABLE");
+  }
   return new CheckoutError("INTERNAL");
 }
 
@@ -173,8 +186,28 @@ async function runAttempt(
     throwOnError: false,
   });
   if (!errors || errors.length === 0) return outcomeOf(container, attemptId);
+  // Lưới an toàn: bù trừ dừng giữa chừng thì bước nhả khóa có thể không chạy → ngừng gia hạn khóa của attempt (khóa tự
+  // hết hạn theo TTL nếu Redis đang mất) để job đối chiếu/retry không bị chặn bởi một khóa được gia hạn mãi.
+  await releaseOwnedQuietly(container.resolve(Modules.LOCKING), attemptId, null);
   const raw = errors[0]?.error;
   const error = classify(raw);
+  // Bù trừ không chạy hết (vd Redis mất nên bù trừ của `createReservationsStep` — cần khóa native — không xoá được
+  // reservation; engine KHÔNG báo lỗi bù trừ của workflow lồng trong `errors`) → kiểm phần dở thật trong DB. Còn phần dở
+  // thì KHÔNG đánh dấu failed (retry cùng key sẽ giữ hàng lần hai): giữ `preparing` để job `x-reconcile-attempts` bù trừ
+  // dưới khóa giỏ khi hạ tầng trở lại (→ `compensated`, gửi lại cùng key nhận ATTEMPT_ABORTED).
+  const left = await leftoversOfAttempt(container, attemptId);
+  if (
+    left.orderIds.length > 0 ||
+    left.reservationIds.length > 0 ||
+    errors.some((e) => e.handlerType === "compensate")
+  ) {
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .error(
+        `[checkout] attempt ${attemptId} bù trừ dở (đơn ${left.orderIds.length}, reservation ${left.reservationIds.length}) — chờ job đối chiếu; lỗi gốc ${error.code}`,
+      );
+    return { kind: "error", error, attemptId };
+  }
   if (error.code === "INTERNAL") {
     container
       .resolve(ContainerRegistrationKeys.LOGGER)

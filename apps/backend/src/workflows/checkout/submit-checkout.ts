@@ -7,6 +7,7 @@ import {
   WorkflowResponse,
 } from "@medusajs/framework/workflows-sdk";
 import { createOrderWorkflow, createReservationsWorkflow } from "@medusajs/medusa/core-flows";
+import { attemptReservationDescription } from "../../lib/checkout/jobs";
 import { lockKeys } from "../../lib/checkout/locks";
 import {
   acquireCheckoutLocksStep,
@@ -169,7 +170,7 @@ export const submitCheckoutWorkflow = createWorkflow(
           quantity: a.quantity,
           line_item_id: verified.line_map[a.line_item_id] as string,
           allow_backorder: a.allow_backorder,
-          description: `checkout ${input.attempt_id}`,
+          description: attemptReservationDescription(input.attempt_id),
           metadata: { checkout_attempt_id: input.attempt_id },
         })),
     );

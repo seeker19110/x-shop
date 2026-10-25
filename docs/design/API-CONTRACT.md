@@ -47,6 +47,9 @@ Body: `{ cart_id, cart_version, quote_id, payment_method, contact: { name, phone
 - **200** (không phải 201): `{ checkout_attempt_id, state:"ready", cart_id, cart_version, payment_method, order:{ id, display_ref, state:"placed"|"awaiting_payment", total, payment_method, hold_expires_at|null, cod_confirm_by|null }, payment_url|null, error:null, status_url }`
 - **202**: `{ checkout_attempt_id, state:"preparing", …, status_url }` + `Location`, `Retry-After` → poll attempts.
 - **409** `PRICE_CHANGED | SHIPPING_CHANGED | DISCOUNT_CHANGED` kèm `quote` (shape như trên) · `CART_CHANGED` (+`current_cart_version`) · `QUOTE_EXPIRED` · `INSUFFICIENT_STOCK` (+`lines:[{line_item_id,variant_id,requested,available}]`) · `DISCOUNT_EXHAUSTED` · `IDEMPOTENCY_CONFLICT` · `BUSY_RETRY` (header `Retry-After`) · `ATTEMPT_ABORTED`.
+- **503** `LOCK_UNAVAILABLE` (T-042): hạ tầng khóa (Redis/Locking Module) không dùng được — header `Retry-After: 60`,
+  `action: "retry_same_key"`, `detail: "Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít phút"`; không tạo đơn/giữ hàng;
+  gửi lại CÙNG `Idempotency-Key` sau đó được xử lý bình thường. Khác `409 BUSY_RETRY` (khóa đang bận, Redis khỏe).
 - 422 `VALIDATION` · 404 giỏ không thuộc phiên.
 ### `GET /store/x/checkout/attempts/:id?cart_id=…`
 Cùng shape view như 200 của submit (`state`: `preparing|ready|failed|compensated`, `error:{code,message}|null`).
