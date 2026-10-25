@@ -62,6 +62,10 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   { method: "POST", path: "/admin/x/returns/:id/reject", permission: "return.approve" },
   { method: "POST", path: "/admin/x/returns/:id/receive", permission: "return.receive" },
   { method: "POST", path: "/admin/x/returns/:id/inspect", permission: "return.inspect" },
+  // T-049: danh sách/chi tiết yêu cầu đổi/trả cho kho — chưa có quyền đọc riêng; dữ liệu trả về đúng phần kho đã thấy khi
+  // nhận hàng (return.receive). Hàng đợi hoàn tiền dùng lại GET /admin/x/refunds (refund.request) ở trên.
+  { method: "GET", path: "/admin/x/returns", permission: "return.receive" },
+  { method: "GET", path: "/admin/x/returns/:id", permission: "return.receive" },
   // Đơn hàng + giao vận (T-026): nhân viên đơn xác nhận COD và tạo vận đơn (đặc tả §5.4).
   { method: "POST", path: "/admin/x/orders/:id/confirm-cod", permission: "order.confirm" },
   { method: "POST", path: "/admin/x/orders/:id/shipments", permission: "fulfillment.create" },

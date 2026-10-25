@@ -42,6 +42,7 @@ export const REFUND_STATE_LABELS: Record<string, string> = {
   succeeded: "Đã hoàn",
   failed: "Hoàn lỗi (thử lại được)",
   unknown: "Chưa rõ kết quả (hỏi lại cổng)",
+  cancelled: "Đã hủy",
 };
 export const refundStateLabel = (c: string) => lookup(REFUND_STATE_LABELS, c);
 
@@ -54,6 +55,22 @@ export const RETURN_STATE_LABELS: Record<string, string> = {
   closed: "Hoàn tất",
 };
 export const returnStateLabel = (c: string) => lookup(RETURN_STATE_LABELS, c);
+
+/** Nguồn yêu cầu đổi/trả: khách/CSKH tạo hay hệ thống mở cho hàng hãng hoàn về (T-045). */
+export const RETURN_SOURCE_LABELS: Record<string, string> = {
+  request: "Khách/CSKH",
+  carrier: "Hãng hoàn về",
+};
+export const returnSourceLabel = (c: string) => lookup(RETURN_SOURCE_LABELS, c);
+
+export const RETURN_REASON_LABELS: Record<string, string> = {
+  wrong_size: "Sai size",
+  defective: "Lỗi sản phẩm",
+  not_as_described: "Không như mô tả",
+  changed_mind: "Đổi ý",
+  other: "Khác",
+};
+export const returnReasonLabel = (c: string) => lookup(RETURN_REASON_LABELS, c);
 
 export const REFUND_REASON_LABELS: Record<string, string> = {
   cancellation: "Hủy đơn",
