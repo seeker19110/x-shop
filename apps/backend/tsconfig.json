@@ -19,6 +19,7 @@
   "include": ["**/*", ".medusa/types/*"],
   "exclude": [
     "node_modules",
+    "src/admin",
     ".medusa/server",
     ".medusa/admin",
     ".cache",
