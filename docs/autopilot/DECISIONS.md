@@ -135,3 +135,10 @@
 - Chọn: Hàng chờ ở Kho cách ly; COD hoàn ngoài hệ thống bắt buộc chứng từ; đổi size cùng sản phẩm cùng giá, đơn thay thế 0 đ xác nhận sau kiểm định đạt; trả hàng không hoàn ship, hủy đơn hoàn toàn bộ; cổng hoàn sandbox/live tắt (409) tới khi có ủy quyền
 - Lý do (tiêu chí chất lượng cuối): Tồn bán không đổi tới khi kiểm định (AT17); không hoàn thật khi grant refund=false; tránh sai tiền khi chênh giá
 - Đường lùi: Cấu hình returns workflow; bật refund-gateway HTTP khi có grant payments refund=true
+
+### D-020 · 2026-10-25T09:05:21+00:00 · T-042: phân loại lỗi khóa và thời gian chờ khi mất Redis
+
+- Phương án: (1) Chỉ khớp thông điệp lỗi ioredis; chờ theo ioredis ~10 s; Retry-After 30 s · (2) Mọi lỗi acquire không phải 'đang bận' → 503 LOCK_UNAVAILABLE; chặn mỗi lệnh khóa 3 s; Retry-After 60 s; không khóa in-memory
+- Chọn: Mọi lỗi acquire không phải 'đang bận' → 503 LOCK_UNAVAILABLE; chặn mỗi lệnh khóa 3 s; Retry-After 60 s; không khóa in-memory
+- Lý do (tiêu chí chất lượng cuối): Fail-closed: lỗi hạ tầng khóa lạ nào cũng dừng bán thay vì bán bằng tồn không khóa; 3 s giữ request không treo
+- Đường lùi: Hằng số trong apps/backend/src/lib/checkout/locks.ts
