@@ -2,6 +2,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import type Redis from "ioredis";
+import { drainCatalogIndex } from "../../src/lib/catalog/indexer";
 import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
 import { LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS } from "../../src/lib/checkout/errors";
 import { reconcileAttempts } from "../../src/lib/checkout/jobs";
@@ -19,6 +20,9 @@ import {
 } from "../helpers/checkout-fixtures";
 
 jest.setTimeout(300 * 1000);
+
+/** Hạn chờ client Redis khóa về `ready` sau khi giả lập sự cố (restoreRedis/afterEach). */
+const REDIS_READY_TIMEOUT_MS = 5_000;
 
 /**
  * T-042 — mất hạ tầng khóa (Locking Module, provider Redis) khi submit checkout (đặc tả §13.2): 503 `LOCK_UNAVAILABLE`
@@ -63,12 +67,69 @@ medusaIntegrationTestRunner({
       const locking = c.resolve(Modules.LOCKING) as unknown as LockingInternals;
       return locking.providerService_.retrieveProviderRegistration(locking.defaultProviderId).redisClient;
     };
+    /** Đợi `promise` kết thúc (xong hay lỗi) trong `ms`; quá hạn → lỗi rõ ràng thay vì treo tới hạn hook của Jest. */
+    const settlesWithin = async (promise: Promise<unknown>, ms: number, what: string) => {
+      let timer: NodeJS.Timeout | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what}: quá ${ms}ms vẫn chưa kết thúc`)), ms);
+      });
+      try {
+        return await Promise.race([
+          promise.then(
+            () => "settled",
+            () => "settled",
+          ),
+          deadline,
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
     /** Redis khóa mất hẳn (đóng kết nối, không tự nối lại). */
     const cutRedis = () => redis.disconnect();
+    /**
+     * Lệnh khóa "câm": không trả lời cho tới khi Redis "về" (restoreRedis) — lúc đó mọi lời gọi còn treo bị từ chối như
+     * khi ioredis mất kết nối thật. KHÔNG treo vĩnh viễn: lời gọi của tác vụ nền (job mỗi phút/lượt xả catalog) vào đúng
+     * khoảng này sẽ kẹt mãi, và `jobWorker.close()` của workflow engine ở teardown chờ job đó tới hạn hook 300 giây (T-047).
+     */
+    const hungCalls: Array<(error: Error) => void> = [];
+    const silentRedis = () => {
+      redis.acquireLock = () => new Promise<number>((_, reject) => void hungCalls.push(reject));
+    };
+    /** Đợi client ở `ready` (≤ timeoutMs) rồi PING; kẹt ở trạng thái khác → lỗi nêu rõ trạng thái, không để teardown treo. */
+    const waitRedisReady = async (timeoutMs = REDIS_READY_TIMEOUT_MS) => {
+      const deadline = Date.now() + timeoutMs;
+      if (["end", "close", "wait"].includes(redis.status)) {
+        await settlesWithin(
+          redis.connect().catch(() => undefined),
+          timeoutMs,
+          `redis.connect() (status=${redis.status})`,
+        );
+      }
+      while (redis.status !== "ready") {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Redis khóa không về trạng thái ready trong ${timeoutMs}ms (status=${redis.status})`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const pong = await Promise.race([
+        redis.ping(),
+        new Promise<never>((_, reject) => {
+          setTimeout(
+            () => reject(new Error(`Redis khóa không trả PONG trong ${timeoutMs}ms`)),
+            timeoutMs,
+          ).unref();
+        }),
+      ]);
+      if (pong !== "PONG") throw new Error(`Redis khóa trả "${String(pong)}" thay vì PONG`);
+    };
     const restoreRedis = async () => {
       if (!redis) return;
       redis.acquireLock = originalAcquireLock;
-      if (redis.status === "end" || redis.status === "close") await redis.connect();
+      hungCalls.splice(0).forEach((reject) => reject(new Error("Connection is closed.")));
+      await waitRedisReady();
     };
     /** Khóa checkout còn sót trong Redis (tiền tố mặc định của provider). */
     const leakedLocks = async (keys: string[]) => {
@@ -177,7 +238,7 @@ medusaIntegrationTestRunner({
       const q = await client.quote(cartId);
       const ordersBefore = await countOrders(container);
 
-      redis.acquireLock = () => new Promise<number>(() => undefined);
+      silentRedis();
       const started = Date.now();
       const res = await client.submit(q);
       const elapsed = Date.now() - started;
@@ -187,7 +248,12 @@ medusaIntegrationTestRunner({
       expect(await countOrders(container)).toBe(ordersBefore);
       expect(await reservationsOf(container, fx, "Trắng/S")).toHaveLength(0);
 
+      // Một tác vụ nền (job mỗi phút `x-catalog-index-drain`, lượt xả hẹn giờ) gọi khóa đúng lúc Redis câm: lời gọi ấy
+      // không được kẹt vĩnh viễn — hạn đóng của runner (`jobWorker.close()` chờ job đang chạy) là nguyên nhân treo
+      // teardown 300 giây (T-047). Redis "về" (restoreRedis) thì mọi lời gọi còn treo phải kết thúc.
+      const background = drainCatalogIndex(container);
       await restoreRedis();
+      await expect(settlesWithin(background, 5_000, "lời gọi khóa của tác vụ nền")).resolves.toBeDefined();
       expect(await leakedLocks([lockKeys.cart(cartId)])).toEqual([]);
     });
 
