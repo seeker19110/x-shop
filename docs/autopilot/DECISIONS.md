@@ -235,3 +235,10 @@
 - Chọn: Dùng return.receive (kho, owner); hàng hãng hoàn hiện kèm source; hàng đợi refund không order_id thì state bắt buộc, cũ nhất trước; tham số thừa/limit ngoài 1–100 → 422
 - Lý do (tiêu chí chất lượng cuối): Không mở thêm quyền đọc dữ liệu đơn cho vai trò mới khi chưa có nhu cầu; 422 rõ ràng thay vì kẹp ngầm
 - Đường lùi: Thêm return.read vào ma trận khi CSKH cần duyệt yêu cầu trả
+
+### D-034 · 2026-10-25T23:56:41+00:00 · Rate limit cửa sổ cố định cho phép gấp đôi hạn mức qua ranh giới (T-050)
+
+- Phương án: (1) Giữ cửa sổ cố định, chấp nhận 2x ở ranh giới · (2) Kiểm hai cửa sổ liền kề có trọng số (xấp xỉ cửa sổ trượt) trong hitRateCounter/peekRateCounter cho mọi chính sách
+- Chọn: Kiểm hai cửa sổ liền kề có trọng số (xấp xỉ cửa sổ trượt) trong hitRateCounter/peekRateCounter cho mọi chính sách
+- Lý do (tiêu chí chất lượng cuối): Chống dò mã tra cứu/đoán mã đúng ngưỡng công bố (an toàn trước); không cần hạ tầng mới
+- Đường lùi: Trả về một cửa sổ trong modules/checkout/service.ts
