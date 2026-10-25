@@ -28,6 +28,9 @@ export const PRIVATE_SOURCES = [
 /** Đường mang token/tham số thanh toán trên URL: không bao giờ gửi Referer. */
 export const NO_REFERRER_SOURCES = ["/tra-cuu-don/xac-thuc", "/thanh-toan/ket-qua"] as const;
 
+/** Service worker và manifest: luôn kiểm tra lại với server để bản mới đến được khách (không cache dài hạn tệp SW). */
+export const SW_SOURCES = ["/sw.js", "/manifest.webmanifest"] as const;
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
@@ -48,6 +51,18 @@ const nextConfig: NextConfig = {
       ...PRIVATE_SOURCES.map((source) => ({
         source,
         headers: [{ key: "Cache-Control", value: "private, no-store" }],
+      })),
+      ...SW_SOURCES.map((source) => ({
+        source,
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=0, must-revalidate" },
+          ...(source === "/sw.js"
+            ? [
+                { key: "Service-Worker-Allowed", value: "/" },
+                { key: "Content-Type", value: "text/javascript; charset=utf-8" },
+              ]
+            : []),
+        ],
       })),
       {
         source: "/:path*",
