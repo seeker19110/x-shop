@@ -200,3 +200,17 @@
 - Chọn: UI chỉ hướng dẫn đăng nhập lại kèm TOTP (dùng luồng MFA native sẵn có của T-024)
 - Lý do (tiêu chí chất lượng cuối): Không tạo đường xác thực thứ hai chưa được rà; luồng MFA native đã có test
 - Đường lùi: Thêm form TOTP vào components admin khi cần UX nhanh hơn
+
+### D-029 · 2026-10-25T18:35:20+00:00 · T-044: route native ghi tiền (/admin/payments/*, payment-collections, credit-lines, order cancel native)
+
+- Phương án: (1) Chỉ owner qua settings.manage · (2) Chặn hẳn với mọi vai trò; mọi hoàn/hủy đi qua /admin/x/refunds và /admin/x/orders/:id/cancel
+- Chọn: Chặn hẳn với mọi vai trò; mọi hoàn/hủy đi qua /admin/x/refunds và /admin/x/orders/:id/cancel
+- Lý do (tiêu chí chất lượng cuối): Không còn đường lách duyệt 2 người và ledger kể cả với owner; owner vẫn hoàn được qua route có kiểm
+- Đường lùi: Đổi NATIVE_MONEY_ROUTE trong lib/admin-security/native-permissions.ts
+
+### D-030 · 2026-10-25T18:35:20+00:00 · T-044: mở lại hoàn tiền theo yêu cầu trả sau khi refund failed bị hủy
+
+- Phương án: (1) reason=other (yêu cầu trả không bao giờ đóng) · (2) Cấm hủy refund gắn yêu cầu trả (tiền giữ mãi) · (3) reason=return + return_id, số tiền server tính theo kiểm định, chỉ khi bản cũ đã cancelled, unique chặn trùng
+- Chọn: reason=return + return_id, số tiền server tính theo kiểm định, chỉ khi bản cũ đã cancelled, unique chặn trùng
+- Lý do (tiêu chí chất lượng cuối): Tiền đúng, yêu cầu trả đóng được, không tạo trùng
+- Đường lùi: Bỏ nhánh reason=return trong RefundCreateBody
