@@ -177,7 +177,9 @@ export async function rebuildCatalogIndex(
 /** Ký hiệu "cần rebuild toàn phần" trong hàng đợi sản phẩm bẩn. */
 export const REBUILD_MARK = "*";
 const DRAIN_BATCH = 500;
-const DRAIN_LOCK_EXPIRE_SECONDS = 600;
+// Lease ngắn + gia hạn mỗi 1/3 lease khi còn xả: tiến trình chết giữa chừng thì khoá tự hết sau ≤ 30 giây (lease
+// dài 600 giây cũ làm index đứng 10 phút và chặn rebuild — chờ tối đa LOCK_TIMEOUT_SECONDS — tới khi hết hạn).
+export const DRAIN_LOCK_EXPIRE_SECONDS = 30;
 
 /** Đánh dấu sản phẩm cần đồng bộ (sự kiện) — ghi một dòng, rẻ; việc nặng do `drainCatalogIndex` làm theo lô. */
 export async function markCatalogDirty(container: MedusaContainer, productIds: string[]): Promise<void> {
@@ -201,6 +203,16 @@ export async function drainCatalogIndex(container: MedusaContainer): Promise<num
     } catch {
       return processed; // tiến trình khác đang giữ khoá (đang xả hoặc rebuild) — nó sẽ xử lý dấu này.
     }
+    // Acquire lại cùng ownerId = gia hạn (SET XX). Gia hạn lỗi (Redis mất, app đã tắt) → bỏ qua: lease tự hết.
+    const renewal = setInterval(
+      () => {
+        locking
+          .acquire(CATALOG_INDEX_LOCK, { ownerId, expire: DRAIN_LOCK_EXPIRE_SECONDS })
+          .catch(() => undefined);
+      },
+      (DRAIN_LOCK_EXPIRE_SECONDS * 1000) / 3,
+    );
+    renewal.unref?.();
     try {
       let ctx: IndexContext | null = null;
       for (;;) {
@@ -222,6 +234,7 @@ export async function drainCatalogIndex(container: MedusaContainer): Promise<num
         processed += claims.length;
       }
     } finally {
+      clearInterval(renewal);
       await locking.release(CATALOG_INDEX_LOCK, { ownerId });
     }
     if ((await index.dirtyCount()) === 0) break;
