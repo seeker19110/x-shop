@@ -512,6 +512,11 @@ export async function commitImportJob(
   container: MedusaContainer,
   importId: string,
   actorId: string,
+  /**
+   * Chạy TRONG khóa nhập sau khi job ở trạng thái committed (cả lần ghi lẫn lần trả lại) — vd ghi audit đúng một lần:
+   * các commit đồng thời cùng id đi tuần tự qua đây. Lỗi ở hook được ném ra (job vẫn committed; gọi lại sẽ chạy lại hook).
+   */
+  onCommitted?: (job: ImportJobView, replayed: boolean) => Promise<void>,
 ): Promise<CommitOutcome> {
   const service = importService(container);
   return container.resolve(Modules.LOCKING).execute(
@@ -522,16 +527,21 @@ export async function commitImportJob(
         { take: 1 },
       )) as unknown as JobRecord[];
       if (!job) throw new MedusaError(MedusaError.Types.NOT_FOUND, `Không có import ${importId}`);
-      if (job.status === "committed") return { kind: "committed", job: jobView(job), replayed: true };
+      if (job.status === "committed") {
+        const view = jobView(job);
+        await onCommitted?.(view, true);
+        return { kind: "committed", job: view, replayed: true };
+      }
       if ((job.errors as unknown[]).length) {
         return { kind: "has_errors", job: jobView(job), errors: job.errors as ImportRowError[] };
       }
       // Dữ liệu có thể đã đổi từ lúc preview — kiểm lại trên trạng thái hiện tại.
       const preview = await previewImport(container, job.content);
       if (preview.errors.length) return { kind: "has_errors", job: jobView(job), errors: preview.errors };
+      let updated: JobRecord;
       try {
         const result = await applyImport(container, preview.plan);
-        const updated = (await service.updateCatalogImportJobs({
+        updated = (await service.updateCatalogImportJobs({
           id: job.id,
           status: "committed",
           result,
@@ -539,7 +549,6 @@ export async function commitImportJob(
           committed_by: actorId,
           committed_at: new Date(),
         } as never)) as unknown as JobRecord;
-        return { kind: "committed", job: jobView(updated), replayed: false };
       } catch (e) {
         await service.updateCatalogImportJobs({
           id: job.id,
@@ -548,6 +557,10 @@ export async function commitImportJob(
         } as never);
         throw e;
       }
+      // Ngoài try: job đã committed — lỗi của hook không được hạ job về `failed`.
+      const view = jobView(updated);
+      await onCommitted?.(view, false);
+      return { kind: "committed", job: view, replayed: false };
     },
     { timeout: 300 },
   );
