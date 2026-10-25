@@ -25,12 +25,20 @@ export const CHECKOUT_ERROR_STATUS = {
   RATE_LIMITED: 429,
   INTERNAL: 500,
   SHIPPING_UNAVAILABLE: 503,
+  LOCK_UNAVAILABLE: 503,
 } as const;
 
 export type CheckoutErrorCode = keyof typeof CHECKOUT_ERROR_STATUS;
 
 /** Lỗi tạm thời: cùng Idempotency-Key được thử lại (attempt mở lại), không phải đổi key. */
-export const RETRYABLE_CODES: readonly CheckoutErrorCode[] = ["BUSY_RETRY", "SHIPPING_UNAVAILABLE"];
+export const RETRYABLE_CODES: readonly CheckoutErrorCode[] = [
+  "BUSY_RETRY",
+  "SHIPPING_UNAVAILABLE",
+  "LOCK_UNAVAILABLE",
+];
+
+/** Giây gợi ý chờ trước khi gửi lại khi hạ tầng khóa (Redis) mất — đặc tả §13.2 "tạm dừng checkout cần giữ tồn". */
+export const LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS = 60;
 
 const DEFAULT_MESSAGES: Record<CheckoutErrorCode, string> = {
   VALIDATION: "Dữ liệu chưa hợp lệ",
@@ -54,6 +62,7 @@ const DEFAULT_MESSAGES: Record<CheckoutErrorCode, string> = {
   RATE_LIMITED: "Bạn thao tác quá nhanh, vui lòng thử lại sau ít giây",
   INTERNAL: "Không thể xử lý yêu cầu lúc này",
   SHIPPING_UNAVAILABLE: "Chưa lấy được phí vận chuyển, vui lòng thử lại sau giây lát",
+  LOCK_UNAVAILABLE: "Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít phút",
 };
 
 /** Hành động gợi ý cho client (đặc tả §9.1 "kèm hành động cần làm"). */
@@ -70,6 +79,7 @@ const ACTIONS: Partial<Record<CheckoutErrorCode, string>> = {
   RATE_LIMITED: "retry_later",
   ADDRESS_NOT_SERVED: "change_address",
   SHIPPING_UNAVAILABLE: "retry_same_key",
+  LOCK_UNAVAILABLE: "retry_same_key",
   PAYMENT_PENDING: "retry_later",
   NOT_CANCELLABLE: "contact_support",
 };
@@ -89,9 +99,10 @@ export class CheckoutError extends Error {
   constructor(
     code: CheckoutErrorCode,
     message?: string,
-    opts: { field?: string; detail?: CheckoutErrorDetail } = {},
+    opts: { field?: string; detail?: CheckoutErrorDetail; cause?: unknown } = {},
   ) {
-    super(message ?? DEFAULT_MESSAGES[code]);
+    // `cause` chỉ để ghi log phía server — KHÔNG vào thân problem (có thể chứa host/cổng hạ tầng).
+    super(message ?? DEFAULT_MESSAGES[code], opts.cause === undefined ? undefined : { cause: opts.cause });
     this.code = code;
     this.status = CHECKOUT_ERROR_STATUS[code];
     this.field = opts.field;
@@ -157,6 +168,8 @@ export function sendProblem(res: ProblemResponse, error: CheckoutError): void {
   res.setHeader("Cache-Control", "no-store");
   if (error.code === "BUSY_RETRY") res.setHeader("Retry-After", "1");
   if (error.code === "SHIPPING_UNAVAILABLE") res.setHeader("Retry-After", "5");
+  if (error.code === "LOCK_UNAVAILABLE")
+    res.setHeader("Retry-After", String(LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS));
   if (error.code === "RATE_LIMITED") {
     const after = error.detail?.retry_after_seconds;
     res.setHeader("Retry-After", String(typeof after === "number" ? after : 10));
