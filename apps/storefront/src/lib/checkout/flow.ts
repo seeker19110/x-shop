@@ -42,6 +42,8 @@ export type FlowOutcome =
   | { kind: "error"; code: string; message: string; field?: string; newKey: boolean }
   /** Hết lượt thử vì bận: giữ khóa, khách bấm lại. */
   | { kind: "busy" }
+  /** Hệ thống khóa tạm ngưng (503): KHÔNG tự gửi lại; giữ khóa và dữ liệu, khách bấm thử lại sau ít phút. */
+  | { kind: "unavailable"; retryAfterSeconds: number | null }
   /** Mất kết nối: giữ khóa và dữ liệu, bấm lại an toàn (không tạo đơn trùng). */
   | { kind: "network" }
   /** Đơn vẫn đang được xử lý sau khi poll hết lượt: có mã tham chiếu, KHÔNG đặt lại. */
@@ -65,6 +67,7 @@ export async function runSubmit(
     case "stock":
     case "error":
     case "network":
+    case "unavailable":
       return r;
     case "pending":
       return pollUntilDone(deps, r.attemptId, opt);
@@ -79,6 +82,8 @@ async function pollUntilDone(deps: FlowDeps, attemptId: string, opt: FlowOptions
     await deps.sleep(opt.pollIntervalMs);
     const p = await deps.poll(attemptId);
     if (p.kind === "placed") return p;
+    if (p.kind === "failed" && p.code === "LOCK_UNAVAILABLE")
+      return { kind: "unavailable", retryAfterSeconds: null };
     if (p.kind === "failed") return { kind: "error", code: p.code, message: p.message, newKey: true };
     if (p.kind === "network") {
       networkErrors++;

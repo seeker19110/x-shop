@@ -308,6 +308,21 @@ medusaIntegrationTestRunner({
         expect((await search(newIp())).status).toBe(200);
       });
 
+      it("products?q=: q rỗng/chỉ khoảng trắng không đếm; có q vượt ngưỡng → 429 + Retry-After; IP khác không bị chặn", async () => {
+        const { limit, windowMs } = STORE_RATE_LIMITS.searchIp;
+        await freshWindow(windowMs);
+        const ip = newIp();
+        const list = (qs: string, who = ip) =>
+          raw("GET", `/store/x/products${qs}`, { ...store, "x-forwarded-for": who });
+        for (const qs of ["", "?q=", "?q=%20%20", "?color=den"]) {
+          for (let i = 0; i < limit + 2; i++) expect((await list(qs)).status).toBe(200);
+        }
+        for (let i = 0; i < limit; i++) expect((await list(`?q=ao${i}`)).status).toBe(200);
+        expect429(await list("?q=ao"), windowMs);
+        expect((await list("")).status).toBe(200); // không có q vẫn duyệt được
+        expect((await list("?q=ao", newIp())).status).toBe(200);
+      });
+
       it("coupon: đếm mã KHÁC NHAU theo giỏ — báo giá lại cùng mã không tốn lượt; vượt → 429 kể cả mã đã thử", async () => {
         const { limit, windowMs } = STORE_RATE_LIMITS.couponCart;
         await freshWindow(windowMs);

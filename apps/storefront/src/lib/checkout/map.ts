@@ -162,6 +162,10 @@ export function mapSubmitResponse(
   body: unknown,
   retryAfterHeader?: string | null,
 ): SubmitResult {
+  if (status === 503 && isObj(body) && str(body.code) === "LOCK_UNAVAILABLE") {
+    const s = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+    return { kind: "unavailable", retryAfterSeconds: Number.isFinite(s) && s > 0 ? Math.ceil(s) : null };
+  }
   if (status === 0 || status >= 500 || !isObj(body)) return { kind: "network" };
   if (status === 202) {
     return str(body.checkout_attempt_id)

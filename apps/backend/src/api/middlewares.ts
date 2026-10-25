@@ -15,7 +15,12 @@ import {
 } from "../lib/admin-security/guard";
 import { csrfGuard } from "../lib/security/csrf";
 import { securityHeaders } from "../lib/security/headers";
-import { quoteRateLimit, searchRateLimit, submitRateLimit } from "../lib/security/rate-limit";
+import {
+  productSearchRateLimit,
+  quoteRateLimit,
+  searchRateLimit,
+  submitRateLimit,
+} from "../lib/security/rate-limit";
 import { uploadContentCheck, uploadPrecheck } from "../lib/security/upload";
 
 /** Xác thực cho route /auth native (giống middleware lõi) — để rate limit/refresh guard đọc được auth_context. */
@@ -45,6 +50,7 @@ export default defineMiddlewares({
     { matcher: "/x", middlewares: [securityHeaders] },
     // Rate limit Store API theo IP + khoá nghiệp vụ (SEC03, T-034); tra cứu đơn giới hạn trong route (AT20).
     { methods: ["GET"], matcher: "/store/x/search", middlewares: [searchRateLimit] },
+    { methods: ["GET"], matcher: "/store/x/products", middlewares: [productSearchRateLimit] },
     { methods: ["POST"], matcher: "/store/x/checkout/quote", middlewares: [quoteRateLimit] },
     { methods: ["POST"], matcher: "/store/x/checkout/submit", middlewares: [submitRateLimit] },
     {

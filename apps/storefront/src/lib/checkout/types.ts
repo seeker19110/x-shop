@@ -94,6 +94,8 @@ export type SubmitResult =
   | { kind: "changed"; code: ChangedCode; message: string; quote: QuoteView | null }
   | { kind: "stock"; message: string; lines: StockShortage[] }
   | { kind: "busy"; retryAfterMs: number }
+  /** 503 LOCK_UNAVAILABLE: hạ tầng khóa tạm ngưng; không tạo đơn; thử lại CÙNG khóa sau `Retry-After`. */
+  | { kind: "unavailable"; retryAfterSeconds: number | null }
   | {
       kind: "error";
       code: string;
