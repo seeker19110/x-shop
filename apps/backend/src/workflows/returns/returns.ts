@@ -1137,9 +1137,16 @@ const REFUND_LABEL: Record<string, string> = {
   cancelled: "Đang xử lý hoàn tiền",
 };
 
-/** Hình yêu cầu đổi/trả trả cho khách/Admin (POST03: thấy đã tiếp nhận → chờ gửi → đã nhận → đã kiểm tra → kết quả). */
-export async function presentReturn(container: Scope, ret: ReturnWithLines, opts: { customer: boolean }) {
-  const refund = await returnsOf(container).refundOfReturn(ret.id);
+/**
+ * Hình yêu cầu đổi/trả trả cho khách/Admin (POST03: thấy đã tiếp nhận → chờ gửi → đã nhận → đã kiểm tra → kết quả).
+ * `opts.refund`: hoàn tiền đã đọc cùng bản chụp với `ret` (đọc Admin — T-049); bỏ trống → tự đọc.
+ */
+export async function presentReturn(
+  container: Scope,
+  ret: ReturnWithLines,
+  opts: { customer: boolean; refund?: RefundRow | null },
+) {
+  const refund = opts.refund !== undefined ? opts.refund : await returnsOf(container).refundOfReturn(ret.id);
   let replacement: { display_ref: string; state: string } | null = null;
   if (ret.replacement_order_id) {
     const [fin] = await checkoutOf(container).listOrderFinances({ order_id: ret.replacement_order_id });

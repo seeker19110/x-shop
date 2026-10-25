@@ -109,6 +109,22 @@ export interface OrderCancelRow {
 
 export type NewOrderCancel = Omit<OrderCancelRow, "id" | "created_at">;
 
+/** Phân trang cho danh sách đọc của Admin (route kiểm khoảng hợp lệ trước khi gọi). */
+export interface ListPage {
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Lọc danh sách yêu cầu đổi/trả (T-049). `key_prefix`: lọc theo tiền tố khóa chống trùng do server đặt (yêu cầu hàng
+ * hoàn từ hãng — tiền tố do workflow quyết, module không biết nghĩa): `match=true` chỉ lấy khóa có tiền tố, `false` loại.
+ */
+export interface ReturnListFilter {
+  state?: ReturnState;
+  order_id?: string;
+  key_prefix?: { prefix: string; match: boolean };
+}
+
 export type NewReturn = Pick<
   ReturnRow,
   "order_id" | "kind" | "reason" | "note" | "channel" | "requested_by" | "idempotency_key" | "payload_hash"
@@ -178,6 +194,14 @@ export default class ReturnsModuleService {
     return this.db.transaction(fn);
   }
 
+  /**
+   * Đọc nhiều truy vấn trên CÙNG một bản chụp (REPEATABLE READ, chỉ đọc) — trạng thái yêu cầu, dòng hàng và hoàn tiền
+   * không lệch nhau khi một thao tác ghi commit giữa các câu đọc (T-049).
+   */
+  readSnapshot<T>(fn: (trx: Knex.Transaction) => Promise<T>): Promise<T> {
+    return this.db.transaction(fn, { isolationLevel: "repeatable read", readOnly: true });
+  }
+
   /** Khóa advisory theo đơn trong transaction hiện tại (tự nhả khi commit/rollback). */
   async lockOrder(trx: Knex.Transaction, orderId: string): Promise<void> {
     await trx.raw("select pg_advisory_xact_lock(hashtext(?))", [`x-returns:order:${orderId}`]);
@@ -211,6 +235,50 @@ export default class ReturnsModuleService {
         .orderBy("id")) as Record<string, unknown>[]
     ).map(toLine);
     return rows.map((r) => ({ ...r, lines: lines.filter((l) => l.return_id === r.id) }));
+  }
+
+  /**
+   * Danh sách yêu cầu đổi/trả cho Admin (T-049): lọc trạng thái/đơn/tiền tố khóa, mới nhất trước (created_at desc, id
+   * desc — thứ tự ổn định khi trùng mốc), kèm dòng hàng (một truy vấn cho cả trang) và tổng số khớp lọc.
+   */
+  async listReturns(
+    filter: ReturnListFilter,
+    page: ListPage,
+    db: Db = this.db,
+  ): Promise<{ returns: ReturnWithLines[]; count: number }> {
+    const where = (q: Knex.QueryBuilder) => {
+      if (filter.state) q.where("state", filter.state);
+      if (filter.order_id) q.where("order_id", filter.order_id);
+      if (filter.key_prefix) {
+        const sql = `starts_with("idempotency_key", ?)`;
+        if (filter.key_prefix.match) q.whereRaw(sql, [filter.key_prefix.prefix]);
+        else q.whereRaw(`not ${sql}`, [filter.key_prefix.prefix]);
+      }
+      return q;
+    };
+    const [rows, total] = await Promise.all([
+      (async () =>
+        (await where(db(RETURN_TABLE).select("*"))
+          .orderBy([
+            { column: "created_at", order: "desc" },
+            { column: "id", order: "desc" },
+          ])
+          .limit(page.limit)
+          .offset(page.offset)) as ReturnRow[])(),
+      (async () =>
+        (await where(db(RETURN_TABLE)).count({ n: "*" }).first()) as { n: string | number } | undefined)(),
+    ]);
+    const count = Number(total?.n ?? 0);
+    if (rows.length === 0) return { returns: [], count };
+    const lines = (
+      (await db(RETURN_LINE_TABLE)
+        .whereIn(
+          "return_id",
+          rows.map((r) => r.id),
+        )
+        .orderBy("id")) as Record<string, unknown>[]
+    ).map(toLine);
+    return { returns: rows.map((r) => ({ ...r, lines: lines.filter((l) => l.return_id === r.id) })), count };
   }
 
   /**
@@ -320,6 +388,45 @@ export default class ReturnsModuleService {
       .orderByRaw(`("state" = 'cancelled') asc, "created_at" desc, "id" desc`)
       .first();
     return row ? toRefund(row) : null;
+  }
+
+  /** `refundOfReturn` cho nhiều yêu cầu trả một lần (danh sách Admin — không N+1): return_id → bản còn hiệu lực trước. */
+  async refundsOfReturns(returnIds: readonly string[], db: Db = this.db): Promise<Map<string, RefundRow>> {
+    if (returnIds.length === 0) return new Map();
+    const rows = (await db(REFUND_TABLE)
+      .distinctOn("return_id")
+      .whereIn("return_id", [...returnIds])
+      .orderByRaw(`"return_id", ("state" = 'cancelled') asc, "created_at" desc, "id" desc`)) as Record<
+      string,
+      unknown
+    >[];
+    return new Map(rows.map((r) => [String(r.return_id), toRefund(r)]));
+  }
+
+  /**
+   * Hàng đợi hoàn tiền theo trạng thái, mọi đơn (T-049 — vd. `requested` chờ duyệt). Cũ nhất trước (created_at asc, id
+   * asc): hàng đợi xử lý theo thứ tự đến, yêu cầu chờ lâu không bị đẩy xuống trang sau.
+   */
+  async listRefundsByState(
+    state: RefundState,
+    page: ListPage,
+    db: Db = this.db,
+  ): Promise<{ refunds: RefundRow[]; count: number }> {
+    const [rows, total] = await Promise.all([
+      (async () =>
+        (await db(REFUND_TABLE)
+          .where({ state })
+          .orderBy([
+            { column: "created_at", order: "asc" },
+            { column: "id", order: "asc" },
+          ])
+          .limit(page.limit)
+          .offset(page.offset)) as Record<string, unknown>[])(),
+      (async () =>
+        (await db(REFUND_TABLE).where({ state }).count({ n: "*" }).first()) as
+          { n: string | number } | undefined)(),
+    ]);
+    return { refunds: rows.map(toRefund), count: Number(total?.n ?? 0) };
   }
 
   async listRefundsOfOrder(orderId: string, db: Db = this.db): Promise<RefundRow[]> {

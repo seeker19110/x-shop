@@ -2,6 +2,7 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { auditContextOf } from "../../../../lib/audit/record";
 import { rejectWithoutRecentMfa } from "../../../../lib/admin-security/guard";
 import { RETURNS_CONFIG } from "../../../../modules/returns/constants";
+import { AdminRefundQueueQuery, refundQueueForAdmin } from "../../../../workflows/returns/admin-read";
 import { handleReturnsRouteError, ReturnsError } from "../../../../workflows/returns/errors";
 import { actorOf, idempotencyKeyOf, parseBody, RefundCreateBody } from "../../../../workflows/returns/http";
 import { createRefund, presentRefund, refundSummary } from "../../../../workflows/returns/refunds";
@@ -13,7 +14,10 @@ import { createRefund, presentRefund, refundSummary } from "../../../../workflow
  * người thứ hai duyệt (S-402, S-403). Hoàn theo trả hàng được tạo tự động khi kiểm định; chỉ khi bản đó đã bị hủy
  * (`failed → cancelled`, T-044) mới mở lại ở đây bằng `reason=return` + `return_id` (số tiền theo kiểm định).
  *
- * GET /admin/x/refunds?order_id=… — đã thu / đã hoàn / đang giữ / còn hoàn được + danh sách yêu cầu của đơn.
+ * GET /admin/x/refunds?order_id=… — đã thu / đã hoàn / đang giữ / còn hoàn được + danh sách yêu cầu của đơn (chỉ
+ * `order_id`; kèm tham số khác → 422).
+ * GET /admin/x/refunds?state=requested[&limit=&offset=] — hàng đợi trên mọi đơn theo trạng thái (T-049), cũ nhất
+ * trước; `state` bắt buộc khi không có `order_id`, `limit` 1–100 (mặc định 50), vượt khoảng/tham số lạ → 422.
  */
 export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
@@ -47,6 +51,19 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
     actorOf(req, "refund.request");
+    if (!Object.prototype.hasOwnProperty.call(req.query, "order_id")) {
+      const query = parseBody(AdminRefundQueueQuery, req.query);
+      const body = await refundQueueForAdmin(req.scope, query);
+      res.setHeader("Cache-Control", "no-store");
+      res.status(200).json(body);
+      return;
+    }
+    const mixed = Object.keys(req.query).filter((k) => k !== "order_id");
+    if (mixed.length > 0) {
+      throw new ReturnsError("VALIDATION", "order_id không dùng kèm tham số hàng đợi", {
+        errors: mixed.map((param) => ({ param, reason: "không dùng kèm order_id" })),
+      });
+    }
     const orderId = typeof req.query.order_id === "string" ? req.query.order_id.trim() : "";
     if (!orderId || orderId.length > 128) {
       throw new ReturnsError("VALIDATION", "Cần order_id", { field: "order_id" });
