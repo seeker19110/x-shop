@@ -171,3 +171,10 @@
 - Lý do (tiêu chí chất lượng cuối): Không vá framework, dễ lùi; ảnh production sẽ qua CDN nên header đặt ở biên là chuẩn
 - Đường lùi: Chuyển sang file module S3 khi chọn hạ tầng ảnh
 - Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Ảnh qua S3-compatible + CDN đặt nosniff; tắt /static
+
+### D-025 · 2026-10-25T17:03:28+00:00 · T-022: nối E2E Playwright vào CI
+
+- Phương án: (1) Thêm services postgres/redis cho job e2e trong ci.yml; xt.yaml e2e: pnpm e2e, e2e_setup cài Chromium · (2) docker compose Postgres/Redis trong e2e_setup · (3) Chỉ chạy e2e cục bộ, CI bỏ qua
+- Chọn: Thêm services postgres/redis cho job e2e trong ci.yml; xt.yaml e2e: pnpm e2e, e2e_setup cài Chromium
+- Lý do (tiêu chí chất lượng cuối): Đặc tả §13.3 đòi E2E luồng trọng yếu trong CI; services giống job gate, không phụ thuộc docker trên runner, pnpm e2e tự reset DB
+- Đường lùi: Đặt lại e2e: "" trong xt.yaml (CI bỏ qua job e2e)

@@ -1,0 +1,46 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index a22306a..8819318 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -101,6 +101,26 @@ jobs:
+       matrix:
+         # Một shard. Thêm shard (vd [1, 2]) chỉ khi đo thấy e2e là đường dài nhất của CI (WF-CI-025, ADR-0039).
+         shard: [1]
++    # x-shop (T-022, D-025): `pnpm e2e` tự dựng DB `xshop_e2e` + Redis DB 7, seed, build rồi chạy backend/storefront
++    # thật — cần Postgres/Redis như job `gate` (đặc tả §13.3: E2E luồng trọng yếu trong CI).
++    services:
++      postgres:
++        image: postgres:16-alpine
++        env:
++          POSTGRES_USER: xshop
++          POSTGRES_PASSWORD: xshop
++          POSTGRES_DB: xshop
++        ports: ["5432:5432"]
++        options: >-
++          --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
++      redis:
++        image: redis:7-alpine
++        ports: ["6379:6379"]
++        options: >-
++          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
++    env:
++      DATABASE_URL: postgres://xshop:xshop@localhost:5432/xshop
++      REDIS_URL: redis://localhost:6379
+     steps:
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+         with:
+diff --git a/xt.yaml b/xt.yaml
+index 8db692e..ea8ab55 100644
+--- a/xt.yaml
++++ b/xt.yaml
+@@ -35,8 +35,8 @@ delivery_phase: build
+ # author_effort: ""           # low|medium|high|xhigh|max — cần cả hai khi cùng họ (D-161); chỉ dùng cùng model lấy từ cấu hình
+ # reviewer_effort: ""
+ # CI mẫu 3 job (ADR-0039): job e2e chạy cùng lúc với job gate; khoá rỗng = bỏ qua có log.
+-e2e: ""               # suite E2E, CI chạy (`dev-task.sh e2e I N`); dùng $XT_SHARD để chia shard, vd npx playwright test --shard=${XT_SHARD:-1/1}
+-e2e_setup: ""         # trước e2e: cài trình duyệt (vd npx playwright install --with-deps chromium)
++e2e: "pnpm e2e"       # suite E2E, CI chạy (`dev-task.sh e2e I N`); dùng $XT_SHARD để chia shard, vd npx playwright test --shard=${XT_SHARD:-1/1}
++e2e_setup: "pnpm exec playwright install --with-deps chromium"  # trước e2e: cài trình duyệt (vd npx playwright install --with-deps chromium)
+ e2e_affected: ""      # chỉ spec của lát đang làm (Gate mỗi task); trống = e2e
+ audit: "pnpm audit --prod --audit-level high"             # audit phụ thuộc (npm audit · pip-audit …)
+ # Trước phát hành (pha harden, `release-check` chạy — ADR-0042): đỏ = NO-GO; trống ở M/L = người ký lý do không áp.
