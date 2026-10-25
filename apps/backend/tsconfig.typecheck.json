@@ -6,5 +6,5 @@
     "rootDir": "../..",
     "customConditions": ["@x-shop/source"]
   },
-  "exclude": ["node_modules", ".medusa/server", ".medusa/admin", ".cache", "jest.config.js"]
+  "exclude": ["node_modules", "src/admin", ".medusa/server", ".medusa/admin", ".cache", "jest.config.js"]
 }

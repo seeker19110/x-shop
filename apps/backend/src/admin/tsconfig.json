@@ -1,0 +1,19 @@
+{
+  "//": "Bundle Admin chạy ở trình duyệt (vite do `medusa build` dựng): cần lib DOM + JSX, tách khỏi tsconfig của backend (Node) để DOM không lọt vào mã server. Kiểm bằng `pnpm typecheck` của apps/backend.",
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false,
+    "customConditions": ["@x-shop/source"],
+    "paths": {
+      "react": ["../../node_modules/@types/react"],
+      "react/*": ["../../node_modules/@types/react/*"]
+    }
+  },
+  "include": ["./**/*"]
+}
