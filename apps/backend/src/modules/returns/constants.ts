@@ -46,6 +46,11 @@ export const RETURNS_CONFIG = {
   returnWindowDays: null as number | null,
   /** Tối đa số dòng trong một yêu cầu đổi/trả. */
   maxLinesPerReturn: 50,
+  /**
+   * Số lần GỬI tối đa của một yêu cầu hoàn (lần đầu + thử lại, đếm ở `x_refund.attempts`) — T-044. Hết lượt mà vẫn
+   * `failed` → 409 REFUND_RETRY_EXHAUSTED: hủy yêu cầu (nhả số đang giữ) rồi tạo yêu cầu mới (thường là `manual`).
+   */
+  refundMaxAttempts: 3,
   /** Chờ khóa `order:<id>` trước khi trả 409 BUSY_RETRY. */
   lockWaitMs: 15_000,
 } as const;

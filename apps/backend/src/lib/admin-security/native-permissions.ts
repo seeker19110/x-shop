@@ -8,11 +8,20 @@ import type { Permission } from "@x-shop/domain";
  *   - đọc (GET/HEAD) → cần có ít nhất một vai trò (`any_role`);
  *   - ghi (POST/PUT/PATCH/DELETE) → `settings.manage` (chỉ owner, kèm MFA) — fail-closed cho mọi route native mới.
  * User chưa có vai trò nào chỉ được đọc hồ sơ mình (`GET /admin/users/me`).
+ *
+ * `deny`: route native đóng với MỌI vai trò, kể cả owner (T-044) — đi vòng sổ/duyệt của `/admin/x/*`:
+ *   - `NATIVE_MONEY_ROUTE`: ghi tiền native (capture/refund/mark-as-paid/payment-collection/credit-line) lách duyệt hoàn
+ *     tiền 2 người + sổ `x_refund`/ledger (S-403, S-108) → hoàn tiền chỉ qua `/admin/x/refunds`;
+ *   - `NATIVE_ORDER_CANCEL`: `cancelOrderWorkflow` ghi refund native qua provider hệ thống khi tiền thật chưa hoàn
+ *     (D-012) → nhân viên hủy qua `POST /admin/x/orders/:id/cancel`.
  */
+export type NativeDenyReason = "NATIVE_MONEY_ROUTE" | "NATIVE_ORDER_CANCEL";
+
 export type NativeRule =
   | { kind: "public" }
   | { kind: "self" }
   | { kind: "any_role" }
+  | { kind: "deny"; reason: NativeDenyReason }
   | { kind: "permission"; permission: Permission };
 
 export interface NativeRoute {
@@ -22,6 +31,7 @@ export interface NativeRoute {
 }
 
 const p = (permission: Permission): NativeRule => ({ kind: "permission", permission });
+const deny = (reason: NativeDenyReason): NativeRule => ({ kind: "deny", reason });
 const R = ["READ"] as const;
 const W = ["WRITE"] as const;
 const ALL = ["READ", "WRITE"] as const;
@@ -40,16 +50,15 @@ export const NATIVE_ADMIN_ROUTES: readonly NativeRoute[] = [
   { methods: ALL, path: "/admin/rbac/*", rule: p("settings.manage") },
   { methods: ALL, path: "/admin/workflows-executions/*", rule: p("settings.manage") },
   { methods: ALL, path: "/admin/notifications/*", rule: p("settings.manage") },
-  // Tiền: capture/refund/đánh dấu đã trả/credit line
-  { methods: ["POST"], path: "/admin/payments/:id/capture", rule: p("refund.execute") },
-  { methods: ["POST"], path: "/admin/payments/:id/refund", rule: p("refund.execute") },
-  { methods: W, path: "/admin/payments/*", rule: p("refund.execute") },
+  // Tiền (T-044, S-403): MỌI ghi native — capture/refund/đánh dấu đã trả/tạo-xóa payment collection/credit line — đóng
+  // với mọi vai trò, kể cả owner; hoàn tiền chỉ qua /admin/x/refunds (sổ + duyệt 2 người). Đọc vẫn theo payment.read.
+  { methods: W, path: "/admin/payments/*", rule: deny("NATIVE_MONEY_ROUTE") },
   { methods: R, path: "/admin/payments/*", rule: p("payment.read") },
-  { methods: W, path: "/admin/payment-collections/*", rule: p("refund.execute") },
+  { methods: W, path: "/admin/payment-collections/*", rule: deny("NATIVE_MONEY_ROUTE") },
   { methods: R, path: "/admin/payment-collections/*", rule: p("payment.read") },
-  { methods: ["POST"], path: "/admin/orders/:id/credit-lines", rule: p("refund.execute") },
-  // Đơn hàng
-  { methods: ["POST"], path: "/admin/orders/:id/cancel", rule: p("order.cancel") },
+  { methods: W, path: "/admin/orders/:id/credit-lines/*", rule: deny("NATIVE_MONEY_ROUTE") },
+  // Đơn hàng — hủy native ghi refund native khi tiền thật chưa hoàn (D-012) → đóng; dùng POST /admin/x/orders/:id/cancel.
+  { methods: W, path: "/admin/orders/:id/cancel", rule: deny("NATIVE_ORDER_CANCEL") },
   { methods: ["POST"], path: "/admin/orders/:id/complete", rule: p("order.confirm") },
   { methods: ["POST"], path: "/admin/orders/:id/fulfillments/:fid/cancel", rule: p("fulfillment.update") },
   { methods: ["POST"], path: "/admin/orders/:id/fulfillments/:fid/shipments", rule: p("fulfillment.update") },

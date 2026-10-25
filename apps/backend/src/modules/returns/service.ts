@@ -6,6 +6,7 @@ import type { RefundMethod, RefundReason, ReturnKind, ReturnReason } from "./con
 export const RETURN_TABLE = "x_return";
 export const RETURN_LINE_TABLE = "x_return_line";
 export const REFUND_TABLE = "x_refund";
+export const ORDER_CANCEL_TABLE = "x_order_cancel";
 
 export interface ReturnRow {
   id: string;
@@ -84,9 +85,29 @@ export interface RefundRow {
   idempotency_key: string;
   payload_hash: string;
   succeeded_at: Date | null;
+  cancelled_by: string | null;
+  cancelled_at: Date | null;
+  cancel_reason: string | null;
   created_at: Date;
   updated_at: Date;
 }
+
+/** Lệnh hủy đơn của nhân viên theo Idempotency-Key (T-044). */
+export interface OrderCancelRow {
+  id: string;
+  order_id: string;
+  idempotency_key: string;
+  payload_hash: string;
+  actor_id: string;
+  reason: string;
+  outcome: "cancelled" | "already_cancelled";
+  from_state: string | null;
+  refund_requested: boolean;
+  refund_id: string | null;
+  created_at: Date;
+}
+
+export type NewOrderCancel = Omit<OrderCancelRow, "id" | "created_at">;
 
 export type NewReturn = Pick<
   ReturnRow,
@@ -292,8 +313,12 @@ export default class ReturnsModuleService {
     return row ? toRefund(row) : null;
   }
 
+  /** Hoàn tiền của một yêu cầu trả: bản còn hiệu lực trước (bản `cancelled` chỉ còn là lịch sử — T-044). */
   async refundOfReturn(returnId: string, db: Db = this.db): Promise<RefundRow | null> {
-    const row = await db(REFUND_TABLE).where({ return_id: returnId }).first();
+    const row = await db(REFUND_TABLE)
+      .where({ return_id: returnId })
+      .orderByRaw(`("state" = 'cancelled') asc, "created_at" desc, "id" desc`)
+      .first();
     return row ? toRefund(row) : null;
   }
 
@@ -333,5 +358,20 @@ export default class ReturnsModuleService {
       })
       .returning("*")) as Record<string, unknown>[];
     return row ? toRefund(row) : null;
+  }
+
+  /* ------------------------------------------------------------------ hủy đơn bởi nhân viên (T-044) */
+
+  async findOrderCancelByKey(key: string, db: Db = this.db): Promise<OrderCancelRow | null> {
+    const row = await db(ORDER_CANCEL_TABLE).where({ idempotency_key: key }).first();
+    return (row as OrderCancelRow | undefined) ?? null;
+  }
+
+  /** Ghi lệnh hủy; trùng `idempotency_key` (request song song cùng khóa) → lỗi 23505 cho caller đọc lại bản thắng. */
+  async insertOrderCancel(input: NewOrderCancel, db: Db = this.db): Promise<OrderCancelRow> {
+    const [row] = (await db(ORDER_CANCEL_TABLE)
+      .insert({ id: generateEntityId(undefined, "xocn"), ...input })
+      .returning("*")) as OrderCancelRow[];
+    return row as OrderCancelRow;
   }
 }

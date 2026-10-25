@@ -179,6 +179,7 @@ export async function nativeOrderParts(
 
 const CANCEL_LABELS: Record<string, string> = {
   CUSTOMER_CANCELLED: "Bạn đã hủy đơn",
+  SHOP_CANCELLED: "Cửa hàng đã hủy đơn",
   HOLD_EXPIRED: "Đơn đã hủy do quá hạn thanh toán",
 };
 

@@ -49,10 +49,23 @@ describe("resolveAdminRule", () => {
   });
 
   it("native: bảng nhạy cảm; đọc chưa khai → any_role; ghi chưa khai → settings.manage", () => {
-    expect(resolveAdminRule("POST", "/admin/payments/p/refund")).toMatchObject({
-      permission: "refund.execute",
+    // T-044: route native ghi tiền / hủy đơn đóng với mọi vai trò (kể cả owner) — đi qua /admin/x/*.
+    for (const path of [
+      "/admin/payments/p/refund",
+      "/admin/payments/p/capture",
+      "/admin/payments/p",
+      "/admin/payment-collections/pc/mark-as-paid",
+      "/admin/payment-collections",
+      "/admin/orders/o/credit-lines",
+    ]) {
+      expect(resolveAdminRule("POST", path)).toEqual({ kind: "deny", reason: "NATIVE_MONEY_ROUTE" });
+    }
+    expect(resolveAdminRule("DELETE", "/admin/payment-collections/pc")).toMatchObject({ kind: "deny" });
+    expect(resolveAdminRule("POST", "/admin/orders/o/cancel")).toEqual({
+      kind: "deny",
+      reason: "NATIVE_ORDER_CANCEL",
     });
-    expect(resolveAdminRule("POST", "/admin/orders/o/cancel")).toMatchObject({ permission: "order.cancel" });
+    expect(resolveAdminRule("GET", "/admin/payments/p")).toMatchObject({ permission: "payment.read" });
     expect(resolveAdminRule("POST", "/admin/orders/o/fulfillments/f/shipments")).toMatchObject({
       permission: "fulfillment.update",
     });

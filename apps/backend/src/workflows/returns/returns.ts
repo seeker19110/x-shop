@@ -898,6 +898,7 @@ const REFUND_LABEL: Record<string, string> = {
   succeeded: "Đã hoàn tiền",
   failed: "Đang xử lý hoàn tiền",
   unknown: "Đang xử lý hoàn tiền",
+  cancelled: "Đang xử lý hoàn tiền",
 };
 
 /** Hình yêu cầu đổi/trả trả cho khách/Admin (POST03: thấy đã tiếp nhận → chờ gửi → đã nhận → đã kiểm tra → kết quả). */

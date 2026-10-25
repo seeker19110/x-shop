@@ -10,7 +10,8 @@ import { createRefund, presentRefund, refundSummary } from "../../../../workflow
  * POST /admin/x/refunds — tạo yêu cầu hoàn tiền (quyền `refund.request`; kho không có → 403, AT21). Header
  * `Idempotency-Key` bắt buộc (gửi lại → 200 bản cũ, khác nội dung → 409). Σ hoàn ≤ Σ đã thu kể cả các yêu cầu đang
  * giữ (422 REFUND_EXCEEDS_CAPTURED). Vượt ngưỡng (hoặc hoàn toàn bộ khi hủy đơn) → đòi xác thực lại MFA ≤ 5 phút và
- * người thứ hai duyệt (S-402, S-403). Hoàn theo trả hàng được tạo tự động khi kiểm định, không qua đây.
+ * người thứ hai duyệt (S-402, S-403). Hoàn theo trả hàng được tạo tự động khi kiểm định; chỉ khi bản đó đã bị hủy
+ * (`failed → cancelled`, T-044) mới mở lại ở đây bằng `reason=return` + `return_id` (số tiền theo kiểm định).
  *
  * GET /admin/x/refunds?order_id=… — đã thu / đã hoàn / đang giữ / còn hoàn được + danh sách yêu cầu của đơn.
  */
@@ -26,6 +27,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
       {
         order_id: body.order_id,
         reason: body.reason,
+        return_id: body.return_id ?? null,
         amount: body.amount ?? null,
         method: body.method ?? "auto",
         note: body.note ?? null,
