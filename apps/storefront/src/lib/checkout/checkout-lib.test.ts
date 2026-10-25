@@ -87,6 +87,30 @@ describe("map: phản hồi thật của backend", () => {
     });
   });
 
+  it("503 LOCK_UNAVAILABLE → unavailable (Retry-After); 503 khác/không body vẫn là network", () => {
+    const body = { code: "LOCK_UNAVAILABLE", detail: "x" };
+    expect(mapSubmitResponse(503, body, "60")).toEqual({ kind: "unavailable", retryAfterSeconds: 60 });
+    expect(mapSubmitResponse(503, body)).toEqual({ kind: "unavailable", retryAfterSeconds: null });
+    expect(mapSubmitResponse(503, body, "0")).toEqual({ kind: "unavailable", retryAfterSeconds: null });
+    expect(mapSubmitResponse(503, body, "abc")).toEqual({ kind: "unavailable", retryAfterSeconds: null });
+    expect(mapSubmitResponse(503, { code: "SHIPPING_UNAVAILABLE" }, "60")).toEqual({ kind: "network" });
+  });
+
+  it("unavailable: runSubmit không tự gửi lại", async () => {
+    const { d, keys, sleeps } = deps([{ kind: "unavailable", retryAfterSeconds: 60 }, placed]);
+    expect(await runSubmit(d, input)).toEqual({ kind: "unavailable", retryAfterSeconds: 60 });
+    expect(keys).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("poll: attempt failed LOCK_UNAVAILABLE → unavailable (giữ khóa, không báo lỗi cứng)", async () => {
+    const { d } = deps(
+      [{ kind: "pending", attemptId: "chk_1" }],
+      [{ kind: "failed", code: "LOCK_UNAVAILABLE", message: "x" }],
+    );
+    expect(await runSubmit(d, input)).toEqual({ kind: "unavailable", retryAfterSeconds: null });
+  });
+
   it("409 INSUFFICIENT_STOCK chỉ ra dòng; BUSY_RETRY có giới hạn thời gian; IDEMPOTENCY_CONFLICT cần khóa mới", () => {
     const s = mapSubmitResponse(409, {
       code: "INSUFFICIENT_STOCK",

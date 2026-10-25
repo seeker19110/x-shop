@@ -3,7 +3,9 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
+import { parseFilter } from "@x-shop/domain";
 import { CheckoutError, sendProblem } from "../checkout/errors";
+import { sanitizeQuery } from "../catalog/listing";
 import { ipRateKey } from "./client-ip";
 import { clientIpOf } from "./config";
 
@@ -162,6 +164,17 @@ function rateLimitMiddleware(checksOf: (req: MedusaRequest) => Check[]) {
 export const searchRateLimit = rateLimitMiddleware((req) => {
   const ip = ipKey(req);
   return [(c, now) => (ip ? consume(c, "searchIp", ip, now) : null)];
+});
+
+/**
+ * GET /store/x/products?q=…: tìm kiếm qua danh sách lọc (T-046). Chỉ áp khi có `q` KHÔNG rỗng theo đúng cách route đọc
+ * (`parseFilter`: giá trị đầu, chuẩn hoá, rỗng → không tìm) — duyệt danh mục/lọc không có `q` không tốn lượt. Dùng chung
+ * bộ đếm `searchIp` với /store/x/search: cùng một tài nguyên tìm kiếm, đổi endpoint không nhân đôi hạn mức.
+ */
+export const productSearchRateLimit = rateLimitMiddleware((req) => {
+  const ip = ipKey(req);
+  const searching = parseFilter(sanitizeQuery(req.query as Record<string, unknown>)).filter.q !== null;
+  return [(c, now) => (ip && searching ? consume(c, "searchIp", ip, now) : null)];
 });
 
 /** POST /store/x/checkout/quote: mọi báo giá theo IP + mã giảm giá khác nhau theo IP và theo giỏ. */
