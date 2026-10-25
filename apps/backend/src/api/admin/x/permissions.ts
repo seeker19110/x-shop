@@ -63,6 +63,20 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   // Đơn hàng + giao vận (T-026): nhân viên đơn xác nhận COD và tạo vận đơn (đặc tả §5.4).
   { method: "POST", path: "/admin/x/orders/:id/confirm-cod", permission: "order.confirm" },
   { method: "POST", path: "/admin/x/orders/:id/shipments", permission: "fulfillment.create" },
+  // Đối soát COD/sao kê + báo cáo/dashboard ngoại lệ (T-028, §5.5, AT14): kế toán nhập chứng từ (settlement.import —
+  // nhạy cảm, đòi MFA) và đóng chênh lệch; báo cáo theo report.read, dashboard theo exception.read.
+  { method: "POST", path: "/admin/x/settlements/batches", permission: "settlement.import" },
+  { method: "GET", path: "/admin/x/settlements/batches", permission: "settlement.read" },
+  { method: "GET", path: "/admin/x/settlements/batches/:id", permission: "settlement.read" },
+  { method: "GET", path: "/admin/x/settlements/discrepancies", permission: "settlement.read" },
+  {
+    method: "POST",
+    path: "/admin/x/settlements/discrepancies/:id/resolve",
+    permission: "exception.resolve",
+    also: ["settlement.read"],
+  },
+  { method: "GET", path: "/admin/x/reports/summary", permission: "report.read" },
+  { method: "GET", path: "/admin/x/reports/exceptions", permission: "exception.read" },
   // Audit + điều chỉnh tồn (T-025)
   { method: "GET", path: "/admin/x/audit", permission: "audit.read" },
   { method: "POST", path: "/admin/x/inventory/adjustments", permission: "inventory.adjust" },
