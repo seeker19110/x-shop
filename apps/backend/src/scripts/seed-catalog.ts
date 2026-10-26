@@ -7,6 +7,7 @@ import {
   updateProductsWorkflow,
 } from "@medusajs/medusa/core-flows";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "../lib/catalog/constants";
+import { withOwnedLock } from "../lib/checkout/locks";
 import { rebuildCatalogIndex } from "../lib/catalog/indexer";
 import { FASHION_MODULE } from "../modules/fashion";
 import type FashionModuleService from "../modules/fashion/service";
@@ -44,10 +45,12 @@ export default async function seedCatalog({
   container,
 }: Pick<ExecArgs, "container">): Promise<CatalogSeedResult> {
   const base = await seedXShop({ container });
-  const locking = container.resolve(Modules.LOCKING);
-  const result = await locking.execute(CATALOG_SEED_LOCK, () => seedUnlocked(container, base), {
-    timeout: 300,
-  });
+  const result = await withOwnedLock(
+    container.resolve(Modules.LOCKING),
+    CATALOG_SEED_LOCK,
+    { waitMs: 300_000, ttlSeconds: 30, scope: "seed-catalog" },
+    () => seedUnlocked(container, base),
+  );
   // Read model đọc được ngay sau seed (không chờ hàng đợi sự kiện) — rebuild là idempotent.
   await rebuildCatalogIndex(container);
   container
