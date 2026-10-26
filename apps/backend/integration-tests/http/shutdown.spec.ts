@@ -174,6 +174,18 @@ async function startBackend(extra: Record<string, string>): Promise<Backend> {
 async function slowLogin(port: number) {
   const email = `shutdown-${randomUUID()}@x-shop.test`;
   const password = `pw-${randomUUID()}`;
+  // Đăng ký `user` chỉ qua cổng khi có lời mời còn hạn cho đúng email (T-138) — tiến trình con không chung container với
+  // test nên ghi lời mời thẳng vào DB (cổng chỉ đọc email/accepted/expires_at; token không dùng ở luồng không kèm token).
+  const invite = new Client({ connectionString: DB_URL });
+  await invite.connect();
+  try {
+    await invite.query(
+      `INSERT INTO invite (id, email, accepted, token, expires_at) VALUES ($1, $2, false, $3, now() + interval '1 hour')`,
+      [`invite_shutdown_${randomUUID()}`, email, `test-${randomUUID()}`],
+    );
+  } finally {
+    await invite.end();
+  }
   const reg = await request(port, "POST", "/auth/user/emailpass/register", { email, password });
   expect(reg.status).toBe(200);
   const lock = new Client({ connectionString: DB_URL });

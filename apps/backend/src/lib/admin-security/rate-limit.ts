@@ -19,7 +19,7 @@ import type { SecurityStore } from "./store";
  * Bộ đếm lưu theo cửa sổ cố định theo đồng hồ (khoá `…:w<chỉ số cửa sổ>`), quyết định theo xấp xỉ cửa sổ trượt (cửa sổ
  * hiện tại + cửa sổ trước × phần còn lại, lib/security/sliding-window.ts, T-055) — không còn 2× ngưỡng qua ranh giới.
  */
-export type LimitScope = "login" | "mfa";
+export type LimitScope = "login" | "mfa" | "register";
 
 const h = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 40);
 

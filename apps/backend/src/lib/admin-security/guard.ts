@@ -236,6 +236,23 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
   };
 }
 
+/**
+ * Chỉ chạy `mw` khi tham số `auth_provider` (Express đã giải mã `%xx`) đúng là `emailpass` — provider mật khẩu duy nhất.
+ * Dùng cho matcher tham số `/auth/:actor_type/:auth_provider`: matcher này cũng khớp route tĩnh `/auth/token/refresh`,
+ * `/auth/mfa/factors`… (không phải đăng nhập); provider khác `emailpass` (kể cả `EMAILPASS`) Auth Module không phân giải
+ * được nên không là kênh đoán mật khẩu.
+ */
+export function emailpassOnly(
+  mw: (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => Promise<void> | void,
+) {
+  return (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) =>
+    req.params.auth_provider === "emailpass" ? mw(req, res, next) : next();
+}
+
+/**
+ * Định danh rate limit đăng nhập/đăng ký = email (identity emailpass dùng chung mọi actor: `entity_id = email`) — thất bại
+ * qua `/auth/customer/emailpass`, `/auth/<actor lạ>/emailpass` cộng chung bộ đếm với `/auth/user/emailpass`.
+ */
 export const loginIdentity = (req: MedusaRequest): string | null => {
   const email = (req.body as { email?: unknown } | undefined)?.email;
   return typeof email === "string" ? email.slice(0, 320) : null;
