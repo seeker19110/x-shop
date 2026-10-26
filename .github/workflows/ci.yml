@@ -92,6 +92,16 @@ jobs:
       # WF-DOC-002, BASE-DOC-006: liên kết Markdown nội bộ (file + anchor) phải trỏ tới đích có thật; offline, chặn merge.
       - name: Liên kết tài liệu nội bộ — `check-links.py`
         run: python3 .xtemplates/scripts/check-links.py
+      # x-shop (T-131): script kiểm tài liệu đã có nhưng chưa chạy ở CI nên lệch tài liệu↔mã không bị chặn. Kiểm ngắn → BƯỚC
+      # trong `gate` (không thêm job/required check). Mỗi script chạy kèm test của chính nó.
+      - name: Đặc tả API (openapi + spectral) — `pnpm check:openapi`
+        run: pnpm check:openapi
+      - name: Bản đồ dữ liệu ↔ migration/PII — `pnpm check:data-map`
+        run: pnpm check:data-map
+      - name: Cấu trúc ADR — `node scripts/check-adr.mjs`
+        run: node scripts/check-adr.mjs
+      - name: Test của các script kiểm tài liệu
+        run: pnpm check:openapi:test && pnpm check:data-map:test && pnpm check:adr:test
 
   # E2E (QA-E2E-001, QA-E2E-029): chạy CÙNG LÚC với `gate`, không `needs` — lệnh `e2e` tự build và phục vụ (vd `webServer`
   # của Playwright). `e2e-mode`: `off` (chưa khai `e2e`) → bỏ qua; `shard` (lệnh dùng $XT_SHARD, vd

@@ -21,7 +21,9 @@
     "check:openapi": "node scripts/check-openapi.mjs && pnpm lint:openapi",
     "check:openapi:test": "node --test scripts/check-openapi.test.mjs",
     "check:data-map": "node scripts/check-data-map.mjs",
-    "check:data-map:test": "node --test scripts/check-data-map.test.mjs"
+    "check:data-map:test": "node --test scripts/check-data-map.test.mjs",
+    "check:adr": "node scripts/check-adr.mjs",
+    "check:adr:test": "node --test scripts/check-adr.test.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
