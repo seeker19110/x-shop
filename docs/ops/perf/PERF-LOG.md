@@ -48,4 +48,12 @@ Commit A (trước khi đo): mục mới ở §Nhật ký với **điểm nóng*
 - **Kỳ vọng:** |Δ trung vị| dưới ngưỡng của compare (max(2 %, MAD/trung vị)); MAD/trung vị ≤ 10 %.
 - **Falsifier:** `improved` hoặc `regressed` (p < 0,05 và vượt sàn), hoặc MAD/trung vị > 10 % → bộ đo/máy quá nhiễu cho quyết định giữ/hoàn tác: tăng số mẫu, xen kẽ hoặc ghim CPU trước khi dùng làm Gate T-060.
 - **Cách đo** (một cây, không worktree vì cùng commit): `node scripts/load/serve.mjs start` → `xt.py perf guard --base HEAD --locked 'scripts/load/*' --locked 'scripts/perf/*' --strict` → `xt.py perf sample --out a1.json --runs 10 --warmup 2 -- node scripts/load/bench-pdp.mjs --requests 40` → cùng lệnh ra `a2.json` → `xt.py perf compare a1.json a2.json` → `serve.mjs stop`.
-- **Số đo:** _(commit sau, theo LOOP-OPT-004)_
+- **Số đo** (2026-10-26 17:47–17:49 UTC, commit `6afe5edad082ca6b96d2459365518ff3d5bfeb4d`; giả thuyết ở commit trước đó):
+  - Máy: 4 CPU Intel Xeon @ 2.80GHz, 15 GiB RAM, máy dev **dùng chung** (phiên khác chạy test cùng lúc); tải hệ thống 0,70/1,28/1,96 → 1,08/1,25/1,88; Node v22.22.0; PostgreSQL 16.15; backend tải `serve.mjs start` (DB `xshop_load` dựng mới: 10.024 SP / 50.105 dòng read model, 1 tiến trình Medusa, `NODE_ENV=development`, mock); máy phát tải cùng máy.
+  - `perf guard --base HEAD --locked 'scripts/load/*' --locked 'scripts/perf/*' --strict` → `✓ 0 file đổi`, exit 0.
+  - a1 (10 mẫu, giây): 4,141 · 3,996 · 4,342 · 3,936 · 3,435 · 3,788 · 3,583 · 3,581 · 3,385 · 3,686 — trung vị 3,737.
+  - a2 (10 mẫu, giây): 3,683 · 3,736 · 3,688 · 4,110 · 3,893 · 3,837 · 4,036 · 3,841 · 4,298 · 3,687 — trung vị 3,839.
+  - `xt.py perf compare a1.json a2.json` → `neutral: trung vị 3.73702 → 3.83891 (+2.73%, ngưỡng 6.13%, p=0.3847, 10/10 mẫu)`, exit 1.
+  - Trước khi viết giả thuyết đã chạy tay 3 lần để kiểm bộ đo hoạt động (4,15 · 3,41 · 4,04 s, `time`), không dùng làm mẫu.
+- **Kết luận:** giả thuyết đứng — không có `improved`/`regressed` giả; MAD/trung vị = 6,13 % (≤ 10 %). Hệ quả cho T-060: trên máy này `perf compare` chỉ nhận thay đổi ≥ ~6 % của 40 PDP tuần tự (~93 ms/PDP lúc không tải); thay đổi nhỏ hơn cần thêm mẫu hoặc máy yên hơn. Không có gì để giữ/hoàn tác (không đổi mã).
+- **Chưa chạy:** luồng đầy đủ `opt-gate.sh` với backend (worktree commit gốc + build + `serve.mjs` ở cả hai cây) — phiên này không được tạo worktree trên repo dùng chung; luồng đó đã có test trên bản clone tạm (`scripts/perf/opt-gate.test.mjs`), chạy thật lần đầu ở Gate T-060.
