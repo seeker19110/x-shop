@@ -25,3 +25,7 @@ Chạy: `pnpm load:smoke` — dựng DB tải riêng (`xshop_load`, Redis DB 13,
 Chi tiết dataset, điều kiện tái lập, năng lực đo được, chỗ nghẽn, lỗi phát hiện (`rebuildCatalogIndex` thiếu dòng ở quy mô lớn) và câu hỏi mở: [`load-dataset.md`](load-dataset.md).
 
 **Giới hạn**: máy dev 4 CPU dùng chung, máy phát tải chạy cùng máy, không CDN, ảnh SVG — là cổng hồi quy ở tỷ lệ thu nhỏ, không phải năng lực production hay bằng chứng đạt §10.3 (cần chạy đầy đủ trên staging).
+
+## Vòng tối ưu (T-127, LOOP-OPT)
+
+Task tối ưu chỉ mở khi có mục tiêu số + điều kiện đo; máy quyết giữ/hoàn tác bằng `xt.py perf compare` (≥ 10 mẫu/bên, baseline đo lại trên commit gốc cùng lượt) qua `scripts/perf/opt-gate.sh` (lấy từ commit gốc, khoá `scripts/load/*`, `scripts/perf/*` bằng `perf guard --locked`). Bộ đo PDP: `scripts/load/bench-pdp.mjs` trên backend tải của từng cây (`scripts/load/serve.mjs start|stop`). Mục tiêu, Gate mẫu cho T-060 và sổ thử: [`PERF-LOG.md`](PERF-LOG.md).

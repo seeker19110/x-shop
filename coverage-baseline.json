@@ -1,0 +1,9 @@
+{
+  "$comment": "Ratchet coverage (QA-COV-002, T-110): scripts/coverage-ratchet.mjs đỏ khi lines/branches của một gói thấp hơn số dưới đây. Chỉ tăng: nâng bằng `node scripts/coverage-ratchet.mjs --update` sau `pnpm -r --if-present test:coverage`; không sửa tay để hạ.",
+  "measured": "2026-10-26 — pnpm -r --if-present test:coverage (provider v8; domain/storefront vitest 5.0.5, backend jest 29 unit), Node 22.22.0, Linux x86_64",
+  "packages": {
+    "apps/backend": { "lines": 28.78, "branches": 83.1 },
+    "apps/storefront": { "lines": 91.01, "branches": 80.99 },
+    "packages/domain": { "lines": 99.83, "branches": 94.75 }
+  }
+}
