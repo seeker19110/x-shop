@@ -198,7 +198,10 @@ medusaIntegrationTestRunner({
           for (const pii of [CONTACT.name, CONTACT.email, "0912", "Điện Biên", b.orderId]) {
             expect(raw).not.toContain(pii);
           }
-          bodies.add(raw);
+          // `trace_id` là mã ngẫu nhiên theo request (T-088) — không mang thông tin về đơn; phần còn lại phải giống hệt.
+          const { trace_id: traceId, ...rest } = r.data as Record<string, unknown>;
+          expect(typeof traceId).toBe("string");
+          bodies.add(JSON.stringify(rest));
         }
         expect(bodies.size).toBe(1);
         // Hủy bằng token đơn khác cũng 404 và không đổi gì.

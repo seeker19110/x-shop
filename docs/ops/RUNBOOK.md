@@ -20,11 +20,14 @@ repo (quét `gitleaks`, `.github/workflows/secret-scan.yml`). Máy dev: `.env` c
 
 ```bash
 curl -fsS "$MEDUSA_BACKEND_URL/x/health"   # {"status":"ok"} — kiểm sống, không chạm DB, không trả phiên bản
+curl -sS "$MEDUSA_BACKEND_URL/x/readyz"    # 200 {"status":"ready"} | 503 NOT_READY — DB+Redis trả lời trong 1 s (chi tiết ở log server)
 curl -fsS "$MEDUSA_BACKEND_URL/health"     # health native của Medusa
 psql "$DATABASE_URL" -c "select state, count(*) from outbox_event group by 1"
 psql "$DATABASE_URL" -c "select kind, state, count(*) from ops_exception where state <> 'resolved' group by 1,2"
 redis-cli -u "$REDIS_URL" ping
 ```
+
+Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi cùng mã (`[http|checkout|returns|settlement|shipping] <METHOD> <path> trace_id=<mã>: <stack>`) — khách/nhân viên báo mã đó → tìm đúng dòng log. Tiến trình chết vì lỗi ngoài request để lại một dòng JSON `level: fatal` (`exception.type/message/stacktrace`) trên stderr và thoát mã 1.
 
 **Trạng thái diễn tập** (`last_drilled` = ngày diễn tập thật gần nhất; hạn ≤ 6 tháng, quá hạn = diễn tập lại):
 

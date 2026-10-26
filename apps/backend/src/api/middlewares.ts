@@ -13,8 +13,10 @@ import {
   loginIdentity,
   mfaIdentity,
 } from "../lib/admin-security/guard";
+import { xErrorHandler } from "../lib/errors/error-handler";
 import { csrfGuard } from "../lib/security/csrf";
 import { securityHeaders } from "../lib/security/headers";
+import { rejectNulBytes } from "../lib/security/nul-bytes";
 import {
   productSearchRateLimit,
   quoteRateLimit,
@@ -41,13 +43,16 @@ function blockNativeCartComplete(_req: MedusaRequest, res: MedusaResponse, _next
 }
 
 export default defineMiddlewares({
+  // Handler lỗi toàn cục (T-088): problem+json có trace_id, 5xx không lộ stack/SQL/đường dẫn (lib/errors/error-handler.ts).
+  errorHandler: xErrorHandler,
   routes: [
     // Header bảo mật + CSRF cho thao tác ghi dùng cookie (SEC01, SEC05, T-034). Middleware toàn cục (không `methods`)
     // chạy trước middleware theo method; mảng giữ thứ tự → CSRF trước cổng RBAC admin bên dưới.
-    { matcher: "/store", middlewares: [securityHeaders, csrfGuard("store")] },
-    { matcher: "/admin", middlewares: [securityHeaders, csrfGuard("admin")] },
-    { matcher: "/auth", middlewares: [securityHeaders, csrfGuard("auth")] },
-    { matcher: "/x", middlewares: [securityHeaders] },
+    // `rejectNulBytes` (T-085): `%00`/U+0000 ở đường dẫn, query, thân → 400 trước khi tới DB (Postgres không nhận NUL).
+    { matcher: "/store", middlewares: [securityHeaders, csrfGuard("store"), rejectNulBytes] },
+    { matcher: "/admin", middlewares: [securityHeaders, csrfGuard("admin"), rejectNulBytes] },
+    { matcher: "/auth", middlewares: [securityHeaders, csrfGuard("auth"), rejectNulBytes] },
+    { matcher: "/x", middlewares: [securityHeaders, rejectNulBytes] },
     // Rate limit Store API theo IP + khoá nghiệp vụ (SEC03, T-034); tra cứu đơn giới hạn trong route (AT20).
     { methods: ["GET"], matcher: "/store/x/search", middlewares: [searchRateLimit] },
     { methods: ["GET"], matcher: "/store/x/products", middlewares: [productSearchRateLimit] },

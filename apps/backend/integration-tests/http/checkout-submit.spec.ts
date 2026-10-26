@@ -62,6 +62,7 @@ interface Body {
   status: number;
   lines: unknown[];
   replacement: string;
+  trace_id: string;
 }
 /** Phần axios tối thiểu do test runner cấp. */
 interface Res {
@@ -601,7 +602,9 @@ medusaIntegrationTestRunner({
         expect(other.status).toBe(404);
         const unknown = await quote("cart_khong_ton_tai");
         expect(unknown.status).toBe(404);
-        expect(unknown.data).toEqual(anon.data);
+        // Giống hệt trừ `trace_id` (mã ngẫu nhiên theo request, T-088) — không phân biệt giỏ có/không tồn tại.
+        expect({ ...unknown.data, trace_id: "*" }).toEqual({ ...anon.data, trace_id: "*" });
+        expect(unknown.data.trace_id).not.toBe(anon.data.trace_id);
 
         const q = await quoteOk(cartA, {}, tokenA);
         expect((await submit(submitBody(q))).status).toBe(404);

@@ -1,3 +1,5 @@
+import { traceIdOf } from "../errors/trace";
+
 /**
  * Lỗi checkout có mã ổn định (đặc tả §9.1): HTTP trả `application/problem+json` (RFC 9457) với `code` cố định, thông
  * báo tiếng Việt và `field` khi là lỗi dữ liệu. Lỗi đi qua workflow bị engine tuần tự hoá (serializeError giữ thuộc
@@ -158,6 +160,8 @@ export function toProblem(error: CheckoutError): ProblemBody {
 }
 
 interface ProblemResponse {
+  /** Request gốc (Express gắn `res.req`) — nguồn `trace_id`; vắng (test) → mã mới. */
+  req?: unknown;
   status(code: number): ProblemResponse;
   setHeader(name: string, value: string): unknown;
   json(body: unknown): unknown;
@@ -174,5 +178,5 @@ export function sendProblem(res: ProblemResponse, error: CheckoutError): void {
     const after = error.detail?.retry_after_seconds;
     res.setHeader("Retry-After", String(typeof after === "number" ? after : 10));
   }
-  res.status(error.status).json(toProblem(error));
+  res.status(error.status).json({ ...toProblem(error), trace_id: traceIdOf(res.req) });
 }

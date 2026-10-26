@@ -2,6 +2,7 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
 import { z } from "zod";
 import { recordAudit } from "../audit/record";
+import { logServerError } from "../errors/error-handler";
 import { maskFreeText } from "../audit/sanitize";
 import { readCsvBody } from "../http/read-body";
 import { sendProblem, zodErrors } from "../http/problem";
@@ -51,11 +52,7 @@ export function handleSettlementError(req: MedusaRequest, res: MedusaResponse, e
       return sendProblem(res, 401, "UNAUTHORIZED", error.message);
     if (error.type === MedusaError.Types.FORBIDDEN) return sendProblem(res, 403, "FORBIDDEN", error.message);
   }
-  req.scope
-    .resolve(ContainerRegistrationKeys.LOGGER)
-    .error(
-      `[settlement] ${req.method} ${req.path}: ${error instanceof Error ? error.stack : "lỗi không rõ"}`,
-    );
+  logServerError(req, "settlement", error);
   sendProblem(res, 500, "INTERNAL", "Không thể xử lý yêu cầu lúc này");
 }
 

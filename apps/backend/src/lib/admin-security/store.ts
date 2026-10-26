@@ -18,6 +18,8 @@ export interface SecurityStore {
   decr(key: string): Promise<void>;
   del(key: string): Promise<void>;
   ttl(key: string): Promise<number>;
+  /** Kiểm kho trả lời được (readiness, T-079): Redis `PING`; bộ nhớ → luôn được. Lỗi kết nối → reject. */
+  ping(): Promise<void>;
   /** Đóng kết nối (khi ứng dụng tắt). */
   close(): Promise<void>;
 }
@@ -66,6 +68,9 @@ class RedisStore implements SecurityStore {
   async ttl(key: string) {
     return this.redis.ttl(KEY_PREFIX + key);
   }
+  async ping() {
+    await this.redis.ping();
+  }
   async close() {
     await this.redis.quit().catch(() => this.redis.disconnect());
   }
@@ -111,6 +116,7 @@ export class MemoryStore implements SecurityStore {
     const e = this.live(key);
     return e ? Math.ceil((e.expiresAt - Date.now()) / 1000) : -2;
   }
+  async ping() {}
   async close() {
     this.data.clear();
   }

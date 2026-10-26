@@ -5,6 +5,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { AUDIT_MODULE } from "../../modules/audit";
 import type AuditModuleService from "../../modules/audit/service";
 import { clientIpOf } from "../security/config";
+import { REQUEST_ID_PATTERN } from "../errors/trace";
 import type { AuditEntry, AuditEntryInput } from "../../modules/audit/service";
 
 type Scope = Pick<MedusaContainer, "resolve">;
@@ -19,8 +20,6 @@ export function hashIp(scope: Scope, ip: string | undefined | null): string | nu
   return createHmac("sha256", key).update(`ip:${ip}`).digest("hex").slice(0, 32);
 }
 
-const REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/;
-
 /** Ngữ cảnh actor/request từ HTTP request (dùng ở route admin). */
 export function auditContextOf(
   req: MedusaRequest,
@@ -33,7 +32,7 @@ export function auditContextOf(
   return {
     actor_type: ctx?.actor_type || "anonymous",
     actor_id: ctx?.actor_id || null,
-    request_id: rid && REQUEST_ID.test(rid) ? rid : null,
+    request_id: rid && REQUEST_ID_PATTERN.test(rid) ? rid : null,
     ip_hash: hashIp(req.scope, clientIpOf(req).ip),
   };
 }
