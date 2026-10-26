@@ -25,6 +25,10 @@ import { Counter, Rate } from "k6/metrics";
 
 const E = (k, d) => (__ENV[k] !== undefined && __ENV[k] !== "" ? __ENV[k] : d);
 const BASE_URL = E("BASE_URL", "http://127.0.0.1:9200");
+// QA-PERF-007: cấm đích production (mẫu viết tách vế để CI grep không bắt chính file này).
+if (new RegExp("(^|[/.@])x-shop\\.(" + ["vn", "com"].join("|") + ")([:/]|$)", "i").test(BASE_URL)) {
+  throw new Error("BASE_URL trỏ vào production — load test bị cấm (QA-PERF-007)");
+}
 const KEY = E("PUBLISHABLE_KEY", "");
 const PRODUCTS = Number(E("PRODUCTS", "10000"));
 const READ_RPS = Number(E("READ_RPS", "100"));

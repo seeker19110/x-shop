@@ -14,7 +14,7 @@ import path from "node:path";
 import { BASE_URL, LOAD } from "./env.mjs";
 import { evaluatePhase, groupSamples, summarizeByOp, THRESHOLDS } from "./lib.mjs";
 import { connectDb, log, prepare, root, startBackend } from "./prepare.mjs";
-import { renderReport } from "./report.mjs";
+import { currentCommit, renderReport } from "./report.mjs";
 import { pgCacheStats, snapshotBefore, verifyAfter } from "./verify.mjs";
 import { createContext, runContention, runPhase } from "./workload.mjs";
 
@@ -134,6 +134,7 @@ async function main() {
     const machineEnd = machineInfo(machineStart.pg);
     const report = {
       date: started.toISOString(),
+      commit: currentCommit(root),
       config: { ...LOAD, dbName: LOAD.dbName },
       machine: { ...machineStart, loadavg: `${machineStart.loadavg} → ${machineEnd.loadavg}` },
       timings: prep.timings,
