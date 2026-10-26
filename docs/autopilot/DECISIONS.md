@@ -270,3 +270,11 @@
 - Chọn: Nhả lỗi → cảnh báo, khóa tự hết theo TTL; mất lease ở import/seed/bảng size → LOCK_UNAVAILABLE như native; recheck Redis hỏng → 503 (bận vẫn 429)
 - Lý do (tiêu chí chất lượng cuối): Không báo lỗi sai cho việc đã ghi và không che lỗi gốc; mất lease là tín hiệu không an toàn nên dừng; 503 đúng ngữ nghĩa hạ tầng
 - Đường lùi: Đổi releaseOwnedOrWarn/failOnLeaseLoss trong lib/checkout/locks.ts
+
+### D-039 · 2026-10-26T03:07:43+00:00 · T-035: chế độ điều tiết Lighthouse cho cổng lab
+
+- Phương án: (1) simulate (mặc định Lighthouse; trên localhost HTTP/1.1 dao động quanh ngưỡng, đỏ ~3/6 lần) · (2) devtools (điều tiết áp thật theo hồ sơ §10.1; ổn định 4/4) — ghi rõ là mốc lạc quan, đo lại bằng RUM sau ra mắt
+- Chọn: devtools (điều tiết áp thật theo hồ sơ §10.1; ổn định 4/4) — ghi rõ là mốc lạc quan, đo lại bằng RUM sau ra mắt
+- Lý do (tiêu chí chất lượng cuối): Cổng phải tất định, không hạ ngưỡng; giới hạn mô hình mạng được ghi nhận trong docs/ops/perf/README.md
+- Đường lùi: Đổi throttlingMethod trong scripts/perf/lighthouse.mjs
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): RUM web-vitals trên hạ tầng thật sau ra mắt
