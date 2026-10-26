@@ -11,45 +11,45 @@ cầu bắt buộc để ra mắt.
 ## Nội dung
 
 [1 Mục tiêu và quyết định triển
-khai](#mục-tiêu-và-quyết-định-triển-khai)
+khai](#1-mục-tiêu-và-quyết-định-triển-khai)
 
 [2 Cơ sở nghiên cứu và hàm ý thiết
-kế](#cơ-sở-nghiên-cứu-và-hàm-ý-thiết-kế)
+kế](#2-cơ-sở-nghiên-cứu-và-hàm-ý-thiết-kế)
 
 [3 Định hướng giao diện và hệ thống thiết
-kế](#định-hướng-giao-diện-và-hệ-thống-thiết-kế)
+kế](#3-định-hướng-giao-diện-và-hệ-thống-thiết-kế)
 
-[4 Đặc tả trải nghiệm mua sắm](#đặc-tả-trải-nghiệm-mua-sắm)
+[4 Đặc tả trải nghiệm mua sắm](#4-đặc-tả-trải-nghiệm-mua-sắm)
 
-[5 Quản trị và quy tắc thương mại](#quản-trị-và-quy-tắc-thương-mại)
+[5 Quản trị và quy tắc thương mại](#5-quản-trị-và-quy-tắc-thương-mại)
 
 [6 Luồng đơn hàng thanh toán và giao
-vận](#luồng-đơn-hàng-thanh-toán-và-giao-vận)
+vận](#6-luồng-đơn-hàng-thanh-toán-và-giao-vận)
 
 [7 Kiến trúc và ranh giới trách
-nhiệm](#kiến-trúc-và-ranh-giới-trách-nhiệm)
+nhiệm](#7-kiến-trúc-và-ranh-giới-trách-nhiệm)
 
-[8 Mô hình dữ liệu và ràng buộc](#mô-hình-dữ-liệu-và-ràng-buộc)
+[8 Mô hình dữ liệu và ràng buộc](#8-mô-hình-dữ-liệu-và-ràng-buộc)
 
-[9 Hợp đồng API và tích hợp](#hợp-đồng-api-và-tích-hợp)
+[9 Hợp đồng API và tích hợp](#9-hợp-đồng-api-và-tích-hợp)
 
-[10 Hiệu năng và khả năng mở rộng](#hiệu-năng-và-khả-năng-mở-rộng)
+[10 Hiệu năng và khả năng mở rộng](#10-hiệu-năng-và-khả-năng-mở-rộng)
 
 [11 Bảo mật dữ liệu và khả năng tiếp
-cận](#bảo-mật-dữ-liệu-và-khả-năng-tiếp-cận)
+cận](#11-bảo-mật-dữ-liệu-và-khả-năng-tiếp-cận)
 
-[12 SEO nội dung và PWA](#seo-nội-dung-và-pwa)
+[12 SEO nội dung và PWA](#12-seo-nội-dung-và-pwa)
 
-[13 Quan sát hệ thống và vận hành](#quan-sát-hệ-thống-và-vận-hành)
+[13 Quan sát hệ thống và vận hành](#13-quan-sát-hệ-thống-và-vận-hành)
 
-[14 Kế hoạch thực thi và phân công](#kế-hoạch-thực-thi-và-phân-công)
+[14 Kế hoạch thực thi và phân công](#14-kế-hoạch-thực-thi-và-phân-công)
 
-[15 Ma trận nghiệm thu](#ma-trận-nghiệm-thu)
+[15 Ma trận nghiệm thu](#15-ma-trận-nghiệm-thu)
 
 [16 Phạm vi sau ra mắt và quyết định cần cấu
-hình](#phạm-vi-sau-ra-mắt-và-quyết-định-cần-cấu-hình)
+hình](#16-phạm-vi-sau-ra-mắt-và-quyết-định-cần-cấu-hình)
 
-[17 Nguồn tham khảo](#nguồn-tham-khảo)
+[17 Nguồn tham khảo](#17-nguồn-tham-khảo)
 
 # 1 Mục tiêu và quyết định triển khai
 

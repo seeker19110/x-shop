@@ -88,6 +88,9 @@ jobs:
         run: python3 .xtemplates/scripts/xt.py doctor
       - name: Workflow (ghim SHA, quyền, timeout, secret trên PR) + cấu hình xt.yaml — `xt.py ci-check`
         run: python3 .xtemplates/scripts/xt.py ci-check
+      # WF-DOC-002, BASE-DOC-006: liên kết Markdown nội bộ (file + anchor) phải trỏ tới đích có thật; offline, chặn merge.
+      - name: Liên kết tài liệu nội bộ — `check-links.py`
+        run: python3 .xtemplates/scripts/check-links.py
 
   # E2E (QA-E2E-001, QA-E2E-029): chạy CÙNG LÚC với `gate`, không `needs` — lệnh `e2e` tự build và phục vụ (vd `webServer`
   # của Playwright). `e2e-mode`: `off` (chưa khai `e2e`) → bỏ qua; `shard` (lệnh dùng $XT_SHARD, vd
