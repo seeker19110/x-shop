@@ -64,12 +64,26 @@ tables:
         retention: audit-1y
         recipients: []
         copies: không
+      user_agent:
+        category: basic
+        purpose: User-Agent của request (cắt ≤ 256 ký tự, đã che email/SĐT lẫn trong chuỗi) — nguồn của sự kiện bảo mật, phát hiện phiên/thiết bị lạ
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: []
+        copies: không
+      resource_id:
+        category: basic
+        purpose: đích của thao tác — có thể là id khách/nhân viên hoặc bí danh HMAC của email đăng nhập (idh_…, không lưu email thô) để gom các lần đăng nhập vào một tài khoản
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: []
+        copies: không
     non_pii:
       - id
       - actor_type
       - action
       - resource_type
-      - resource_id
+      - outcome
       - changes
       - request_id
       - created_at

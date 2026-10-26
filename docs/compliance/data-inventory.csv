@@ -2,6 +2,8 @@ system,table,column,category,purpose,legal_basis,retention
 x-shop/backend/audit,audit_log,actor_id,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
 x-shop/backend/audit,audit_log,reason,basic,"lý do thao tác quản trị (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",legitimate_interests,audit-1y
 x-shop/backend/audit,audit_log,ip_hash,basic,IP của người thao tác ở dạng băm — truy vết và chống gian lận,legitimate_interests,audit-1y
+x-shop/backend/audit,audit_log,user_agent,basic,"User-Agent của request (cắt ≤ 256 ký tự, đã che email/SĐT lẫn trong chuỗi) — nguồn của sự kiện bảo mật, phát hiện phiên/thiết bị lạ",legitimate_interests,audit-1y
+x-shop/backend/audit,audit_log,resource_id,basic,"đích của thao tác — có thể là id khách/nhân viên hoặc bí danh HMAC của email đăng nhập (idh_…, không lưu email thô) để gom các lần đăng nhập vào một tài khoản",legitimate_interests,audit-1y
 x-shop/backend/catalog-import,catalog_import_job,previewed_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
 x-shop/backend/catalog-import,catalog_import_job,committed_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
 x-shop/backend/checkout,checkout_quote,address,basic,báo giá phí vận chuyển theo địa chỉ giao (AddressSnapshot),contract,transient-90d
