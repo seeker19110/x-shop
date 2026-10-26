@@ -1,5 +1,6 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { z } from "zod";
+import { maskFreeText } from "../../lib/audit/sanitize";
 import { REFUND_STATES, RETURN_STATES } from "../../modules/returns/constants";
 import type { ReturnWithLines } from "../../modules/returns/service";
 import { ReturnsError } from "./errors";
@@ -149,7 +150,7 @@ export async function returnDetailForAdmin(container: Scope, returnId: string) {
       ...l,
       title: titles.get(l.line_id)?.title ?? null,
       variant_title: titles.get(l.line_id)?.variant_title ?? null,
-      inspection_note: notes.get(l.line_id) ?? null,
+      inspection_note: maskFreeText(notes.get(l.line_id)),
     })),
   };
 }

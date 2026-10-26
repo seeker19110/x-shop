@@ -20,7 +20,14 @@ const PHONE_VALUE = /^(\+?84|0)[\d .-]{8,13}$/;
 
 // Email/số điện thoại lẫn trong văn bản tự do (ghi chú, lý do) cũng bị che.
 const EMAIL_IN_TEXT = /[^\s@]+@[^\s@]+\.[^\s@]+/g;
-const PHONE_IN_TEXT = /(?<!\d)(?:\+?84|0)\d{8,10}(?!\d)/g;
+// Cho phép khoảng trắng/chấm/gạch giữa các chữ số ("+84 912 345 678", "0912.345.678").
+const PHONE_IN_TEXT = /(?<!\d)(?:\+?84|0)(?:[ .-]?\d){8,10}(?!\d)/gu;
+// Địa chỉ trong văn bản: cụm báo hiệu ("địa chỉ", "đ/c", "số nhà", "sn") che tới hết mệnh đề (`;`/xuống dòng/chấm cách);
+// hoặc "số|ngõ|ngách|hẻm|kiệt <số>" kèm các cấp hành chính liền sau (đường/phố/phường/xã/quận/huyện/tp/tỉnh).
+const ADDRESS_CUE_IN_TEXT =
+  /(?<![\p{L}\d_])(?:địa chỉ|đ[/]c|số nhà|nhà số|sn)(?![\p{L}\d_])[^;\n]*?(?=;|\n|\.\s|\.$|$)/giu;
+const STREET_IN_TEXT =
+  /(?<![\p{L}\d_])(?:số|ngõ|ngách|hẻm|kiệt)\s*\d[\p{L}\d/-]*(?:\s*,?\s*(?:đường|phố|phường|xã|quận|huyện|thôn|tổ|tp\.?|thành phố|tỉnh)\s+[\p{L}\d][\p{L}\d ]*?(?=,|;|\n|\.\s|\.$|$))*/giu;
 
 const MAX_DEPTH = 6;
 const MAX_ITEMS = 100;
@@ -31,10 +38,24 @@ function maskString(key: string, value: string): string {
   if (PII_KEY.test(key)) return PII;
   if (EMAIL_KEY.test(key) || EMAIL_VALUE.test(value)) return maskEmail(value);
   if (PHONE_KEY.test(key) || PHONE_VALUE.test(value)) return maskPhone(value.replace(/[ .-]/g, ""));
-  const masked = value
-    .replace(EMAIL_IN_TEXT, (m) => maskEmail(m))
-    .replace(PHONE_IN_TEXT, (m) => maskPhone(m));
+  const masked = maskFreeText(value);
   return masked.length > MAX_STRING ? `${masked.slice(0, MAX_STRING)}…` : masked;
+}
+
+/**
+ * Che PII lẫn trong văn bản tự do (ghi chú/lý do do khách hoặc nhân viên nhập): email → maskEmail, số điện thoại VN →
+ * maskPhone (bỏ khoảng trắng/chấm/gạch), địa chỉ → "[PII]" (nhận diện theo cụm báo hiệu — heuristic, không hứa bắt hết).
+ * Văn bản không có PII giữ nguyên từng ký tự (Unicode tiếng Việt không bị đổi). Dùng chung cho audit và các route trả ra.
+ */
+export function maskFreeText(value: string): string;
+export function maskFreeText(value: string | null | undefined): string | null;
+export function maskFreeText(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  return value
+    .replace(EMAIL_IN_TEXT, (m) => maskEmail(m))
+    .replace(PHONE_IN_TEXT, (m) => maskPhone(m.replace(/[ .-]/g, "")))
+    .replace(ADDRESS_CUE_IN_TEXT, PII)
+    .replace(STREET_IN_TEXT, PII);
 }
 
 function walk(key: string, value: unknown, depth: number): unknown {
