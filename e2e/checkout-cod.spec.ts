@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { countOrders } from "./db.mjs";
-import { BUYER, guestJourneyToFilledCheckout, placeCodOrder } from "./helpers";
+import { BUYER, expectNoA11yViolations, guestJourneyToFilledCheckout, placeCodOrder } from "./helpers";
 
 /** R-001: khách không tài khoản mua COD từ trang chủ tới trang đơn; tra cứu đơn bảo mật. */
 test.describe("R-001 — khách vãng lai mua COD", () => {
@@ -9,7 +9,9 @@ test.describe("R-001 — khách vãng lai mua COD", () => {
     browser,
   }) => {
     const before = await countOrders();
-    await guestJourneyToFilledCheckout(page, "cod");
+    await guestJourneyToFilledCheckout(page, "cod", (label) =>
+      expectNoA11yViolations(page, `COD — ${label}`),
+    );
     await expect(page.getByText("Mua không cần tài khoản.")).toBeVisible();
 
     const ref = await placeCodOrder(page);
@@ -17,6 +19,7 @@ test.describe("R-001 — khách vãng lai mua COD", () => {
     // Trang đơn: đã đặt, COD, thông tin người nhận.
     await expect(page.getByRole("heading", { level: 1 })).toContainText(ref);
     await expect(page.getByText("Đã nhận đơn — chờ xác nhận")).toBeVisible();
+    await expectNoA11yViolations(page, "COD — trang đơn");
     await expect(page.getByText("Thanh toán khi nhận hàng", { exact: true })).toBeVisible();
     // SĐT được che giữa ngay cả với chủ phiên đơn (PII).
     await expect(page.getByText(`${BUYER.name} · 0912***678`)).toBeVisible();
