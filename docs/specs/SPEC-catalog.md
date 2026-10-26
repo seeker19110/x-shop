@@ -4,6 +4,8 @@
 |---|---|
 | ID tính năng | F-003, F-004 (yêu cầu gốc: ADM01–03, CAT01–04, AT01, AT26, AT31, AT32) |
 | Trạng thái | Approved for implementation (D-001) |
+| approved_by | Phiên chính, tự duyệt theo AGENTS.md §5 (D-001) |
+| approved_at | 2026-10-24 |
 | Nguồn | `docs/specs/DAC-TA-GOC.md` §4.2, §5.1, §7.2 (search read model) |
 
 ## 1. User story

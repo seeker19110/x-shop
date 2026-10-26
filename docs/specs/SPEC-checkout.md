@@ -4,6 +4,8 @@
 |---|---|
 | ID tính năng | F-005, F-006 (yêu cầu gốc: CHK01–06, PRICE01–04, INV02–03, DATA01–06, §6.2, §9.1) |
 | Trạng thái | Approved for implementation (D-001) |
+| approved_by | Phiên chính, tự duyệt theo AGENTS.md §5 (D-001) |
+| approved_at | 2026-10-24 |
 | Nguồn | `docs/specs/DAC-TA-GOC.md` §4.4, §5.2–5.3, §6.1–6.2, §8, §9.1 — file này chỉ bổ sung tiêu chí kiểm được và quyết định lấp chỗ hở |
 
 ## 1. User story
@@ -81,3 +83,10 @@ lần, để không bị thu thêm ngầm và không mất hàng đã giữ.
 - Khóa: Locking Module của Medusa theo key `inventory_item:<id>` sắp tăng dần + khóa `cart:<id>`; ràng buộc UNIQUE
   `(cart_id, cart_version)` trên checkout attempt là lớp đỡ cuối (D-002).
 - Làm tròn phân bổ giảm giá: largest remainder theo giá trị dòng, hòa thì theo thứ tự dòng (D-002).
+- Làm tròn tiền (XC-UNITS-006): VND là số nguyên, không số lẻ; mọi phép chia ra số lẻ có mode ghi tại đây (D-002).
+  - Giảm theo phần trăm (`percentOfVnd`, `packages/domain/src/money/money.ts`): tính bằng phép nguyên trên basis point (1% = 100 bp), làm tròn XUỐNG tới đồng (ROUND_DOWN = floor) — mức giảm "10%" không bao giờ vượt 10%. Ví dụ: 10% của 99.999 đ = 9.999 đ; 10% của 1.300.000 đ = 130.000 đ.
+  - Giá trị phần trăm của mã giảm đọc từ Medusa (`quote.ts`) đổi sang basis point; nếu không khớp đúng một basis point (sai số > 1e-9) hoặc > 100% thì mã không áp dụng — không làm tròn lặng lẽ.
+  - Phân bổ giảm giá theo dòng: largest remainder (đã nêu trên); tổng phân bổ = tổng giảm tuyệt đối.
+  - Phí ship theo bậc khối lượng (`apps/backend/src/lib/checkout/shipping.ts`): số bậc làm tròn LÊN (ceil); khối lượng một dòng không số nguyên gram làm tròn lên.
+  - Thuế/hóa đơn: hiện chưa tính thuế (đặc tả gốc §7.4: cấu hình theo mô hình kinh doanh, không hardcode). Khi thêm, phải ghi mode làm tròn (HALF_UP hay HALF_EVEN theo nghiệp vụ) vào spec này và ADR trước khi code.
+  - Kiểm: `pnpm --filter @x-shop/domain exec vitest run src/money` (ca `percentOfVnd` làm tròn xuống, biên 0 và 10.000 bp, thuộc tính tổng phân bổ).
