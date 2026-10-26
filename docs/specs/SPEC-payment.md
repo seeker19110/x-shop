@@ -4,6 +4,8 @@
 |---|---|
 | ID tính năng | F-007 (yêu cầu gốc: §6.1–6.2, §9.2, AT06–09, AT11, AT16, AT18, AT24, AT35, AT36) |
 | Trạng thái | Approved for implementation (D-001) |
+| approved_by | Phiên chính, tự duyệt theo AGENTS.md §5 (D-001) |
+| approved_at | 2026-10-24 |
 | Nguồn | `docs/specs/DAC-TA-GOC.md` §6, §9.2; protocol VNPAY xác minh ở `docs/research/2026-10-24-stack.md` |
 
 ## 1. User story
