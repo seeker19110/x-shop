@@ -5,19 +5,22 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
-import { createAdmin, createMfaAdmin, type MfaAdmin } from "../helpers/auth";
+import { cleanupUnlinkedIdentityForInvite } from "../../src/lib/admin-security/invite-guard";
+import { createAdmin, createMfaAdmin, jwtPayload, type MfaAdmin } from "../helpers/auth";
 
 jest.setTimeout(300 * 1000);
 
 /**
- * T-138 (BE-AUTH-003, D-068) — đăng ký emailpass không dùng để dò/chiếm trước tài khoản:
- *  - `POST /auth/<actor>/<provider>/register` chỉ cho actor `user` + `emailpass` khi có lời mời admin hợp lệ (token mời
- *    trong thân, hoặc lời mời còn hạn cho đúng email — trang mời của dashboard Medusa không gửi token khi đăng ký);
- *    còn lại (email admin có thật, email lạ, actor `customer`/lạ, đường dẫn mã hoá %xx) → CÙNG một phản hồi, không tạo
+ * T-138 (BE-AUTH-003, D-068, D-075) — đăng ký emailpass không dùng để dò/chiếm trước tài khoản:
+ *  - `POST /auth/<actor>/<provider>/register` chỉ cho actor `user` + `emailpass` khi chứng minh có token mời hợp lệ đúng
+ *    email (thân `invite_token`, hoặc `Referer` = trang mời dashboard `/app/invite?token=…` cùng host — trang mời của
+ *    dashboard Medusa không gửi token khi đăng ký); còn lại (email admin có thật, email lạ, actor `customer`/lạ, đường dẫn mã hoá %xx) → CÙNG một phản hồi, không tạo
  *    auth_identity. Identity emailpass dùng chung mọi actor (entity_id = email) nên đăng ký `customer` cũng dò/chiếm được
  *    email admin — đóng ở P0 (tài khoản khách là P1, đặc tả §1.1, POST04).
  *  - rate limit theo (email + IP), email, IP cho mọi `/auth/<actor>/<provider>/register` và đăng nhập
- *    `/auth/<actor>/emailpass` (bộ đếm đăng nhập theo email dùng chung mọi actor — không lách qua route khách).
+ *    `/auth/<actor>/emailpass` (bộ đếm đăng nhập theo email dùng chung mọi actor — không lách qua route khách);
+ *    GET/HEAD đăng nhập emailpass → 405 (không lách rate limit bằng GET có thân).
+ *  - accept lời mời: email thân và identity trong Bearer phải khớp lời mời; xoá/gửi lại lời mời dọn identity chưa gắn actor.
  */
 
 interface RawRes {
@@ -39,8 +42,13 @@ medusaIntegrationTestRunner({
       container = getContainer();
     });
 
-    /** Request thô — giữ nguyên đường dẫn (kể cả `%75`), không để client chuẩn hoá. */
-    function post(path: string, body: unknown, headers: Record<string, string> = {}): Promise<RawRes> {
+    /** Request thô — giữ nguyên đường dẫn (kể cả `%75`), không để client chuẩn hoá; GET/HEAD cũng gửi được thân. */
+    function send(
+      method: string,
+      path: string,
+      body: unknown,
+      headers: Record<string, string> = {},
+    ): Promise<RawRes> {
       const text = JSON.stringify(body);
       return new Promise((resolve, reject) => {
         const req = http.request(
@@ -48,8 +56,13 @@ medusaIntegrationTestRunner({
             host: base.hostname,
             port: base.port,
             path,
-            method: "POST",
-            headers: { "content-type": "application/json", "x-forwarded-for": newIp(), ...headers },
+            method,
+            headers: {
+              "content-type": "application/json",
+              "content-length": String(Buffer.byteLength(text)),
+              "x-forwarded-for": newIp(),
+              ...headers,
+            },
           },
           (res) => {
             const chunks: Buffer[] = [];
@@ -68,6 +81,20 @@ medusaIntegrationTestRunner({
         req.on("error", reject);
         req.end(text);
       });
+    }
+    const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+      send("POST", path, body, headers);
+    /** Referer của trang mời dashboard Medusa (cùng host với backend, `admin.path` mặc định `/app`). */
+    const dashboardReferer = (token: string, host = base.host) => ({
+      referer: `http://${host}/app/invite?token=${encodeURIComponent(token)}`,
+    });
+    /** Chờ subscriber (sự kiện chạy bất đồng bộ) — tối đa ~15 s. */
+    async function eventually(check: () => Promise<boolean>) {
+      for (let i = 0; i < 150; i++) {
+        if (await check()) return true;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return false;
     }
 
     const withoutTrace = (r: RawRes) => {
@@ -101,6 +128,14 @@ medusaIntegrationTestRunner({
         data: { invite: { email } },
       });
       return res.data.invite;
+    };
+    const asOwner = async (method: "post" | "delete", url: string) => {
+      owner ??= await createMfaAdmin(api as never, container, { roles: ["owner"] });
+      const cfg = { headers: owner.headers, validateStatus: () => true } as never;
+      return (method === "post" ? await api.post(url, {}, cfg) : await api.delete(url, cfg)) as unknown as {
+        status: number;
+        data: Record<string, unknown>;
+      };
     };
 
     describe("đăng ký không lộ tài khoản tồn tại, không tạo identity khi không có lời mời", () => {
@@ -136,7 +171,11 @@ medusaIntegrationTestRunner({
         expect(await identityCount(future)).toBe(0);
         // Admin được mời sau đó vẫn đăng ký + nhận lời mời bình thường (không ai chiếm trước được identity).
         const inv = await invite(future);
-        const reg = await post("/auth/user/emailpass/register", { email: future, password });
+        const reg = await post(
+          "/auth/user/emailpass/register",
+          { email: future, password },
+          dashboardReferer(inv.token),
+        );
         expect(reg.status).toBe(200);
         const acc = await post(
           `/admin/invites/accept?token=${encodeURIComponent(inv.token)}`,
@@ -164,6 +203,16 @@ medusaIntegrationTestRunner({
         });
         expect(withoutTrace(badToken)).toEqual(ref);
         expect(withoutTrace(wrongEmail)).toEqual(ref);
+        // Token thân sai thì Referer đúng không cứu được.
+        expect(
+          withoutTrace(
+            await post(
+              "/auth/user/emailpass/register",
+              { email, password, invite_token: "khong-hop-le" },
+              dashboardReferer(invOther.token),
+            ),
+          ),
+        ).toEqual(ref);
         expect(await identityCount(email)).toBe(0);
 
         const expiredEmail = unknownEmail();
@@ -190,10 +239,41 @@ medusaIntegrationTestRunner({
     });
 
     describe("luồng mời admin (invite → register → accept → đăng nhập) vẫn xanh", () => {
-      it("như trang mời của dashboard Medusa: register KHÔNG kèm token (lời mời còn hạn cho đúng email) → accept → login", async () => {
+      it("người lạ biết email đang được mời: không token / Referer khác host / sai token / sai trang → 400 chung, không tạo identity (D-075)", async () => {
+        const email = unknownEmail();
+        const ref = withoutTrace(
+          await post("/auth/user/emailpass/register", { email: unknownEmail(), password }),
+        );
+        const inv = await invite(email);
+        const other = await invite(unknownEmail());
+        for (const headers of [
+          {},
+          dashboardReferer(inv.token, "evil.example"),
+          dashboardReferer(inv.token, `${base.hostname}:1`),
+          dashboardReferer(other.token),
+          dashboardReferer("khong-hop-le"),
+          { referer: `http://${base.host}/app/login?token=${encodeURIComponent(inv.token)}` },
+          { referer: `http://${base.host}/app/invite` },
+        ]) {
+          const r = await post("/auth/user/emailpass/register", { email, password }, headers);
+          expect({ headers, ...withoutTrace(r) }).toEqual({ headers, ...ref });
+        }
+        expect(await identityCount(email)).toBe(0);
+        // Người được mời vẫn đăng ký được sau đó (không ai chiếm trước).
+        expect(
+          (await post("/auth/user/emailpass/register", { email, password }, dashboardReferer(inv.token)))
+            .status,
+        ).toBe(200);
+      });
+
+      it("như trang mời của dashboard Medusa: không token trong thân, Referer `/app/invite?token=` cùng host → accept → login", async () => {
         const email = unknownEmail();
         const inv = await invite(email);
-        const reg = await post("/auth/user/emailpass/register", { email, password });
+        const reg = await post(
+          "/auth/user/emailpass/register",
+          { email, password },
+          dashboardReferer(inv.token),
+        );
         expect(reg.status).toBe(200);
         expect(typeof reg.json.token).toBe("string");
         const acc = await post(
@@ -225,6 +305,122 @@ medusaIntegrationTestRunner({
           { authorization: `Bearer ${String(reg.json.token)}` },
         );
         expect(acc.status).toBe(200);
+      });
+    });
+
+    describe("accept lời mời ràng buộc email + identity; xoá/gửi lại lời mời dọn identity treo", () => {
+      const userCount = async (email: string) =>
+        (await container.resolve(Modules.USER).listUsers({ email })).length;
+
+      it("accept với thân email khác lời mời → 400 INVITE_MISMATCH, không tạo user email lạ; đúng email → 200", async () => {
+        const a = unknownEmail();
+        const b = unknownEmail();
+        const inv = await invite(a);
+        const reg = await post("/auth/user/emailpass/register", {
+          email: a,
+          password,
+          invite_token: inv.token,
+        });
+        expect(reg.status).toBe(200);
+        const bearer = { authorization: `Bearer ${String(reg.json.token)}` };
+        const url = `/admin/invites/accept?token=${encodeURIComponent(inv.token)}`;
+        const bad = await post(url, { email: b }, bearer);
+        expect(bad.status).toBe(400);
+        expect(bad.json).toMatchObject({ code: "INVITE_MISMATCH" });
+        expect(await userCount(b)).toBe(0);
+        expect(await userCount(a)).toBe(0);
+        const ok = await post(url, { email: a }, bearer);
+        expect(ok.status).toBe(200);
+        expect((ok.json.user as { email: string }).email).toBe(a);
+      });
+
+      it("accept token mời của A bằng identity của C → 400; không Bearer → bị từ chối", async () => {
+        const a = unknownEmail();
+        const c = unknownEmail();
+        const invA = await invite(a);
+        const invC = await invite(c);
+        const regC = await post("/auth/user/emailpass/register", {
+          email: c,
+          password,
+          invite_token: invC.token,
+        });
+        expect(regC.status).toBe(200);
+        const url = `/admin/invites/accept?token=${encodeURIComponent(invA.token)}`;
+        const cross = await post(url, {}, { authorization: `Bearer ${String(regC.json.token)}` });
+        expect(cross.status).toBe(400);
+        expect(cross.json).toMatchObject({ code: "INVITE_MISMATCH" });
+        expect(await userCount(a)).toBe(0);
+        expect(await userCount(c)).toBe(0);
+        expect((await post(url, {})).status).toBeGreaterThanOrEqual(400);
+        expect(await userCount(a)).toBe(0);
+      });
+
+      it("xoá lời mời → identity đã đăng ký (chưa accept) của đúng email bị dọn; email khác không bị chạm", async () => {
+        const email = unknownEmail();
+        const keep = unknownEmail();
+        const inv = await invite(email);
+        const invKeep = await invite(keep);
+        expect(
+          (await post("/auth/user/emailpass/register", { email, password, invite_token: inv.token })).status,
+        ).toBe(200);
+        expect(
+          (
+            await post("/auth/user/emailpass/register", {
+              email: keep,
+              password,
+              invite_token: invKeep.token,
+            })
+          ).status,
+        ).toBe(200);
+        expect((await asOwner("delete", `/admin/invites/${inv.id}`)).status).toBe(200);
+        expect(await eventually(async () => (await identityCount(email)) === 0)).toBe(true);
+        expect(await identityCount(keep)).toBe(1);
+      });
+
+      it("gửi lại lời mời → identity treo bị dọn; đăng ký lại bằng token mới (mật khẩu khác) → 200, token cũ → 400", async () => {
+        const email = unknownEmail();
+        const inv = await invite(email);
+        expect(
+          (await post("/auth/user/emailpass/register", { email, password, invite_token: inv.token })).status,
+        ).toBe(200);
+        const resent = await asOwner("post", `/admin/invites/${inv.id}/resend`);
+        expect(resent.status).toBe(200);
+        const fresh = String((resent.data.invite as { token: string }).token);
+        expect(fresh).not.toBe(inv.token);
+        expect(await eventually(async () => (await identityCount(email)) === 0)).toBe(true);
+        const pw2 = `${password}-moi`;
+        expect(
+          (await post("/auth/user/emailpass/register", { email, password: pw2, invite_token: inv.token }))
+            .status,
+        ).toBe(400);
+        const reg = await post(
+          "/auth/user/emailpass/register",
+          { email, password: pw2 },
+          dashboardReferer(fresh),
+        );
+        expect(reg.status).toBe(200);
+        const acc = await post(
+          `/admin/invites/accept?token=${encodeURIComponent(fresh)}`,
+          {},
+          { authorization: `Bearer ${String(reg.json.token)}` },
+        );
+        expect(acc.status).toBe(200);
+      });
+
+      it("dọn chỉ chạm identity CHƯA gắn actor: identity đã gắn actor (app_metadata.*_id) giữ nguyên", async () => {
+        const email = unknownEmail();
+        const inv = await invite(email);
+        const reg = await post("/auth/user/emailpass/register", { email, password, invite_token: inv.token });
+        expect(reg.status).toBe(200);
+        const auth = container.resolve<IAuthModuleService>(Modules.AUTH);
+        const authIdentityId = String(jwtPayload(String(reg.json.token)).auth_identity_id);
+        // Medusa không cho mời email đã là user → gắn actor thẳng vào identity để mô phỏng tài khoản đã có.
+        await auth.updateAuthIdentities({ id: authIdentityId, app_metadata: { customer_id: "cus_da_co" } });
+        expect(await cleanupUnlinkedIdentityForInvite(container, inv.id)).toBe(0);
+        expect(await identityCount(email)).toBe(1);
+        await auth.updateAuthIdentities({ id: authIdentityId, app_metadata: { customer_id: null } });
+        expect(await cleanupUnlinkedIdentityForInvite(container, inv.id)).toBe(1);
+        expect(await identityCount(email)).toBe(0);
       });
     });
 
@@ -301,6 +497,36 @@ medusaIntegrationTestRunner({
         // IP khác vẫn đăng nhập đúng được (chưa tới ngưỡng theo email).
         expect(
           (await post("/auth/user/emailpass", { email: admin.email, password: admin.password })).status,
+        ).toBe(200);
+      });
+
+      it("GET/HEAD đăng nhập emailpass có thân → 405, không token; không làm lệch bộ đếm; provider khác không bị 405", async () => {
+        const admin = await createAdmin(api as never, container);
+        const ip = newIp();
+        const h = { "x-forwarded-for": ip };
+        for (let i = 0; i < 30; i++) {
+          const r = await send(
+            "GET",
+            "/auth/user/emailpass",
+            { email: admin.email, password: "sai-mat-khau-0123" },
+            h,
+          );
+          expect(r.status).toBe(405);
+        }
+        for (const path of ["/auth/user/emailpass", "/auth/%75ser/emailpass", "/auth/customer/emailpass"]) {
+          const good = await send("GET", path, { email: admin.email, password: admin.password }, h);
+          expect({ path, status: good.status }).toEqual({ path, status: 405 });
+          expect(good.headers.allow).toBe("POST");
+          expect(good.json.token).toBeUndefined();
+          expect(JSON.stringify(good.json)).not.toMatch(/eyJ/);
+          const head = await send("HEAD", path, { email: admin.email, password: admin.password }, h);
+          expect({ path, status: head.status }).toEqual({ path, status: 405 });
+        }
+        // Provider không phải emailpass không bị cổng 405 chặn (OAuth dùng GET cho bước chuyển hướng).
+        expect((await send("GET", "/auth/user/google", {}, h)).status).not.toBe(405);
+        // 30 lần GET không vào bộ đếm thất bại: POST đúng mật khẩu cùng IP vẫn 200.
+        expect(
+          (await post("/auth/user/emailpass", { email: admin.email, password: admin.password }, h)).status,
         ).toBe(200);
       });
     });
