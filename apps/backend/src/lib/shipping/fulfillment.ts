@@ -26,7 +26,7 @@ import { isUniqueViolation, type AuditEntryInput } from "../../modules/audit/ser
 import type { ShipmentRow } from "../../modules/shipping/service";
 import { toSafeInteger } from "../checkout/cart";
 import { CHECKOUT_CONFIG } from "../checkout/config";
-import { acquireOrdered, lockKeys, releaseOwned } from "../checkout/locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
 
 /**
  * Fulfillment NATIVE của Medusa cho vận đơn GHN (T-043, S-303 "1 shipment / 1 fulfillment").
@@ -530,7 +530,12 @@ export async function applyStock(
       }
     }
   } finally {
-    await releaseOwned(locking, ownerId, null);
+    await releaseOwnedOrWarn(
+      locking,
+      ownerId,
+      container.resolve(ContainerRegistrationKeys.LOGGER),
+      "fulfillment",
+    );
   }
   return { applied, replayed: groups.size - applied };
 }

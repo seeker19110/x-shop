@@ -7,7 +7,7 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import type { OutboxClaim } from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG } from "./config";
 import { readCheckoutError } from "./errors";
-import { acquireOrdered, lockKeys, releaseOwned } from "./locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
 import { syncNativePayment } from "./payment";
 import { queryAndProcess } from "./recheck";
@@ -43,7 +43,7 @@ async function withLock<T>(
   try {
     return await fn();
   } finally {
-    await releaseOwned(locking, owner, null);
+    await releaseOwnedOrWarn(locking, owner, logger(container), "job");
   }
 }
 

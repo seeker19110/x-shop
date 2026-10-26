@@ -78,6 +78,12 @@ interface Lease {
   keys: Set<string>;
   ttlSeconds: number;
   timer: ReturnType<typeof setInterval> | null;
+  /**
+   * Một lần gia hạn thấy khóa đã thuộc chủ KHÁC (lease hết hạn trong lúc Redis không trả lời và bị người khác lấy) —
+   * vùng găng không còn độc quyền. Chỉ ghi nhận; `withOwnedLock({ failOnLeaseLoss })` đọc để báo lỗi như
+   * `locking.execute` native. Không phát hiện được ca khóa hết hạn rồi được chính chủ SET lại khi chưa ai lấy.
+   */
+  lost: boolean;
 }
 
 const leases = new Map<string, Lease>();
@@ -85,7 +91,7 @@ const leases = new Map<string, Lease>();
 function startRenewal(locking: LockingLike, ownerId: string, keys: string[], ttlSeconds: number): void {
   let lease = leases.get(ownerId);
   if (!lease) {
-    lease = { keys: new Set(), ttlSeconds, timer: null };
+    lease = { keys: new Set(), ttlSeconds, timer: null, lost: false };
     leases.set(ownerId, lease);
   }
   for (const k of keys) lease.keys.add(k);
@@ -95,7 +101,10 @@ function startRenewal(locking: LockingLike, ownerId: string, keys: string[], ttl
     () => {
       for (const key of current.keys) {
         // Cùng ownerId → provider đặt lại TTL (gia hạn). Lỗi tạm (mạng) thì lần sau thử lại; khóa vẫn tự hết hạn.
-        locking.acquire(key, { ownerId, expire: current.ttlSeconds }).catch(() => undefined);
+        // "Đang bận" = khóa đã về tay chủ khác → mất lease (ghi nhận, không tự lấy lại).
+        locking.acquire(key, { ownerId, expire: current.ttlSeconds }).catch((e: unknown) => {
+          if (isBusyError(e)) current.lost = true;
+        });
       }
     },
     Math.max(250, Math.floor((ttlSeconds * 1000) / 3)),
@@ -189,27 +198,39 @@ export async function releaseOwned(
   }
 }
 
+export interface OwnedLockOptions {
+  waitMs: number;
+  ttlSeconds: number;
+  scope: string;
+  callTimeoutMs?: number;
+  /** Tiền tố ownerId (dễ đọc khi soi Redis/log), mặc định `lock`. */
+  ownerPrefix?: string;
+  /**
+   * Như `locking.execute` native: nếu trong lúc `fn` chạy một lần gia hạn thấy khóa đã về tay chủ khác thì báo
+   * `LOCK_UNAVAILABLE` (detail `lease_lost`) thay vì trả kết quả như thể đã giữ khóa suốt. `fn` KHÔNG bị cắt giữa chừng
+   * (phần đã ghi vẫn còn) — chỉ dùng cho tác vụ gọi lại được an toàn (idempotent).
+   */
+  failOnLeaseLoss?: boolean;
+  onReleaseError?: (e: unknown) => void;
+}
+
 /**
- * Chạy `fn` dưới khóa `key` của Locking Module với mọi lời gọi có hạn (acquire/gia hạn/release) — thay cho
- * `locking.execute` không hạn. Chờ khóa bận tối đa `waitMs` (quá → BUSY_RETRY); Redis lỗi/không trả lời trong
- * `callTimeoutMs` → LOCK_UNAVAILABLE (503) và KHÔNG chạy `fn`. Hạn chỉ áp cho bước giành/nhả khóa, KHÔNG cắt `fn` đang
- * chạy (lease được gia hạn nền tới khi xong). Nhả lỗi/quá hạn không làm hỏng kết quả của `fn` — khóa tự hết hạn theo
- * TTL; lỗi được báo qua `onReleaseError`.
+ * Chạy `fn` dưới khóa `key` (hoặc nhiều khóa — lấy tuần tự tăng dần) của Locking Module với mọi lời gọi có hạn
+ * (acquire/gia hạn/release) — thay cho `locking.execute` không hạn. Chờ khóa bận tối đa `waitMs` (quá → BUSY_RETRY);
+ * Redis lỗi/không trả lời trong `callTimeoutMs` → LOCK_UNAVAILABLE (503) và KHÔNG chạy `fn`. Hạn chỉ áp cho bước
+ * giành/nhả khóa, KHÔNG cắt `fn` đang chạy (lease `ttlSeconds` được gia hạn nền mỗi 1/3 TTL tới khi xong — tác vụ dài
+ * như import CSV không cần TTL dài; tiến trình chết thì khóa tự nhả sau ≤ TTL). Nhả lỗi/quá hạn không làm hỏng kết quả
+ * của `fn` — khóa tự hết hạn theo TTL; lỗi được báo qua `onReleaseError`.
  */
 export async function withOwnedLock<T>(
   locking: LockingLike,
-  key: string,
-  opts: {
-    waitMs: number;
-    ttlSeconds: number;
-    scope: string;
-    callTimeoutMs?: number;
-    onReleaseError?: (e: unknown) => void;
-  },
+  key: string | readonly string[],
+  opts: OwnedLockOptions,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const ownerId = `lock:${randomUUID()}`;
-  await acquireOrdered(locking, [key], {
+  const ownerId = `${opts.ownerPrefix ?? "lock"}:${randomUUID()}`;
+  const keys = typeof key === "string" ? [key] : [...key];
+  const held = await acquireOrdered(locking, keys, {
     ownerId,
     waitMs: opts.waitMs,
     ttlSeconds: opts.ttlSeconds,
@@ -217,10 +238,58 @@ export async function withOwnedLock<T>(
     callTimeoutMs: opts.callTimeoutMs,
   });
   try {
-    return await fn();
+    const result = await fn();
+    if (opts.failOnLeaseLoss && leases.get(ownerId)?.lost) {
+      throw new CheckoutError("LOCK_UNAVAILABLE", undefined, {
+        detail: { lock_scope: opts.scope, lease_lost: true },
+        cause: new Error(`lease lost for ${held.join(", ")} while the job was running`),
+      });
+    }
+    return result;
   } finally {
-    const err = await releaseOwnedQuietly(locking, ownerId, [key], opts.callTimeoutMs);
+    // Đã mất lease → khóa không còn của mình; release theo ownerId vẫn an toàn (Lua chỉ xoá khi đúng chủ).
+    const err = await releaseOwnedQuietly(locking, ownerId, held, opts.callTimeoutMs);
     if (err) opts.onReleaseError?.(err);
+  }
+}
+
+/**
+ * Lấy một khóa KHÔNG chờ, KHÔNG gia hạn, tự hết sau `expireSeconds` — dùng làm giới hạn tần suất phân tán (vd nút
+ * "Kiểm tra lại" 1 lần / 10 giây). `true` = vừa lấy được; `false` = đang bị giữ (đã gọi trong cửa sổ). Lời gọi có hạn
+ * `callTimeoutMs`: Redis lỗi/không trả lời → LOCK_UNAVAILABLE (503) — KHÔNG coi là "đang bận" (khách không bị báo 429
+ * sai, cũng không bỏ qua giới hạn). Lệnh tới muộn sau khi quá hạn chỉ giữ khóa tới hết `expireSeconds`.
+ */
+export async function tryAcquireExpiring(
+  locking: LockingLike,
+  key: string,
+  opts: { expireSeconds: number; scope: string; ownerId?: string; callTimeoutMs?: number },
+): Promise<boolean> {
+  try {
+    await withLockCallTimeout(
+      locking.acquire(key, { ownerId: opts.ownerId ?? randomUUID(), expire: opts.expireSeconds }),
+      opts.callTimeoutMs ?? LOCK_CALL_TIMEOUT_MS,
+    );
+    return true;
+  } catch (e) {
+    if (isBusyError(e)) return false;
+    throw lockUnavailable(opts.scope, e);
+  }
+}
+
+/**
+ * Nhả khóa của chủ sau vùng găng mà KHÔNG làm đổi kết quả nghiệp vụ đã xong (hoặc che lỗi gốc của vùng găng): lỗi/quá
+ * hạn chỉ ghi cảnh báo — khóa đã ngừng gia hạn và tự hết sau TTL.
+ */
+export async function releaseOwnedOrWarn(
+  locking: LockingLike,
+  ownerId: string,
+  logger: { warn(message: string): unknown },
+  label: string,
+): Promise<void> {
+  const err = await releaseOwnedQuietly(locking, ownerId, null);
+  if (err) {
+    const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : String(err);
+    logger.warn(`[${label}] Nhả khóa lỗi/quá hạn (khóa tự hết theo TTL): ${cause}`);
   }
 }
 

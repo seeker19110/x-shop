@@ -19,6 +19,7 @@ import {
 import { CATALOG_IMPORT_MODULE } from "../../modules/catalog-import";
 import type CatalogImportModuleService from "../../modules/catalog-import/service";
 import { setProductFashionWorkflow } from "../../workflows/fashion/set-product-fashion";
+import { withOwnedLock } from "../checkout/locks";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "./constants";
 import { colorOf, loadDictionary, sizeOf } from "./dictionary";
 import { loadProductSources } from "./product-source";
@@ -433,6 +434,13 @@ export async function exportProductsCsv(container: MedusaContainer): Promise<str
 
 /** Khoá ghi nhập CSV: mọi commit chạy tuần tự (hai import cùng tạo một handle không thể chen nhau). */
 export const CATALOG_IMPORT_LOCK = "x-shop:catalog-import";
+/** Chờ tối đa khi một commit khác đang giữ khóa (như `timeout: 300` của `locking.execute` trước đây). */
+const IMPORT_LOCK_WAIT_MS = 300_000;
+/**
+ * Lease khóa nhập: gia hạn nền mỗi 1/3 TTL (20 s) suốt lúc commit chạy — file lớn chạy bao lâu cũng giữ khóa; tiến trình
+ * chết thì khóa tự nhả sau ≤ 60 s (bằng hạn mặc định của `locking.execute` native).
+ */
+const IMPORT_LOCK_TTL_SECONDS = 60;
 
 export interface ImportJobView {
   import_id: string;
@@ -519,9 +527,24 @@ export async function commitImportJob(
   onCommitted?: (job: ImportJobView, replayed: boolean) => Promise<void>,
 ): Promise<CommitOutcome> {
   const service = importService(container);
-  return container.resolve(Modules.LOCKING).execute(
+  // Mọi lời gọi Redis có hạn (LOCK_CALL_TIMEOUT_MS): Redis câm/mất → LOCK_UNAVAILABLE (503) và KHÔNG chạy commit; khóa
+  // bận quá IMPORT_LOCK_WAIT_MS → BUSY_RETRY. Như `locking.execute` native: lease bị chủ khác lấy mất giữa chừng (Redis
+  // không trả lời lâu hơn TTL) → báo lỗi thay vì trả "committed" như thể độc quyền; commit idempotent nên gọi lại an toàn.
+  return withOwnedLock(
+    container.resolve(Modules.LOCKING),
     CATALOG_IMPORT_LOCK,
-    async () => {
+    {
+      waitMs: IMPORT_LOCK_WAIT_MS,
+      ttlSeconds: IMPORT_LOCK_TTL_SECONDS,
+      scope: "catalog-import",
+      ownerPrefix: "import",
+      failOnLeaseLoss: true,
+      onReleaseError: (e) =>
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .warn(`[import] Nhả khoá lỗi/quá hạn (lease tự hết): ${(e as Error).message}`),
+    },
+    async (): Promise<CommitOutcome> => {
       const [job] = (await service.listCatalogImportJobs(
         { id: importId },
         { take: 1 },
@@ -562,6 +585,5 @@ export async function commitImportJob(
       await onCommitted?.(view, false);
       return { kind: "committed", job: view, replayed: false };
     },
-    { timeout: 300 },
   );
 }

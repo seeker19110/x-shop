@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { updateInventoryLevelsWorkflow } from "@medusajs/medusa/core-flows";
 import { decideIdempotency, payloadHash } from "@x-shop/domain";
 import { z } from "zod";
@@ -9,7 +9,7 @@ import type AuditModuleService from "../../modules/audit/service";
 import { isUniqueViolation, type InventoryAdjustment } from "../../modules/audit/service";
 import type { AuditEntryInput } from "../../modules/audit/service";
 import { CHECKOUT_CONFIG } from "../checkout/config";
-import { acquireOrdered, lockKeys, releaseOwned } from "../checkout/locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
 
 /**
  * Điều chỉnh tồn có kiểm soát (T-025, INV03, SPEC-admin S-404): lý do trong danh mục, người làm, trước/sau, khóa chống
@@ -166,6 +166,11 @@ export async function adjustInventory(
       throw e;
     }
   } finally {
-    await releaseOwned(locking, ownerId, null);
+    await releaseOwnedOrWarn(
+      locking,
+      ownerId,
+      scope.resolve(ContainerRegistrationKeys.LOGGER),
+      "inventory-adjust",
+    );
   }
 }

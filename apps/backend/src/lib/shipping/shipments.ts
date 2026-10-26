@@ -20,7 +20,7 @@ import { toSafeInteger as toSafeIntegerOrNull } from "../checkout/cart";
 import { cartWeightGrams } from "../checkout/shipping";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { readCheckoutError } from "../checkout/errors";
-import { acquireOrdered, lockKeys, releaseOwned } from "../checkout/locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
 import { SHIPPING_CONFIG } from "./config";
 import { FulfillmentSyncError, syncNativeProgress } from "./fulfillment";
 import { getGhnClient, GhnError, type GhnDetail } from "./ghn-client";
@@ -95,7 +95,7 @@ export async function withOrderLock<T>(
   try {
     return await fn();
   } finally {
-    await releaseOwned(locking, owner, null);
+    await releaseOwnedOrWarn(locking, owner, container.resolve(ContainerRegistrationKeys.LOGGER), "shipping");
   }
 }
 

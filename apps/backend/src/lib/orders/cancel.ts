@@ -14,7 +14,7 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { CheckoutError, readCheckoutError } from "../checkout/errors";
 import { cancelNativeOrder } from "../checkout/jobs";
-import { acquireOrdered, lockKeys, releaseOwned } from "../checkout/locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
 import { queryAndProcess } from "../checkout/recheck";
 import { CUSTOMER_CANCELLABLE_STATES, nativeOrderParts, shipmentStateOf } from "./view";
 
@@ -74,7 +74,7 @@ async function withCancelLock<T>(
   try {
     return await fn();
   } finally {
-    await releaseOwned(locking, owner, null);
+    await releaseOwnedOrWarn(locking, owner, container.resolve(ContainerRegistrationKeys.LOGGER), "cancel");
   }
 }
 
