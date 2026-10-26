@@ -1,0 +1,308 @@
+#!/usr/bin/env node
+// Quét SQL dựng bằng nối chuỗi (`node scripts/check-sql-safety.mjs`). BASE-SEC-007 / SEC-WEB-001.
+//
+// Hai loại phát hiện trong mã nguồn không-test của apps/*/src và packages/*/src (TS/JS):
+//  1. Lời gọi "sink" SQL (`.raw(`, `.whereRaw(`/`havingRaw`/`orderByRaw`/`groupByRaw`/`joinRaw`/`selectRaw`, `.execute(`, `.query(`)
+//     mà ĐỐI SỐ ĐẦU không phải chuỗi/literal tĩnh: có `${…}`, có nối `+`, hay là biến/biểu thức gọi hàm.
+//  2. Literal (template hoặc chuỗi nối `+`) mở đầu bằng động từ SQL (select/insert into/update/delete from/with/…) mà có `${…}`
+//     hoặc đang nối `+` với biểu thức — dù chưa đưa thẳng vào sink.
+// Mọi phát hiện phải có dòng trong scripts/sql-safety-allowlist.json: { file, match, reason } — `match` là chuỗi con của
+// đối số/literal đã gộp khoảng trắng, `reason` giải thích vì sao an toàn (định danh/hằng từ mã, KHÔNG từ input; giá trị đi
+// qua tham số `?`/`$n`); `kind` (tuỳ chọn) khoá loại phát hiện, bắt buộc nên dùng cho đối số trần như `sql`. Dòng allowlist không khớp phát hiện nào → lỗi (không để allowlist mục nát). Test không bị quét.
+//
+// Thoát 0 = đạt; 1 = có phát hiện chưa duyệt / allowlist sai; 2 = không đọc được đầu vào.
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const SINK =
+  /\.(raw|whereRaw|orWhereRaw|havingRaw|orderByRaw|groupByRaw|joinRaw|selectRaw|execute|query)\s*(?:<[^>()]*>)?\(/g;
+const SQL_START = /^\s*(select|insert\s+into|update|delete\s+from|with|alter|drop|create|truncate|merge)\b/i;
+const SOURCE_FILE = /\.(ts|tsx|js|mjs|cjs)$/;
+const SKIP_FILE =
+  /(^|\/)(__tests__|integration-tests|node_modules|dist|\.next|\.medusa|migrations)\/|\.(test|spec)\.[a-z]+$|\.d\.ts$/;
+const MIN_REASON = 15;
+
+/** Phân tách mã: mask[i] = 1 nếu ký tự i là mã (không nằm trong chuỗi/chú thích/regex); literals: chuỗi & template. */
+export function tokenize(src) {
+  const mask = new Uint8Array(src.length);
+  const literals = [];
+  const n = src.length;
+  let lastSig = "";
+
+  function skipRegex(i) {
+    let inClass = false;
+    i++;
+    while (i < n && src[i] !== "\n") {
+      const c = src[i];
+      if (c === "\\") i += 2;
+      else {
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "/" && !inClass) return i + 1;
+        i++;
+      }
+    }
+    return i;
+  }
+
+  function parseTemplate(i) {
+    const start = i;
+    i++;
+    let interp = false;
+    while (i < n) {
+      const c = src[i];
+      if (c === "\\") i += 2;
+      else if (c === "$" && src[i + 1] === "{") {
+        interp = true;
+        i = parseCode(i + 2, true);
+      } else if (c === "`") {
+        i++;
+        break;
+      } else i++;
+    }
+    literals.push({ start, end: i, kind: "tpl", interp, text: src.slice(start, i) });
+    return i;
+  }
+
+  function parseCode(i, untilBrace) {
+    let depth = 0;
+    while (i < n) {
+      const c = src[i];
+      const d = src[i + 1];
+      if (c === "/" && d === "/") {
+        while (i < n && src[i] !== "\n") i++;
+      } else if (c === "/" && d === "*") {
+        const e = src.indexOf("*/", i + 2);
+        i = e < 0 ? n : e + 2;
+      } else if (c === "'" || c === '"') {
+        const start = i;
+        i++;
+        while (i < n && src[i] !== c && src[i] !== "\n") i += src[i] === "\\" ? 2 : 1;
+        i++;
+        literals.push({ start, end: i, kind: "str", interp: false, text: src.slice(start, i) });
+        lastSig = '"';
+      } else if (c === "`") {
+        i = parseTemplate(i);
+        lastSig = '"';
+      } else if (c === "/" && (lastSig === "" || "(,=:[!&|?{};+-*%<>~^".includes(lastSig))) {
+        i = skipRegex(i);
+        lastSig = '"';
+      } else {
+        if (c === "{") depth++;
+        else if (c === "}") {
+          if (untilBrace && depth === 0) return i + 1;
+          depth--;
+        }
+        mask[i] = 1;
+        if (!/\s/.test(c)) lastSig = c;
+        i++;
+      }
+    }
+    return i;
+  }
+
+  parseCode(0, false);
+  return { mask, literals };
+}
+
+const lineOf = (src, idx) => src.slice(0, idx).split("\n").length;
+const squash = (s) => s.replace(/\s+/g, " ").trim();
+
+/** Lấy đối số đầu của lời gọi mở ngoặc ở `open` (vị trí `(`): đến dấu `,`/`)` ở mức ngoài cùng. */
+function firstArg(src, mask, open) {
+  let depth = 0;
+  let i = open + 1;
+  for (; i < src.length; i++) {
+    if (!mask[i]) continue;
+    const c = src[i];
+    if ("([{".includes(c)) depth++;
+    else if (")]}".includes(c)) {
+      if (depth === 0) break;
+      depth--;
+    } else if (c === "," && depth === 0) break;
+  }
+  return src.slice(open + 1, i);
+}
+
+const STATIC_STR = /^(['"])(?:(?!\1)[^\\\n]|\\.)*\1$/;
+const STATIC_TPL = /^`(?:[^`\\$]|\\.|\$(?!\{))*`$/;
+
+/** `true` nếu biểu thức chỉ gồm literal tĩnh nối bằng `+` (không có thành phần động). */
+export function isStaticSql(expr) {
+  const t = expr.trim();
+  if (!t) return true; // gọi không đối số
+  const parts = [];
+  let cur = "";
+  let q = null;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) {
+      cur += c;
+      if (c === "\\") cur += t[++i] ?? "";
+      else if (c === q) q = null;
+    } else if (c === "'" || c === '"' || c === "`") {
+      q = c;
+      cur += c;
+    } else if (c === "+") {
+      parts.push(cur);
+      cur = "";
+    } else cur += c;
+  }
+  parts.push(cur);
+  return parts.every((p) => {
+    const s = p
+      .trim()
+      .replace(/^\(|\)$/g, "")
+      .trim();
+    return STATIC_STR.test(s) || STATIC_TPL.test(s);
+  });
+}
+
+/** Phát hiện trong một tệp: [{ line, kind, sink?, text }]. */
+export function scanSource(src) {
+  const { mask, literals } = tokenize(src);
+  const out = [];
+  const seen = new Set();
+  const add = (idx, kind, sink, text) => {
+    const key = `${idx}:${kind}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ line: lineOf(src, idx), kind, sink, text: squash(text) });
+  };
+
+  const sinkRanges = [];
+  for (const m of src.matchAll(SINK)) {
+    if (!mask[m.index]) continue;
+    const open = m.index + m[0].length - 1;
+    const arg = firstArg(src, mask, open);
+    if (isStaticSql(arg)) continue;
+    sinkRanges.push([open, open + 1 + arg.length]);
+    const kind = arg.includes("${") ? "interpolation" : /[+]/.test(arg) ? "concat" : "dynamic";
+    add(open, kind, m[1], arg);
+  }
+
+  for (const lit of literals) {
+    // literal nằm trong đối số của sink đã báo → không báo lần hai
+    if (sinkRanges.some(([a, b]) => lit.start >= a && lit.end <= b)) continue;
+    if (!SQL_START.test(lit.text.slice(1))) continue;
+    if (lit.kind === "tpl" && lit.interp) {
+      add(lit.start, "sql-template", undefined, lit.text);
+      continue;
+    }
+    // chuỗi thường nối `+` với biểu thức: nhìn token liền trước/sau ở mức mã
+    const before = src.slice(0, lit.start).trimEnd();
+    const after = src.slice(lit.end).trimStart();
+    if (before.endsWith("+") || (after.startsWith("+") && !after.startsWith("++"))) {
+      add(lit.start, "sql-concat", undefined, lit.text);
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/** Đối chiếu phát hiện với allowlist. Trả { unapproved, errors, used }. */
+export function applyAllowlist(findingsByFile, allowlist) {
+  const errors = [];
+  const used = new Set();
+  const unapproved = [];
+  allowlist.forEach((a, idx) => {
+    if (!a || typeof a.file !== "string" || typeof a.match !== "string" || !a.match.trim())
+      errors.push(`allowlist[${idx}]: thiếu file/match`);
+    else if (typeof a.reason !== "string" || a.reason.trim().length < MIN_REASON)
+      errors.push(`allowlist[${idx}] (${a.file}): thiếu lý do (≥ ${MIN_REASON} ký tự)`);
+  });
+  for (const [file, findings] of Object.entries(findingsByFile)) {
+    for (const f of findings) {
+      const idx = allowlist.findIndex(
+        (a) =>
+          a &&
+          a.file === file &&
+          typeof a.match === "string" &&
+          a.match &&
+          (a.kind === undefined || a.kind === f.kind) &&
+          (a.kind === "dynamic" ? f.text === a.match : f.text.includes(a.match)),
+      );
+      if (idx >= 0) used.add(idx);
+      else unapproved.push({ file, ...f });
+    }
+  }
+  allowlist.forEach((a, idx) => {
+    if (a && !used.has(idx) && typeof a.match === "string" && a.match)
+      errors.push(`allowlist[${idx}] (${a.file}): "${a.match}" không khớp phát hiện nào — xoá dòng mục nát`);
+  });
+  return { unapproved, errors };
+}
+
+function walk(dir) {
+  const out = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name === "dist" || e.name.startsWith(".")) continue;
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...walk(p));
+    else out.push(p);
+  }
+  return out;
+}
+
+export function listSources(root) {
+  const files = [];
+  for (const group of ["apps", "packages"]) {
+    let names;
+    try {
+      names = readdirSync(join(root, group), { withFileTypes: true }).filter((e) => e.isDirectory());
+    } catch {
+      continue;
+    }
+    for (const d of names) {
+      const src = join(root, group, d.name, "src");
+      try {
+        files.push(...walk(src));
+      } catch {
+        // gói không có src/
+      }
+    }
+  }
+  return files
+    .map((f) => relative(root, f).split(sep).join("/"))
+    .filter((f) => SOURCE_FILE.test(f) && !SKIP_FILE.test(f))
+    .sort();
+}
+
+export function main(root) {
+  let allowlist;
+  const findingsByFile = {};
+  let files;
+  try {
+    allowlist = JSON.parse(readFileSync(join(root, "scripts/sql-safety-allowlist.json"), "utf8"));
+    if (!Array.isArray(allowlist)) throw new Error("allowlist phải là mảng");
+    files = listSources(root);
+    for (const f of files) {
+      const found = scanSource(readFileSync(join(root, f), "utf8"));
+      if (found.length) findingsByFile[f] = found;
+    }
+  } catch (e) {
+    console.error(`check-sql-safety: không đọc được đầu vào: ${e.message}`);
+    return 2;
+  }
+  const { unapproved, errors } = applyAllowlist(findingsByFile, allowlist);
+  for (const u of unapproved)
+    console.error(
+      `check-sql-safety: ${u.file}:${u.line} [${u.kind}${u.sink ? ` ${u.sink}` : ""}] ${u.text.slice(0, 160)}`,
+    );
+  for (const e of errors) console.error(`check-sql-safety: ${e}`);
+  if (unapproved.length || errors.length) {
+    console.error(
+      "check-sql-safety: dùng tham số hoá (`?`/bindings) cho giá trị; định danh động phải là hằng từ mã và được ghi vào scripts/sql-safety-allowlist.json kèm lý do.",
+    );
+    return 1;
+  }
+  const approved = Object.values(findingsByFile).reduce((s, a) => s + a.length, 0);
+  console.log(
+    `check-sql-safety: ${files.length} tệp, ${approved} chỗ động đã duyệt trong allowlist, 0 chưa duyệt`,
+  );
+  return 0;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exit(main(join(dirname(fileURLToPath(import.meta.url)), "..")));
+}
