@@ -390,3 +390,10 @@
 - Chọn: Giữ allowlist 6 số mẫu ở docs/compliance/test-data-policy.md, cấm mọi số khác trong fixture
 - Lý do (tiêu chí chất lượng cuối): (1) số mẫu phổ biến không gắn dữ liệu cá nhân thật, không gửi SMS trong dev/CI (adapter mock); script chặn số ngoài allowlist; (3) đổi hàng loạt test không tăng an toàn khi chưa có dải reserved xác minh
 - Đường lùi: Khi có dải số reserved có nguồn: sửa allowlist trong test-data-policy.md, check-fixtures báo các chỗ phải đổi
+
+### D-056 · 2026-10-26T14:26:34+00:00 · Nối kiểm EXPLAIN đường nóng vào CI (DB-PERF-001)? dựng dataset ~8 phút
+
+- Phương án: (1) Job CI theo lịch/trước release: perf-dataset.mjs + explain-hot-paths.mjs · (2) Chỉ đưa explain-hot-paths.test.mjs (hàm thuần) vào gate; EXPLAIN chạy tay mỗi mốc PLAN · (3) Thêm vào perf của xt.yaml (cần người sửa xt.yaml)
+- Chọn: Chỉ đưa explain-hot-paths.test.mjs (hàm thuần) vào gate; EXPLAIN chạy tay mỗi mốc PLAN
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi: không thêm job 8 phút chưa đo trên runner; (3) đơn giản, test được ngay; hồi quy index vẫn bị bắt ở mốc PLAN (pha harden audit mỗi mốc). DB-PERF-001 giữ [ ] vì yêu cầu test tự động trong CI
+- Đường lùi: Thêm job schedule/release khi có staging (T-060) hoặc khi runner đo được thời gian
