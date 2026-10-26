@@ -37,7 +37,14 @@ interface ListBody {
   total: number;
 }
 
-/** Mô hình cache dữ liệu của Next: `next.revalidate = N` → dùng lại bản đã lưu tới khi đủ N giây; `no-store` → luôn gọi nguồn. */
+/**
+ * Mô hình cache dữ liệu của Next 16 (theo `next/dist/server/lib/patch-fetch.js`, nhánh `entry.isStale`):
+ *  - chưa có mục → gọi nguồn (chặn), lỗi thì báo lỗi;
+ *  - mục còn hạn (`next.revalidate = N` giây) → dùng lại;
+ *  - mục HẾT hạn → TRẢ NGAY BẢN CŨ rồi làm mới nền (stale-while-revalidate); làm mới lỗi (không phải 200) thì giữ bản
+ *    cũ và thử lại ở request sau;
+ *  - `cache: "no-store"` → luôn gọi nguồn.
+ */
 function nextDataCacheOver(source: (url: string) => Response) {
   const store = new Map<string, { at: number; res: Response }>();
   const origin = vi.fn((url: string) => source(url));
@@ -46,9 +53,14 @@ function nextDataCacheOver(source: (url: string) => Response) {
       const url = String(input);
       const ttlS = init?.cache === "no-store" ? 0 : (init?.next?.revalidate ?? 0);
       const hit = store.get(url);
-      if (ttlS > 0 && hit !== undefined && Date.now() - hit.at < ttlS * 1000) return hit.res.clone();
+      if (ttlS > 0 && hit !== undefined) {
+        if (Date.now() - hit.at < ttlS * 1000) return hit.res.clone();
+        const fresh = origin(url); // làm mới nền: người đọc hiện tại vẫn nhận bản cũ
+        if (fresh.ok) store.set(url, { at: Date.now(), res: fresh.clone() });
+        return hit.res.clone();
+      }
       const res = origin(url);
-      if (ttlS > 0) store.set(url, { at: Date.now(), res: res.clone() });
+      if (ttlS > 0 && res.ok) store.set(url, { at: Date.now(), res: res.clone() });
       return res;
     },
   );
@@ -92,31 +104,28 @@ describe("cache dữ liệu catalog (next.revalidate): cập nhật nguồn → 
     };
   }
 
-  it("trong TTL vẫn thấy bản cũ (và chỉ gọi nguồn một lần); đúng TTL thì thấy bản mới", async () => {
+  it("trong TTL còn bản cũ; hết TTL lần đọc ĐẦU vẫn trả bản cũ (SWR) và làm mới nền; lần kế tiếp thấy bản mới", async () => {
     const t = setup();
     expect(await t.read()).toBe("Tên cũ");
     t.rename("Tên mới");
-    vi.advanceTimersByTime(1000);
-    expect(await t.read()).toBe("Tên cũ"); // chấp nhận được: cũ không quá TTL
-    vi.advanceTimersByTime((CATALOG_REVALIDATE_S - 2) * 1000);
+    vi.advanceTimersByTime((CATALOG_REVALIDATE_S - 1) * 1000);
     expect(await t.read()).toBe("Tên cũ"); // còn 1 giây trước khi hết hạn
     expect(t.origin).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(1000); // đúng TTL
+    vi.advanceTimersByTime(1000); // đúng TTL: mục hết hạn
+    expect(await t.read()).toBe("Tên cũ"); // SWR: vẫn phát bản cũ…
+    expect(t.origin).toHaveBeenCalledTimes(2); // …nhưng đã kích làm mới nền
     expect(await t.read()).toBe("Tên mới");
     expect(t.origin).toHaveBeenCalledTimes(2);
   });
 
-  it("độ cũ tối đa quan sát được không vượt CATALOG_REVALIDATE_S giây", async () => {
+  it("khoá ít người xem: không ai đọc 1 giờ → lần đọc đầu vẫn là bản cũ tuổi 3600 giây (trần là TTL + khoảng giữa hai request)", async () => {
     const t = setup();
     await t.read();
     t.rename("Tên mới");
-    let staleSeconds = 0;
-    while ((await t.read()) === "Tên cũ") {
-      vi.advanceTimersByTime(1000);
-      staleSeconds += 1;
-      expect(staleSeconds).toBeLessThanOrEqual(CATALOG_REVALIDATE_S);
-    }
-    expect(staleSeconds).toBe(CATALOG_REVALIDATE_S);
+    vi.advanceTimersByTime(3600 * 1000);
+    expect(3600).toBeGreaterThan(CATALOG_REVALIDATE_S);
+    expect(await t.read()).toBe("Tên cũ");
+    expect(await t.read()).toBe("Tên mới");
   });
 
   it("đường giá/tồn hiện hành (getProductFresh, no-store) thấy ngay bản mới, không chờ TTL", async () => {
@@ -135,39 +144,63 @@ describe("cache dữ liệu catalog (next.revalidate): cập nhật nguồn → 
     expect(origin).toHaveBeenCalledTimes(2);
   });
 
-  it("nguồn lỗi sau khi cache hết hạn → lỗi báo ra, không phát lại bản cũ vô thời hạn", async () => {
+  it("nguồn lỗi sau khi hết hạn → vẫn phát bản cũ (không báo lỗi); nguồn hồi lại thì lần kế tiếp thấy bản mới", async () => {
     let fail = false;
-    const { cached } = nextDataCacheOver(() =>
-      fail ? new Response("x", { status: 502 }) : json(fixture("list")),
-    );
+    let title = "Tên cũ";
+    const { cached } = nextDataCacheOver(() => {
+      if (fail) return new Response("x", { status: 502 });
+      const body = fixture<ListBody>("list");
+      body.items[0]!.title = title;
+      return json(body);
+    });
     vi.stubGlobal("fetch", cached);
-    await listProducts(EMPTY_FILTER);
+    const read = async () => (await listProducts(EMPTY_FILTER)).items[0]!.title;
+    expect(await read()).toBe("Tên cũ");
     fail = true;
     vi.advanceTimersByTime(CATALOG_REVALIDATE_S * 1000);
+    expect(await read()).toBe("Tên cũ");
+    expect(await read()).toBe("Tên cũ"); // làm mới lỗi: giữ bản cũ
+    fail = false;
+    title = "Tên mới";
+    expect(await read()).toBe("Tên cũ"); // lần này kích làm mới thành công
+    expect(await read()).toBe("Tên mới");
+  });
+
+  it("chưa có bản nào trong cache mà nguồn lỗi → báo lỗi", async () => {
+    const { cached } = nextDataCacheOver(() => new Response("x", { status: 502 }));
+    vi.stubGlobal("fetch", cached);
     await expect(listProducts(EMPTY_FILTER)).rejects.toMatchObject({ code: "UNAVAILABLE" });
   });
 });
 
 describe("cache danh mục tỉnh/phường (TTL dài)", () => {
-  it("cập nhật nguồn: cũ trước 24 giờ, mới đúng 24 giờ", async () => {
+  const first = async () => {
+    const r = await getWards("01");
+    return r.status === "ok" ? r.wards[0]?.name : r.status;
+  };
+
+  it("cập nhật nguồn: cũ trước 24 giờ; hết hạn lần đọc đầu vẫn cũ (SWR), lần sau mới", async () => {
     let name = "Phường cũ";
     const { cached } = nextDataCacheOver(() => json({ wards: [{ code: "00001", name }] }));
     vi.stubGlobal("fetch", cached);
-    expect((await getWards("01"))?.[0]?.name).toBe("Phường cũ");
+    expect(await first()).toBe("Phường cũ");
     name = "Phường mới";
     vi.advanceTimersByTime((ADDRESS_REVALIDATE_S - 1) * 1000);
-    expect((await getWards("01"))?.[0]?.name).toBe("Phường cũ");
+    expect(await first()).toBe("Phường cũ");
     vi.advanceTimersByTime(1000);
-    expect((await getWards("01"))?.[0]?.name).toBe("Phường mới");
+    expect(await first()).toBe("Phường cũ");
+    expect(await first()).toBe("Phường mới");
   });
 
-  it("mã tỉnh sai không chạm nguồn; nguồn lỗi → null (không cache lỗi vào kết quả)", async () => {
+  it("mã tỉnh sai không chạm nguồn; nguồn lỗi → unavailable (503, retry được); backend 404 → not_found", async () => {
     const { cached, origin } = nextDataCacheOver(() => new Response("x", { status: 500 }));
     vi.stubGlobal("fetch", cached);
-    expect(await getWards("../x")).toBeNull();
-    expect(await getWards("")).toBeNull();
+    expect(await getWards("../x")).toEqual({ status: "not_found" });
+    expect(await getWards("")).toEqual({ status: "not_found" });
     expect(origin).not.toHaveBeenCalled();
-    expect(await getWards("01")).toBeNull();
+    expect(await getWards("01")).toEqual({ status: "unavailable" });
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 404 }));
+    expect(await getWards("99")).toEqual({ status: "not_found" });
   });
 });
 

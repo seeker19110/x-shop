@@ -141,7 +141,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
 
   /* ---------------------------------------------------------------- tỉnh → phường/xã */
   const loadWards = useCallback((code: string, signal?: AbortSignal) => {
-    // Lỗi tạm thời (mạng/5xx/429) tự thử lại có backoff; 404 (mã sai) trả ngay (FE-STATE-005).
+    // Nguồn lỗi tạm thời (route trả 503, hoặc lỗi mạng) tự thử lại có backoff; 404 (mã tỉnh sai) trả ngay (FE-STATE-005).
     fetchWithRetry(`/api/address/wards?province=${encodeURIComponent(code)}`, { signal })
       .then((r) => (r.ok ? (r.json() as Promise<{ wards?: { code: string; name: string }[] }>) : null))
       .then((j) => {

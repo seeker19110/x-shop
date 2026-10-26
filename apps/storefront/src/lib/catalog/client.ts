@@ -58,6 +58,17 @@ async function backendGet<T>(
     const code = problem.code === "INVALID_RANGE" ? "INVALID_RANGE" : "VALIDATION";
     throw new CatalogError(code, problem.detail ?? "Tham số không hợp lệ.", 422);
   }
+  if (res.status === 429) {
+    // Backend giới hạn tốc độ (vd. tìm kiếm theo IP): giữ nguyên 429 + Retry-After để route chuyển tiếp cho client,
+    // tránh biến thành 503 "tạm thời" rồi bị retry làm tăng tải đúng lúc đang bị giới hạn.
+    const raw = res.headers.get("retry-after")?.trim() ?? "";
+    throw new CatalogError(
+      "UNAVAILABLE",
+      "Quá nhiều yêu cầu, thử lại sau.",
+      429,
+      /^\d{1,9}$/.test(raw) ? Number(raw) : null,
+    );
+  }
   throw new CatalogError("UNAVAILABLE", "Máy chủ dữ liệu đang gặp sự cố.", res.status);
 }
 

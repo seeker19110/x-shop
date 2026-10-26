@@ -1,5 +1,6 @@
 import { EMPTY_FILTER, normalizeQuery } from "@x-shop/domain";
 import { CATALOG_API_CACHE_CONTROL } from "../../../../lib/cache-policy";
+import { rateLimitedResponse } from "../../../../lib/catalog/rate-limited";
 import { search } from "../../../../lib/catalog/client";
 
 /** Tối đa gợi ý trả về và tối thiểu ký tự để gợi ý (CAT01). */
@@ -23,7 +24,7 @@ export async function GET(request: Request): Promise<Response> {
       { suggestions: titles },
       { headers: { "Cache-Control": CATALOG_API_CACHE_CONTROL } },
     );
-  } catch {
-    return Response.json({ suggestions: [] }, { status: 503 });
+  } catch (e) {
+    return rateLimitedResponse(e, { suggestions: [] }) ?? Response.json({ suggestions: [] }, { status: 503 });
   }
 }

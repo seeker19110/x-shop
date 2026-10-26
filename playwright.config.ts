@@ -34,7 +34,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   // UX-RESP-008 / FE-TEST-002: hai project. `desktop` chạy toàn bộ spec; `mobile` (Pixel 7: viewport 412×915, cảm ứng,
-  // UA di động) chạy bộ lõi — luồng mua COD/VNPAY, tổng tiền, reflow mọi route. Spec tự đặt viewport (a11y-reflow) và
+  // UA di động) chạy checkout-cod, checkout-vnpay, checkout-total, responsive (reflow 320px mọi route) và mobile-touch. Spec tự đặt viewport (a11y-reflow) và
   // spec bố cục desktop (keyboard-flow: bộ lọc dạng sidebar) không có nghĩa ở mobile nên loại khỏi project này.
   projects: [
     { name: "desktop", use: { ...devices["Desktop Chrome"] }, testIgnore: /mobile-touch\.spec\.ts$/ },

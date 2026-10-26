@@ -17,10 +17,10 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
 
 | Loại cache | Cơ chế | Giá trị | Ai vô hiệu hoá, khi nào | Cũ tối đa sau khi nguồn đổi |
 | --- | --- | --- | --- | --- |
-| Dữ liệu catalog (fetch phía server) | TTL | `next.revalidate` = 60 giây | Next tự làm mới sau TTL; đường cần đúng tuyệt đối dùng `no-store` | 60 giây |
-| Trang chủ (ISR) | TTL | `export const revalidate = 60` | Next dựng lại nền sau TTL | 60 giây (+ tuổi dữ liệu catalog, cùng 60 giây) |
-| API công khai của storefront | TTL (CDN/trình duyệt) | `public, s-maxage=60, stale-while-revalidate=300` | CDN theo `s-maxage`; không có purge thủ công | 420 giây |
-| Danh mục tỉnh/phường | TTL | 86400 giây (+ `max-age=3600` ở trình duyệt) | Next sau TTL; đổi bản dữ liệu hành chính → xem mục riêng | 86400 giây (server) |
+| Dữ liệu catalog (fetch phía server) | TTL | `next.revalidate` = 60 giây | Next làm mới nền sau TTL (stale-while-revalidate); đường cần đúng tuyệt đối dùng `no-store` | 60 giây + 1 lần đọc (khoá ít người xem: tới lần đọc kế tiếp) |
+| Trang chủ (ISR) | TTL | `export const revalidate = 60` | Next dựng lại nền sau TTL (cũng SWR) | như dòng catalog; hai lớp cùng 60 giây có thể lệch pha |
+| API công khai của storefront | TTL (CDN/trình duyệt) | `public, s-maxage=60, stale-while-revalidate=300` | CDN theo `s-maxage`; không có purge thủ công | 420 giây + 1 lần đọc ở lớp Next phía sau |
+| Danh mục tỉnh/phường | TTL | 86400 giây (+ `max-age=3600` ở trình duyệt) | Next làm mới nền sau TTL; đổi bản dữ liệu hành chính → xem mục riêng | 86400 giây + 1 lần đọc (server) |
 | Service worker | Phiên bản + sự kiện | `CACHE_VERSION = "v1"` | Trình duyệt, ở sự kiện `activate` | tới lần tải kế tiếp có mạng |
 | Tài nguyên tĩnh | Phiên bản | `/_next/static/*` tên băm nội dung | Mỗi lần build đổi tên tệp | 0 (URL mới) |
 | Ảnh sản phẩm | TTL | `images.minimumCacheTTL` mặc định của Next 16 = 14400 giây | Next sau TTL; đổi ảnh → đổi URL ảnh | 14400 giây |
@@ -32,21 +32,27 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
   = **60 giây** cho danh sách, tìm kiếm, chi tiết sản phẩm, danh mục. `getProductFresh` dùng `cache: "no-store"`.
 - **Cơ chế:** TTL. Khoá cache của Next gồm URL đầy đủ, nên bộ lọc/trang/sắp xếp khác nhau là các mục khác nhau.
   Tìm kiếm chuyển tiếp IP khách (chống lạm dụng) nên khoá tách theo IP — chấp nhận vì truy vấn tìm kiếm vốn phân tán.
-- **Ai/khi nào vô hiệu hoá:** Next, sau 60 giây, làm mới nền (stale-while-revalidate nội bộ). Không có purge theo sự
-  kiện: backend không gọi ngược storefront khi sửa sản phẩm.
-- **Ngưỡng chấp nhận được:** sửa sản phẩm/giá hiện trên trang danh mục, tìm kiếm, PDP chậm tối đa **60 giây**.
+- **Ai/khi nào vô hiệu hoá:** Next. Khi mục đã quá 60 giây, request kế tiếp NHẬN NGAY BẢN CŨ và kích làm mới nền
+  (stale-while-revalidate, `patch-fetch.js` của Next 16, nhánh `entry.isStale`); request sau đó mới thấy bản mới. Làm
+  mới nền lỗi thì giữ bản cũ và thử lại ở request sau; chỉ khi chưa có mục nào thì lỗi nguồn mới báo ra. Không có
+  purge theo sự kiện: backend không gọi ngược storefront khi sửa sản phẩm.
+- **Ngưỡng chấp nhận được:** sửa sản phẩm/giá hiện trên trang danh mục, tìm kiếm, PDP chậm **60 giây cộng thêm tới lần
+  đọc kế tiếp của cùng khoá**: khoá đông người xem thì cỡ 60 giây, khoá ít người xem có thể cũ hơn nhiều (một lần đọc
+  cũ rồi mới mới). Chấp nhận được vì giá/tồn lúc mua luôn kiểm lại tươi. Đề xuất nếu cần chặt hơn: webhook backend →
+  storefront gọi `revalidateTag` theo sự kiện sửa sản phẩm (chưa làm).
 - **Không được cũ:** giá và tồn dùng để thêm vào giỏ, báo giá và đặt hàng. Giỏ gọi `getProductFresh` (`no-store`);
   checkout do server báo giá lại ở từng bước và lúc đặt (đặc tả §7.4). Giá trên PDP chỉ là thông tin tham khảo tới 60 giây.
-- **Test:** `cache-policy.test.ts` ("cache dữ liệu catalog"): sửa nguồn → trong TTL còn bản cũ, đúng 60 giây thì bản
-  mới; độ cũ quan sát được không vượt 60 giây; `getProductFresh` thấy bản mới ngay; nguồn lỗi sau khi hết hạn thì báo lỗi.
+- **Test:** `cache-policy.test.ts` ("cache dữ liệu catalog"): sửa nguồn → trong TTL còn bản cũ; hết TTL lần đọc đầu vẫn
+  trả bản cũ rồi lần sau mới (mô hình SWR của Next); khoá ít người xem; `getProductFresh` thấy bản mới ngay; nguồn lỗi
+  sau khi hết hạn vẫn phát bản cũ, chưa có mục mà lỗi thì báo lỗi.
 
 ## Trang chủ (ISR)
 
 - **Mã:** `apps/storefront/src/app/page.tsx` — `export const revalidate = 60` (phải là literal tĩnh để Next đọc lúc build).
   Layout gốc gọi `connection()` để gắn nonce CSP nên trang vẫn render lúc request; phần dữ liệu thật sự được cache
   là các `fetch` catalog ở trên.
-- **Cơ chế:** TTL, 60 giây, cùng nguồn với mục trước nên trần tổng không cộng dồn thêm khi trang dựng từ cache dữ liệu
-  còn hạn; trường hợp xấu nhất là hai lớp lệch pha (tối đa 120 giây).
+- **Cơ chế:** TTL 60 giây, cũng theo SWR như mục trước. Trang dựng từ cache dữ liệu catalog (cũng 60 giây) nên hai lớp
+  có thể lệch pha và cộng dồn tối đa khoảng hai chu kỳ cộng lần đọc kế tiếp.
 - **Test:** `cache-policy.test.ts` kiểm `revalidate` của trang chủ bằng `CATALOG_REVALIDATE_S`.
 
 ## API công khai của storefront
@@ -65,15 +71,15 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
 ## Danh mục tỉnh/phường
 
 - **Mã:** `apps/storefront/src/lib/checkout/address.ts` (`next.revalidate` = `ADDRESS_REVALIDATE_S` = 86400 giây);
-  `/api/address/wards` trả `public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800`
+  `/api/address/wards` (404 mã tỉnh sai, 503 nguồn lỗi không cache) trả `public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800`
   (`ADDRESS_API_CACHE_CONTROL`, khớp `PUBLIC_ADDRESS_CACHE` của backend).
 - **Cơ chế:** TTL dài vì dữ liệu hành chính chỉ đổi theo bản phát hành (docs đặc tả địa chỉ 2 cấp).
 - **Ai/khi nào vô hiệu hoá:** Next sau 86400 giây. Khi nhập bản dữ liệu hành chính mới: triển khai lại storefront
   (xoá cache dữ liệu của bản chạy) hoặc chờ hết TTL; người vận hành ghi vào RUNBOOK khi đổi bản dữ liệu.
-- **Ngưỡng chấp nhận được:** 86400 giây ở server; trình duyệt giữ thêm tối đa 3600 giây. Địa chỉ cũ vẫn gửi được vì
+- **Ngưỡng chấp nhận được:** 86400 giây cộng tới lần đọc kế tiếp (SWR) ở server; trình duyệt giữ thêm tối đa 3600 giây. Địa chỉ cũ vẫn gửi được vì
   backend kiểm lại mã tỉnh/phường khi báo giá và đặt hàng.
-- **Test:** `cache-policy.test.ts` ("cache danh mục tỉnh/phường"): cũ trước 86400 giây, mới đúng 86400 giây; lỗi
-  nguồn không bị lưu thành kết quả.
+- **Test:** `cache-policy.test.ts` ("cache danh mục tỉnh/phường"): cũ trước 86400 giây, hết hạn lần đọc đầu vẫn cũ rồi
+  mới; mã sai = `not_found`, nguồn lỗi = `unavailable` (không bị lưu thành kết quả).
 
 ## Service worker
 
@@ -118,13 +124,19 @@ công khai ở trình duyệt: tải phường/xã (`CheckoutForm`), đếm kế
 
 | Quy tắc | Giá trị |
 | --- | --- |
-| Lỗi được retry | lỗi mạng (`TypeError`), `TimeoutError`, HTTP 408, 429, 500, 502, 503, 504 |
+| Lỗi được retry | lỗi mạng (`TypeError`), `TimeoutError`, HTTP 408, 429, 500, 502, 503, 504 (429 chỉ khi `Retry-After` ≤ 10 giây) |
 | Không retry | mọi 4xx khác (400/401/403/404/409/410/422…), 501, 505, 2xx/3xx; `AbortError` do người dùng huỷ |
 | Phương thức | chỉ GET/HEAD/OPTIONS, hoặc yêu cầu có header `Idempotency-Key`, hoặc người gọi khai `idempotent: true`. POST/PUT/PATCH/DELETE thường không retry |
 | Trần | 3 lần thử lại (tối đa 4 lần gọi); hết lượt trả phản hồi lỗi cuối / ném lỗi mạng cuối |
 | Backoff | `random() × min(4000 ms, 250 ms × 2^lần)` (jitter đầy đủ để khách không dồn cùng lúc) |
-| `Retry-After` | giây hoặc ngày HTTP: chờ ít nhất bấy lâu; bắt chờ quá 10 000 ms thì không retry, trả lỗi để giao diện báo; giá trị rỗng/sai không bị coi là 0 |
+| `Retry-After` | giây hoặc ngày HTTP: chờ ít nhất bấy lâu; bắt chờ quá 10 000 ms (kể cả số nguyên rất lớn > 2^53) thì không retry, trả lỗi để giao diện báo; giá trị rỗng/sai không bị coi là 0 |
 | Huỷ | `AbortSignal` của người gọi đã huỷ (kể cả giữa lúc chờ backoff) → dừng ngay |
+
+Giới hạn tốc độ: backend trả 429 + `Retry-After` (tìm kiếm theo IP, 60 lần/60 giây) → `backendGet` giữ nguyên status và
+`Retry-After` trong `CatalogError`, các route `/api/catalog/suggest` và `/api/catalog/count` trả 429 + `Retry-After` (mặc
+60 giây, `no-store`) thay vì 503, nên client không retry — mỗi lần gõ/đếm đúng một lượt gọi backend (test
+`app/api/catalog/retry-rate-limit.test.ts`). `/api/address/wards` trả 404 cho mã sai (không retry) và 503 cho nguồn lỗi
+(retry).
 
 Ngoài phạm vi (có cơ chế riêng): đặt hàng `POST /store/x/checkout/submit` dùng khóa idempotency giữ trong bộ nhớ trang
 và tự đọc `Retry-After` của 503 `LOCK_UNAVAILABLE` (`lib/checkout/idempotency.ts`, `checkout-lib.ts`); gọi server-side

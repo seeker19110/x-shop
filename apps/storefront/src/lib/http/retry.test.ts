@@ -80,8 +80,16 @@ describe("parseRetryAfterMs", () => {
     expect(parseRetryAfterMs("Mon, 26 Oct 2026 10:00:07 GMT", now)).toBe(7000);
     expect(parseRetryAfterMs("Mon, 26 Oct 2026 09:00:00 GMT", now)).toBe(0);
   });
+  it("số nguyên rất lớn (> 2^53) → Infinity (chờ rất lâu) và không retry", async () => {
+    expect(parseRetryAfterMs("99999999999999999999", Date.now())).toBe(Number.POSITIVE_INFINITY);
+    reset();
+    const f = stubFetch(res(503, { "retry-after": "99999999999999999999" }), res(200));
+    expect((await fetchWithRetry("/x", {}, opts)).status).toBe(503);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
   it("rỗng/null/sai/âm/thập phân → null (không coi là 0 để khỏi gửi dồn)", () => {
-    for (const v of [null, "", "  ", "abc", "-3", "1.5", "99999999999999999999"]) {
+    for (const v of [null, "", "  ", "abc", "-3", "1.5"]) {
       expect(parseRetryAfterMs(v, now)).toBeNull();
     }
   });
