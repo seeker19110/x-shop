@@ -93,6 +93,7 @@ export const EXCEPTION_OWNER_ROLE: Record<string, string> = {
   cod_confirm_overdue: "order_staff",
   outbox_dead: "order_staff",
   notification_failed: "order_staff",
+  catalog_index_mismatch: "owner",
   cod_unsettled: "accountant",
 };
 export const DEFAULT_SETTLEMENT_OWNER_ROLE = "accountant";

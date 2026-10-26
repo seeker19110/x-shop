@@ -2,25 +2,24 @@
  * Dựng read model `catalog_variant_index` cho bộ dữ liệu tải, chạy bằng `medusa exec` (cần container Medusa):
  *   cd apps/backend && pnpm exec medusa exec ../../scripts/load/index-dataset.ts
  *
- * Dùng `syncCatalogProducts` (đường đồng bộ theo sự kiện của production: đọc nguồn và ghi theo lô 100 sản phẩm, mỗi lô
- * một giao dịch) thay cho `rebuildCatalogIndex`: ở quy mô 10.000 sản phẩm / 50.000 SKU `rebuildCatalogIndex` gom MỌI
- * sản phẩm vào MỘT lần `buildIndexRows` (một truy vấn giá/tồn cho 50.000 biến thể) và chỉ cho ra ~4.000 dòng — xem
- * docs/ops/perf/load-dataset.md §Phát hiện. Khi lỗi đó được sửa, đổi lại sang `rebuildCatalogIndex`.
+ * Dùng `rebuildCatalogIndex` (đường production): đọc nguồn và giá theo lô, thay cả bảng trong một giao dịch cuối. Lỗi
+ * cũ "chỉ ~4.000 dòng ở 50.000 SKU" đã sửa ở T-057; từ T-059 rebuild còn từ chối thay bảng khi có SKU có giá niêm yết
+ * mà không ra giá bán (`missing > 0`) — script này thoát lỗi (exit khác 0) trong trường hợp đó để bộ dữ liệu tải không
+ * bao giờ dùng read model thiếu dòng. Xem docs/ops/perf/load-dataset.md §Phát hiện.
  */
 import type { ExecArgs } from "@medusajs/framework/types";
-import { Modules } from "@medusajs/framework/utils";
-import { syncCatalogProducts } from "../../apps/backend/src/lib/catalog/indexer";
+import { rebuildCatalogIndex } from "../../apps/backend/src/lib/catalog/indexer";
 
 export default async function indexDataset({ container }: Pick<ExecArgs, "container">) {
-  const products = await container
-    .resolve(Modules.PRODUCT)
-    .listProducts({ status: "published" }, { select: ["id"], take: null });
   const started = Date.now();
-  const rows = await syncCatalogProducts(
-    container,
-    products.map((p) => p.id),
-  );
+  const r = await rebuildCatalogIndex(container);
   console.log(
-    `[load-index] ${products.length} sản phẩm → ${rows} dòng read model trong ${Date.now() - started} ms`,
+    `[load-index] ${r.products} sản phẩm → ${r.rows} dòng read model (kỳ vọng ${r.expected}, thiếu giá bán ${r.missing}, ` +
+      `không giá ${r.unpriced}) trong ${Date.now() - started} ms`,
   );
+  if (r.missing > 0 || r.rows !== r.expected) {
+    throw new Error(
+      `read model không khớp: ${r.rows}/${r.expected} dòng, ${r.missing} SKU thiếu giá bán — bảng cũ được giữ`,
+    );
+  }
 }

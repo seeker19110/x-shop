@@ -33,6 +33,8 @@ export const OPS_EXCEPTION_KINDS = [
   "notification_failed",
   /** Khách hủy đơn đã trả tiền (POST02, T-021) — chờ hoàn tiền + hủy native ở luồng hoàn tiền (T-027). */
   "refund_request",
+  /** Read model catalog dựng lệch: SKU có giá niêm yết mà không ra giá bán (D-040) — bảng cũ được giữ. */
+  "catalog_index_mismatch",
 ] as const;
 export const OPS_EXCEPTION_STATES = ["open", "in_progress", "resolved"] as const;
 export const OPS_PRIORITIES = ["low", "normal", "high", "urgent"] as const;

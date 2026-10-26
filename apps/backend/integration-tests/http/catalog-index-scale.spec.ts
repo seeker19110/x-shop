@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { rebuildCatalogIndex, syncCatalogProducts } from "../../src/lib/catalog/indexer";
+import { Migration20261026030000 } from "../../src/modules/checkout/migrations/Migration20261026030000";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
@@ -204,6 +205,142 @@ medusaIntegrationTestRunner({
       expect(msg).toBeDefined();
       expect(msg).toContain("dựng 50");
       expect(msg).toContain("trong bảng 49");
+    });
+
+    // ---- D-040: lệch giá bán (missing > 0) → không thay bảng, mở ngoại lệ ----
+    const KIND = "catalog_index_mismatch";
+    const BAD_PREFIX = "variant_SCALE00001"; // 5 biến thể của sản phẩm prod_SCALE00001
+    const SENTINEL = "SENTINEL-CU";
+    const exceptions = async (state?: string): Promise<number> => {
+      const res = await db.raw(
+        `SELECT count(*)::int AS n FROM ops_exception WHERE kind = ? AND (?::text IS NULL OR state = ?)`,
+        [KIND, state ?? null, state ?? null],
+      );
+      return (res.rows[0] as { n: number }).n;
+    };
+    const sentinelCount = async (): Promise<number> => count("title = ?", [SENTINEL]);
+    const markSentinel = (productLike: string) =>
+      db.raw(`UPDATE catalog_variant_index SET title = ? WHERE product_id LIKE ?`, [SENTINEL, productLike]);
+    /** Ép lỗi đọc giá: biến thể của một sản phẩm "mất" calculated_price (có giá niêm yết, không ra giá bán). */
+    const breakPricing = () => {
+      const query = container.resolve(ContainerRegistrationKeys.QUERY);
+      const original = query.graph.bind(query);
+      return jest.spyOn(query, "graph").mockImplementation((async (...args: Parameters<typeof original>) => {
+        const out = await original(...args);
+        const fields = (args[0] as { fields?: string[] }).fields ?? [];
+        if (!fields.includes("calculated_price.*")) return out;
+        return {
+          ...out,
+          data: (out.data as { id: string }[]).map((r) =>
+            r.id.startsWith(BAD_PREFIX) ? { id: r.id, calculated_price: null } : r,
+          ),
+        };
+      }) as typeof original);
+    };
+
+    it("rebuild khi missing > 0: giữ nguyên bảng cũ, log lỗi, ngoại lệ mở đúng 1 lần dù gọi 2 lần; hết lỗi thì thay bảng", async () => {
+      await rebuildCatalogIndex(container);
+      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+      await markSentinel("prod_SCALE0000%");
+      const before = await count();
+      const sentinels = await sentinelCount();
+      expect(sentinels).toBeGreaterThan(0);
+
+      const error = jest.spyOn(logger, "error");
+      const stub = breakPricing();
+      const r1 = await rebuildCatalogIndex(container);
+      const r2 = await rebuildCatalogIndex(container);
+      stub.mockRestore();
+
+      for (const r of [r1, r2]) {
+        expect(r.missing).toBe(SKUS_PER_PRODUCT);
+        expect(r.rows).toBe(0);
+      }
+      expect(await count()).toBe(before);
+      expect(await sentinelCount()).toBe(sentinels); // bảng cũ còn nguyên (không bị dựng lại)
+      expect(logged(error, "BỊ HỦY")).toBe(true);
+      expect(await exceptions()).toBe(1);
+      expect(await exceptions("open")).toBe(1);
+      const detail = (await db.raw(`SELECT detail, priority FROM ops_exception WHERE kind = ?`, [KIND]))
+        .rows[0] as { detail: { op: string; missing: number }; priority: string };
+      expect(detail.detail).toMatchObject({ op: "rebuild", missing: SKUS_PER_PRODUCT });
+      expect(detail.priority).toBe("high");
+
+      // Bình thường: vẫn thay cả bảng (sentinel biến mất), ngoại lệ cũ không tự đóng, không mở thêm.
+      const ok = await rebuildCatalogIndex(container);
+      expect(ok.missing).toBe(0);
+      expect(await count()).toBe(expectedTotal);
+      expect(await sentinelCount()).toBe(0);
+      expect(await exceptions()).toBe(1);
+
+      // Xử lý xong (resolved) rồi lỗi tái diễn → mở lại (không bị dedupe vĩnh viễn).
+      await db.raw(`UPDATE ops_exception SET state = 'resolved' WHERE kind = ?`, [KIND]);
+      const stub2 = breakPricing();
+      await rebuildCatalogIndex(container);
+      stub2.mockRestore();
+      expect(await exceptions()).toBe(2);
+      expect(await exceptions("open")).toBe(1);
+    });
+
+    it("đồng bộ theo sản phẩm gặp missing: không ghi sản phẩm đó (giữ dòng cũ), sản phẩm khác trong lô vẫn ghi; ngoại lệ không mở trùng", async () => {
+      await rebuildCatalogIndex(container);
+      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+      await markSentinel("prod_SCALE0000%");
+      const bad = "prod_SCALE00001";
+      const good = "prod_SCALE00002";
+      const badBefore = await count("product_id = ?", [bad]);
+      expect(badBefore).toBe(SKUS_PER_PRODUCT);
+
+      const stub = breakPricing();
+      const written = await syncCatalogProducts(container, [bad, good]);
+      await syncCatalogProducts(container, [bad]);
+      stub.mockRestore();
+
+      expect(written).toBe(SKUS_PER_PRODUCT); // chỉ sản phẩm tốt được ghi
+      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+      expect(await count("product_id = ?", [bad])).toBe(badBefore);
+      expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
+      expect(await count("product_id = ?", [good])).toBe(SKUS_PER_PRODUCT);
+      expect(await exceptions("open")).toBe(1);
+    });
+
+    it("sync/rebuild với dữ liệu rỗng: không lỗi, không mở ngoại lệ", async () => {
+      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+      expect(await syncCatalogProducts(container, [])).toBe(0);
+      expect(await exceptions()).toBe(0);
+    });
+
+    it("migration 20261026030000: down trả CHECK cũ (dòng kind mới → outbox_dead + original_kind), up cho phép lại", async () => {
+      const insert = (kind: string, key: string) =>
+        db.raw(`INSERT INTO ops_exception (id, kind, dedupe_key) VALUES (?, ?, ?)`, [
+          `opx_${key}`,
+          kind,
+          key,
+        ]);
+      const failsWithCheck = async (kind: string, key: string): Promise<boolean> => {
+        try {
+          await insert(kind, key);
+          return false;
+        } catch (e) {
+          return (e as { code?: string }).code === "23514";
+        }
+      };
+      const run = async (direction: "up" | "down") => {
+        const m = new Migration20261026030000({} as never, {} as never);
+        await m[direction]();
+        for (const q of m.getQueries()) await db.raw(String(q));
+      };
+      await db.raw(`DELETE FROM ops_exception WHERE dedupe_key LIKE 'mig-%'`);
+      await insert(KIND, "mig-1");
+      await run("down");
+      const row = (await db.raw(`SELECT kind, detail FROM ops_exception WHERE dedupe_key = 'mig-1'`))
+        .rows[0] as { kind: string; detail: { original_kind: string } };
+      expect(row.kind).toBe("outbox_dead");
+      expect(row.detail.original_kind).toBe(KIND);
+      expect(await failsWithCheck(KIND, "mig-2")).toBe(true);
+      await run("up");
+      expect(await failsWithCheck(KIND, "mig-3")).toBe(false);
+      expect(await failsWithCheck("khong_ton_tai", "mig-4")).toBe(true);
     });
   },
 });
