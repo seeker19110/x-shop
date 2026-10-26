@@ -1,0 +1,4 @@
+Contact: mailto:lienhe@donghanhcungban.org
+Expires: 2027-04-26T00:00:00.000Z
+Preferred-Languages: vi, en
+Policy: https://github.com/seeker19110/x-shop/blob/master/SECURITY.md
