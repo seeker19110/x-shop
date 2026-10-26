@@ -16,7 +16,9 @@
     "perf:budget": "bash scripts/perf/run-budget.sh",
     "load:smoke": "node scripts/load/smoke.mjs",
     "load:test": "node --test scripts/load/lib.test.mjs",
-    "e2e": "node e2e/run.mjs"
+    "e2e": "node e2e/run.mjs",
+    "check:openapi": "node scripts/check-openapi.mjs",
+    "check:openapi:test": "node --test scripts/check-openapi.test.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
@@ -32,6 +34,7 @@
     "pg": "8.23.1",
     "prettier": "^3.9.10",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.72.0"
+    "typescript-eslint": "^8.72.0",
+    "yaml": "2.9.1"
   }
 }
