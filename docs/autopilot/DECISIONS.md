@@ -467,3 +467,10 @@
 - Chọn: Che 9 số khi có từ khoá đi kèm (CMND/CMT/chứng minh)
 - Lý do (tiêu chí chất lượng cuối): (1) cách chặt hơn cho PII mà không che nhầm số tiền; test được bằng bảng ca
 - Đường lùi: Tắt luật từ khoá nếu che nhầm trong log thật
+
+### D-067 · 2026-10-26T20:35:49+00:00 · Gắn check-schema.mjs vào CI (DB-MODEL-004)
+
+- Phương án: (1) Phiên chính thêm bước CI ngay khi merge T-101 (Postgres service đã có trong job gate) · (2) Để task riêng sau
+- Chọn: Phiên chính thêm bước CI ngay khi merge T-101 (Postgres service đã có trong job gate)
+- Lý do (tiêu chí chất lượng cuối): (1) yêu cầu MUST cần CI chặn; job gate đã có Postgres service; (3) một bước, đã có test script
+- Đường lùi: Gỡ bước nếu CI vượt timeout
