@@ -285,3 +285,10 @@
 - Chọn: Huỷ ghi, giữ bảng cũ (cũ nhưng đủ), log error + ops_exception catalog_index_mismatch (migration thêm kind)
 - Lý do (tiêu chí chất lượng cuối): Lệch hàng loạt là dấu hiệu lỗi hệ thống (như lỗi chia lô vừa sửa); bảng cũ đầy đủ an toàn hơn bảng mới thiếu sản phẩm
 - Đường lùi: Đổi nhánh abort trong rebuildUnlocked về ghi + log
+
+### D-041 · 2026-10-26T06:19:35+00:00 · T-058: cache listing/facet cho listing toàn bảng (~150 ms)
+
+- Phương án: (1) Cache trong tiến trình 15–60 s (đánh đổi độ tươi §7.4) · (2) Bảng tổng hợp cấp sản phẩm (đụng schema) · (3) Chưa cache; chờ số đo thật trên staging/RUM; giữ pageSql/facetSql làm oracle trong test
+- Chọn: Chưa cache; chờ số đo thật trên staging/RUM; giữ pageSql/facetSql làm oracle trong test
+- Lý do (tiêu chí chất lượng cuối): Đã đạt ngưỡng ở 20+2/s; cache thêm rủi ro dữ liệu cũ, chưa có bằng chứng cần
+- Đường lùi: Thêm cache khi RUM cho thấy listing là nghẽn
