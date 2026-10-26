@@ -46,10 +46,10 @@ let ipSeq = 0;
 const newIp = () => `10.21.${Math.floor(++ipSeq / 250)}.${(ipSeq % 250) + 1}`;
 
 /**
- * Bộ đếm là cửa sổ CỐ ĐỊNH theo đồng hồ (bội của windowMs từ epoch): ca đếm vắt qua ranh giới thì bộ đếm về 0 và lần "phải
- * bị chặn" nhận 200 (T-050: tái hiện được khi bắt đầu ca cách ranh giới ~60 ms). Ca kiểm ngưỡng gọi hàm này TRƯỚC khi
- * đếm: cửa sổ chứa "bây giờ" còn ít hơn `needMs` thì đợi sang cửa sổ mới — tất định, không nới ngưỡng, không đổi mã chạy
- * thật (cửa sổ cố định là thiết kế đã chọn).
+ * T-050: với cửa sổ CỐ ĐỊNH, ca đếm vắt qua ranh giới thì bộ đếm về 0 và lần "phải bị chặn" nhận 200. Từ T-055 bộ đếm
+ * quyết định theo xấp xỉ cửa sổ trượt nên vắt qua ranh giới vẫn chặn đúng (ca hồi quy "sát ranh giới" bên dưới, đồng hồ
+ * tiêm). Giữ hàm này cho các ca kiểm ngưỡng thường: tách khỏi phần dư của ca trước trong cửa sổ trước (cùng khoá) — không
+ * còn cần cho tính đúng.
  */
 async function alignToRateWindow(windowMs: number, needMs = 30_000): Promise<void> {
   const left = windowMs - (Date.now() % windowMs);
@@ -222,6 +222,42 @@ medusaIntegrationTestRunner({
         expect(Number(blocked.headers["retry-after"])).toBeGreaterThan(0);
         ip = newIp();
         expect((await getOrder(o.ref, o.access)).status).toBe(200);
+      });
+
+      it("hồi quy T-055: dò mã bắt đầu sát ranh giới cửa sổ — lần thứ N+1 (sau ranh giới) vẫn 429; hết cửa sổ trượt thì mở", async () => {
+        const o = await place([["Đen/S", 1]], "cod");
+        const { limit, windowMs } = ORDER_RATE_LIMITS.deniedIp;
+        // Đồng hồ tiêm CHỈ cho bộ đếm (route vẫn dùng giờ thật cho token): N lần bị từ chối 50 ms trước ranh giới,
+        // lần N+1 ngay sau ranh giới — cửa sổ cố định cũ đếm lại từ 0 ở đây và cho 200.
+        const s = service();
+        const realHit = s.hitRateCounter.bind(s);
+        const realPeek = s.peekRateCounter.bind(s);
+        const boundary = (Math.floor(Date.now() / windowMs) + 1) * windowMs;
+        let clock = boundary - 50;
+        const hit = jest
+          .spyOn(s, "hitRateCounter")
+          .mockImplementation((b, w) => realHit(b, w, new Date(clock)));
+        const peek = jest
+          .spyOn(s, "peekRateCounter")
+          .mockImplementation((b, w) => realPeek(b, w, new Date(clock)));
+        try {
+          ip = newIp();
+          for (let i = 0; i < limit; i++) {
+            const ref = `XS-${String(200000 + i).replace(/[012]/g, "B")}`;
+            expect((await getOrder(ref, o.access)).status).toBe(404);
+          }
+          clock = boundary + 10;
+          const blocked = await getOrder(o.ref, o.access);
+          expect(blocked.status).toBe(429);
+          expect(blocked.data.code).toBe("RATE_LIMITED");
+          // Retry-After: lần kế qua khi 1 + N·(M − e)/M ≤ N ⇔ e ≥ M/N.
+          expect(Number(blocked.headers["retry-after"])).toBe(Math.ceil((windowMs / limit - 10) / 1000));
+          clock = boundary + Math.ceil(windowMs / limit);
+          expect((await getOrder(o.ref, o.access)).status).toBe(200);
+        } finally {
+          hit.mockRestore();
+          peek.mockRestore();
+        }
       });
 
       it("VNPAY_RETURN_URL kèm attempt = checkout attempt của lần đặt (đã ký); mỗi lần đặt một attempt riêng", async () => {
@@ -426,6 +462,35 @@ medusaIntegrationTestRunner({
         expect(blocked.status).toBe(429);
         expect(blocked.data.code).toBe("RATE_LIMITED");
         expect(await lookupLinks(o.orderId)).toHaveLength(0);
+      });
+
+      it("hồi quy T-055: SĐT tra cứu bắt đầu sát ranh giới — lần thứ 6 ngay sau ranh giới vẫn 429 (đồng hồ tiêm)", async () => {
+        const o = await place([["Đen/M", 1]], "cod");
+        const { limit, windowMs } = ORDER_RATE_LIMITS.lookupPhone;
+        const s = service();
+        const realHit = s.hitRateCounter.bind(s);
+        const boundary = (Math.floor(Date.now() / windowMs) + 1) * windowMs;
+        let clock = boundary - 1;
+        const hit = jest
+          .spyOn(s, "hitRateCounter")
+          .mockImplementation((b, w) => realHit(b, w, new Date(clock)));
+        try {
+          const phone = "0933 222 111";
+          for (let i = 0; i < limit; i++) {
+            ip = newIp();
+            expect((await lookup({ display_ref: "XS-QQQQQQ", phone })).status).toBe(202);
+          }
+          clock = boundary;
+          ip = newIp();
+          const blocked = await lookup({ display_ref: o.ref, phone });
+          expect(blocked.status).toBe(429);
+          expect(blocked.data.code).toBe("RATE_LIMITED");
+          // Lần kế qua khi 1 + 1 + 5·(M − e)/M ≤ 5 ⇔ e ≥ 2M/5 (cửa sổ cố định cũ: 200 ngay tại đây).
+          expect(Number(blocked.headers["retry-after"])).toBe(Math.ceil((2 * windowMs) / 5 / 1000));
+          expect(await lookupLinks(o.orderId)).toHaveLength(0);
+        } finally {
+          hit.mockRestore();
+        }
       });
 
       it("đổi liên kết → phiên đơn; dùng lại/giả/hết hạn/sai loại → 404; hai lần đổi đồng thời chỉ một thành công", async () => {

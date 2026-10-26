@@ -60,11 +60,15 @@ export function routeClassOf(rule: AdminRule): string {
   }
 }
 
-/** Bộ đếm cửa sổ cố định ở Postgres (bảng `rate_limit_counter`, nguyên tử, chung mọi instance, có job dọn). */
+/**
+ * Bộ đếm cửa sổ cố định ở Postgres (bảng `rate_limit_counter`, nguyên tử, chung mọi instance, có job dọn). Gộp audit cần
+ * số lần THÔ trong cửa sổ (ghi lần 1, 10, 100…) — không phải quyết định chặn, nên không dùng số hiệu dụng cửa sổ trượt.
+ */
 const denyCounter =
   (req: MedusaRequest): WindowCounter =>
-  (bucket, windowMs, now) =>
-    req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE).hitRateCounter(bucket, windowMs, now);
+  async (bucket, windowMs, now) =>
+    (await req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE).hitRateCounter(bucket, windowMs, now))
+      .current;
 
 async function auditDenied(
   req: MedusaRequest,
@@ -203,7 +207,9 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
     const store = storeOf(req);
     const identity = identityOf(req);
     const ip = clientIpOf(req).ip ?? "unknown";
-    const attempt = await registerAttempt(store, scope, identity, ip);
+    // Một mốc cho cả lần thử: hoàn lại (thành công/5xx) vào đúng cửa sổ đã giữ chỗ dù phản hồi xong sau ranh giới.
+    const at = new Date();
+    const attempt = await registerAttempt(store, scope, identity, ip, at);
     if (!attempt.allowed) {
       res.setHeader("Retry-After", String(attempt.retryAfterSeconds));
       return deny(res, 429, "RATE_LIMITED", { retry_after: attempt.retryAfterSeconds });
@@ -219,9 +225,9 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
       const s = res.statusCode;
       const book =
         s < 400
-          ? registerSuccess(store, scope, identity, ip)
+          ? registerSuccess(store, scope, identity, ip, at)
           : s >= 500
-            ? registerRefund(store, scope, identity, ip)
+            ? registerRefund(store, scope, identity, ip, at)
             : Promise.resolve();
       book.catch(() => undefined).finally(() => originalEnd(...args));
       return res;

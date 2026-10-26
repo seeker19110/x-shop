@@ -7,6 +7,8 @@ import { resetHttpSecurityConfigForTests } from "../../src/lib/security/config";
 import { STORE_RATE_LIMITS } from "../../src/lib/security/rate-limit";
 import { UPLOAD_LIMITS } from "../../src/lib/security/upload";
 import { ORDER_RATE_LIMITS } from "../../src/lib/orders/rate-limit";
+import { CHECKOUT_MODULE } from "../../src/modules/checkout";
+import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { createAdmin, storeHeaders, type AdminAccount } from "../helpers/auth";
 
 jest.setTimeout(300 * 1000);
@@ -39,7 +41,11 @@ const HTML = Buffer.from("<!doctype html><html><body><script>alert(document.cook
 let ipSeq = 0;
 const newIp = () => `198.51.${Math.floor(++ipSeq / 250)}.${(ipSeq % 250) + 1}`;
 
-/** Bộ đếm cửa sổ cố định theo đồng hồ: còn ít hơn `needMs` tới hết cửa sổ thì chờ sang cửa sổ mới (tránh test chập chờn). */
+/**
+ * Còn ít hơn `needMs` tới hết cửa sổ thì chờ sang cửa sổ mới. Từ T-055 (cửa sổ trượt) không còn cần cho tính đúng ở
+ * ranh giới (ca hồi quy "sát ranh giới" dùng đồng hồ tiêm); giữ để loạt song song/ca đếm không chịu phần lẻ của cửa sổ
+ * trước khi IP dùng chung giữa các ca.
+ */
 async function freshWindow(windowMs: number, needMs = 20_000) {
   const left = windowMs - (Date.now() % windowMs);
   if (left < needMs) await new Promise((r) => setTimeout(r, left + 50));
@@ -292,7 +298,8 @@ medusaIntegrationTestRunner({
         const after = Number(res.headers["retry-after"]);
         expect(Number.isInteger(after)).toBe(true);
         expect(after).toBeGreaterThanOrEqual(1);
-        expect(after).toBeLessThanOrEqual(Math.ceil(windowMs / 1000));
+        // Xấp xỉ cửa sổ trượt (T-055): đợt dồn dập còn đóng góp sang cửa sổ sau ⇒ mốc mở lại có thể tới 2 cửa sổ.
+        expect(after).toBeLessThanOrEqual(Math.ceil((2 * windowMs) / 1000));
         expect(res.headers["content-type"]).toMatch(/^application\/problem\+json/);
       };
 
@@ -306,6 +313,31 @@ medusaIntegrationTestRunner({
         expect(limited).toHaveLength(10);
         expect429(limited[0]!, windowMs);
         expect((await search(newIp())).status).toBe(200);
+      });
+
+      it("hồi quy T-055: N lượt sát cuối cửa sổ → lượt N+1 ngay sau ranh giới vẫn 429 (đồng hồ tiêm cho bộ đếm)", async () => {
+        const { limit, windowMs } = STORE_RATE_LIMITS.searchIp;
+        const s = getContainer().resolve<CheckoutModuleService>(CHECKOUT_MODULE);
+        const realHit = s.hitRateCounter.bind(s);
+        const boundary = (Math.floor(Date.now() / windowMs) + 1) * windowMs;
+        let clock = boundary - 50;
+        const hit = jest
+          .spyOn(s, "hitRateCounter")
+          .mockImplementation((b, w) => realHit(b, w, new Date(clock)));
+        try {
+          const ip = newIp();
+          const burst = await Promise.all(Array.from({ length: limit }, () => search(ip)));
+          expect(burst.filter((r) => r.status === 200)).toHaveLength(limit);
+          clock = boundary + 10; // cửa sổ cố định cũ: bộ đếm về 0 → 200
+          const res = await search(ip);
+          expect429(res, windowMs);
+          // Lượt kế qua khi 2 + N·(M − e)/M ≤ N ⇔ e ≥ 2M/N.
+          expect(Number(res.headers["retry-after"])).toBe(Math.ceil(((2 * windowMs) / limit - 10) / 1000));
+          clock = boundary + (2 * windowMs) / limit;
+          expect((await search(ip)).status).toBe(200);
+        } finally {
+          hit.mockRestore();
+        }
       });
 
       it("products?q=: q rỗng/chỉ khoảng trắng không đếm; có q vượt ngưỡng → 429 + Retry-After; IP khác không bị chặn", async () => {
