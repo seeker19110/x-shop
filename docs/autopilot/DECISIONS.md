@@ -320,3 +320,24 @@
 - Chọn: Phiên chính tự duyệt theo khuyến nghị bảng Q (tiêu chí AGENTS §5), thêm T-128 mở khoá commit xt.yaml và T-129 áp patch T-048; việc cần người tách riêng
 - Lý do (tiêu chí chất lượng cuối): Mọi khuyến nghị chọn phương án đúng/an toàn hơn và có đường lùi; việc thuộc quyền chủ dự án (giấy phép, ruleset, pháp chế, khoá thật, hạ tầng) không tự làm
 - Đường lùi: Sửa task/quyết định trong docs/autopilot/PLAN-2.md trước khi task tương ứng chạy
+
+### D-046 · 2026-10-26T09:51:06+00:00 · PM-REQ-019: giả định đổi trả/phí ship/thuế suất cho câu [chặn ra mắt] PROJECT.md §10
+
+- Phương án: (1) Chờ chủ dự án chốt rồi mới ghi · (2) Mặc định tạm như PROJECT.md §10 (đổi trả theo D-019, ship theo GHN báo phí, thuế chưa áp) — chủ dự án chốt trước G7, nằm trong GO-NO-GO
+- Chọn: Mặc định tạm như PROJECT.md §10 (đổi trả theo D-019, ship theo GHN báo phí, thuế chưa áp) — chủ dự án chốt trước G7, nằm trong GO-NO-GO
+- Lý do (tiêu chí chất lượng cuối): Không chặn tiến độ build; con số có chủ sở hữu và hạn quyết rõ trong GO-NO-GO
+- Đường lùi: Sửa PROJECT.md §10 khi chủ dự án chốt
+
+### D-047 · 2026-10-26T09:51:06+00:00 · ARC-MOD-008: bố cục thư mục apps/backend/src do Medusa quy định vs miền nghiệp vụ
+
+- Phương án: (1) Đổi bố cục thư mục theo miền · (2) ADR ngoại lệ chấp nhận bố cục Medusa + script so khớp modules/* với docs/architecture/domains.md
+- Chọn: ADR ngoại lệ chấp nhận bố cục Medusa + script so khớp modules/* với docs/architecture/domains.md
+- Lý do (tiêu chí chất lượng cuối): Đổi bố cục phá quy ước framework; script giữ ranh giới miền kiểm được bằng máy
+- Đường lùi: Bỏ ADR + script
+
+### D-048 · 2026-10-26T09:51:07+00:00 · SPEC-platform (F-001/F-012) đang Draft
+
+- Phương án: (1) ADR coi ADR-0001 + docs/ops là spec · (2) Phiên chính duyệt SPEC-platform (approved_by D-048) và đổi trạng thái Approved
+- Chọn: Phiên chính duyệt SPEC-platform (approved_by D-048) và đổi trạng thái Approved
+- Lý do (tiêu chí chất lượng cuối): Giữ đúng một quy trình spec cho mọi tính năng
+- Đường lùi: Đổi lại Draft

@@ -3,7 +3,9 @@
 | Trường      | Giá trị                                                                                                                                              |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ID tính năng | F-001, F-012 (yêu cầu gốc: §7, §10, §11.3, §13.2, T01, T12, AT25, AT27–AT28)                                                                         |
-| Trạng thái  | Draft — chờ phiên chính duyệt bằng D-NNN (soạn 2026-10-26 từ hiện trạng; ADR-0001/0002 và `docs/ops/` là nguồn sự thật hiện tại)                       |
+| Trạng thái  | Approved (D-048, 2026-10-26) |
+| approved_by | Phiên chính, tự duyệt theo AGENTS.md §5 (D-048) |
+| approved_at | 2026-10-26 |
 | Nguồn       | `docs/specs/DAC-TA-GOC.md`, `docs/adr/0001-stack.md`, `docs/adr/0002-kieu-kien-truc.md`, `docs/ops/RUNBOOK.md`, `docs/ops/perf/README.md`, `PROJECT.md` §5 |
 
 ## 1. User story
