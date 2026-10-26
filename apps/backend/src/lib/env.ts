@@ -207,6 +207,9 @@ const schema = z
         .optional(),
     ),
     VNPAY_HASH_SECRET: optionalText.pipe(secret.optional()),
+    // Xoay khoá (BE-INT-002, T-099): khoá TRƯỚC vẫn được nhận khi XÁC MINH chữ ký (IPN/return/querydr) trong cửa sổ
+    // xoay; mọi chữ ký gửi đi chỉ dùng VNPAY_HASH_SECRET. Bỏ biến này khi hết cửa sổ xoay.
+    VNPAY_HASH_SECRET_PREVIOUS: optionalText.pipe(secret.optional()),
     VNPAY_PAYMENT_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
     VNPAY_API_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
     VNPAY_RETURN_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
@@ -228,6 +231,21 @@ const schema = z
     ),
   })
   .superRefine((env, ctx) => {
+    if (env.VNPAY_HASH_SECRET_PREVIOUS !== undefined) {
+      if (env.VNPAY_HASH_SECRET === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["VNPAY_HASH_SECRET_PREVIOUS"],
+          message: "chỉ đặt khi đã đặt VNPAY_HASH_SECRET (khoá hiện tại)",
+        });
+      } else if (env.VNPAY_HASH_SECRET_PREVIOUS === env.VNPAY_HASH_SECRET) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["VNPAY_HASH_SECRET_PREVIOUS"],
+          message: "phải khác VNPAY_HASH_SECRET",
+        });
+      }
+    }
     const ghnMode = env.GHN_MODE ?? (env.NODE_ENV === "production" ? undefined : "mock");
     if (ghnMode === "sandbox" || ghnMode === "live") {
       for (const key of GHN_REQUIRED) {
@@ -283,12 +301,10 @@ const schema = z
       } else if (env.VNPAY_MODE === "mock") {
         ctx.addIssue({ code: "custom", path: ["VNPAY_MODE"], message: "không được dùng mock ở production" });
       }
-      if (env.VNPAY_HASH_SECRET === VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["VNPAY_HASH_SECRET"],
-          message: "không được dùng khoá giả của dev",
-        });
+      for (const key of ["VNPAY_HASH_SECRET", "VNPAY_HASH_SECRET_PREVIOUS"] as const) {
+        if (env[key] === VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET) {
+          ctx.addIssue({ code: "custom", path: [key], message: "không được dùng khoá giả của dev" });
+        }
       }
       for (const key of ["VNPAY_PAYMENT_URL", "VNPAY_API_URL", "VNPAY_RETURN_URL"] as const) {
         const value = env[key];
@@ -320,6 +336,7 @@ const schema = z
         ? {
             tmnCode: pick("VNPAY_TMN_CODE"),
             hashSecret: pick("VNPAY_HASH_SECRET"),
+            hashSecretPrevious: env.VNPAY_HASH_SECRET_PREVIOUS ?? null,
             paymentUrl: pick("VNPAY_PAYMENT_URL"),
             apiUrl: pick("VNPAY_API_URL"),
             returnUrl: pick("VNPAY_RETURN_URL"),

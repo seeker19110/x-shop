@@ -20,10 +20,16 @@ import {
 
 jest.setTimeout(300 * 1000);
 
+// Cửa sổ xoay khoá VNPAY (BE-INT-002, T-099): khoá hiện tại = khoá dev (đặt tường minh), khoá trước = PREVIOUS_SECRET.
+// Đặt TRƯỚC khi app khởi động (medusa-config/getVnpayConfig đọc process.env); Jest cô lập process.env theo file test.
+const PREVIOUS_SECRET = "xshop-test-vnpay-khoa-truoc-0123456789abcdef";
+process.env.VNPAY_HASH_SECRET = DEV_VNPAY.hashSecret;
+process.env.VNPAY_HASH_SECRET_PREVIOUS = PREVIOUS_SECRET;
+
 const R = vnpay.IPN_RESPONSES;
 
 /** Ký lại một bộ tham số vnp_* bằng khoá dev (giả lập VNPAY/kẻ tấn công biết khoá). */
-function resign(params: URLSearchParams, secret = DEV_VNPAY.hashSecret): URLSearchParams {
+function resign(params: URLSearchParams, secret: string = DEV_VNPAY.hashSecret): URLSearchParams {
   const p = Object.fromEntries([...params.entries()].filter(([k]) => k !== "vnp_SecureHash"));
   return new URLSearchParams({ ...p, vnp_SecureHash: vnpay.hmacSha512(secret, vnpay.signData(p)) });
 }
@@ -182,6 +188,36 @@ medusaIntegrationTestRunner({
         expect(pa!.state).toBe("failed");
         expect((await finance(o.orderId)).state).toBe("awaiting_payment");
         expect(await ledger(o.orderId)).toHaveLength(0);
+      });
+    });
+
+    describe("BE-INT-002 — xoay khoá VNPAY (nhận khoá hiện tại + khoá trước)", () => {
+      it("IPN ký bằng khoá TRƯỚC → 00 xác nhận; khoá lạ → 97; sửa 1 byte → 97; không ghi tiền khi bị từ chối", async () => {
+        const o = await client.placeOrder([["Đen/M", 1]], "vnpay");
+        const paid = gateway.mock.pay(o.paymentUrl, "success");
+
+        const unknownKey = resign(paid, "xshop-test-vnpay-khoa-la-0123456789abcdef0123");
+        expect((await ipn(api, unknownKey)).data).toEqual(R.invalidSignature);
+        const tampered = resign(paid, PREVIOUS_SECRET);
+        tampered.set("vnp_BankCode", "NCC");
+        expect((await ipn(api, tampered)).data).toEqual(R.invalidSignature);
+        expect(await ledger(o.orderId)).toHaveLength(0);
+
+        const withPrevious = resign(paid, PREVIOUS_SECRET);
+        expect(withPrevious.get("vnp_SecureHash")).not.toBe(paid.get("vnp_SecureHash"));
+        expect((await ipn(api, withPrevious)).data).toEqual(R.success);
+        expect(await finance(o.orderId)).toMatchObject({ state: "confirmed", total: o.total });
+        // Cùng sự kiện ký bằng khoá hiện tại tới sau → cùng event key → 02, không ghi thêm.
+        expect((await ipn(api, paid)).data).toEqual(R.alreadyConfirmed);
+        expect((await ledger(o.orderId)).map((r) => [r.kind, r.amount])).toEqual([["capture", o.total]]);
+      });
+
+      it("URL thanh toán gửi đi ký bằng khoá HIỆN TẠI (không phải khoá trước)", async () => {
+        const o = await client.placeOrder([["Trắng/M", 1]], "vnpay");
+        const params = Object.fromEntries(new URL(o.paymentUrl).searchParams.entries());
+        const data = vnpay.signData(params);
+        expect(params.vnp_SecureHash).toBe(vnpay.hmacSha512(DEV_VNPAY.hashSecret, data));
+        expect(params.vnp_SecureHash).not.toBe(vnpay.hmacSha512(PREVIOUS_SECRET, data));
       });
     });
 

@@ -249,6 +249,75 @@ medusaIntegrationTestRunner({
       });
     });
 
+    describe("đăng nhập admin không lộ tài khoản tồn tại; đăng xuất vô hiệu phiên (BE-AUTH-003/004, T-099)", () => {
+      const login = (email: string, password: string) =>
+        raw(
+          "POST",
+          "/auth/user/emailpass",
+          { "content-type": "application/json", "x-forwarded-for": newIp() },
+          JSON.stringify({ email, password }),
+        );
+      const median = (xs: number[]) => {
+        const v = [...xs].sort((a, b) => a - b);
+        return v[Math.floor(v.length / 2)]!;
+      };
+      const timed = async (fn: () => Promise<RawRes>) => {
+        const t0 = performance.now();
+        const res = await fn();
+        return { res, ms: performance.now() - t0 };
+      };
+
+      it("email không tồn tại vs sai mật khẩu: cùng status + thân lỗi; trung vị thời gian chênh ≤ 1.5×", async () => {
+        const admin = await createAdmin(api as never, getContainer());
+        // ≤ 11 lần sai cho cùng email (ngưỡng theo định danh 20/15 phút), mỗi lần một IP (ngưỡng email+IP 5).
+        const existing = () => login(admin.email, "sai-mat-khau-0123");
+        const missing = () => login(`khong-co-${randomUUID()}@x-shop.test`, "sai-mat-khau-0123");
+        const a = await existing();
+        const b = await missing();
+        expect(a.status).toBe(401);
+        expect(b.status).toBe(a.status);
+        // Thân lỗi giống hệt trừ `trace_id` (mỗi request một mã).
+        const { trace_id: _ta, ...bodyA } = a.json;
+        const { trace_id: _tb, ...bodyB } = b.json;
+        expect(bodyB).toEqual(bodyA);
+        expect(bodyA).toMatchObject({ status: 401, message: "Invalid email or password" });
+        const ta: number[] = [];
+        const tb: number[] = [];
+        for (let i = 0; i < 9; i++) {
+          const [x, y] = i % 2 ? [missing, existing] : [existing, missing];
+          const first = await timed(x);
+          const second = await timed(y);
+          (x === existing ? ta : tb).push(first.ms);
+          (y === existing ? ta : tb).push(second.ms);
+          expect([first.res.status, second.res.status]).toEqual([401, 401]);
+        }
+        const ratio = Math.max(median(ta), median(tb)) / Math.min(median(ta), median(tb));
+        expect(ratio).toBeLessThanOrEqual(1.5);
+        // Đúng mật khẩu vẫn đăng nhập được (lớp cân thời gian không chặn ca được phép).
+        expect((await login(admin.email, admin.password)).status).toBe(200);
+      });
+
+      it("đăng xuất (DELETE /auth/session) → cookie cũ dùng lại bị 401; cookie bị xoá trong phản hồi", async () => {
+        const admin = await createAdmin(api as never, getContainer());
+        const origin = "http://localhost:9000";
+        const created = await raw("POST", "/auth/session", { ...admin.headers, origin }, "");
+        expect(created.status).toBe(200);
+        const sid = (created.headers["set-cookie"] ?? [])
+          .map((c) => c.split(";")[0] ?? "")
+          .find((c) => c.startsWith("connect.sid=")) as string;
+        expect(sid).toBeDefined();
+        const setCookie = (created.headers["set-cookie"] ?? []).find((c) => c.startsWith("connect.sid="))!;
+        expect(setCookie.toLowerCase()).toContain("httponly");
+        expect((await raw("GET", "/admin/users/me", { cookie: sid })).status).toBe(200);
+
+        const out = await raw("DELETE", "/auth/session", { cookie: sid, origin });
+        expect(out.status).toBe(200);
+        const cleared = (out.headers["set-cookie"] ?? []).find((c) => c.startsWith("connect.sid="));
+        expect(cleared).toMatch(/^connect\.sid=;/);
+        expect((await raw("GET", "/admin/users/me", { cookie: sid })).status).toBe(401);
+      });
+    });
+
     describe("IP khách và proxy tin cậy (SEC03)", () => {
       it("mặc định (XS_TRUSTED_PROXIES rỗng) không tin X-Forwarded-For: đổi XFF không lách được giới hạn IP", async () => {
         setTrustedProxies("");

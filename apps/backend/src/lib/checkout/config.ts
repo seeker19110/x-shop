@@ -35,7 +35,8 @@ export const CHECKOUT_CONFIG = {
 /** Giới hạn cột tiền `integer` của Postgres (xem migration module checkout) — vượt → 422 LIMIT, không tràn số. */
 export const MAX_MONEY_VND = 2_147_483_647;
 
-export type VnpayRuntimeConfig = vnpay.VnpayConfig & { mode: VnpayMode };
+/** `hashSecretPrevious`: khoá trước, CHỈ dùng xác minh trong cửa sổ xoay (lib/payment/vnpay-secrets.ts, T-099). */
+export type VnpayRuntimeConfig = vnpay.VnpayConfig & { mode: VnpayMode; hashSecretPrevious: string | null };
 
 let cachedVnpay: { value: VnpayRuntimeConfig | null } | null = null;
 

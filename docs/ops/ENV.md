@@ -54,6 +54,9 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 VNPAY_MODE=sandbox
 VNPAY_TMN_CODE=MAMERCHANT          # mã website do VNPAY cấp (chữ/số, ≤ 32 ký tự)
 VNPAY_HASH_SECRET=thay-bang-khoa-bi-mat-vnpay-it-nhat-32-ky-tu   # ≥ 32 ký tự (độ dài thật: chưa xác minh với tài liệu merchant)
+# Xoay khoá (T-099): khoá TRƯỚC, chỉ dùng XÁC MINH chữ ký IPN/return/querydr trong cửa sổ xoay; ký gửi đi luôn bằng
+# VNPAY_HASH_SECRET. ≥ 32 ký tự, khác khoá hiện tại, chỉ đặt khi đã đặt VNPAY_HASH_SECRET. Bỏ khi hết cửa sổ (RUNBOOK §9).
+# VNPAY_HASH_SECRET_PREVIOUS=
 VNPAY_PAYMENT_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
 VNPAY_API_URL=https://sandbox.vnpayment.vn/merchant_webapi/api/transaction
 VNPAY_RETURN_URL=https://shop.example.vn/thanh-toan/ket-qua

@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv } from "@medusajs/framework/utils";
+import { sessionCookieConfig } from "./src/lib/admin-security/session-cookie";
 import { loadEnvOrExit } from "./src/lib/env";
 
 loadEnv(process.env.NODE_ENV || "development", process.cwd());
@@ -69,6 +70,8 @@ module.exports = defineConfig({
     ...(env.REDIS_URL !== undefined && { redisUrl: env.REDIS_URL }),
     workerMode: env.MEDUSA_WORKER_MODE,
     http,
+    // Production: cookie phiên `__Host-xshop_sid` (Secure, HttpOnly, SameSite=Lax, Path=/, không Domain) — BE-AUTH-004, T-099.
+    ...sessionCookieConfig(env.NODE_ENV),
   },
   admin: {
     disable: env.DISABLE_MEDUSA_ADMIN,
@@ -76,6 +79,14 @@ module.exports = defineConfig({
   },
   modules: [
     ...redisModules,
+    // Auth Module: provider `emailpass` cân thời gian phản hồi — email không tồn tại cũng tốn một scrypt.verify như sai
+    // mật khẩu (BE-AUTH-003, T-099). Tuỳ chọn MFA (AUTH_MFA_ENCRYPTION_KEY) vẫn do defineConfig gộp vào như mặc định.
+    {
+      resolve: "@medusajs/medusa/auth",
+      options: {
+        providers: [{ resolve: "./src/lib/admin-security/emailpass", id: "emailpass" }],
+      },
+    },
     // File Module: provider local bọc lại — tên lưu `<ULID><đuôi theo MIME>` do server sinh, không dùng tên client
     // (BE-FILE-003, T-100). Thay mặc định `@medusajs/medusa/file-local` của defineConfig.
     {

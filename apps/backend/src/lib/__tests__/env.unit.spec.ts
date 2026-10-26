@@ -131,6 +131,7 @@ describe("parseEnv — development/test", () => {
     expect(result.env.vnpay).toEqual({
       tmnCode: VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE,
       hashSecret: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET,
+      hashSecretPrevious: null,
       paymentUrl: VNPAY_DEV_DEFAULTS.VNPAY_PAYMENT_URL,
       apiUrl: VNPAY_DEV_DEFAULTS.VNPAY_API_URL,
       returnUrl: VNPAY_DEV_DEFAULTS.VNPAY_RETURN_URL,
@@ -212,6 +213,7 @@ describe("parseEnv — production", () => {
     expect(result.env.vnpay).toEqual({
       tmnCode: production.VNPAY_TMN_CODE,
       hashSecret: production.VNPAY_HASH_SECRET,
+      hashSecretPrevious: null,
       paymentUrl: production.VNPAY_PAYMENT_URL,
       apiUrl: production.VNPAY_API_URL,
       returnUrl: production.VNPAY_RETURN_URL,

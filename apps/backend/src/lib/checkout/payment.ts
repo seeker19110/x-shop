@@ -7,6 +7,7 @@ import {
 import { payloadHash, vnpay } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
+import { verifyNotificationWithRotation } from "../payment/vnpay-secrets";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG, getVnpayConfig } from "./config";
 import { readCheckoutError } from "./errors";
@@ -49,7 +50,8 @@ export async function handleVnpayIpn(
 ): Promise<IpnResponse> {
   const cfg = getVnpayConfig();
   if (!cfg) return R.unknownError;
-  const verified = vnpay.verifyNotification(cfg, query);
+  // Nhận khoá hiện tại hoặc khoá trước trong cửa sổ xoay (T-099).
+  const verified = verifyNotificationWithRotation(cfg, query);
   if (!verified.ok) {
     const payload = sanitize(query);
     const hash = payloadHash(payload);
