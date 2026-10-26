@@ -76,6 +76,14 @@ module.exports = defineConfig({
   },
   modules: [
     ...redisModules,
+    // File Module: provider local bọc lại — tên lưu `<ULID><đuôi theo MIME>` do server sinh, không dùng tên client
+    // (BE-FILE-003, T-100). Thay mặc định `@medusajs/medusa/file-local` của defineConfig.
+    {
+      resolve: "@medusajs/medusa/file",
+      options: {
+        providers: [{ resolve: "./src/lib/upload", id: "local" }],
+      },
+    },
     // Module tùy biến: checkout attempt, idempotency, quote, ledger, inbox/outbox, ngoại lệ (docs/design/checkout-flow.md).
     { resolve: "./src/modules/checkout" },
     // Catalog thời trang: bảng size có version, thuộc tính, bảng màu/size (T-013).

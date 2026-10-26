@@ -500,6 +500,9 @@ medusaIntegrationTestRunner({
         const files = res.body.files as Array<{ id: string; url: string }>;
         expect(files).toHaveLength(1);
         expect(files[0]!.url).toMatch(/\.png$/);
+        // Tên lưu do server sinh (T-100): không còn tên client trong khoá/URL.
+        expect(files[0]!.id).toMatch(/^\d{13}-[0-9A-HJKMNP-TV-Z]{26}\.png$/);
+        expect(files[0]!.url).not.toContain("ao-thun");
         const del = await fetch(new URL(`/admin/uploads/${encodeURIComponent(files[0]!.id)}`, base), {
           method: "DELETE",
           headers: owner.headers,
