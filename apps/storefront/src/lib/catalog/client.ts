@@ -149,17 +149,21 @@ export const CATEGORY_PAGE_SIZE = 200;
 const CATEGORY_TOTAL_MAX = 1000;
 
 async function fetchAllCategories(): Promise<CategoryEntry[]> {
-  const all: CategoryEntry[] = [];
-  for (let offset = 0; offset < CATEGORY_TOTAL_MAX; offset += CATEGORY_PAGE_SIZE) {
+  // Mỗi trang cache riêng (revalidate 60 s) nên các trang có thể là ảnh chụp ở thời điểm khác nhau: danh mục vừa có/hết hàng
+  // làm lệch biên trang → bỏ trùng theo handle (mục bị đẩy qua biên chỉ thiếu tới khi cache trang đồng bộ, ≤ một chu kỳ).
+  const byHandle = new Map<string, CategoryEntry>();
+  for (let offset = 0; offset < CATEGORY_TOTAL_MAX;) {
     const params = new URLSearchParams({ limit: String(CATEGORY_PAGE_SIZE), offset: String(offset) });
     const raw = await backendGet<unknown>("/store/x/categories", params);
     const page = mapCategories(raw);
-    all.push(...page);
-    const count = (raw as { count?: unknown } | null)?.count;
-    const total = typeof count === "number" ? count : all.length;
-    if (page.length < CATEGORY_PAGE_SIZE || all.length >= total) break;
+    for (const c of page) if (!byHandle.has(c.handle)) byHandle.set(c.handle, c);
+    const meta = (raw ?? {}) as { count?: unknown; limit?: unknown };
+    const limit = typeof meta.limit === "number" && meta.limit > 0 ? meta.limit : CATEGORY_PAGE_SIZE;
+    const total = typeof meta.count === "number" ? meta.count : offset + page.length;
+    offset += limit;
+    if (page.length < limit || offset >= total) break;
   }
-  return all;
+  return [...byHandle.values()];
 }
 
 export interface MenuCategory {

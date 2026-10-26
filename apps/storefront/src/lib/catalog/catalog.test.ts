@@ -3,7 +3,14 @@ import { EMPTY_FILTER, parseFilter, type CatalogFilter } from "@x-shop/domain";
 import { resetEnvCacheForTests } from "../env";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { getCategoryName, getMenuCategories, getProduct, listProducts, search } from "./client";
+import {
+  getCategories,
+  getCategoryName,
+  getMenuCategories,
+  getProduct,
+  listProducts,
+  search,
+} from "./client";
 import { FIXTURE_PRODUCTS } from "./fixtures";
 import { CatalogError } from "./types";
 
@@ -254,6 +261,27 @@ describe("backend (XS_DATA_SOURCE=backend)", () => {
     expect(await getCategoryName("dm-249")).toBe("Danh mục 249");
     const urls = (fetchMock.mock.calls as unknown as [string][]).map(([x]) => new URL(x).search);
     expect(urls).toEqual(["?limit=200&offset=0", "?limit=200&offset=200"]);
+  });
+
+  it("trang danh mục là ảnh chụp lệch nhau (thêm danh mục giữa hai trang) → không trùng handle", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const offset = Number(new URL(url).searchParams.get("offset"));
+      // Trang 2 lấy sau khi có thêm một danh mục đứng trước biên → dm-199 lặp lại ở đầu trang 2.
+      const from = offset === 0 ? 0 : 199;
+      const n = offset === 0 ? 200 : 51;
+      const categories = Array.from({ length: n }, (_, i) => ({
+        handle: `dm-${from + i}`,
+        name: `Danh mục ${from + i}`,
+        parent_handle: null,
+        product_count: 1,
+      }));
+      return ok({ categories, count: offset === 0 ? 250 : 251, limit: 200, offset });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const all = await getCategories();
+    const handles = all.map((c) => c.handle);
+    expect(new Set(handles).size).toBe(handles.length);
+    expect(handles).toContain("dm-249");
   });
 
   it("phản hồi thật của danh sách/chi tiết/tìm kiếm đi qua lớp ánh xạ", async () => {
