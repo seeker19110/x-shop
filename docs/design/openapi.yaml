@@ -1839,7 +1839,7 @@ components:
       description: |
         RFC 9457 problem details. `code` ổn định để client xử lý; `detail`/`title` tiếng Việt. Khóa riêng theo `code`
         (vd `quote`, `lines`, `current_cart_version`, `retry_after_seconds`, `permission`, `import_id`) nằm cùng cấp.
-      required: [type, title, status, code]
+      required: [type, title, status, code, trace_id]
       properties:
         type: { type: string, description: "`https://x-shop.vn/problems/<code>` (checkout/đơn) hoặc `about:blank` (dạng chung)." }
         title: { type: string }
@@ -1848,6 +1848,12 @@ components:
         detail: { type: string }
         field: { type: string, description: "Trường gây lỗi, vd `contact.phone`." }
         action: { type: string, description: "Gợi ý cho client, vd `requote`, `retry_same_key`." }
+        trace_id:
+          type: string
+          description: "Mã tham chiếu request (header `x-request-id` hợp lệ hoặc UUID) — cùng mã trong log server, để tra lỗi (T-088)."
+        message:
+          type: string
+          description: "Chỉ ở lỗi đi qua handler toàn cục (route ném lỗi, route native): bằng `detail`, giữ cho client Medusa (js-sdk đọc `message`)."
         errors:
           type: array
           items:

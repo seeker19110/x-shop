@@ -27,6 +27,8 @@ psql "$DATABASE_URL" -c "select kind, state, count(*) from ops_exception where s
 redis-cli -u "$REDIS_URL" ping
 ```
 
+Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi cùng mã (`[http|checkout|returns|settlement|shipping] <METHOD> <path> trace_id=<mã>: <stack>`) — khách/nhân viên báo mã đó → tìm đúng dòng log. Tiến trình chết vì lỗi ngoài request để lại một dòng JSON `level: fatal` (`exception.type/message/stacktrace`) trên stderr và thoát mã 1.
+
 **Trạng thái diễn tập** (`last_drilled` = ngày diễn tập thật gần nhất; hạn ≤ 6 tháng, quá hạn = diễn tập lại):
 
 | Mục | last_drilled | Ghi chú |

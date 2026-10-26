@@ -13,6 +13,7 @@ import {
   loginIdentity,
   mfaIdentity,
 } from "../lib/admin-security/guard";
+import { xErrorHandler } from "../lib/errors/error-handler";
 import { csrfGuard } from "../lib/security/csrf";
 import { securityHeaders } from "../lib/security/headers";
 import {
@@ -41,6 +42,8 @@ function blockNativeCartComplete(_req: MedusaRequest, res: MedusaResponse, _next
 }
 
 export default defineMiddlewares({
+  // Handler lỗi toàn cục (T-088): problem+json có trace_id, 5xx không lộ stack/SQL/đường dẫn (lib/errors/error-handler.ts).
+  errorHandler: xErrorHandler,
   routes: [
     // Header bảo mật + CSRF cho thao tác ghi dùng cookie (SEC01, SEC05, T-034). Middleware toàn cục (không `methods`)
     // chạy trước middleware theo method; mảng giữ thứ tự → CSRF trước cổng RBAC admin bên dưới.

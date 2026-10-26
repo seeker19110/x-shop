@@ -1,5 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
-import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
+import { MedusaError } from "@medusajs/framework/utils";
+import { logServerError } from "../../lib/errors/error-handler";
 import { readCheckoutError, sendProblem as sendCheckoutProblem } from "../../lib/checkout/errors";
 import { sendProblem } from "../../lib/http/problem";
 import { AdjustError } from "../../lib/inventory/adjust";
@@ -72,8 +73,6 @@ export function handleReturnsRouteError(req: MedusaRequest, res: MedusaResponse,
           : 0;
     if (status) return sendProblem(res, status, status === 401 ? "UNAUTHORIZED" : "FORBIDDEN", error.message);
   }
-  req.scope
-    .resolve(ContainerRegistrationKeys.LOGGER)
-    .error(`[returns] ${req.method} ${req.path}: ${error instanceof Error ? error.stack : "lỗi không rõ"}`);
+  logServerError(req, "returns", error);
   sendProblem(res, 500, "INTERNAL", "Không thể xử lý yêu cầu lúc này");
 }

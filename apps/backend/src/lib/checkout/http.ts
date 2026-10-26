@@ -1,10 +1,10 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { normalizeVnPhone, validateAddress, type AddressSnapshot } from "@x-shop/domain";
 import { z } from "zod";
 import { PAYMENT_METHODS } from "../../modules/checkout/models/constants";
 import type { CartAccessContext } from "./cart";
 import { clientIpOf } from "../security/config";
+import { logServerError } from "../errors/error-handler";
 import { CheckoutError, readCheckoutError, sendProblem } from "./errors";
 
 /**
@@ -120,9 +120,6 @@ export function handleRouteError(req: MedusaStoreRequest, res: MedusaResponse, e
     sendProblem(res, known);
     return;
   }
-  const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER);
-  logger.error(
-    `[checkout] ${req.method} ${req.path}: ${error instanceof Error ? error.stack : JSON.stringify(error)}`,
-  );
+  logServerError(req, "checkout", error);
   sendProblem(res, known ?? new CheckoutError("INTERNAL"));
 }
