@@ -18,7 +18,7 @@
     "format:check": "prettier --check .",
     "perf:budget": "bash scripts/perf/run-budget.sh",
     "load:smoke": "node scripts/load/smoke.mjs",
-    "load:test": "node --test scripts/load/lib.test.mjs",
+    "load:test": "node --test scripts/load/*.test.mjs scripts/perf/*.test.mjs",
     "e2e": "node e2e/run.mjs",
     "lint:openapi": "spectral lint docs/design/openapi.yaml --ruleset .spectral.yaml --fail-severity=warn",
     "check:openapi": "node scripts/check-openapi.mjs && pnpm lint:openapi",
