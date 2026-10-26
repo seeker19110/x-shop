@@ -23,7 +23,9 @@
     "check:data-map": "node scripts/check-data-map.mjs",
     "check:data-map:test": "node --test scripts/check-data-map.test.mjs",
     "check:adr": "node scripts/check-adr.mjs",
-    "check:adr:test": "node --test scripts/check-adr.test.mjs"
+    "check:adr:test": "node --test scripts/check-adr.test.mjs",
+    "check:routes": "node scripts/check-routes.mjs",
+    "check:routes:test": "node --test scripts/check-routes.test.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
