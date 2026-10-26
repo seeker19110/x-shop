@@ -292,3 +292,10 @@
 - Chọn: Chưa cache; chờ số đo thật trên staging/RUM; giữ pageSql/facetSql làm oracle trong test
 - Lý do (tiêu chí chất lượng cuối): Đã đạt ngưỡng ở 20+2/s; cache thêm rủi ro dữ liệu cũ, chưa có bằng chứng cần
 - Đường lùi: Thêm cache khi RUM cho thấy listing là nghẽn
+
+### D-042 · 2026-10-26T06:37:22+00:00 · T-059: mở ngoại lệ catalog_index_mismatch và phạm vi bỏ qua khi sync
+
+- Phương án: (1) Dedupe vĩnh viễn theo khóa cố định; sync bỏ cả lô · (2) Chỉ mở khi chưa có ngoại lệ cùng kind đang open/in_progress (tái diễn sau khi xử lý thì mở lại); sync bỏ qua từng sản phẩm lệch, sản phẩm tốt vẫn ghi
+- Chọn: Chỉ mở khi chưa có ngoại lệ cùng kind đang open/in_progress (tái diễn sau khi xử lý thì mở lại); sync bỏ qua từng sản phẩm lệch, sản phẩm tốt vẫn ghi
+- Lý do (tiêu chí chất lượng cuối): Lỗi tái diễn không bị nuốt; không chặn cập nhật sản phẩm đúng
+- Đường lùi: Đổi openOpsExceptionIfNoneActive về openOpsException
