@@ -316,6 +316,36 @@ medusaIntegrationTestRunner({
         expect(cleared).toMatch(/^connect\.sid=;/);
         expect((await raw("GET", "/admin/users/me", { cookie: sid })).status).toBe(401);
       });
+
+      it("đăng nhập tạo lại session ID (D-059, T-133): cookie cấy sẵn bị huỷ, phiên mới mang danh tính người đăng nhập", async () => {
+        const origin = "http://localhost:9000";
+        const sidOf = (res: RawRes) =>
+          (res.headers["set-cookie"] ?? [])
+            .map((c) => c.split(";")[0] ?? "")
+            .find((c) => c.startsWith("connect.sid="));
+        // Kẻ tấn công có phiên hợp lệ của CHÍNH MÌNH và cấy cookie đó vào trình duyệt nạn nhân (session fixation).
+        const attacker = await createAdmin(api as never, getContainer());
+        const victim = await createAdmin(api as never, getContainer());
+        const planted = sidOf(await raw("POST", "/auth/session", { ...attacker.headers, origin }, ""));
+        expect(planted).toBeDefined();
+
+        // Bị từ chối: chỉ có cookie (không Bearer) → 401 (middleware native chỉ nhận Bearer), không phát cookie mới.
+        const denied = await raw("POST", "/auth/session", { cookie: planted!, origin }, "");
+        expect(denied.status).toBe(401);
+        expect(sidOf(denied)).toBeUndefined();
+
+        const login = await raw("POST", "/auth/session", { ...victim.headers, cookie: planted!, origin }, "");
+        expect(login.status).toBe(200);
+        expect((login.json.user as { actor_id?: string }).actor_id).toBe(victim.userId);
+        const fresh = sidOf(login);
+        expect(fresh).toBeDefined();
+        expect(fresh).not.toBe(planted);
+        // Phiên cấy đã huỷ ở server (Redis) → 401; phiên mới là của nạn nhân, kẻ tấn công không biết ID.
+        expect((await raw("GET", "/admin/users/me", { cookie: planted! })).status).toBe(401);
+        const me = await raw("GET", "/admin/users/me", { cookie: fresh! });
+        expect(me.status).toBe(200);
+        expect((me.json.user as { id?: string }).id).toBe(victim.userId);
+      });
     });
 
     describe("IP khách và proxy tin cậy (SEC03)", () => {
