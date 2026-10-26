@@ -278,3 +278,10 @@
 - Lý do (tiêu chí chất lượng cuối): Cổng phải tất định, không hạ ngưỡng; giới hạn mô hình mạng được ghi nhận trong docs/ops/perf/README.md
 - Đường lùi: Đổi throttlingMethod trong scripts/perf/lighthouse.mjs
 - Khi chạy thật (đề xuất, chủ dự án quyết ở G7): RUM web-vitals trên hạ tầng thật sau ra mắt
+
+### D-040 · 2026-10-26T05:16:47+00:00 · T-057: khi kiểm cuối rebuild index thấy lệch (SKU có giá niêm yết mà không ra giá bán)
+
+- Phương án: (1) Vẫn ghi bảng mới + log error · (2) Huỷ ghi, giữ bảng cũ (cũ nhưng đủ), log error + ops_exception catalog_index_mismatch (migration thêm kind)
+- Chọn: Huỷ ghi, giữ bảng cũ (cũ nhưng đủ), log error + ops_exception catalog_index_mismatch (migration thêm kind)
+- Lý do (tiêu chí chất lượng cuối): Lệch hàng loạt là dấu hiệu lỗi hệ thống (như lỗi chia lô vừa sửa); bảng cũ đầy đủ an toàn hơn bảng mới thiếu sản phẩm
+- Đường lùi: Đổi nhánh abort trong rebuildUnlocked về ghi + log
