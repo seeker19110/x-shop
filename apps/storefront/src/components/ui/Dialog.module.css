@@ -67,8 +67,10 @@
   cursor: pointer;
 }
 
-.close:hover {
-  background: var(--divider);
+@media (hover: hover) {
+  .close:hover {
+    background: var(--divider);
+  }
 }
 
 .body {

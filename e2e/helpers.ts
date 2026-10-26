@@ -11,11 +11,27 @@ export const BUYER = {
 
 export const ORDER_REF = /XS-[A-Z0-9]{4,12}/;
 
+/**
+ * Vào danh mục bằng menu của header: desktop dùng thanh điều hướng; màn nhỏ (menu thanh bên ẩn) mở drawer "Mở menu
+ * danh mục" rồi chọn liên kết trong dialog.
+ */
+export async function openCategoryFromMenu(page: Page, name: string): Promise<void> {
+  const inline = page
+    .getByRole("navigation", { name: "Danh mục", exact: true })
+    .getByRole("link", { name, exact: true });
+  if (await inline.first().isVisible()) {
+    await inline.first().click();
+    return;
+  }
+  await page.getByRole("button", { name: "Mở menu danh mục" }).click();
+  await page.getByRole("dialog", { name: "Danh mục" }).getByRole("link", { name, exact: true }).click();
+}
+
 /** Trang chủ → danh mục "Nữ" bằng menu → thẻ sản phẩm đầu tiên → trang chi tiết (PDP). */
 export async function openFirstProductFromHome(page: Page): Promise<void> {
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
-  await page.getByRole("navigation").getByRole("link", { name: "Nữ", exact: true }).first().click();
+  await openCategoryFromMenu(page, "Nữ");
   await expect(page).toHaveURL(/\/danh-muc\/nu/);
   await expect(page.getByRole("heading", { level: 1, name: "Nữ" })).toBeVisible();
   await page.locator("main article h3 a").first().click();

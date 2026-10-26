@@ -33,8 +33,10 @@
   color: var(--on-accent);
 }
 
-.primary:hover {
-  background: var(--accent-hover);
+@media (hover: hover) {
+  .primary:hover {
+    background: var(--accent-hover);
+  }
 }
 
 .secondary {
@@ -43,8 +45,10 @@
   border-color: var(--border-strong);
 }
 
-.secondary:hover {
-  border-color: var(--foreground);
+@media (hover: hover) {
+  .secondary:hover {
+    border-color: var(--foreground);
+  }
 }
 
 .ghost {
@@ -52,8 +56,10 @@
   color: var(--foreground);
 }
 
-.ghost:hover {
-  text-decoration: underline;
+@media (hover: hover) {
+  .ghost:hover {
+    text-decoration: underline;
+  }
 }
 
 .button:disabled,
