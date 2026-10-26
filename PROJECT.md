@@ -84,9 +84,21 @@ Tên đặc tính theo bản 2023 của ISO/IEC 25010 (đối chiếu qua tài l
 ## 6. Dữ liệu & pháp lý
 - Dữ liệu cá nhân: có — cơ bản (họ tên, SĐT, email, địa chỉ); không thu dữ liệu nhạy cảm.
 - Tiền thật: có (COD, VNPAY). Dev/CI chỉ sandbox/mock.
-- Luật (xác minh ở `docs/research/2026-10-24-stack.md`): Luật TMĐT 122/2025/QH15 + NĐ 248/2026/NĐ-CP; Luật BVDLCN
-  91/2025/QH15 + NĐ 356/2025/NĐ-CP. Chủ shop/người phụ trách pháp lý rà trước ra mắt (đặc tả §11.2).
-- DPIA: `docs/ops/DPIA.md` (lát hoàn thiện).
+### Khung pháp lý
+
+Lập 2026-10-26. Chưa truy cập được văn bản gốc (vbpl.vn, thuvienphapluat.vn trả 403 từ môi trường chạy; không tìm được bản tin cổng chính thống nào) nên ngày hiệu lực và URL ghi "(chưa xác minh)" theo D-044: sai điều luật nguy hiểm hơn để trống có đánh dấu. Số hiệu và ngày hiệu lực lấy từ nguồn thứ cấp ở `docs/research/2026-10-24-stack.md` mục 9 (moit.gov.vn, pwc.com/vn, luatvietnam.vn; độ tin cậy F/T), chỉ để định hướng, pháp chế đối chiếu bản gốc trước G7 (đặc tả §11.2).
+
+| Văn bản | Áp dụng cho | Hiệu lực (nguồn thứ cấp, 2026-10-24) | URL văn bản gốc | Sửa đổi/thay thế |
+|---|---|---|---|---|
+| Luật Thương mại điện tử 122/2025/QH15 | bán hàng trực tuyến, thông tin bắt buộc, đổi trả | 01/07/2026 (chưa xác minh bản gốc) | (chưa xác minh) | (chưa xác minh) |
+| Nghị định 248/2026/NĐ-CP | hướng dẫn thi hành Luật TMĐT | 01/07/2026 (chưa xác minh bản gốc) | (chưa xác minh) | (chưa xác minh) |
+| Luật Bảo vệ dữ liệu cá nhân 91/2025/QH15 | họ tên, SĐT, email, địa chỉ khách | 01/01/2026 (chưa xác minh bản gốc) | (chưa xác minh) | (chưa xác minh) |
+| Nghị định 356/2025/NĐ-CP | hướng dẫn thi hành Luật 91/2025, hồ sơ đánh giá tác động | 01/01/2026 (chưa xác minh bản gốc) | (chưa xác minh) | (chưa xác minh) |
+| Nghị định 13/2023/NĐ-CP | bảo vệ dữ liệu cá nhân (khung trước) | (chưa xác minh) còn hay hết hiệu lực | (chưa xác minh) | (chưa xác minh) |
+
+Kiểm tra văn bản sửa đổi: trước mỗi mốc G7 và mỗi 6 tháng, pháp chế tra lại từng dòng trên cổng văn bản chính thức và cập nhật bảng kèm ngày tra; mục nào chưa đối chiếu giữ "(chưa xác minh)". Thuế/hóa đơn và thời hạn lưu dữ liệu: xem §10 và Q-20 của `docs/autopilot/PLAN-2.md`.
+
+- DPIA: `docs/ops/DPIA.md` (phần kỹ thuật hoàn tất 2026-10-26; chờ chủ dự án/pháp chế duyệt).
 
 ## 7. Stack (chi tiết + phiên bản: ADR-0001)
 Next.js App Router + TypeScript (storefront) · Medusa v2 (commerce + Admin) · PostgreSQL · Redis · S3-compatible + CDN.
