@@ -9,6 +9,44 @@ import vitest from "eslint-plugin-vitest";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+/**
+ * BASE-DATA-003 (T-082): cấm lấy mặc định bằng `||` và cấm điều kiện ngầm trên giá trị nullable nguyên thuỷ.
+ * - prefer-nullish-coalescing: `a || d` khi `a` có thể null/undefined → dùng `a ?? d`; nếu cố ý thay cả ""/0/false
+ *   thì viết tường minh (`s === "" ? d : s`), để người đọc thấy rõ 0/rỗng là hợp lệ hay không.
+ * - strict-boolean-expressions:
+ *   · allowNullableString/Number/Boolean/Enum = false: `if (s)` với `s: string | undefined` gộp "thiếu" với "" (và
+ *     `n: number | null` gộp với 0 — tiền/số lượng 0 là hợp lệ) → phải viết `s !== undefined`, `s === ""`, `n !== null`.
+ *   · allowNullableObject = true: object/mảng/hàm không bao giờ falsy, nên `if (obj)` chỉ có một nghĩa (khác null).
+ *   · allowString/allowNumber = true (mặc định): `if (s)` với `s: string` KHÔNG nullable chỉ có một nghĩa (khác "");
+ *     không có nhầm lẫn thiếu-vs-rỗng mà luật này nhắm tới.
+ *   · allowAny = false: `any` trong điều kiện phải ép kiểu tường minh.
+ * @param {{ files: string[]; project: string[] }[]} scopes
+ */
+function typedNullishRules(scopes) {
+  return scopes.map(({ files, project }) => ({
+    files,
+    languageOptions: {
+      parserOptions: { project, tsconfigRootDir: import.meta.dirname },
+    },
+    rules: {
+      "@typescript-eslint/prefer-nullish-coalescing": "error",
+      "@typescript-eslint/strict-boolean-expressions": [
+        "error",
+        {
+          allowString: true,
+          allowNumber: true,
+          allowNullableObject: true,
+          allowNullableBoolean: false,
+          allowNullableString: false,
+          allowNullableNumber: false,
+          allowNullableEnum: false,
+          allowAny: false,
+        },
+      ],
+    },
+  }));
+}
+
 export default tseslint.config(
   {
     ignores: [
@@ -128,6 +166,11 @@ export default tseslint.config(
       "jest/expect-expect": ["error", { assertFunctionNames: ["expect", "expect*", "assert*"] }],
     },
   },
+  // BASE-DATA-003: phân biệt thiếu (null/undefined) với rỗng ("") và 0/false. Hai luật cần thông tin kiểu nên chỉ
+  // chạy trên mã TS thuộc một tsconfig; bật dần theo gói (T-082).
+  ...typedNullishRules([
+    { files: ["packages/domain/src/**/*.ts"], project: ["packages/domain/tsconfig.json"] },
+  ]),
   {
     rules: {
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],

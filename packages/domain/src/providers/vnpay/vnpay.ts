@@ -129,7 +129,8 @@ export function buildPaymentUrl(cfg: VnpayConfig, input: CreatePaymentInput): st
     vnp_CreateDate: toVnpDate(input.createdAt),
     vnp_ExpireDate: toVnpDate(input.expiresAt),
   };
-  if (input.bankCode) params.vnp_BankCode = input.bankCode;
+  // bankCode "" coi như không chọn ngân hàng (giữ hành vi cũ), không gửi tham số rỗng.
+  if (input.bankCode !== undefined && input.bankCode !== "") params.vnp_BankCode = input.bankCode;
   const data = signData(params);
   return `${cfg.paymentUrl}?${data}&vnp_SecureHash=${hmacSha512(cfg.hashSecret, data)}`;
 }
@@ -180,14 +181,17 @@ export function verifyNotification(
     if (k.startsWith("vnp_")) params[k] = v;
   }
   const given = params.vnp_SecureHash;
-  if (!given || !/^[0-9a-fA-F]{128}$/.test(given)) return { ok: false, code: "INVALID_SIGNATURE" };
+  // Regex đã loại chuỗi rỗng; chỉ cần tách riêng trường hợp thiếu.
+  if (given === undefined || !/^[0-9a-fA-F]{128}$/.test(given)) {
+    return { ok: false, code: "INVALID_SIGNATURE" };
+  }
   if (!safeEqualHex(hmacSha512(cfg.hashSecret, signData(params)), given)) {
     return { ok: false, code: "INVALID_SIGNATURE" };
   }
   const amountRaw = params.vnp_Amount ?? "";
   if (!/^\d{1,17}$/.test(amountRaw) || Number(amountRaw) % 100 !== 0) return { ok: false, code: "MALFORMED" };
   const txnRef = params.vnp_TxnRef;
-  if (!txnRef) return { ok: false, code: "MALFORMED" };
+  if (txnRef === undefined || txnRef === "") return { ok: false, code: "MALFORMED" };
   if (params.vnp_TmnCode !== cfg.tmnCode) return { ok: false, code: "MERCHANT_MISMATCH" };
   const responseCode = params.vnp_ResponseCode ?? "";
   const transactionStatus = params.vnp_TransactionStatus ?? "";
@@ -200,7 +204,10 @@ export function verifyNotification(
       transactionStatus,
       transactionNo: params.vnp_TransactionNo ?? "",
       bankCode: params.vnp_BankCode ?? null,
-      payDate: params.vnp_PayDate ? fromVnpDate(params.vnp_PayDate) : null,
+      payDate:
+        params.vnp_PayDate === undefined || params.vnp_PayDate === ""
+          ? null
+          : fromVnpDate(params.vnp_PayDate),
       success: responseCode === "00" && transactionStatus === "00",
       tmnCode: params.vnp_TmnCode,
     },

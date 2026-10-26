@@ -79,6 +79,15 @@ describe("buildPaymentUrl", () => {
     expect(() => buildPaymentUrl(cfg, { ...input, expiresAt: created })).toThrow();
     expect(() => buildPaymentUrl(cfg, { ...input, bankCode: "NCB" })).not.toThrow();
   });
+  it("bankCode rỗng hoặc thiếu → không gửi vnp_BankCode; có giá trị → gửi (BASE-DATA-003)", () => {
+    expect(new URL(buildPaymentUrl(cfg, input)).searchParams.has("vnp_BankCode")).toBe(false);
+    expect(new URL(buildPaymentUrl(cfg, { ...input, bankCode: "" })).searchParams.has("vnp_BankCode")).toBe(
+      false,
+    );
+    expect(
+      new URL(buildPaymentUrl(cfg, { ...input, bankCode: "NCB" })).searchParams.get("vnp_BankCode"),
+    ).toBe("NCB");
+  });
 });
 
 describe("buildPaymentUrl — vnp_ReturnUrl kèm attempt", () => {
@@ -164,6 +173,30 @@ describe("verifyNotification — S-101, S-103 (AT07)", () => {
     const noRef: Record<string, string> = { vnp_Amount: "100", vnp_TmnCode: cfg.tmnCode };
     noRef.vnp_SecureHash = hmacSha512(cfg.hashSecret, signData(noRef));
     expect(verifyNotification(cfg, noRef)).toEqual({ ok: false, code: "MALFORMED" });
+    const emptyRef: Record<string, string> = { vnp_Amount: "100", vnp_TxnRef: "", vnp_TmnCode: cfg.tmnCode };
+    emptyRef.vnp_SecureHash = hmacSha512(cfg.hashSecret, signData(emptyRef));
+    expect(verifyNotification(cfg, emptyRef)).toEqual({ ok: false, code: "MALFORMED" });
+    expect(verifyNotification(cfg, { ...noRef, vnp_SecureHash: "" })).toEqual({
+      ok: false,
+      code: "INVALID_SIGNATURE",
+    });
+  });
+  it("PayDate/BankCode thiếu hoặc rỗng → null; amount 0 vẫn đọc là 0 (BASE-DATA-003)", () => {
+    const sign = (p: Record<string, string>) => ({
+      ...p,
+      vnp_SecureHash: hmacSha512(cfg.hashSecret, signData(p)),
+    });
+    const base = { vnp_Amount: "0", vnp_TxnRef: "T1", vnp_TmnCode: cfg.tmnCode };
+    expect(verifyNotification(cfg, sign(base))).toMatchObject({
+      ok: true,
+      value: { amount: 0, payDate: null, bankCode: null, transactionNo: "" },
+    });
+    expect(verifyNotification(cfg, sign({ ...base, vnp_PayDate: "", vnp_BankCode: "" }))).toMatchObject({
+      ok: true,
+      value: { payDate: null, bankCode: "" },
+    });
+    const withDate = verifyNotification(cfg, sign({ ...base, vnp_PayDate: "20261024160000" }));
+    expect(withDate.ok && withDate.value.payDate?.toISOString()).toBe("2026-10-24T09:00:00.000Z");
   });
   it("mã phản hồi IPN cố định", () => {
     expect(IPN_RESPONSES.invalidSignature.RspCode).toBe("97");

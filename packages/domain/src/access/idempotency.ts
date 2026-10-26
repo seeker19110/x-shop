@@ -51,7 +51,9 @@ export function verifyLookupToken(
   now: Date,
 ): { ok: true; orderId: string } | { ok: false; reason: "MALFORMED" | "BAD_SIGNATURE" | "EXPIRED" } {
   const [b64, mac] = token.split(".");
-  if (!b64 || !mac || token.length > 512) return { ok: false, reason: "MALFORMED" };
+  if (b64 === undefined || b64 === "" || mac === undefined || mac === "" || token.length > 512) {
+    return { ok: false, reason: "MALFORMED" };
+  }
   const body = Buffer.from(b64, "base64url").toString("utf8");
   const m = /^([A-Za-z0-9_-]{1,64})\.(\d{1,12})$/.exec(body);
   if (!m) return { ok: false, reason: "MALFORMED" };

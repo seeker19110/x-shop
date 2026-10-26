@@ -114,4 +114,10 @@ describe("token tra cứu đơn — POST01", () => {
       reason: "MALFORMED",
     });
   });
+  it("phần thân/MAC thiếu hoặc rỗng → MALFORMED (BASE-DATA-003)", () => {
+    const [b64, mac] = tok.split(".");
+    expect(verifyLookupToken(secret, "", now)).toMatchObject({ reason: "MALFORMED" });
+    expect(verifyLookupToken(secret, `${b64}.`, now)).toMatchObject({ reason: "MALFORMED" });
+    expect(verifyLookupToken(secret, `.${mac}`, now)).toMatchObject({ reason: "MALFORMED" });
+  });
 });
