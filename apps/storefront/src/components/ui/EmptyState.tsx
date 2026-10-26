@@ -13,11 +13,14 @@ export interface EmptyStateProps {
 
 export function EmptyState({ title, description, action, headingLevel = 2 }: EmptyStateProps) {
   const Heading = headingLevel === 3 ? "h3" : "h2";
+  // ReactNode "rỗng" (null/undefined/false/""/0) → không dựng khung hành động, như kiểm truthy cũ.
+  const hasAction =
+    action !== undefined && action !== null && action !== false && action !== "" && action !== 0;
   return (
     <section className={styles.empty}>
       <Heading className={styles.title}>{title}</Heading>
       {isNonEmpty(description) ? <p className={styles.description}>{description}</p> : null}
-      {action !== undefined && action !== null ? <div className={styles.action}>{action}</div> : null}
+      {hasAction ? <div className={styles.action}>{action}</div> : null}
     </section>
   );
 }

@@ -181,7 +181,7 @@ describe("verifyNotification — S-101, S-103 (AT07)", () => {
       code: "INVALID_SIGNATURE",
     });
   });
-  it("PayDate/BankCode thiếu hoặc rỗng → null; amount 0 vẫn đọc là 0 (BASE-DATA-003)", () => {
+  it('PayDate thiếu/rỗng → null; BankCode thiếu → null, rỗng giữ ""; amount 0 vẫn đọc là 0 (BASE-DATA-003)', () => {
     const sign = (p: Record<string, string>) => ({
       ...p,
       vnp_SecureHash: hmacSha512(cfg.hashSecret, signData(p)),

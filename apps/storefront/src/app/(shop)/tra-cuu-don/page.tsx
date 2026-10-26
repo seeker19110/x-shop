@@ -3,6 +3,7 @@ import styles from "../../../components/orders/Order.module.css";
 import { LookupForm } from "../../../components/orders/LookupForm";
 import { ORDER_REF_RE } from "../../../lib/orders/map";
 import { isNonEmpty } from "../../../lib/presence";
+import { lookupNotice } from "../../../lib/orders/notices";
 
 export const metadata: Metadata = {
   title: "Tra cứu đơn hàng",
@@ -10,12 +11,6 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
-
-const NOTICES: Record<string, string> = {
-  "lien-ket": "Liên kết xem đơn đã hết hạn hoặc đã được dùng. Vui lòng tra cứu lại để nhận liên kết mới.",
-  "thanh-toan":
-    "Chúng tôi đang xác nhận thanh toán với cổng VNPAY — bạn không cần thanh toán lại. Tra cứu đơn để xem kết quả.",
-};
 
 /** Tra cứu đơn (POST01): mã đơn + SĐT → luôn cùng thông điệp; liên kết xem đơn gửi qua email/SMS. */
 export default async function LookupPage({
@@ -25,8 +20,7 @@ export default async function LookupPage({
 }) {
   const sp = await searchParams;
   const ma = typeof sp.ma === "string" ? sp.ma.trim().toUpperCase() : "";
-  const notice =
-    typeof sp.loi === "string" ? NOTICES[sp.loi] : typeof sp.tu === "string" ? NOTICES[sp.tu] : undefined;
+  const notice = lookupNotice(typeof sp.loi === "string" ? sp.loi : sp.tu);
   return (
     <section className={styles.page} aria-labelledby="tra-cuu-tieu-de">
       <h1 id="tra-cuu-tieu-de" className={styles.title}>
