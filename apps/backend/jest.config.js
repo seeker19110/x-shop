@@ -49,6 +49,14 @@ module.exports = {
   moduleFileExtensions: ["js", "ts", "json"],
   modulePathIgnorePatterns: ["dist/", "<rootDir>/.medusa/"],
   setupFiles: ["./integration-tests/setup.ts"],
+  // Coverage nhánh (QA-COV-001) — chỉ bật khi chạy `--coverage` (`pnpm test:coverage`). Provider v8: transform là
+  // @swc/jest nên instrument kiểu babel-istanbul không áp. Mọi file .ts của src (kể cả chưa có test → 0 %); .tsx của
+  // Admin UI không thuộc phạm vi Jest (moduleFileExtensions). Ngưỡng: ratchet theo coverage-baseline.json ở gốc repo
+  // (scripts/coverage-ratchet.mjs, QA-COV-002).
+  coverageProvider: "v8",
+  collectCoverageFrom: ["src/**/*.ts", "!src/**/__tests__/**", "!src/**/*.d.ts"],
+  coverageDirectory: "coverage",
+  coverageReporters: ["text-summary", "json-summary", "lcov"],
 };
 
 if (process.env.TEST_TYPE === "integration:http") {

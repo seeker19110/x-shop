@@ -80,6 +80,31 @@ jobs:
         run: bash .xtemplates/scripts/dev-task.sh setup
       - name: gate-par — typecheck ∥ lint ∥ build → test (kèm ngưỡng coverage của `test`) đúng lệnh trong xt.yaml
         run: bash .xtemplates/scripts/dev-task.sh gate-par
+      # x-shop (T-110, QA-COV-001/002): coverage nhánh (v8) của domain + storefront (vitest) + backend unit (jest), rồi
+      # ratchet so coverage-baseline.json — lines/branches tụt dưới baseline, hoặc PR hạ chính baseline so với nhánh đích
+      # (`--against`), thì bước đỏ. Bước riêng vì `floor --run` không áp ở pha build (ADR-0041) và `test` của xt.yaml
+      # chưa chạy coverage (đổi xt.yaml là việc phiên chính). BASE_REF qua env, không nội suy vào shell.
+      - name: Coverage nhánh + ratchet — `test:coverage` mỗi gói rồi `scripts/coverage-ratchet.mjs`
+        env:
+          BASE_REF: ${{ github.base_ref || 'master' }}
+        run: |
+          set -euo pipefail
+          pnpm coverage:ratchet:test
+          pnpm -r --if-present test:coverage
+          node scripts/coverage-ratchet.mjs --against "origin/$BASE_REF"
+      # Báo cáo coverage (json-summary + lcov HTML) làm artifact, kể cả khi ratchet đỏ (để xem nhánh nào tụt).
+      # upload-artifact v7.0.2 — SHA lấy bằng `git ls-remote` ngày 2026-10-26 (tag nhẹ, trỏ thẳng commit).
+      - name: Lưu báo cáo coverage (artifact 14 ngày)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: |
+            packages/domain/coverage/
+            apps/storefront/coverage/
+            apps/backend/coverage/
+          retention-days: 14
+          if-no-files-found: warn
       # Sàn M/L (LOOP-HARNESS-023): khoá sàn khai riêng trong xt.yaml (`format_check`, `coverage`, kiểm kiểu theo stack) —
       # trước chỉ `loop verify` chạy nên CI xanh khi sàn đỏ (AUD-XFEAT-020). Lệnh trùng lệnh của gate-par bỏ qua; `e2e` có
       # job riêng; quy mô S/không blueprint → không áp; khoá thiếu chỉ cảnh báo (như doctor).

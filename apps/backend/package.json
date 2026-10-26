@@ -14,6 +14,7 @@
     "rbac:grant-owner": "medusa exec ./src/scripts/grant-owner.ts",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json && tsc --noEmit -p src/admin/tsconfig.json",
     "test": "TEST_TYPE=unit NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit --passWithNoTests",
+    "test:coverage": "TEST_TYPE=unit NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit --passWithNoTests --coverage",
     "test:integration": "TEST_TYPE=integration:http NODE_OPTIONS=\"--experimental-vm-modules --max-old-space-size=3072\" jest --silent=false --maxWorkers=1 --forceExit"
   },
   "dependencies": {
