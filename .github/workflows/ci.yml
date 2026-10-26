@@ -45,7 +45,8 @@ jobs:
     # x-shop: test tích hợp Medusa (giữ hàng, idempotency, IPN — AT04/AT05/AT35) chạy trên Postgres/Redis thật (đặc tả §13.3).
     services:
       postgres:
-        image: postgres:16-alpine
+        # BASE-DEP-008: ghim digest (index đa kiến trúc, xác minh 2026-10-26 từ Docker Hub registry). Nâng: lấy digest mới của tag.
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
         env:
           POSTGRES_USER: xshop
           POSTGRES_PASSWORD: xshop
@@ -54,7 +55,7 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
         ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
