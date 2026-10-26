@@ -111,7 +111,7 @@ jobs:
       - name: Fixture không PII thật — `node scripts/check-fixtures.mjs` (QA-DATA-002)
         run: node scripts/check-fixtures.mjs
       - name: Test của các script kiểm kiến trúc/dữ liệu
-        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs
+        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs && pnpm load:test
 
   # E2E (QA-E2E-001, QA-E2E-029): chạy CÙNG LÚC với `gate`, không `needs` — lệnh `e2e` tự build và phục vụ (vd `webServer`
   # của Playwright). `e2e-mode`: `off` (chưa khai `e2e`) → bỏ qua; `shard` (lệnh dùng $XT_SHARD, vd
