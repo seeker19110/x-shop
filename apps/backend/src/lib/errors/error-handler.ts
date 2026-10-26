@@ -10,7 +10,8 @@ import { traceIdOf } from "./trace";
  * Route đã tự map lỗi nghiệp vụ (checkout, đổi trả, đối soát, giao vận…) không đi qua đây — mã lỗi của chúng giữ nguyên.
  *
  * - Mã HTTP theo ánh xạ của Medusa (`getHttpResponseFromError`: 400/401/403/404/409/422/500) — không đổi hành vi client
- *   native; thêm: lỗi zod thô → 400 `VALIDATION` có `errors[]` (Medusa trả 500), lỗi multer → 400/413.
+ *   native; thêm: lỗi zod thô → 400 `VALIDATION` có `errors[]` (Medusa trả 500), lỗi multer → 400/413, tham số đường
+ *   dẫn mã hoá hỏng (URIError của Express) → 400 `INVALID_PATH` (Medusa trả 500).
  * - Thân `application/problem+json` (RFC 9457) có `code` + `trace_id`; giữ `message` (= `detail`) vì client Medusa
  *   (js-sdk, Admin) đọc khoá này.
  * - 5xx: thông điệp chung, không stack/đường dẫn/SQL/tên bảng/phiên bản; đầy đủ (stack) chỉ ở log server kèm `trace_id`.
@@ -120,7 +121,12 @@ export function toHttpProblem(err: unknown, traceId: string): HttpProblem {
   let errors: ProblemError[] | undefined;
 
   const httpStatus = httpErrorStatus(err);
-  if (isZodError(err)) {
+  if (err instanceof URIError || (err as { name?: unknown } | null)?.name === "URIError") {
+    // Express không giải mã được tham số đường dẫn (`%E0%A4%A`…) → 400 (Medusa mặc định trả 500) — T-085.
+    status = 400;
+    code = "INVALID_PATH";
+    detail = "Đường dẫn không hợp lệ";
+  } else if (isZodError(err)) {
     status = 400;
     code = "VALIDATION";
     errors = zodErrors(err.issues);

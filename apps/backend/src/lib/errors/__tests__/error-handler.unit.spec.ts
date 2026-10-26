@@ -272,6 +272,18 @@ describe("toHttpProblem — 4xx giữ mã của Medusa, bỏ chi tiết nội b�
     expect(p.body.detail).toBe(detail);
   });
 
+  it("URIError (Express không giải mã được tham số đường dẫn, gắn status 400) → 400 INVALID_PATH, không 500", () => {
+    const err = Object.assign(new URIError("Failed to decode param '%E0%A4%A'"), {
+      status: 400,
+      statusCode: 400,
+    });
+    expect(toHttpProblem(err, "t")).toMatchObject({
+      status: 400,
+      body: { code: "INVALID_PATH", detail: "Đường dẫn không hợp lệ", trace_id: "t" },
+    });
+    expect(toHttpProblem(new URIError("URI malformed"), "t").status).toBe(400);
+  });
+
   it("multer: quá cỡ → 413, khác → 400", () => {
     const big = Object.assign(new Error("File too large"), { name: "MulterError", code: "LIMIT_FILE_SIZE" });
     const other = Object.assign(new Error("Unexpected field"), {
