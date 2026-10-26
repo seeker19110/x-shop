@@ -376,3 +376,17 @@
 - Chọn: Vá bằng nâng bản/pnpm.overrides theo bản vá, chạy đủ cổng (build + test + tích hợp + e2e) để chứng minh không vỡ; SLA mặc định Critical 7/High 14/Medium 60/Low 90 ngày, ngoại lệ tối đa 90 ngày có duyệt chủ dự án
 - Lý do (tiêu chí chất lượng cuối): Vá thật an toàn hơn che lỗi; ngoại lệ chỉ khi bản vá phá Medusa (major graphql-tools/uuid) — khi đó ghi lý do và đề xuất chủ dự án duyệt
 - Đường lùi: Bỏ overrides trong package.json
+
+### D-054 · 2026-10-26T13:26:02+00:00 · 401 ẩn danh ở /admin/* do authenticate của Medusa trả {message} thường, không problem+json (BASE-ERR-003)
+
+- Phương án: (1) Chấp nhận ngoại lệ: ghi vào ADR-0003/OpenAPI, giữ luồng xác thực native của Medusa · (2) Tắt AUTHENTICATE cho /admin/x, tự gọi authenticate(allowUnauthenticated) + guard trả 401 problem
+- Chọn: Chấp nhận ngoại lệ: ghi vào ADR-0003/OpenAPI, giữ luồng xác thực native của Medusa
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: không tự viết lại luồng xác thực admin — đổi luồng auth là rủi ro lỗ hổng lớn hơn lợi ích định dạng; (3) đơn giản, theo chuẩn framework; 401 không lộ chi tiết nên không vi phạm bảo mật
+- Đường lùi: Làm phương án 2 trong một task riêng có test rbac/security; BASE-ERR-003 giữ [ ] kèm ghi chú ngoại lệ
+
+### D-055 · 2026-10-26T13:26:02+00:00 · SĐT mẫu trong fixture (0912345678…) thuộc dải thuê bao thật; VN chưa xác minh có dải số dành riêng cho test (QA-DATA-002)
+
+- Phương án: (1) Giữ allowlist 6 số mẫu ở docs/compliance/test-data-policy.md, cấm mọi số khác trong fixture · (2) Tìm dải số reserved có nguồn rồi đổi toàn bộ fixture
+- Chọn: Giữ allowlist 6 số mẫu ở docs/compliance/test-data-policy.md, cấm mọi số khác trong fixture
+- Lý do (tiêu chí chất lượng cuối): (1) số mẫu phổ biến không gắn dữ liệu cá nhân thật, không gửi SMS trong dev/CI (adapter mock); script chặn số ngoài allowlist; (3) đổi hàng loạt test không tăng an toàn khi chưa có dải reserved xác minh
+- Đường lùi: Khi có dải số reserved có nguồn: sửa allowlist trong test-data-policy.md, check-fixtures báo các chỗ phải đổi
