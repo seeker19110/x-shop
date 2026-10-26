@@ -523,3 +523,10 @@
 - Chọn: Đóng đăng ký khách tới khi làm P1
 - Lý do (tiêu chí chất lượng cuối): (1) đặc tả: mua không cần tài khoản, tài khoản khách là P1; đóng là cách an toàn nhất; (2) quyết thiết kế cùng task P1
 - Đường lùi: Mở khi làm P1 với provider riêng hoặc xác minh email
+
+### D-075 · 2026-10-26T23:25:33+00:00 · Thay D-073: đăng ký admin không kèm invite_token (review T-138: người lạ chiếm trước identity email đang được mời, gắn TOTP của họ; rủi ro chiếm tài khoản qua reset sau này)
+
+- Phương án: (1) Chỉ nhánh token; dashboard: lấy invite_token từ Referer cùng origin /app/invite?token=… khi thân không có, thiếu thì từ chối; dọn identity chưa gắn actor khi xoá/gửi lại lời mời · (2) Chỉ nhánh token, onboarding bằng CLI/trang mời riêng · (3) Giữ D-073 (chấp nhận rủi ro)
+- Chọn: Chỉ nhánh token; dashboard: lấy invite_token từ Referer cùng origin /app/invite?token=… khi thân không có, thiếu thì từ chối; dọn identity chưa gắn actor khi xoá/gửi lại lời mời
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: không có đường tạo identity admin khi không chứng minh có token mời — đúng tiêu chí T-138; (2)(4) dashboard gốc vẫn dùng được vì nó chạy cùng origin với token trên URL; thiếu Referer → từ chối (đóng an toàn)
+- Đường lùi: Phương án 2 (trang mời riêng) nếu Referer không tin cậy trong môi trường thật
