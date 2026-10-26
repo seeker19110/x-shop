@@ -4,7 +4,7 @@ import { multiplyVnd, type QuoteBreakdown } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { toSafeInteger } from "../../lib/checkout/cart";
 import { readCheckoutError } from "../../lib/checkout/errors";
-import { acquireOrdered, lockKeys, releaseOwned } from "../../lib/checkout/locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../../lib/checkout/locks";
 import { CHECKOUT_CONFIG } from "../../lib/checkout/config";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
@@ -206,6 +206,6 @@ export async function withOrderLock<T>(container: Scope, orderId: string, fn: ()
   try {
     return await fn();
   } finally {
-    await releaseOwned(locking, owner, null);
+    await releaseOwnedOrWarn(locking, owner, container.resolve(ContainerRegistrationKeys.LOGGER), "returns");
   }
 }

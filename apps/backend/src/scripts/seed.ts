@@ -9,6 +9,7 @@ import {
   linkSalesChannelsToStockLocationWorkflow,
   updateStoresWorkflow,
 } from "@medusajs/medusa/core-flows";
+import { withOwnedLock } from "../lib/checkout/locks";
 
 /**
  * Seed nền của x-shop — idempotent: chạy lại (kể cả hai tiến trình cùng lúc) không tạo bản ghi trùng.
@@ -42,13 +43,26 @@ export interface SeedResult {
 
 /** Thời gian chờ lấy khoá seed (giây) khi một tiến trình seed khác đang chạy. */
 const SEED_LOCK_WAIT_SECONDS = 120;
+/** Lease khoá seed — gia hạn nền khi còn chạy; tiến trình chết thì tự nhả sau ≤ 60 giây (như `locking.execute`). */
+const SEED_LOCK_TTL_SECONDS = 60;
 
 export default async function seedXShop({ container }: Pick<ExecArgs, "container">): Promise<SeedResult> {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
-  const locking = container.resolve(Modules.LOCKING);
-  const result = await locking.execute(SEED.lockKey, () => seedUnlocked(container), {
-    timeout: SEED_LOCK_WAIT_SECONDS,
-  });
+  // Mỗi lời gọi Redis có hạn (lib/checkout/locks.ts): Redis câm → LOCK_UNAVAILABLE thay vì treo tiến trình seed.
+  const result = await withOwnedLock(
+    container.resolve(Modules.LOCKING),
+    SEED.lockKey,
+    {
+      waitMs: SEED_LOCK_WAIT_SECONDS * 1000,
+      ttlSeconds: SEED_LOCK_TTL_SECONDS,
+      scope: "seed",
+      ownerPrefix: "seed",
+      failOnLeaseLoss: true,
+      onReleaseError: (e) =>
+        logger.warn(`[seed] Nhả khoá lỗi/quá hạn (lease tự hết): ${(e as Error).message}`),
+    },
+    () => seedUnlocked(container),
+  );
   logger.info(`[seed] Xong: store=${result.storeId} region=${result.regionId}`);
   return result;
 }

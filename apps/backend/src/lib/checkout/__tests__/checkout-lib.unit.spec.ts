@@ -3,8 +3,11 @@ import {
   acquireOrdered,
   activeLeaseCount,
   releaseOwned,
+  releaseOwnedOrWarn,
   releaseOwnedQuietly,
   sortLockKeys,
+  tryAcquireExpiring,
+  withOwnedLock,
   type LockingLike,
 } from "../locks";
 import { cartWeightGrams, quoteShipping, SHIPPING_FEE_TABLE } from "../shipping";
@@ -139,6 +142,141 @@ describe("locks", () => {
     await acquireOrdered(l, ["k2"], opts("B"));
     await expect(releaseOwned(down, "B", null)).rejects.toMatchObject({ code: "LOCK_UNAVAILABLE" });
     expect(await releaseOwnedQuietly(down, "khong-giu-gi", null)).toBeNull();
+  });
+
+  describe("tryAcquireExpiring (giới hạn tần suất bằng khóa tự hết hạn — T-056)", () => {
+    it("lấy được → true (giữ với expire, không gia hạn); đang bị giữ → false", async () => {
+      const l = new FakeLocking();
+      const calls: Array<{ expire?: number }> = [];
+      const spy: LockingLike = {
+        acquire: (keys, args) => {
+          calls.push({ expire: args?.expire });
+          return l.acquire(keys, args);
+        },
+        release: (keys, args) => l.release(keys, args),
+      };
+      expect(await tryAcquireExpiring(spy, "r:1", { expireSeconds: 10, scope: "recheck" })).toBe(true);
+      expect(await tryAcquireExpiring(spy, "r:1", { expireSeconds: 10, scope: "recheck" })).toBe(false);
+      expect(calls).toEqual([{ expire: 10 }, { expire: 10 }]);
+      expect(activeLeaseCount()).toBe(0); // không đăng ký gia hạn → khóa tự hết sau expire
+    });
+
+    it("provider treo → LOCK_UNAVAILABLE sau callTimeoutMs (không phải 'đang bận'); lỗi kết nối → LOCK_UNAVAILABLE ngay", async () => {
+      const hanging: LockingLike = {
+        acquire: () => new Promise<void>(() => undefined),
+        release: async () => true,
+      };
+      const started = Date.now();
+      const err = await tryAcquireExpiring(hanging, "r:2", {
+        expireSeconds: 10,
+        scope: "recheck",
+        callTimeoutMs: 50,
+      }).catch((e: unknown) => e);
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(err).toMatchObject({ code: "LOCK_UNAVAILABLE", detail: { lock_scope: "recheck" } });
+      const down: LockingLike = {
+        acquire: () => Promise.reject(new Error("Connection is closed.")),
+        release: async () => true,
+      };
+      await expect(
+        tryAcquireExpiring(down, "r:3", { expireSeconds: 10, scope: "recheck" }),
+      ).rejects.toMatchObject({
+        code: "LOCK_UNAVAILABLE",
+      });
+    });
+  });
+
+  describe("withOwnedLock (thay locking.execute — T-056)", () => {
+    it("nhiều khóa: lấy tuần tự tăng dần với tiền tố owner, nhả hết sau fn; fn lỗi → lỗi gốc, khóa vẫn được nhả", async () => {
+      const l = new FakeLocking();
+      const value = await withOwnedLock(l, ["b", "a"], { ...opts("x"), ownerPrefix: "import" }, async () => {
+        expect([...l.owners.values()].every((o) => o.startsWith("import:"))).toBe(true);
+        return 42;
+      });
+      expect(value).toBe(42);
+      expect(l.log.map((e) => e.split("+")[1])).toEqual(["a", "b"]);
+      expect(l.owners.size).toBe(0);
+      const boom = new Error("lỗi nghiệp vụ");
+      await expect(withOwnedLock(l, "a", opts("x"), () => Promise.reject(boom))).rejects.toBe(boom);
+      expect(l.owners.size).toBe(0);
+    });
+
+    it("Redis câm khi giành khóa → LOCK_UNAVAILABLE trong hạn, KHÔNG chạy fn", async () => {
+      const hanging: LockingLike = {
+        acquire: () => new Promise<void>(() => undefined),
+        release: async () => true,
+      };
+      let ran = false;
+      const err = await withOwnedLock(hanging, "a", { ...opts("x", 10_000), callTimeoutMs: 50 }, async () => {
+        ran = true;
+      }).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: "LOCK_UNAVAILABLE" });
+      expect(ran).toBe(false);
+    });
+
+    it("mất lease giữa chừng (gia hạn thấy chủ khác giữ): failOnLeaseLoss → LOCK_UNAVAILABLE lease_lost, không xoá khóa của chủ khác; không bật → trả kết quả", async () => {
+      const run = async (failOnLeaseLoss: boolean) => {
+        const l = new FakeLocking();
+        const p = withOwnedLock(l, "imp", { ...opts("x"), ttlSeconds: 1, failOnLeaseLoss }, async () => {
+          l.owners.set("imp", "OTHER"); // lease hết hạn khi Redis không trả lời, chủ khác lấy
+          await new Promise((r) => setTimeout(r, 450)); // > 1/3 TTL → một lần gia hạn chạy
+          return "xong";
+        });
+        const out = await p.catch((e: unknown) => e);
+        expect(l.owners.get("imp")).toBe("OTHER");
+        return out;
+      };
+      expect(await run(true)).toMatchObject({
+        code: "LOCK_UNAVAILABLE",
+        detail: { lock_scope: "inventory", lease_lost: true },
+      });
+      expect(await run(false)).toBe("xong");
+    });
+
+    it("gia hạn lỗi tạm (mạng) không bị coi là mất lease", async () => {
+      const l = new FakeLocking();
+      let renewals = 0;
+      const flaky: LockingLike = {
+        acquire: (keys, args) => {
+          if (l.owners.get(keys as string) === args?.ownerId) {
+            renewals += 1;
+            return Promise.reject(new Error("Connection is closed."));
+          }
+          return l.acquire(keys, args);
+        },
+        release: (keys, args) => l.release(keys, args),
+      };
+      const out = await withOwnedLock(
+        flaky,
+        "k",
+        { ...opts("x"), ttlSeconds: 1, failOnLeaseLoss: true },
+        async () => {
+          await new Promise((r) => setTimeout(r, 450));
+          return "ok";
+        },
+      );
+      expect(out).toBe("ok");
+      expect(renewals).toBeGreaterThan(0);
+    });
+  });
+
+  it("releaseOwnedOrWarn: nhả lỗi/treo → chỉ cảnh báo (không ném), ngừng gia hạn; nhả được → không cảnh báo", async () => {
+    const l = new FakeLocking();
+    const warnings: string[] = [];
+    const logger = { warn: (m: string) => warnings.push(m) };
+    await acquireOrdered(l, ["k1"], opts("A"));
+    const down: LockingLike = {
+      acquire: () => Promise.reject(new Error("Connection is closed.")),
+      release: () => Promise.reject(new Error("Connection is closed.")),
+    };
+    await expect(releaseOwnedOrWarn(down, "A", logger, "cancel")).resolves.toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^\[cancel\] .*Connection is closed/);
+    expect(activeLeaseCount()).toBe(0);
+    await acquireOrdered(l, ["k2"], opts("B"));
+    await releaseOwnedOrWarn(l, "B", logger, "cancel");
+    expect(warnings).toHaveLength(1);
+    expect(l.owners.has("k2")).toBe(false);
   });
 
   it("LOCK_UNAVAILABLE là lỗi tạm: cùng Idempotency-Key gửi lại được; BUSY_RETRY vẫn 409", () => {
