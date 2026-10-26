@@ -17,3 +17,11 @@ Chạy: `pnpm perf:budget` (build production storefront với dữ liệu mẫu 
 ## Đề xuất (không tự sửa `xt.yaml`)
 
 Khoá `perf` của `xt.yaml` (dùng cho `release-check`) đang rỗng; đề xuất đặt `perf: "pnpm perf:budget"` khi phiên chính duyệt.
+
+## Kiểm tải (T-036)
+
+Chạy: `pnpm load:smoke` — dựng DB tải riêng (`xshop_load`, Redis DB 13, cổng 9200) với **10.000 sản phẩm / 50.000 SKU**, chạy backend mock provider, rồi 3 pha (lạnh → steady → burst gấp đôi) ở 1/20 tải khởi điểm §10.3 (5 đọc/s + 0,5 ghi/s; read mix 60/20/20, write mix 60/20/20), thêm stress 50 lượt đặt đồng thời cho SKU còn 1 và kiểm tính đúng trong DB (không âm tồn, không đơn trùng idempotency). Vượt ngưỡng p95 (§10.1) / lỗi ≥ 0,5% / sai tính đúng → exit 1. Báo cáo: `load-smoke-latest.md` (commit làm mốc) và `load-smoke-latest.json` (không commit). Kịch bản đầy đủ §10.3 bằng k6: `scripts/load/k6/xshop-load.js`.
+
+Chi tiết dataset, điều kiện tái lập, năng lực đo được, chỗ nghẽn, lỗi phát hiện (`rebuildCatalogIndex` thiếu dòng ở quy mô lớn) và câu hỏi mở: [`load-dataset.md`](load-dataset.md).
+
+**Giới hạn**: máy dev 4 CPU dùng chung, máy phát tải chạy cùng máy, không CDN, ảnh SVG — là cổng hồi quy ở tỷ lệ thu nhỏ, không phải năng lực production hay bằng chứng đạt §10.3 (cần chạy đầy đủ trên staging).
