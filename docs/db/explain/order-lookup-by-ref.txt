@@ -1,0 +1,14 @@
+-- order-lookup-by-ref
+-- Nguồn: apps/backend/src/lib/orders/lookup.ts findByRef → listOrderFinances({ display_ref })
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["XS-P0123457"]
+
+SELECT * FROM order_finance WHERE display_ref = $1 AND deleted_at IS NULL;
+
+Index Scan using "IDX_order_finance_display_ref_unique" on order_finance  (cost=0.42..8.44 rows=1 width=335) (actual time=0.010..0.011 rows=1 loops=1)
+  Index Cond: (display_ref = 'XS-P0123457'::text)
+  Filter: (deleted_at IS NULL)
+  Buffers: shared hit=4
+Planning Time: 0.049 ms
+Execution Time: 0.019 ms

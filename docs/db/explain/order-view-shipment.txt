@@ -1,0 +1,20 @@
+-- order-view-shipment
+-- Nguồn: apps/backend/src/modules/shipping/service.ts shipmentOfOrder
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["order_PF0123457"]
+
+SELECT * FROM shipment WHERE order_id = $1 AND deleted_at IS NULL ORDER BY created_at LIMIT 1;
+
+Limit  (cost=8.45..8.45 rows=1 width=177) (actual time=0.011..0.011 rows=1 loops=1)
+  Buffers: shared hit=4
+  ->  Sort  (cost=8.45..8.45 rows=1 width=177) (actual time=0.010..0.011 rows=1 loops=1)
+        Sort Key: created_at
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=4
+        ->  Index Scan using "IDX_shipment_order_id" on shipment  (cost=0.42..8.44 rows=1 width=177) (actual time=0.008..0.008 rows=1 loops=1)
+              Index Cond: (order_id = 'order_PF0123457'::text)
+              Filter: (deleted_at IS NULL)
+              Buffers: shared hit=4
+Planning Time: 0.048 ms
+Execution Time: 0.020 ms

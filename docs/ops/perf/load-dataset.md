@@ -112,6 +112,31 @@ Cũ chạy 4 câu song song trên 4 kết nối (độ trễ ≈ câu chậm nh�
 
 Cách đo lại: tải — `LOAD_REUSE=1 LOAD_READ_RPS=20 LOAD_WRITE_RPS=2 pnpm load:smoke` (pha burst 40 + 4 sẽ vượt và exit 1; đọc bảng pha steady; lần chạy cuối ghi đè `load-smoke-latest.md` nên chạy lại `pnpm load:smoke` mặc định sau đó); kết quả y hệt — `pnpm --filter @x-shop/backend test:integration -- catalog-search`. Bảng thời gian truy vấn đo bằng script tạm sinh SQL từ `listingSql`/`pageSql`/`facetSql` (không commit — xem câu hỏi mở 5).
 
+## Đo `catalog:reindex` ở 50k SKU (T-074, 2026-10-26)
+
+Thời gian tái dựng read model sau khi sửa lỗi trần 4.000 dòng (T-057) — số ~68 s ở Phát hiện 1 là của bản lỗi (chỉ dựng 4.000 dòng), không dùng được. Số này cũng ghi ở `docs/ops/RPO-RTO.md` (RTO của read model).
+
+**Lệnh sinh dữ liệu + đo** (DB riêng `xshop_perf`, Redis DB 14 — không đụng `xshop`, `xshop_e2e`, `xshop_load` hay Redis của test):
+
+```bash
+node scripts/ops/perf-dataset.mjs                 # DB mới: migrate → seed-catalog → 50k SKU (SQL) → đo reindex → 200k đơn
+node scripts/ops/perf-dataset.mjs --reindex-only  # chỉ đo lại trên DB đã dựng
+node scripts/ops/perf-dataset.mjs --drop          # dọn
+```
+
+**Phương pháp:** không sinh qua API (≈ 10.000 lời gọi workflow tạo sản phẩm — quá chậm trên máy dùng chung). Catalog sinh bằng **SQL hàng loạt** dùng lại đúng bộ sinh tất định của tải (`generateDataset` trong `scripts/load/dataset.mjs`, `generate_series` → `INSERT … SELECT`, một giao dịch; 16,4 s) trên DB đã migrate + `seed-catalog`. Sau đó chạy **đúng lệnh vận hành** `pnpm --filter @x-shop/backend catalog:reindex` (2 lần, đo wall clock gồm khởi động Medusa) và `medusa exec ../../scripts/load/index-dataset.ts` (cùng `rebuildCatalogIndex`, in thời gian bên trong + thoát lỗi nếu số dòng ≠ kỳ vọng); script kiểm lại `catalog_variant_index` đủ 50.000 SKU tải.
+
+| Lần                                     | Wall clock | Bên trong `rebuildCatalogIndex` | Dòng (kỳ vọng 50.105) |
+| --------------------------------------- | ---------: | ------------------------------: | --------------------- |
+| `catalog:reindex` #1                    |    113,3 s |                               — | 50.105                |
+| `catalog:reindex` #2                    |    108,3 s |                               — | 50.105                |
+| `index-dataset.ts`                      |    113,7 s |                         105,7 s | 50.105, thiếu giá 0   |
+| `index-dataset.ts` lần đầu (bảng mới)   |          — |                          94,1 s | 50.105                |
+
+**Máy đo:** 4 CPU Intel Xeon @ 2,80 GHz (`nproc` = 4), 15,7 GiB RAM (`free -h`: 15 Gi, không swap), PostgreSQL 16.15 + Redis cục bộ, Node 22.22.0, Medusa 2.22.1, `NODE_ENV=development`. **Máy đang chịu tải song song** — phiên khác chạy test tích hợp cùng lúc (load average 1,7–2,7 trước mỗi lần, 4,9 lúc cao điểm) → số là cận trên trên máy dev dùng chung, không phải production. Khởi động Medusa chiếm ~5–8 s của wall clock. So với "dựng read model ~76 s" ở mục Dataset (đo lúc máy rảnh hơn): cùng bậc, chênh do tải nền.
+
+Cùng DB còn có lịch sử 200.000 đơn tổng hợp cho EXPLAIN đường nóng — kết quả và script ở `docs/db/explain/README.md` (trả lời một phần câu hỏi mở 5: script EXPLAIN tái lập bằng một lệnh).
+
 ## Phát hiện (lỗi thật — báo cáo, không sửa trong T-036)
 
 1. **(ĐÃ SỬA ở T-057/T-059) `rebuildCatalogIndex` chỉ dựng được ~4.000 dòng khi có 50.000 SKU.** Khi đo (T-036): log `[catalog-index] Rebuild: 10024 sản phẩm, 4000 dòng.` (thiếu ~46.000 dòng, im lặng, ~68 s). Nguyên nhân: `rebuildUnlocked` gọi `buildIndexRows` một lần cho mọi sản phẩm, `loadVariantPrices` truy vấn `calculated_price` cho 50.000 biến thể một lượt và Query của Medusa chỉ trả giá cho 4.000 id đầu (biến thể không giá bị bỏ im lặng → sản phẩm biến mất khỏi listing/search). Đã sửa: rebuild đọc theo lô như sync, `loadVariantPrices` chia lô cố định < 4.000 id, có đối chiếu độc lập (`expected`/`missing`/`unpriced`) và test > 5.000 biến thể (`catalog-index-scale`). T-059 (D-040): `missing > 0` thì rebuild KHÔNG thay bảng (giữ bảng cũ), log lỗi, mở ngoại lệ `catalog_index_mismatch` (không mở trùng khi đang có cái mở); sync theo sản phẩm bỏ qua sản phẩm bị lệch. Do đó `scripts/load/index-dataset.ts` dùng lại `rebuildCatalogIndex`.
