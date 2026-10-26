@@ -122,6 +122,30 @@ describe("FilterDrawer (catalog) — nháp chỉ áp khi xác nhận", () => {
     expect(push).toHaveBeenCalledWith("/danh-muc/ao?color=den&size=m");
   });
 
+  it("FE-STATE-005: API đếm lỗi tạm thời (503) rồi ổn → vẫn hiện số, GET được thử lại", async () => {
+    let n = 0;
+    const fetchMock = vi.fn(async () =>
+      n++ === 0 ? new Response("{}", { status: 503 }) : Response.json({ total: 4 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    openDrawer(setup());
+    fireEvent.click(screen.getByRole("checkbox", { name: /^M/ }));
+    expect(
+      await screen.findByRole("button", { name: "Xem 4 sản phẩm" }, { timeout: 3000 }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("FE-STATE-005: API đếm trả 422 (tham số sai) → KHÔNG thử lại, đúng 1 request", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 422 }));
+    vi.stubGlobal("fetch", fetchMock);
+    openDrawer(setup());
+    fireEvent.click(screen.getByRole("checkbox", { name: /^M/ }));
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Xem kết quả" })).toBeInTheDocument();
+  });
+
   it("giá nháp: nhập khoảng giá vào URL; để trống một đầu thì bỏ đầu đó", async () => {
     vi.stubGlobal("fetch", async () => Response.json({ total: 1 }));
     openDrawer(setup());

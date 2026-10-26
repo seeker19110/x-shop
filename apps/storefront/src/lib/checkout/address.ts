@@ -1,3 +1,4 @@
+import { ADDRESS_REVALIDATE_S } from "../cache-policy";
 import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
 
 /**
@@ -15,9 +16,9 @@ export interface Ward {
   name: string;
 }
 
-const REVALIDATE_S = 24 * 60 * 60;
+type Fetched<T> = { status: "ok"; body: T } | { status: "not_found" } | { status: "unavailable" };
 
-async function backendJson<T>(path: string): Promise<T | null> {
+async function backendJson<T>(path: string): Promise<Fetched<T>> {
   try {
     const res = await fetch(`${getServerEnv().MEDUSA_BACKEND_URL}${path}`, {
       headers: {
@@ -25,28 +26,39 @@ async function backendJson<T>(path: string): Promise<T | null> {
         "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
       },
       signal: AbortSignal.timeout(5000),
-      next: { revalidate: REVALIDATE_S },
+      next: { revalidate: ADDRESS_REVALIDATE_S },
     });
-    return res.ok ? ((await res.json()) as T) : null;
+    if (res.ok) return { status: "ok", body: (await res.json()) as T };
+    return res.status === 404 ? { status: "not_found" } : { status: "unavailable" };
   } catch {
-    return null;
+    return { status: "unavailable" };
   }
 }
 
 export async function getProvinces(): Promise<Province[]> {
   if (resolveDataSource() === "fixtures") return [];
   const r = await backendJson<{ provinces?: Province[] }>("/store/x/addresses/provinces");
-  return Array.isArray(r?.provinces) ? r.provinces.map(({ code, name }) => ({ code, name })) : [];
+  return r.status === "ok" && Array.isArray(r.body.provinces)
+    ? r.body.provinces.map(({ code, name }) => ({ code, name }))
+    : [];
 }
 
-/** `null` khi mã tỉnh không tồn tại (404); danh sách rỗng khi nguồn lỗi cũng trả `null` để route trả 503/404 đúng. */
-export async function getWards(provinceCode: string): Promise<Ward[] | null> {
-  if (!/^[0-9]{1,10}$/.test(provinceCode)) return null;
-  if (resolveDataSource() === "fixtures") return null;
+/**
+ * `not_found`: mã tỉnh sai/không có (route trả 404, client KHÔNG thử lại). `unavailable`: nguồn lỗi/không có backend
+ * (route trả 503, client thử lại có backoff). Tách hai trường hợp để retry chỉ chạy với lỗi tạm thời.
+ */
+export type WardsResult =
+  { status: "ok"; wards: Ward[] } | { status: "not_found" } | { status: "unavailable" };
+
+export async function getWards(provinceCode: string): Promise<WardsResult> {
+  if (!/^[0-9]{1,10}$/.test(provinceCode)) return { status: "not_found" };
+  if (resolveDataSource() === "fixtures") return { status: "not_found" };
   const r = await backendJson<{ wards?: Ward[] }>(
     `/store/x/addresses/provinces/${encodeURIComponent(provinceCode)}/wards`,
   );
-  return Array.isArray(r?.wards) && r.wards.length > 0
-    ? r.wards.map(({ code, name }) => ({ code, name }))
-    : null;
+  if (r.status !== "ok") return r;
+  const list = Array.isArray(r.body.wards) ? r.body.wards : [];
+  return list.length > 0
+    ? { status: "ok", wards: list.map(({ code, name }) => ({ code, name })) }
+    : { status: "not_found" };
 }

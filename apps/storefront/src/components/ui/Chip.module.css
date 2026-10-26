@@ -30,8 +30,10 @@
   transition: background-color var(--motion-fast) var(--ease);
 }
 
-.remove:hover {
-  background: var(--divider);
+@media (hover: hover) {
+  .remove:hover {
+    background: var(--divider);
+  }
 }
 
 .listWrap {
