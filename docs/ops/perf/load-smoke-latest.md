@@ -1,12 +1,12 @@
 # Kiểm tải smoke — kết quả mới nhất (T-036)
 
-Kết quả: **ĐẠT** · 2026-10-26T04:06:25.612Z · `pnpm load:smoke`
+Kết quả: **ĐẠT** · 2026-10-26T06:02:59.644Z · `pnpm load:smoke`
 
 > Máy dev dùng chung, một tiến trình Node vừa phát tải vừa chạy cạnh backend + PostgreSQL + Redis: đây là **cổng hồi quy ở tỷ lệ thu nhỏ**, không phải năng lực production và không thay thế chạy đầy đủ §10.3 trên staging (xem `README.md` và `load-dataset.md`).
 
 ## Điều kiện tái lập
 
-- Máy: 4 CPU (Intel(R) Xeon(R) Processor @ 2.80GHz), 15.7 GiB RAM, tải hệ thống đầu/cuối: 1.18/1.10/1.28 → 1.09/1.06/1.25; Node v22.22.0; PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1).
+- Máy: 4 CPU (Intel(R) Xeon(R) Processor @ 2.80GHz), 15.7 GiB RAM, tải hệ thống đầu/cuối: 1.19/1.26/1.29 → 1.08/1.20/1.26; Node v22.22.0; PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1).
 - Backend: Medusa 2.22.1 `medusa start` (1 tiến trình, worker shared), `NODE_ENV=development` (production từ chối mock GHN), GHN mock, chỉ COD, `XS_TRUSTED_PROXIES=loopback`; kết nối DB theo mặc định Medusa (không đặt pool).
 - Dataset: 10000 sản phẩm / 50000 SKU (sinh mới) + 24 sản phẩm demo; seed 20260101; DB `xshop_load`, Redis DB 13, cổng 9200.
 - Tải (§10.3 khởi điểm = 100 đọc/s + 10 ghi/s; smoke = 20× nhỏ hơn): **5 request đọc/s + 0.5 thao tác ghi/s**; pha lạnh 8 s → steady 40 s → burst gấp đôi 12 s.
@@ -17,13 +17,13 @@ Kết quả: **ĐẠT** · 2026-10-26T04:06:25.612Z · `pnpm load:smoke`
 
 | Bước | Thời gian |
 |---|---:|
-| build domain | 1.9 s |
-| làm mới DB + Redis | 0.8 s |
-| migrate | 19.0 s |
-| seed nền + catalog demo | 15.1 s |
-| sinh dữ liệu (SQL) | 13.3 s |
-| dựng read model (syncCatalogProducts) | 77.0 s |
-| build backend | 17.2 s |
+| build domain | 1.8 s |
+| làm mới DB + Redis | 0.9 s |
+| migrate | 18.2 s |
+| seed nền + catalog demo | 17.2 s |
+| sinh dữ liệu (SQL) | 13.8 s |
+| dựng read model (syncCatalogProducts) | 84.5 s |
+| build backend | 19.0 s |
 
 ## Pha lạnh (8 s, hệ số ngưỡng ×1) — chỉ báo cáo
 
@@ -31,23 +31,23 @@ Kết quả: **ĐẠT** · 2026-10-26T04:06:25.612Z · `pnpm load:smoke`
 
 | Nhóm | Request | p50 ms | p95 ms | p99 ms | Ngưỡng p95 ms | Lỗi | Tỷ lệ lỗi | Nghiệp vụ | Kết quả |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| read | 39 | 79.6 | 222.7 | 277.9 | ≤ 300 | 0 | 0.00% | 0 | đạt |
-| write | 3 | 272.3 | 319.9 | 319.9 | ≤ 700 | 0 | 0.00% | 0 | đạt |
-| checkout | 1 | 447.0 | 447.0 | 447.0 | ≤ 2000 | 0 | 0.00% | 0 | đạt |
-| (chung) | 46 | 81.1 | 319.9 | 447.0 | — | 0 | 0.00% | 0 | đạt |
+| read | 39 | 78.2 | 162.0 | 189.0 | ≤ 300 | 0 | 0.00% | 0 | đạt |
+| write | 3 | 176.8 | 307.3 | 307.3 | ≤ 700 | 0 | 0.00% | 0 | đạt |
+| checkout | 1 | 435.0 | 435.0 | 435.0 | ≤ 2000 | 0 | 0.00% | 0 | đạt |
+| (chung) | 46 | 79.2 | 307.3 | 435.0 | — | 0 | 0.00% | 0 | đạt |
 
 | Request | Số lượng | p50 ms | p95 ms | Lỗi |
 |---|---:|---:|---:|---:|
-| cart_add | 1 | 272 | 272 | 0 |
-| cart_create | 1 | 320 | 320 | 0 |
-| listing | 24 | 72 | 125 | 0 |
-| pdp | 8 | 97 | 177 | 0 |
-| quote | 1 | 72 | 72 | 0 |
-| search | 7 | 88 | 278 | 0 |
-| setup_cart_add | 1 | 357 | 357 | 0 |
-| setup_cart_create | 1 | 224 | 224 | 0 |
-| setup_quote | 1 | 60 | 60 | 0 |
-| submit | 1 | 447 | 447 | 0 |
+| cart_add | 1 | 307 | 307 | 0 |
+| cart_create | 1 | 177 | 177 | 0 |
+| listing | 24 | 60 | 114 | 0 |
+| pdp | 8 | 118 | 189 | 0 |
+| quote | 1 | 76 | 76 | 0 |
+| search | 7 | 99 | 145 | 0 |
+| setup_cart_add | 1 | 390 | 390 | 0 |
+| setup_cart_create | 1 | 273 | 273 | 0 |
+| setup_quote | 1 | 59 | 59 | 0 |
+| submit | 1 | 435 | 435 | 0 |
 
 ## Pha steady (40 s, hệ số ngưỡng ×1) — đạt
 
@@ -55,21 +55,21 @@ Kết quả: **ĐẠT** · 2026-10-26T04:06:25.612Z · `pnpm load:smoke`
 
 | Nhóm | Request | p50 ms | p95 ms | p99 ms | Ngưỡng p95 ms | Lỗi | Tỷ lệ lỗi | Nghiệp vụ | Kết quả |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| read | 199 | 66.4 | 186.7 | 340.0 | ≤ 300 | 0 | 0.00% | 0 | đạt |
-| write | 22 | 198.4 | 293.6 | 334.3 | ≤ 700 | 0 | 0.00% | 0 | đạt |
-| checkout | 4 | 320.1 | 359.7 | 359.7 | ≤ 2000 | 0 | 0.00% | 0 | đạt |
-| (chung) | 225 | 69.8 | 271.8 | 349.3 | — | 0 | 0.00% | 0 | đạt |
+| read | 199 | 58.0 | 120.0 | 150.6 | ≤ 300 | 0 | 0.00% | 0 | đạt |
+| write | 22 | 192.2 | 274.8 | 339.5 | ≤ 700 | 0 | 0.00% | 0 | đạt |
+| checkout | 4 | 300.8 | 395.2 | 395.2 | ≤ 2000 | 0 | 0.00% | 0 | đạt |
+| (chung) | 225 | 64.8 | 220.4 | 315.8 | — | 0 | 0.00% | 0 | đạt |
 
 | Request | Số lượng | p50 ms | p95 ms | Lỗi |
 |---|---:|---:|---:|---:|
-| cart_add | 10 | 244 | 334 | 0 |
-| cart_create | 7 | 142 | 254 | 0 |
-| cart_update | 2 | 205 | 210 | 0 |
-| listing | 119 | 61 | 109 | 0 |
-| pdp | 39 | 75 | 117 | 0 |
-| quote | 3 | 46 | 54 | 0 |
-| search | 41 | 76 | 331 | 0 |
-| submit | 4 | 320 | 360 | 0 |
+| cart_add | 10 | 231 | 339 | 0 |
+| cart_create | 7 | 140 | 145 | 0 |
+| cart_update | 2 | 211 | 211 | 0 |
+| listing | 119 | 49 | 100 | 0 |
+| pdp | 39 | 88 | 113 | 0 |
+| quote | 3 | 40 | 61 | 0 |
+| search | 41 | 89 | 137 | 0 |
+| submit | 4 | 301 | 395 | 0 |
 
 ## Pha burst (gấp đôi) (12 s, hệ số ngưỡng ×2) — đạt
 
@@ -77,25 +77,25 @@ Kết quả: **ĐẠT** · 2026-10-26T04:06:25.612Z · `pnpm load:smoke`
 
 | Nhóm | Request | p50 ms | p95 ms | p99 ms | Ngưỡng p95 ms | Lỗi | Tỷ lệ lỗi | Nghiệp vụ | Kết quả |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| read | 119 | 66.5 | 226.9 | 417.8 | ≤ 600 | 0 | 0.00% | 0 | đạt |
-| write | 12 | 226.0 | 432.0 | 432.0 | ≤ 1400 | 0 | 0.00% | 0 | đạt |
-| checkout | 1 | 290.5 | 290.5 | 290.5 | ≤ 4000 | 0 | 0.00% | 0 | đạt |
-| (chung) | 132 | 68.5 | 290.5 | 432.0 | — | 0 | 0.00% | 0 | đạt |
+| read | 119 | 56.6 | 126.6 | 154.7 | ≤ 600 | 0 | 0.00% | 0 | đạt |
+| write | 13 | 182.4 | 360.8 | 360.8 | ≤ 1400 | 0 | 0.00% | 0 | đạt |
+| checkout | 1 | 256.6 | 256.6 | 256.6 | ≤ 4000 | 0 | 0.00% | 0 | đạt |
+| (chung) | 133 | 60.4 | 195.7 | 292.6 | — | 0 | 0.00% | 0 | đạt |
 
 | Request | Số lượng | p50 ms | p95 ms | Lỗi |
 |---|---:|---:|---:|---:|
-| cart_add | 4 | 251 | 432 | 0 |
-| cart_create | 2 | 226 | 261 | 0 |
-| cart_update | 3 | 239 | 385 | 0 |
-| listing | 71 | 68 | 144 | 0 |
-| pdp | 25 | 70 | 179 | 0 |
-| quote | 3 | 66 | 99 | 0 |
-| search | 23 | 62 | 418 | 0 |
-| submit | 1 | 291 | 291 | 0 |
+| cart_add | 5 | 288 | 361 | 0 |
+| cart_create | 3 | 158 | 170 | 0 |
+| cart_update | 2 | 209 | 236 | 0 |
+| listing | 71 | 49 | 94 | 0 |
+| pdp | 25 | 78 | 145 | 0 |
+| quote | 3 | 54 | 78 | 0 |
+| search | 23 | 60 | 155 | 0 |
+| submit | 1 | 257 | 257 | 0 |
 
 ## Cache PostgreSQL
 
-Hit ratio vùng đệm trong lúc tải: 99.98% (5383614 hit / 1327 read). Không phải hit ratio CDN: smoke đo origin, không CDN.
+Hit ratio vùng đệm trong lúc tải: 99.91% (1582874 hit / 1367 read). Không phải hit ratio CDN: smoke đo origin, không CDN.
 
 ## Tính đúng sau tải
 
@@ -111,5 +111,5 @@ Hit ratio vùng đệm trong lúc tải: 99.98% (5383614 hit / 1327 read). Khôn
 | Stress 50 lượt đặt đồng thời cho SKU còn 1: đúng 1 đơn thành công | đạt | thành công 1, trạng thái: {"200":1,"409":49} |
 | Stress: các lượt còn lại nhận lỗi hiểu được (4xx), không có 5xx/timeout | đạt | 0 lỗi server |
 | Stress: tồn của SKU không âm (giữ chỗ ≤ 1) và chỉ có đúng một đơn chứa SKU | đạt | tồn 1, giữ chỗ 1, đơn chứa SKU 1 |
-| Tỷ lệ lỗi toàn phiên (cả pha lạnh) < 0.5% | đạt | 0/403 |
+| Tỷ lệ lỗi toàn phiên (cả pha lạnh) < 0.5% | đạt | 0/404 |
 

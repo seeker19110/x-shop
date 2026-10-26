@@ -1,6 +1,6 @@
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import type { CatalogFilter, FacetName } from "@x-shop/domain";
-import { facetSql, inList, pageSql, TABLE, type Scope } from "./query";
+import { inList, listingSql, TABLE, type Scope } from "./query";
 
 /** Một dòng read model: một SKU đã publish ở một kênh bán. Tiền là số nguyên VND. */
 export interface CatalogIndexRow {
@@ -222,14 +222,21 @@ export default class CatalogIndexModuleService {
     return (res.rows as Record<string, unknown>[]).map(fromDb);
   }
 
-  async page(
+  /**
+   * Trang + tổng + 3 facet của một listing trong MỘT câu lệnh (T-058, `listingSql`). Kết quả y hệt bản 4 câu cũ
+   * (`pageSql` + `facetSql`), chỉ rẻ hơn.
+   */
+  async listing(
     scope: Scope,
     f: CatalogFilter,
     pageSize: number,
-  ): Promise<{ total: number; items: PageItem[] }> {
-    const q = pageSql(scope, f, pageSize);
+  ): Promise<{ total: number; items: PageItem[]; facets: Record<FacetName, FacetValue[]> }> {
+    const q = listingSql(scope, f, pageSize);
     const res = await this.db.raw(q.sql, q.bindings as Knex.ValueDict[]);
-    const row = res.rows[0] as { total: number; items: Record<string, unknown>[] };
+    const row = res.rows[0] as {
+      total: number;
+      items: Record<string, unknown>[];
+    } & Record<FacetName, FacetValue[]>;
     return {
       total: row.total,
       items: row.items.map((i) => ({
@@ -238,6 +245,7 @@ export default class CatalogIndexModuleService {
         price_max: num(i.price_max),
         in_stock: i.in_stock as boolean,
       })),
+      facets: { color: row.color, size: row.size, material: row.material },
     };
   }
 
@@ -253,11 +261,5 @@ export default class CatalogIndexModuleService {
       ch.bindings as Knex.ValueDict[],
     );
     return res.rows as { handle: string; count: number }[];
-  }
-
-  async facet(scope: Scope, f: CatalogFilter, facet: FacetName): Promise<FacetValue[]> {
-    const q = facetSql(scope, f, facet);
-    const res = await this.db.raw(q.sql, q.bindings as Knex.ValueDict[]);
-    return res.rows as FacetValue[];
   }
 }

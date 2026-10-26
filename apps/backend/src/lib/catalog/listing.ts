@@ -145,18 +145,16 @@ export async function runListing(
   const index: CatalogIndexModuleService = container.resolve(CATALOG_INDEX_MODULE);
   const scope: Scope = { channelIds, category: req.category };
   const f = req.filter;
-  const [page, ...facetRows] = await Promise.all([
-    index.page(scope, f, req.pageSize),
-    ...FACETS.map((facet) => index.facet(scope, f, facet)),
-  ]);
+  // Một câu lệnh cho trang + tổng + 3 facet (T-058) — trước là 4 câu song song, mỗi câu quét lại phạm vi.
+  const page = await index.listing(scope, f, req.pageSize);
   const ids = page.items.map((i) => i.product_id);
   const rows = ids.length ? await index.listRows({ channelIds, category: null }, ids) : [];
   const byProduct = new Map<string, CatalogIndexRow[]>();
   for (const r of rows) byProduct.set(r.product_id, [...(byProduct.get(r.product_id) ?? []), r]);
   const facets = Object.fromEntries(
-    FACETS.map((facet, i) => [
+    FACETS.map((facet) => [
       facet,
-      (facetRows[i] ?? []).map((v) => ({
+      page.facets[facet].map((v) => ({
         value: v.value,
         label: v.label ?? v.value,
         count: v.count,

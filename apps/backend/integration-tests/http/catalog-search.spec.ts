@@ -26,6 +26,7 @@ import {
   syncCatalogProducts,
 } from "../../src/lib/catalog/indexer";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
+import { facetSql, listingSql, pageSql, type Scope, type Sql } from "../../src/modules/catalog-index/query";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import { DEMO_CATEGORIES, DEMO_COLORS, DEMO_PRODUCTS, DEMO_SIZES } from "../../src/scripts/catalog-demo-data";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
@@ -274,6 +275,118 @@ medusaIntegrationTestRunner({
           expect.arrayContaining(["ao-so-mi-lua", "dam-suong-linen"]),
         );
         expect(res.items.map((i) => i.handle)).not.toContain("ao-polo-nam");
+      });
+    });
+
+    describe("một câu lệnh cho trang + facet (T-058)", () => {
+      /** Chạy cả bản tham chiếu (pageSql + 3 facetSql) và listingSql trên cùng DB, chuẩn hoá về cùng dạng JSON. */
+      async function both(scope: Scope, f: CatalogFilter, pageSize: number) {
+        const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+        const run = async (q: Sql) =>
+          (await db.raw(q.sql, q.bindings as never[])).rows as Record<string, unknown>[];
+        const page = (await run(pageSql(scope, f, pageSize)))[0] as Record<string, unknown>;
+        const reference = {
+          total: page.total,
+          items: page.items,
+          color: await run(facetSql(scope, f, "color")),
+          size: await run(facetSql(scope, f, "size")),
+          material: await run(facetSql(scope, f, "material")),
+        };
+        const one = (await run(listingSql(scope, f, pageSize)))[0] as Record<string, unknown>;
+        const single = {
+          total: one.total,
+          items: one.items,
+          color: one.color,
+          size: one.size,
+          material: one.material,
+        };
+        return {
+          reference: JSON.parse(JSON.stringify(reference)),
+          single: JSON.parse(JSON.stringify(single)),
+        };
+      }
+
+      it("kết quả y hệt bản tham chiếu 4 câu trên 120 bộ lọc (phạm vi, từ khoá ngắn/dài/SKU, trang sâu, biên giá)", async () => {
+        const rand = rng(20261026);
+        const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)] as T;
+        const materials = [...new Set(DEMO_PRODUCTS.map((d) => d.material[0]))];
+        const queries = [
+          "ao",
+          "so mi",
+          "ÁO SƠ MI",
+          "lua",
+          "jean",
+          "smlua-den-m",
+          "giay sneaker",
+          "vay",
+          "xyz",
+          "100%",
+          "a_b",
+          "d",
+        ];
+        const categories = [null, null, "nu", "ao-nu", "nam", "quan-nam", "giay", "phu-kien", "khong-co"];
+        const channelIds = [seed.base.salesChannelId];
+        let nonEmpty = 0;
+        for (let i = 0; i < 120; i++) {
+          const params = new URLSearchParams();
+          if (rand() < 0.5) params.append("color", pick(DEMO_COLORS.map((x) => x.value)));
+          if (rand() < 0.2) params.append("color", pick(DEMO_COLORS.map((x) => x.value)));
+          if (rand() < 0.4) params.append("size", pick(DEMO_SIZES.map((x) => x.value)));
+          if (rand() < 0.2) params.append("material", pick(materials));
+          if (rand() < 0.3) params.set("price_min", String(pick([0, 300_000, 450_000, 700_000])));
+          if (rand() < 0.3) params.set("price_max", String(pick([300_000, 450_000, 700_000, 1_500_000])));
+          if (rand() < 0.3) params.set("in_stock", "1");
+          params.set("sort", pick(SORTS));
+          if (rand() < 0.45) params.set("q", pick(queries));
+          if (rand() < 0.25) params.set("page", String(pick([2, 3, 99])));
+          const { filter: f, issues } = parseFilter(params);
+          if (issues.length) continue; // price_min > price_max → 422 ở route, không tới truy vấn
+          const scope: Scope = { channelIds, category: pick(categories) };
+          const { reference, single } = await both(scope, f, pick([1, 6, 24, 48]));
+          expect({ i, qs: params.toString(), category: scope.category, ...single }).toEqual({
+            i,
+            qs: params.toString(),
+            category: scope.category,
+            ...reference,
+          });
+          if ((reference.total as number) > 0) nonEmpty++;
+        }
+        expect(nonEmpty).toBeGreaterThanOrEqual(40);
+      });
+
+      it("kênh không có dữ liệu / nhiều kênh → giống bản tham chiếu (rỗng: total 0, facet [])", async () => {
+        for (const channelIds of [["sc_khong_ton_tai"], [seed.base.salesChannelId, "sc_khong_ton_tai"]]) {
+          const f = parseFilter(new URLSearchParams("q=ao&color=den")).filter;
+          const { reference, single } = await both({ channelIds, category: null }, f, 24);
+          expect(single).toEqual(reference);
+        }
+        const empty = await both({ channelIds: ["sc_khong_ton_tai"], category: null }, EMPTY_FILTER, 24);
+        expect(empty.single).toEqual({ total: 0, items: [], color: [], size: [], material: [] });
+      });
+
+      it("20 listing đồng thời khi rebuild + sync: mỗi response nhất quán nội bộ (một snapshot cho trang và facet)", async () => {
+        let busy = true;
+        const writer = (async () => {
+          while (busy) {
+            await Promise.all([
+              rebuildCatalogIndex(container),
+              syncCatalogProducts(container, Object.values(seed.products).slice(0, 8)),
+            ]);
+          }
+        })();
+        try {
+          const res = await Promise.all(
+            Array.from({ length: 20 }, (_, i) => list(`page_size=${1 + (i % 6)}&sort=${SORTS[i % 3]}`)),
+          );
+          for (const r of res) {
+            expect(r.total).toBe(DEMO_PRODUCTS.length);
+            // Mỗi sản phẩm demo có đúng một chất liệu → tổng đếm facet chất liệu (không lọc) = tổng sản phẩm.
+            expect(r.facets.material.reduce((n, v) => n + v.count, 0)).toBe(r.total);
+          }
+        } finally {
+          busy = false;
+          await writer;
+        }
       });
     });
 
