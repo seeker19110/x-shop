@@ -102,7 +102,7 @@ medusaIntegrationTestRunner({
         const res = await call("POST", "/admin/x/refunds", accounts.warehouse.headers, { amount: 100_000 });
         expect(res.status).toBe(403);
         expect(res.headers["content-type"]).toContain("application/problem+json");
-        expect(res.data).toMatchObject({ code: "FORBIDDEN", status: 403, permission: "refund.execute" });
+        expect(res.data).toMatchObject({ code: "FORBIDDEN", status: 403, permission: "refund.request" });
 
         const audit = container.resolve<AuditModuleService>(AUDIT_MODULE);
         const { entries } = await audit.list(
@@ -113,13 +113,22 @@ medusaIntegrationTestRunner({
           actor_type: "user",
           resource_type: "route",
           resource_id: "POST /admin/x/refunds",
-          changes: { permission: "refund.execute", roles: ["warehouse"], reason: "missing_permission" },
+          changes: { permission: "refund.request", roles: ["warehouse"], reason: "missing_permission" },
         });
         expect(entries[0]?.ip_hash).toMatch(/^[0-9a-f]{32}$/);
 
-        // Kế toán (refund.execute + MFA) qua được RBAC → stub 501 (T-027 làm thật).
+        // Kế toán (refund.request + MFA) qua được RBAC → tới handler (T-027): thiếu Idempotency-Key/dữ liệu → 422.
         const ok = await call("POST", "/admin/x/refunds", accounts.accountant.headers, {});
-        expect(ok.status).toBe(501);
+        expect(ok.status).toBe(422);
+        // Kho cũng không duyệt/thực hiện được hoàn tiền (refund.approve / refund.execute).
+        for (const action of ["approve", "execute"]) {
+          const denied = await call(
+            "POST",
+            `/admin/x/refunds/khong-co/${action}`,
+            accounts.warehouse.headers,
+          );
+          expect(denied.status).toBe(403);
+        }
       });
 
       it("đổi hoa/thường hay thêm '/' cuối không lách được quyền (Express không phân biệt hoa thường)", async () => {

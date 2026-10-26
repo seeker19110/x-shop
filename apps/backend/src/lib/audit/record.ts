@@ -4,6 +4,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { AUDIT_MODULE } from "../../modules/audit";
 import type AuditModuleService from "../../modules/audit/service";
+import { clientIpOf } from "../security/config";
 import type { AuditEntry, AuditEntryInput } from "../../modules/audit/service";
 
 type Scope = Pick<MedusaContainer, "resolve">;
@@ -33,7 +34,7 @@ export function auditContextOf(
     actor_type: ctx?.actor_type || "anonymous",
     actor_id: ctx?.actor_id || null,
     request_id: rid && REQUEST_ID.test(rid) ? rid : null,
-    ip_hash: hashIp(req.scope, req.ip),
+    ip_hash: hashIp(req.scope, clientIpOf(req).ip),
   };
 }
 

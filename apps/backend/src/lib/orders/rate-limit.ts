@@ -3,14 +3,22 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CheckoutError } from "../checkout/errors";
+import {
+  exceedsLimit,
+  NEXT_HIT,
+  slidingRetryAfterSeconds,
+  wouldExceedLimit,
+  type WindowSample,
+} from "../security/sliding-window";
 
 /**
- * Giới hạn tần suất của các route đơn sau mua (AT20) — bộ đếm cửa sổ cố định ở Postgres, đúng cả khi nhiều instance.
+ * Giới hạn tần suất của các route đơn sau mua (AT20) — bộ đếm ở Postgres, đúng cả khi nhiều instance; quyết định theo
+ * xấp xỉ cửa sổ trượt (lib/security/sliding-window.ts, T-055): dò mã/SĐT vắt qua ranh giới cửa sổ vẫn bị chặn đúng ngưỡng.
  * Khóa (IP, SĐT, mã đơn) được băm trước khi lưu: bảng đếm không chứa PII thô.
  *
- * Lưu ý IP: route đọc `req.ip` (Express `trust proxy` = 1 của Medusa → địa chỉ do proxy liền trước báo). Storefront
- * chuyển tiếp IP khách qua `x-forwarded-for`; gọi thẳng backend có thể giả IP → giới hạn theo SĐT/mã đơn mới là chặn
- * cứng, giới hạn theo IP là lớp phụ.
+ * Lưu ý IP: route đọc `clientIp` (lib/security/client-ip.ts) — chỉ tin `x-forwarded-for` khi socket là proxy trong
+ * `XS_TRUSTED_PROXIES` (mặc định không tin). Storefront chuyển tiếp IP khách qua `x-forwarded-for`; giới hạn theo SĐT/mã
+ * đơn là chặn cứng, giới hạn theo IP là lớp phụ.
  */
 export const ORDER_RATE_LIMITS = {
   /** POST /orders/lookup: mỗi SĐT 5 lần/giờ. */
@@ -36,10 +44,11 @@ const service = (c: MedusaContainer) => c.resolve<CheckoutModuleService>(CHECKOU
 const bucketOf = (name: OrderRateLimit, key: string) =>
   `orders.${name}:${createHash("sha256").update(key, "utf8").digest("hex").slice(0, 40)}`;
 
-function rateLimited(name: OrderRateLimit): CheckoutError {
-  const windowS = Math.ceil(ORDER_RATE_LIMITS[name].windowMs / 1000);
+/** RATE_LIMITED kèm `Retry-After` = lúc lượt kế tiếp (được đếm) được cho qua, giả định không thử thêm. */
+function rateLimited(name: OrderRateLimit, sample: WindowSample): CheckoutError {
+  const { limit, windowMs } = ORDER_RATE_LIMITS[name];
   return new CheckoutError("RATE_LIMITED", "Bạn đã thử quá nhiều lần, vui lòng thử lại sau", {
-    detail: { retry_after_seconds: Math.min(windowS, 3600) },
+    detail: { retry_after_seconds: slidingRetryAfterSeconds(sample, limit, windowMs, NEXT_HIT) },
   });
 }
 
@@ -51,8 +60,8 @@ export async function consumeRate(
   now: Date = new Date(),
 ): Promise<void> {
   const { limit, windowMs } = ORDER_RATE_LIMITS[name];
-  const count = await service(container).hitRateCounter(bucketOf(name, key), windowMs, now);
-  if (count > limit) throw rateLimited(name);
+  const sample = await service(container).hitRateCounter(bucketOf(name, key), windowMs, now);
+  if (exceedsLimit(sample, limit, windowMs)) throw rateLimited(name, sample);
 }
 
 /** Chỉ kiểm (không đếm) — dùng với `recordDenied` cho giới hạn số lần bị từ chối. */
@@ -63,8 +72,8 @@ export async function assertNotBlocked(
   now: Date = new Date(),
 ): Promise<void> {
   const { limit, windowMs } = ORDER_RATE_LIMITS[name];
-  const count = await service(container).peekRateCounter(bucketOf(name, key), windowMs, now);
-  if (count >= limit) throw rateLimited(name);
+  const sample = await service(container).peekRateCounter(bucketOf(name, key), windowMs, now);
+  if (wouldExceedLimit(sample, limit, windowMs)) throw rateLimited(name, sample);
 }
 
 export async function recordDenied(

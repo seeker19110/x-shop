@@ -86,3 +86,286 @@
 - Chọn: order_finance=cancelled + nhả reservation + mở refund_request; đơn native hủy cùng lúc hoàn tiền thật ở T-027; fulfillment chặn theo order_finance.state
 - Lý do (tiêu chí chất lượng cuối): Ledger không được báo đã hoàn khi tiền chưa hoàn; khách vẫn tự hủy được trước giao
 - Đường lùi: Chặn tự hủy đơn đã trả ở route cancel
+
+### D-013 · 2026-10-25T01:54:51+00:00 · PWA: service worker cache trang công khai có query string / trang render động (T-032)
+
+- Phương án: (1) Cache theo URL đầy đủ kể cả query; đặt Cache-Control public cho /danh-muc, /san-pham · (2) Không cache URL có query; tôn trọng Cache-Control private/no-store của Next nên trang động chỉ online; chỉ / và trang chính sách + asset tĩnh offline
+- Chọn: Không cache URL có query; tôn trọng Cache-Control private/no-store của Next nên trang động chỉ online; chỉ / và trang chính sách + asset tĩnh offline
+- Lý do (tiêu chí chất lượng cuối): An toàn trước: không lưu tham số nhạy cảm, không cache nhầm nội dung riêng tư; AT22/AT24 vẫn đạt với fallback /offline
+- Đường lùi: Đặt Cache-Control public cho 2 route kèm test header + bỏ chặn query trong XSPolicy (public/sw.js)
+
+### D-014 · 2026-10-25T01:54:52+00:00 · Diễn tập restore (T-037): nguồn danh sách giao dịch provider sau mốc snapshot
+
+- Phương án: (1) Mô phỏng bằng bản ghi DB nguồn trong cửa sổ mốc−300 s + diff nguồn/đích · (2) File mẫu theo định dạng xuất thật VNPAY/GHN
+- Chọn: Mô phỏng bằng bản ghi DB nguồn trong cửa sổ mốc−300 s + diff nguồn/đích
+- Lý do (tiêu chí chất lượng cuối): Định dạng xuất thật chưa xác minh (tài liệu chính thức không truy cập được); cách 1 kiểm độc lập được, đổi sang file thật chỉ cần một mã mỗi dòng
+- Đường lùi: Thay đầu vào post-restore-reconcile.sh bằng file xuất provider khi có khoá merchant
+
+### D-015 · 2026-10-25T02:09:22+00:00 · T-041: attempt trong VNPAY_RETURN_URL là id nào
+
+- Phương án: (1) checkout attempt id (theo API-CONTRACT, route /thanh-toan/ket-qua sẵn có) · (2) payment attempt id (cần endpoint tra cứu mới)
+- Chọn: checkout attempt id (theo API-CONTRACT, route /thanh-toan/ket-qua sẵn có)
+- Lý do (tiêu chí chất lượng cuối): Không mở endpoint mới dễ thành chỗ dò tồn tại đơn; mỗi đơn hiện một payment attempt nên tương đương
+- Đường lùi: Thêm tham số pa= khi một đơn có nhiều payment attempt
+
+### D-016 · 2026-10-25T02:09:22+00:00 · T-041: purchase COD bắn lúc nào, dedupe ở đâu
+
+- Phương án: (1) placed + sessionStorage · (2) confirmed/completed + localStorage theo order_id
+- Chọn: confirmed/completed + localStorage theo order_id
+- Lý do (tiêu chí chất lượng cuối): order_placed đã phủ thời điểm đặt; localStorage chống đếm trùng khi mở lại trang đơn ở phiên sau (AT29)
+- Đường lùi: Đổi trạng thái kích hoạt/kho lưu trong purchase-event.ts
+
+### D-017 · 2026-10-25T02:09:23+00:00 · T-041: bộ đếm gộp audit lần bị từ chối RBAC
+
+- Phương án: (1) Redis SecurityStore · (2) Bảng rate_limit_counter Postgres, gộp theo lớp route trong cửa sổ 60 s, ghi ở lần 1/10/100; lỗi bộ đếm vẫn ghi audit
+- Chọn: Bảng rate_limit_counter Postgres, gộp theo lớp route trong cửa sổ 60 s, ghi ở lần 1/10/100; lỗi bộ đếm vẫn ghi audit
+- Lý do (tiêu chí chất lượng cuối): Gộp theo đường dẫn bị lách bằng đổi id; Postgres giữ cách ly test và fail-open về phía ghi audit (an toàn hơn)
+- Đường lùi: Thay backend bộ đếm trong lib/audit/deny-throttle.ts
+
+### D-018 · 2026-10-25T02:25:39+00:00 · T-027: duyệt hoàn tiền 2 người — ngưỡng và quyền
+
+- Phương án: (1) Mọi khoản hoàn đều 2 người, ngưỡng qua env · (2) Hằng 1.000.000 đ trong RETURNS_CONFIG; cấm tự duyệt mọi trường hợp; MFA xác thực lại khi vượt ngưỡng hoặc hoàn toàn bộ; tạo yêu cầu dùng refund.request
+- Chọn: Hằng 1.000.000 đ trong RETURNS_CONFIG; cấm tự duyệt mọi trường hợp; MFA xác thực lại khi vượt ngưỡng hoặc hoàn toàn bộ; tạo yêu cầu dùng refund.request
+- Lý do (tiêu chí chất lượng cuối): Cấm tự duyệt ở mọi mức giữ tách nhiệm; ngưỡng hằng tránh đổi nhầm qua env; CSKH tạo được yêu cầu nhưng không thực hiện
+- Đường lùi: Đổi RETURNS_CONFIG.twoPersonThreshold
+
+### D-019 · 2026-10-25T02:25:40+00:00 · T-027: hàng trả chờ kiểm định, COD đã giao, đổi size, phí ship
+
+- Phương án: (1) Chặn hoàn COD tới T-028; đổi size cho chênh giá; hoàn cả phí ship · (2) Hàng chờ ở Kho cách ly; COD hoàn ngoài hệ thống bắt buộc chứng từ; đổi size cùng sản phẩm cùng giá, đơn thay thế 0 đ xác nhận sau kiểm định đạt; trả hàng không hoàn ship, hủy đơn hoàn toàn bộ; cổng hoàn sandbox/live tắt (409) tới khi có ủy quyền
+- Chọn: Hàng chờ ở Kho cách ly; COD hoàn ngoài hệ thống bắt buộc chứng từ; đổi size cùng sản phẩm cùng giá, đơn thay thế 0 đ xác nhận sau kiểm định đạt; trả hàng không hoàn ship, hủy đơn hoàn toàn bộ; cổng hoàn sandbox/live tắt (409) tới khi có ủy quyền
+- Lý do (tiêu chí chất lượng cuối): Tồn bán không đổi tới khi kiểm định (AT17); không hoàn thật khi grant refund=false; tránh sai tiền khi chênh giá
+- Đường lùi: Cấu hình returns workflow; bật refund-gateway HTTP khi có grant payments refund=true
+
+### D-020 · 2026-10-25T09:05:21+00:00 · T-042: phân loại lỗi khóa và thời gian chờ khi mất Redis
+
+- Phương án: (1) Chỉ khớp thông điệp lỗi ioredis; chờ theo ioredis ~10 s; Retry-After 30 s · (2) Mọi lỗi acquire không phải 'đang bận' → 503 LOCK_UNAVAILABLE; chặn mỗi lệnh khóa 3 s; Retry-After 60 s; không khóa in-memory
+- Chọn: Mọi lỗi acquire không phải 'đang bận' → 503 LOCK_UNAVAILABLE; chặn mỗi lệnh khóa 3 s; Retry-After 60 s; không khóa in-memory
+- Lý do (tiêu chí chất lượng cuối): Fail-closed: lỗi hạ tầng khóa lạ nào cũng dừng bán thay vì bán bằng tồn không khóa; 3 s giữ request không treo
+- Đường lùi: Hằng số trong apps/backend/src/lib/checkout/locks.ts
+
+### D-021 · 2026-10-25T09:24:38+00:00 · T-034: CSP storefront
+
+- Phương án: (1) 'unsafe-inline' cho script để giữ trang tĩnh/ISR · (2) Nonce + strict-dynamic mọi trang (trang HTML render động, mất cache HTML CDN; giữ cache fetch 60 s); style-src 'unsafe-inline' vì next/image
+- Chọn: Nonce + strict-dynamic mọi trang (trang HTML render động, mất cache HTML CDN; giữ cache fetch 60 s); style-src 'unsafe-inline' vì next/image
+- Lý do (tiêu chí chất lượng cuối): Chặn XSS là tiêu chí an toàn đứng trên hiệu năng; ảnh hưởng hiệu năng đo lại ở T-035/T-036
+- Đường lùi: Bỏ nonce trong src/proxy.ts cho trang công khai
+
+### D-022 · 2026-10-25T09:24:39+00:00 · T-034: xác định IP khách sau proxy
+
+- Phương án: (1) Dùng req.ip (Express trust proxy=1 cứng của Medusa) · (2) Chỉ tin X-Forwarded-For khi socket thuộc XS_TRUSTED_PROXIES (bắt buộc ở production, giá trị none được phép); storefront chỉ chuyển IP khi XS_TRUST_PROXY_HEADERS=true
+- Chọn: Chỉ tin X-Forwarded-For khi socket thuộc XS_TRUSTED_PROXIES (bắt buộc ở production, giá trị none được phép); storefront chỉ chuyển IP khi XS_TRUST_PROXY_HEADERS=true
+- Lý do (tiêu chí chất lượng cuối): req.ip giả được bằng header → rate limit/audit vô hiệu
+- Đường lùi: Đặt XS_TRUSTED_PROXIES theo hạ tầng
+
+### D-023 · 2026-10-25T09:24:39+00:00 · T-043: tạo fulfillment native khi có vận đơn GHN
+
+- Phương án: (1) Workflow Medusa đầy đủ qua shipping option (cần seed shipping option/profile cho mọi sản phẩm) · (2) Ghép bước tương đương: fulfillment ở kho đã giữ, nhả reservation, trừ tồn dưới khóa có khóa chống trùng; trừ lúc tạo vận đơn
+- Chọn: Ghép bước tương đương: fulfillment ở kho đã giữ, nhả reservation, trừ tồn dưới khóa có khóa chống trùng; trừ lúc tạo vận đơn
+- Lý do (tiêu chí chất lượng cuối): Không đụng catalog/seed; lệch về phía thiếu tồn khi sự cố, không bán âm
+- Đường lùi: Chuyển sang workflow native khi catalog có shipping profile
+
+### D-024 · 2026-10-25T10:53:02+00:00 · T-046: X-Content-Type-Options nosniff cho /static (Medusa đăng ký express.static trước middleware dự án)
+
+- Phương án: (1) Header ở reverse proxy/CDN trước backend, ghi vào checklist triển khai · (2) Loader Express chạy trước static (đổi kiến trúc, chưa chắc Medusa hỗ trợ) · (3) Tắt /static ở production, ảnh qua file module S3/CDN
+- Chọn: Header ở reverse proxy/CDN trước backend, ghi vào checklist triển khai
+- Lý do (tiêu chí chất lượng cuối): Không vá framework, dễ lùi; ảnh production sẽ qua CDN nên header đặt ở biên là chuẩn
+- Đường lùi: Chuyển sang file module S3 khi chọn hạ tầng ảnh
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Ảnh qua S3-compatible + CDN đặt nosniff; tắt /static
+
+### D-025 · 2026-10-25T17:03:28+00:00 · T-022: nối E2E Playwright vào CI
+
+- Phương án: (1) Thêm services postgres/redis cho job e2e trong ci.yml; xt.yaml e2e: pnpm e2e, e2e_setup cài Chromium · (2) docker compose Postgres/Redis trong e2e_setup · (3) Chỉ chạy e2e cục bộ, CI bỏ qua
+- Chọn: Thêm services postgres/redis cho job e2e trong ci.yml; xt.yaml e2e: pnpm e2e, e2e_setup cài Chromium
+- Lý do (tiêu chí chất lượng cuối): Đặc tả §13.3 đòi E2E luồng trọng yếu trong CI; services giống job gate, không phụ thuộc docker trên runner, pnpm e2e tự reset DB
+- Đường lùi: Đặt lại e2e: "" trong xt.yaml (CI bỏ qua job e2e)
+
+### D-026 · 2026-10-25T17:44:48+00:00 · T-028: nghĩa 'giá trị đơn' trong báo cáo đối soát
+
+- Phương án: (1) Mọi đơn trừ đơn hủy, kể cả đang chờ thanh toán · (2) Chỉ đơn placed/confirmed/completed; đơn chờ thanh toán tách trường awaiting_payment_value
+- Chọn: Chỉ đơn placed/confirmed/completed; đơn chờ thanh toán tách trường awaiting_payment_value
+- Lý do (tiêu chí chất lượng cuối): Không thổi phồng giá trị đơn bằng đơn chưa chắc thành; kế toán vẫn thấy phần chờ
+- Đường lùi: Gộp lại hai trường trong báo cáo summary
+
+### D-027 · 2026-10-25T17:44:48+00:00 · T-028: định dạng file đối soát và quyền đóng chênh lệch
+
+- Phương án: (1) Chờ định dạng xuất thật VNPAY/GHN · (2) CSV nội bộ 4 cột (mã tham chiếu, số tiền VND nguyên, thời điểm, loại) ghi rõ là giả định; đóng chênh lệch cần exception.resolve + settlement.read; hãng chuyển dư → vận đơn disputed, ưu tiên normal
+- Chọn: CSV nội bộ 4 cột (mã tham chiếu, số tiền VND nguyên, thời điểm, loại) ghi rõ là giả định; đóng chênh lệch cần exception.resolve + settlement.read; hãng chuyển dư → vận đơn disputed, ưu tiên normal
+- Lý do (tiêu chí chất lượng cuối): Không chặn tiến độ vì tài liệu chính thức chưa truy cập được; parser chặt, đổi định dạng chỉ ở một chỗ (constants/csv)
+- Đường lùi: Thêm adapter định dạng thật khi có khoá merchant
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Dùng file xuất thật VNPAY/GHN khi có hợp đồng merchant
+
+### D-028 · 2026-10-25T18:11:37+00:00 · T-030: Admin UI khi server đòi MFA/xác thực lại
+
+- Phương án: (1) Dựng form TOTP trong UI gọi auth API native · (2) UI chỉ hướng dẫn đăng nhập lại kèm TOTP (dùng luồng MFA native sẵn có của T-024)
+- Chọn: UI chỉ hướng dẫn đăng nhập lại kèm TOTP (dùng luồng MFA native sẵn có của T-024)
+- Lý do (tiêu chí chất lượng cuối): Không tạo đường xác thực thứ hai chưa được rà; luồng MFA native đã có test
+- Đường lùi: Thêm form TOTP vào components admin khi cần UX nhanh hơn
+
+### D-029 · 2026-10-25T18:35:20+00:00 · T-044: route native ghi tiền (/admin/payments/*, payment-collections, credit-lines, order cancel native)
+
+- Phương án: (1) Chỉ owner qua settings.manage · (2) Chặn hẳn với mọi vai trò; mọi hoàn/hủy đi qua /admin/x/refunds và /admin/x/orders/:id/cancel
+- Chọn: Chặn hẳn với mọi vai trò; mọi hoàn/hủy đi qua /admin/x/refunds và /admin/x/orders/:id/cancel
+- Lý do (tiêu chí chất lượng cuối): Không còn đường lách duyệt 2 người và ledger kể cả với owner; owner vẫn hoàn được qua route có kiểm
+- Đường lùi: Đổi NATIVE_MONEY_ROUTE trong lib/admin-security/native-permissions.ts
+
+### D-030 · 2026-10-25T18:35:20+00:00 · T-044: mở lại hoàn tiền theo yêu cầu trả sau khi refund failed bị hủy
+
+- Phương án: (1) reason=other (yêu cầu trả không bao giờ đóng) · (2) Cấm hủy refund gắn yêu cầu trả (tiền giữ mãi) · (3) reason=return + return_id, số tiền server tính theo kiểm định, chỉ khi bản cũ đã cancelled, unique chặn trùng
+- Chọn: reason=return + return_id, số tiền server tính theo kiểm định, chỉ khi bản cũ đã cancelled, unique chặn trùng
+- Lý do (tiêu chí chất lượng cuối): Tiền đúng, yêu cầu trả đóng được, không tạo trùng
+- Đường lùi: Bỏ nhánh reason=return trong RefundCreateBody
+
+### D-031 · 2026-10-25T19:06:29+00:00 · T-045: trạng thái vận đơn và tồn khi GHN cancel / hoàn về
+
+- Phương án: (1) Thêm trạng thái cancelled vào domain + migration; cộng tồn lại ngay vào kho bán · (2) Vận đơn về unfulfilled qua cạnh lùi hợp lệ; hàng đã trừ tồn vào Kho cách ly chờ kiểm định; hủy đơn + mở refund_request lúc returned; đánh dấu yêu cầu hàng hoàn bằng khóa carrier:; khách thấy SHOP_CANCELLED, lý do chi tiết trong audit; đơn native giữ làm lịch sử
+- Chọn: Vận đơn về unfulfilled qua cạnh lùi hợp lệ; hàng đã trừ tồn vào Kho cách ly chờ kiểm định; hủy đơn + mở refund_request lúc returned; đánh dấu yêu cầu hàng hoàn bằng khóa carrier:; khách thấy SHOP_CANCELLED, lý do chi tiết trong audit; đơn native giữ làm lịch sử
+- Lý do (tiêu chí chất lượng cuối): Không bán âm, không đổi đặc tả §6.1, không cần migration; tiền theo D-012
+- Đường lùi: Thêm trạng thái cancelled + cột source khi cần báo cáo chi tiết
+
+### D-032 · 2026-10-25T20:20:00+00:00 · T-051: hàng rào phía DB cho bất biến hoàn tiền
+
+- Phương án: (1) Trigger BEFORE INSERT x_refund từ chối nếu phiên không giữ pg_advisory_xact_lock của đúng đơn (tra pg_locks) · (2) Trigger tự khóa và cộng Σ so với đã thu (chép logic tiền sang SQL) · (3) Không thêm, giữ khóa tầng ứng dụng + test tất định
+- Chọn: Trigger BEFORE INSERT x_refund từ chối nếu phiên không giữ pg_advisory_xact_lock của đúng đơn (tra pg_locks)
+- Lý do (tiêu chí chất lượng cuối): Bắt mọi đường ghi quên khóa (lỗi đã thấy chữ ký khi bỏ khóa), không đưa logic tiền ra khỏi domain; migration mới có down
+- Đường lùi: Migration down xoá trigger
+
+### D-033 · 2026-10-25T22:21:20+00:00 · T-049: quyền đọc hàng trả và hàng đợi hoàn tiền
+
+- Phương án: (1) Thêm quyền return.read cho kho + CSKH (đổi ma trận vai trò domain) · (2) Dùng return.receive (kho, owner); hàng hãng hoàn hiện kèm source; hàng đợi refund không order_id thì state bắt buộc, cũ nhất trước; tham số thừa/limit ngoài 1–100 → 422
+- Chọn: Dùng return.receive (kho, owner); hàng hãng hoàn hiện kèm source; hàng đợi refund không order_id thì state bắt buộc, cũ nhất trước; tham số thừa/limit ngoài 1–100 → 422
+- Lý do (tiêu chí chất lượng cuối): Không mở thêm quyền đọc dữ liệu đơn cho vai trò mới khi chưa có nhu cầu; 422 rõ ràng thay vì kẹp ngầm
+- Đường lùi: Thêm return.read vào ma trận khi CSKH cần duyệt yêu cầu trả
+
+### D-034 · 2026-10-25T23:56:41+00:00 · Rate limit cửa sổ cố định cho phép gấp đôi hạn mức qua ranh giới (T-050)
+
+- Phương án: (1) Giữ cửa sổ cố định, chấp nhận 2x ở ranh giới · (2) Kiểm hai cửa sổ liền kề có trọng số (xấp xỉ cửa sổ trượt) trong hitRateCounter/peekRateCounter cho mọi chính sách
+- Chọn: Kiểm hai cửa sổ liền kề có trọng số (xấp xỉ cửa sổ trượt) trong hitRateCounter/peekRateCounter cho mọi chính sách
+- Lý do (tiêu chí chất lượng cuối): Chống dò mã tra cứu/đoán mã đúng ngưỡng công bố (an toàn trước); không cần hạ tầng mới
+- Đường lùi: Trả về một cửa sổ trong modules/checkout/service.ts
+
+### D-035 · 2026-10-26T00:35:48+00:00 · T-053: cách giành khóa có hạn cho sync/rebuild/seed catalog
+
+- Phương án: (1) Giữ locking.execute + Promise.race hạn giành khóa (không phân biệt khóa bận với Redis câm) · (2) acquireOrdered/withOwnedLock dùng chung locks.ts: khóa bận chờ tới 300 s, mỗi lời gọi Redis hạn 3 s → LOCK_UNAVAILABLE; drain bỏ lượt khi bận/câm
+- Chọn: acquireOrdered/withOwnedLock dùng chung locks.ts: khóa bận chờ tới 300 s, mỗi lời gọi Redis hạn 3 s → LOCK_UNAVAILABLE; drain bỏ lượt khi bận/câm
+- Lý do (tiêu chí chất lượng cuối): Tách được khóa bận (chờ hợp lệ) khỏi Redis câm (fail nhanh); một cơ chế cho cả hệ thống
+- Đường lùi: Trở lại locking.execute trong indexer.ts/seed-catalog.ts
+
+### D-036 · 2026-10-26T00:58:38+00:00 · T-054: che PII trong ghi chú tự do
+
+- Phương án: (1) Che lúc ghi vào bảng nghiệp vụ (mất dữ liệu gốc, cần migration dữ liệu) · (2) Che lúc trả ra ở route Admin/Store bằng maskFreeText dùng chung; audit che lúc ghi; địa chỉ nhận theo cụm báo hiệu (heuristic)
+- Chọn: Che lúc trả ra ở route Admin/Store bằng maskFreeText dùng chung; audit che lúc ghi; địa chỉ nhận theo cụm báo hiệu (heuristic)
+- Lý do (tiêu chí chất lượng cuối): Không phá dữ liệu gốc (có thể cần cho tranh chấp), mọi đường trả ra và audit đều che; heuristic có thể sót địa chỉ không có cụm — ghi nhận
+- Đường lùi: Bỏ gọi maskFreeText ở các hàm present*
+
+### D-037 · 2026-10-26T01:36:55+00:00 · T-055: phạm vi và chi tiết rate limit cửa sổ trượt
+
+- Phương án: (1) Chỉ bộ đếm Postgres; login/MFA giữ cửa sổ TTL cũ; Retry-After trần 1 cửa sổ · (2) Áp cả bộ đếm Redis login/MFA (khóa theo chỉ số cửa sổ, MULTI); Retry-After tính đúng (có thể tới 2 cửa sổ); deniedIp chặn khi hiệu dụng+1 > N; gộp audit deny giữ đếm thô
+- Chọn: Áp cả bộ đếm Redis login/MFA (khóa theo chỉ số cửa sổ, MULTI); Retry-After tính đúng (có thể tới 2 cửa sổ); deniedIp chặn khi hiệu dụng+1 > N; gộp audit deny giữ đếm thô
+- Lý do (tiêu chí chất lượng cuối): Không để sót đường 2× ở đăng nhập/MFA (đích dò mật khẩu); Retry-After đúng tránh khách thử lại bị đếm thêm
+- Đường lùi: Trả hàm quyết định về cửa sổ cố định trong lib/security/sliding-window.ts
+
+### D-038 · 2026-10-26T02:16:54+00:00 · T-056: lỗi nhả khóa sau vùng găng, mất lease, recheck khi Redis hỏng
+
+- Phương án: (1) Nhả lỗi → ném 503; mất lease → bỏ qua; recheck Redis hỏng → 429 · (2) Nhả lỗi → cảnh báo, khóa tự hết theo TTL; mất lease ở import/seed/bảng size → LOCK_UNAVAILABLE như native; recheck Redis hỏng → 503 (bận vẫn 429)
+- Chọn: Nhả lỗi → cảnh báo, khóa tự hết theo TTL; mất lease ở import/seed/bảng size → LOCK_UNAVAILABLE như native; recheck Redis hỏng → 503 (bận vẫn 429)
+- Lý do (tiêu chí chất lượng cuối): Không báo lỗi sai cho việc đã ghi và không che lỗi gốc; mất lease là tín hiệu không an toàn nên dừng; 503 đúng ngữ nghĩa hạ tầng
+- Đường lùi: Đổi releaseOwnedOrWarn/failOnLeaseLoss trong lib/checkout/locks.ts
+
+### D-039 · 2026-10-26T03:07:43+00:00 · T-035: chế độ điều tiết Lighthouse cho cổng lab
+
+- Phương án: (1) simulate (mặc định Lighthouse; trên localhost HTTP/1.1 dao động quanh ngưỡng, đỏ ~3/6 lần) · (2) devtools (điều tiết áp thật theo hồ sơ §10.1; ổn định 4/4) — ghi rõ là mốc lạc quan, đo lại bằng RUM sau ra mắt
+- Chọn: devtools (điều tiết áp thật theo hồ sơ §10.1; ổn định 4/4) — ghi rõ là mốc lạc quan, đo lại bằng RUM sau ra mắt
+- Lý do (tiêu chí chất lượng cuối): Cổng phải tất định, không hạ ngưỡng; giới hạn mô hình mạng được ghi nhận trong docs/ops/perf/README.md
+- Đường lùi: Đổi throttlingMethod trong scripts/perf/lighthouse.mjs
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): RUM web-vitals trên hạ tầng thật sau ra mắt
+
+### D-040 · 2026-10-26T05:16:47+00:00 · T-057: khi kiểm cuối rebuild index thấy lệch (SKU có giá niêm yết mà không ra giá bán)
+
+- Phương án: (1) Vẫn ghi bảng mới + log error · (2) Huỷ ghi, giữ bảng cũ (cũ nhưng đủ), log error + ops_exception catalog_index_mismatch (migration thêm kind)
+- Chọn: Huỷ ghi, giữ bảng cũ (cũ nhưng đủ), log error + ops_exception catalog_index_mismatch (migration thêm kind)
+- Lý do (tiêu chí chất lượng cuối): Lệch hàng loạt là dấu hiệu lỗi hệ thống (như lỗi chia lô vừa sửa); bảng cũ đầy đủ an toàn hơn bảng mới thiếu sản phẩm
+- Đường lùi: Đổi nhánh abort trong rebuildUnlocked về ghi + log
+
+### D-041 · 2026-10-26T06:19:35+00:00 · T-058: cache listing/facet cho listing toàn bảng (~150 ms)
+
+- Phương án: (1) Cache trong tiến trình 15–60 s (đánh đổi độ tươi §7.4) · (2) Bảng tổng hợp cấp sản phẩm (đụng schema) · (3) Chưa cache; chờ số đo thật trên staging/RUM; giữ pageSql/facetSql làm oracle trong test
+- Chọn: Chưa cache; chờ số đo thật trên staging/RUM; giữ pageSql/facetSql làm oracle trong test
+- Lý do (tiêu chí chất lượng cuối): Đã đạt ngưỡng ở 20+2/s; cache thêm rủi ro dữ liệu cũ, chưa có bằng chứng cần
+- Đường lùi: Thêm cache khi RUM cho thấy listing là nghẽn
+
+### D-042 · 2026-10-26T06:37:22+00:00 · T-059: mở ngoại lệ catalog_index_mismatch và phạm vi bỏ qua khi sync
+
+- Phương án: (1) Dedupe vĩnh viễn theo khóa cố định; sync bỏ cả lô · (2) Chỉ mở khi chưa có ngoại lệ cùng kind đang open/in_progress (tái diễn sau khi xử lý thì mở lại); sync bỏ qua từng sản phẩm lệch, sản phẩm tốt vẫn ghi
+- Chọn: Chỉ mở khi chưa có ngoại lệ cùng kind đang open/in_progress (tái diễn sau khi xử lý thì mở lại); sync bỏ qua từng sản phẩm lệch, sản phẩm tốt vẫn ghi
+- Lý do (tiêu chí chất lượng cuối): Lỗi tái diễn không bị nuốt; không chặn cập nhật sản phẩm đúng
+- Đường lùi: Đổi openOpsExceptionIfNoneActive về openOpsException
+
+### D-043 · 2026-10-26T06:39:13+00:00 · T-060: tiếp tục tối ưu PDP/ghi giỏ ở 30+3/s trên máy dev hay chờ staging
+
+- Phương án: (1) Tối ưu tiếp trên máy dev 4 CPU dùng chung · (2) Hoãn tới khi có staging nhiều instance; đo bằng k6 kịch bản §10.3 rồi tối ưu theo số đo thật
+- Chọn: Hoãn tới khi có staging nhiều instance; đo bằng k6 kịch bản §10.3 rồi tối ưu theo số đo thật
+- Lý do (tiêu chí chất lượng cuối): Listing/search đã đạt 20+2/s; số đo máy dev không đại diện production (một tiến trình Node, CPU dùng chung), tối ưu mù dễ thêm phức tạp vô ích
+- Đường lùi: Bỏ defer T-060
+
+### D-044 · 2026-10-26T08:50:05+00:00 · T-038: DPIA dẫn chiếu Luật BVDLCN 91/2025, NĐ 356/2025, NĐ 13/2023
+
+- Phương án: (1) Phiên chính tra nguồn sống rồi điền ngày hiệu lực/điều khoản · (2) Giữ '(chưa xác minh)' tới khi pháp chế đối chiếu văn bản gốc; DPIA là việc chờ người ký
+- Chọn: Giữ '(chưa xác minh)' tới khi pháp chế đối chiếu văn bản gốc; DPIA là việc chờ người ký
+- Lý do (tiêu chí chất lượng cuối): Trích sai điều luật nguy hiểm hơn để trống có đánh dấu; DPIA cần pháp chế ký dù sao
+- Đường lùi: Cập nhật DPIA §pháp lý khi có xác minh
+
+### D-045 · 2026-10-26T09:03:40+00:00 · Duyệt PLAN-2 (đợt 2: 68 task đóng MUST blueprint; quyết định Q-01…Q-25)
+
+- Phương án: (1) Chờ chủ dự án duyệt từng quyết định Q · (2) Phiên chính tự duyệt theo khuyến nghị bảng Q (tiêu chí AGENTS §5), thêm T-128 mở khoá commit xt.yaml và T-129 áp patch T-048; việc cần người tách riêng
+- Chọn: Phiên chính tự duyệt theo khuyến nghị bảng Q (tiêu chí AGENTS §5), thêm T-128 mở khoá commit xt.yaml và T-129 áp patch T-048; việc cần người tách riêng
+- Lý do (tiêu chí chất lượng cuối): Mọi khuyến nghị chọn phương án đúng/an toàn hơn và có đường lùi; việc thuộc quyền chủ dự án (giấy phép, ruleset, pháp chế, khoá thật, hạ tầng) không tự làm
+- Đường lùi: Sửa task/quyết định trong docs/autopilot/PLAN-2.md trước khi task tương ứng chạy
+
+### D-046 · 2026-10-26T09:51:06+00:00 · PM-REQ-019: giả định đổi trả/phí ship/thuế suất cho câu [chặn ra mắt] PROJECT.md §10
+
+- Phương án: (1) Chờ chủ dự án chốt rồi mới ghi · (2) Mặc định tạm như PROJECT.md §10 (đổi trả theo D-019, ship theo GHN báo phí, thuế chưa áp) — chủ dự án chốt trước G7, nằm trong GO-NO-GO
+- Chọn: Mặc định tạm như PROJECT.md §10 (đổi trả theo D-019, ship theo GHN báo phí, thuế chưa áp) — chủ dự án chốt trước G7, nằm trong GO-NO-GO
+- Lý do (tiêu chí chất lượng cuối): Không chặn tiến độ build; con số có chủ sở hữu và hạn quyết rõ trong GO-NO-GO
+- Đường lùi: Sửa PROJECT.md §10 khi chủ dự án chốt
+
+### D-047 · 2026-10-26T09:51:06+00:00 · ARC-MOD-008: bố cục thư mục apps/backend/src do Medusa quy định vs miền nghiệp vụ
+
+- Phương án: (1) Đổi bố cục thư mục theo miền · (2) ADR ngoại lệ chấp nhận bố cục Medusa + script so khớp modules/* với docs/architecture/domains.md
+- Chọn: ADR ngoại lệ chấp nhận bố cục Medusa + script so khớp modules/* với docs/architecture/domains.md
+- Lý do (tiêu chí chất lượng cuối): Đổi bố cục phá quy ước framework; script giữ ranh giới miền kiểm được bằng máy
+- Đường lùi: Bỏ ADR + script
+
+### D-048 · 2026-10-26T09:51:07+00:00 · SPEC-platform (F-001/F-012) đang Draft
+
+- Phương án: (1) ADR coi ADR-0001 + docs/ops là spec · (2) Phiên chính duyệt SPEC-platform (approved_by D-048) và đổi trạng thái Approved
+- Chọn: Phiên chính duyệt SPEC-platform (approved_by D-048) và đổi trạng thái Approved
+- Lý do (tiêu chí chất lượng cuối): Giữ đúng một quy trình spec cho mọi tính năng
+- Đường lùi: Đổi lại Draft
+
+### D-049 · 2026-10-26T10:18:27+00:00 · payment_attempt.payment_url lưu vnp_IpAddr (IP thô khách)
+
+- Phương án: (1) Giữ, áp lớp lưu payment-evidence · (2) Không lưu IP thô: lưu URL đã bỏ/che vnp_IpAddr (URL gửi VNPAY vẫn đủ), migration mới che dữ liệu cũ
+- Chọn: Không lưu IP thô: lưu URL đã bỏ/che vnp_IpAddr (URL gửi VNPAY vẫn đủ), migration mới che dữ liệu cũ
+- Lý do (tiêu chí chất lượng cuối): Tối thiểu hoá dữ liệu cá nhân; IP không cần cho đối soát (có txn_ref)
+- Đường lùi: Lưu lại URL đầy đủ
+
+### D-050 · 2026-10-26T10:18:28+00:00 · Phiên bản build cho smoke sau deploy (WF-REL-007)
+
+- Phương án: (1) Thêm phiên bản vào /x/health công khai · (2) Route phiên bản riêng có xác thực (admin) hoặc header nội bộ sau LB
+- Chọn: Route phiên bản riêng có xác thực (admin) hoặc header nội bộ sau LB
+- Lý do (tiêu chí chất lượng cuối): Không lộ phiên bản cho kẻ tấn công dò lỗ hổng theo phiên bản
+- Đường lùi: Đưa phiên bản vào /x/health
+
+### D-051 · 2026-10-26T10:18:28+00:00 · Định danh nhân viên (actor_id, *_by) trong sổ dữ liệu
+
+- Phương án: (1) Không coi là PII · (2) Coi là dữ liệu cá nhân (định danh giả danh của nhân viên), khai trong data-map
+- Chọn: Coi là dữ liệu cá nhân (định danh giả danh của nhân viên), khai trong data-map
+- Lý do (tiêu chí chất lượng cuối): Cách hiểu chặt hơn theo NĐ 13/2023 (chưa xác minh điều khoản); không tốn thêm chi phí
+- Đường lùi: Đổi phân loại trong docs/privacy/data-map.yaml
+
+### D-052 · 2026-10-26T10:54:18+00:00 · T-128: cổng commit chạm cấu hình cổng vượt timeout hook 600 s (song song 4 luồng = 711 s)
+
+- Phương án: (1) Phiên agent tự nâng timeout PreToolUse trong .claude/settings.json · (2) Hạ cổng: commit chạm cấu hình chỉ chạy unit · (3) Commit script phân mảnh; dòng xt.yaml + mọi thay đổi xt.yaml/settings gom thành patch để chủ dự án áp (hoặc nâng timeout hook) — agent không sửa hàng rào của chính mình
+- Chọn: Commit script phân mảnh; dòng xt.yaml + mọi thay đổi xt.yaml/settings gom thành patch để chủ dự án áp (hoặc nâng timeout hook) — agent không sửa hàng rào của chính mình
+- Lý do (tiêu chí chất lượng cuối): Không hạ cổng, không tự nới hàng rào harness; settings.json cũng là cấu hình cổng nên agent không commit được; chủ dự án quyết
+- Đường lùi: Áp patch khi chủ dự án đồng ý

@@ -13,3 +13,9 @@ export const FASHION_KINDS: readonly FashionKind[] = ["apparel", "shoes", "acces
  * thuộc tính thời trang, bảng size, import). Payload: `{ product_ids: string[] }`.
  */
 export const CATALOG_PRODUCTS_CHANGED = "x.catalog.products_changed";
+
+/**
+ * Số id tối đa mỗi lời gọi `query.graph`/`list*` theo danh sách id của catalog. Phải < 4.000: từ ngưỡng đó Query của
+ * Medusa 2.22.1 tự chia lô và làm mất `calculated_price` ở các lô sau (xem `loadVariantPrices`, T-057).
+ */
+export const QUERY_ID_BATCH = 500;

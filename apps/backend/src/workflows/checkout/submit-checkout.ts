@@ -7,6 +7,7 @@ import {
   WorkflowResponse,
 } from "@medusajs/framework/workflows-sdk";
 import { createOrderWorkflow, createReservationsWorkflow } from "@medusajs/medusa/core-flows";
+import { attemptReservationDescription } from "../../lib/checkout/jobs";
 import { lockKeys } from "../../lib/checkout/locks";
 import {
   acquireCheckoutLocksStep,
@@ -81,7 +82,8 @@ function toOrderInput(input: SubmitCheckoutInput, prepared: PreparedCheckout): C
           q.allocatedDiscount > 0
             ? [{ amount: q.allocatedDiscount, description: `Mã giảm ${code}`, promotion_id: promotionId }]
             : [],
-        metadata: { cart_line_item_id: l.id },
+        // Snapshot bảng size đúng phiên bản lúc mua (ADM03) — đổi trả sai size đối chiếu được về sau (T-027).
+        metadata: { cart_line_item_id: l.id, ...l.size_chart },
       };
     }),
     shipping_methods: [
@@ -169,7 +171,7 @@ export const submitCheckoutWorkflow = createWorkflow(
           quantity: a.quantity,
           line_item_id: verified.line_map[a.line_item_id] as string,
           allow_backorder: a.allow_backorder,
-          description: `checkout ${input.attempt_id}`,
+          description: attemptReservationDescription(input.attempt_id),
           metadata: { checkout_attempt_id: input.attempt_id },
         })),
     );
@@ -194,6 +196,7 @@ export const submitCheckoutWorkflow = createWorkflow(
 
     const payment = createPaymentAttemptStep({
       payment_method: input.payment_method,
+      attempt_id: input.attempt_id,
       order_id: verified.order_id,
       display_ref: finance.display_ref,
       amount: transform({ prepared }, ({ prepared }) => prepared.breakdown.total),

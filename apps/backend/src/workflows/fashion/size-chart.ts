@@ -9,6 +9,7 @@ import {
 } from "@medusajs/framework/workflows-sdk";
 import { emitEventStep } from "@medusajs/medusa/core-flows";
 import { CATALOG_PRODUCTS_CHANGED } from "../../lib/catalog/constants";
+import { withOwnedLock } from "../../lib/checkout/locks";
 import { FASHION_MODULE } from "../../modules/fashion";
 import type FashionModuleService from "../../modules/fashion/service";
 import type { SizeChartContent } from "../../modules/fashion/validators";
@@ -43,6 +44,10 @@ export const createSizeChartWorkflow = createWorkflow(
 
 type ReviseResult = { chart: SizeChartRecord; previous: SizeChartRecord; product_ids: string[] };
 
+/** Như mặc định của `locking.execute` trước đây: chờ khóa bận 5 s; lease 60 s (gia hạn nền khi còn chạy). */
+const REVISE_LOCK_WAIT_MS = 5_000;
+const REVISE_LOCK_TTL_SECONDS = 60;
+
 /**
  * Bảng size bất biến theo phiên bản: tạo bản `version + 1`, đánh dấu bản cũ `superseded_at`, chuyển link sản phẩm sang
  * bản mới. Bản cũ KHÔNG bị sửa/xoá — đơn đã mua vẫn trỏ được về đúng bảng size lúc mua (ADM03). Hai lần revise đồng
@@ -53,9 +58,22 @@ const reviseChartStep = createStep(
   async (input: SizeChartContent & { code: string }, { container }) => {
     // Tuần tự hoá theo code: đọc bản hiện hành → tạo bản mới → chuyển link phải là một khối; không thì hai lần revise
     // xen kẽ để lại sản phẩm trỏ bản đã bị thay (đã tái hiện bằng test song song).
-    const locking = container.resolve(Modules.LOCKING);
-    const { result, compensation } = await locking.execute(`x-shop:size-chart:${input.code}`, () =>
-      reviseUnlocked(container, input),
+    // Mỗi lời gọi Redis có hạn (lib/checkout/locks.ts): Redis câm → LOCK_UNAVAILABLE (503), không tạo phiên bản.
+    const { result, compensation } = await withOwnedLock(
+      container.resolve(Modules.LOCKING),
+      `x-shop:size-chart:${input.code}`,
+      {
+        waitMs: REVISE_LOCK_WAIT_MS,
+        ttlSeconds: REVISE_LOCK_TTL_SECONDS,
+        scope: "size-chart",
+        ownerPrefix: "size-chart",
+        failOnLeaseLoss: true,
+        onReleaseError: (e) =>
+          container
+            .resolve(ContainerRegistrationKeys.LOGGER)
+            .warn(`[size-chart] Nhả khoá lỗi/quá hạn (lease tự hết): ${(e as Error).message}`),
+      },
+      () => reviseUnlocked(container, input),
     );
     return new StepResponse(result, compensation);
   },

@@ -189,7 +189,8 @@ medusaIntegrationTestRunner({
           method: "recovery_code",
           code: codes[0] as string,
         });
-        expect((await call("POST", "/admin/x/refunds", headers)).status).toBe(501);
+        // Qua MFA + RBAC thì tới handler thật (T-027): body rỗng → 422 kiểm schema, không phải 401/403.
+        expect((await call("POST", "/admin/x/refunds", headers)).status).toBe(422);
         await expect(
           loginWithMfa(rawApi, admin, { method: "recovery_code", code: codes[0] as string }),
         ).rejects.toThrow();

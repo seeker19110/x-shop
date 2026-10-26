@@ -1,4 +1,5 @@
 import { getClientEnv, getServerEnv } from "../env";
+import { clientIpHeader } from "../security/client-ip";
 
 /**
  * Gọi Medusa Store API từ SERVER (publishable key chỉ gắn ở đây; trình duyệt không gọi thẳng backend). Không cache:
@@ -38,6 +39,8 @@ export async function storeApi<T>(
         accept: "application/json",
         "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
         ...(req.body !== undefined ? { "content-type": "application/json" } : {}),
+        // IP khách cho rate limit theo IP ở backend (chỉ khi tin header proxy — lib/security/client-ip.ts).
+        ...(await clientIpHeader()),
         ...req.headers,
       },
       body: req.body !== undefined ? JSON.stringify(req.body) : undefined,

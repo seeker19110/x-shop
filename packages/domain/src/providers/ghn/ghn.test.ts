@@ -3,6 +3,7 @@ import { listWards, validateAddress } from "../../address/address.js";
 import {
   buildCreateOrderBody,
   buildFeeBody,
+  isGhnCancelled,
   mapGhnStatus,
   parseCallback,
   type CreateShipmentInput,
@@ -52,6 +53,17 @@ describe("trạng thái và callback", () => {
     expect(mapGhnStatus("delivery_fail")).toBe("failed");
     expect(mapGhnStatus("returned")).toBe("returned");
     expect(mapGhnStatus("lost")).toBeNull();
+  });
+  it("hoàn về người gửi → returning/returned; cancel không phải trạng thái tiến trình", () => {
+    expect(mapGhnStatus("waiting_to_return")).toBe("failed");
+    for (const s of ["return", "return_transporting", "return_sorting", "returning", "return_fail"]) {
+      expect(mapGhnStatus(s)).toBe("returning");
+    }
+    expect(mapGhnStatus("cancel")).toBeNull();
+    expect(isGhnCancelled("cancel")).toBe(true);
+    expect(isGhnCancelled("Cancel")).toBe(false);
+    expect(isGhnCancelled("")).toBe(false);
+    expect(isGhnCancelled("returned")).toBe(false);
   });
   it("parse callback + khóa chống lặp; dị dạng → null", () => {
     const cb = parseCallback({

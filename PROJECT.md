@@ -62,16 +62,54 @@
 | CWV | LCP ≤ 2,5 s, INP ≤ 200 ms, CLS ≤ 0,1 (p75) | web.dev [S07] | Lighthouse lab (hồ sơ §10.1) trước ra mắt, RUM sau |
 | Ngân sách | JS đầu ≤ 200 KiB gzip, CSS ≤ 50 KiB, font ≤ 100 KiB | đặc tả §10.2 | `scripts/budget` trên build |
 | API | đọc p95 ≤ 300 ms, ghi p95 ≤ 700 ms, checkout nội bộ p95 ≤ 2 s | đặc tả §10.1 | k6 theo §10.3 |
-| Bảo mật | ASVS 5.0 ~L2 (chọn lọc) | OWASP [S14] | `docs/ops/THREAT-MODEL.md` + test |
+| Bảo mật | ASVS 5.0.0 L2 (chọn lọc theo bề mặt thật) | OWASP [S14] | `docs/ops/THREAT-MODEL.md` + test |
 | Tiếp cận | WCAG 2.2 AA | W3C [S08] | axe trong E2E + kiểm tay |
 | Thiết bị | 320–1440 px; Chrome/Safari/Firefox hiện hành; Android tầm trung, iPhone Safari | đặc tả §3.2 | Playwright viewport |
+
+### Yêu cầu chất lượng theo ISO/IEC 25010:2023
+
+Tên đặc tính theo bản 2023 của ISO/IEC 25010 (đối chiếu qua tài liệu khung `.xtemplates/framework/04-standards/`; văn bản ISO trả phí, chưa đọc bản gốc). "Đã đo" chỉ ghi số có file bằng chứng trong repo; còn lại là ngưỡng đích.
+
+| Đặc tính (25010:2023) | Số đo | Ngưỡng | Đã đo / bằng chứng |
+|---|---|---|---|
+| Performance efficiency | p95 API đọc / ghi / checkout nội bộ | ≤ 300 ms / ≤ 700 ms / ≤ 2 s | smoke 1/20 tải, dữ liệu 10.000 SP: 170,6 / 333,2 / 369,2 ms (`docs/ops/perf/load-smoke-latest.md`) |
+| Performance efficiency | LCP lab mobile (median) · CLS | ≤ 2,5 s · ≤ 0,1 | 1,43–1,45 s · ≤ 0,002 trên ảnh demo nhỏ, không đại diện ảnh thật (`docs/ops/perf/lighthouse-latest.md`) |
+| Reliability | Availability tháng · RPO · RTO | ≥ 99,9% · ≤ 15 phút · ≤ 2 giờ | RTO diễn tập 14–16 s trên DB ~78 KB (không suy ra production); RPO chờ chọn hạ tầng (`docs/ops/RUNBOOK.md`) |
+| Security | Chuẩn xác minh · bí mật trong repo | ASVS 5.0.0 L2 chọn lọc · 0 bí mật | `docs/ops/THREAT-MODEL.md`; workflow `secret-scan` |
+| Interaction capability | Mức tiếp cận · lỗi axe nghiêm trọng | WCAG 2.2 AA · 0 | axe trong E2E (`e2e/`) |
+| Compatibility | Màn hình · trình duyệt | 320–1440 px · Chrome/Safari/Firefox hiện hành | Playwright viewport (`e2e/`) |
+| Maintainability | Coverage dòng/hàm/nhánh của `packages/domain` | ≥ 90% / ≥ 90% / ≥ 85% | ngưỡng cưỡng chế ở `packages/domain/vitest.config.ts` |
+| Functional suitability | Bán vượt tồn · thu tiền trùng | 0 (bất biến M-05) | AT04, AT06, AT36 |
 
 ## 6. Dữ liệu & pháp lý
 - Dữ liệu cá nhân: có — cơ bản (họ tên, SĐT, email, địa chỉ); không thu dữ liệu nhạy cảm.
 - Tiền thật: có (COD, VNPAY). Dev/CI chỉ sandbox/mock.
-- Luật (xác minh ở `docs/research/2026-10-24-stack.md`): Luật TMĐT 122/2025/QH15 + NĐ 248/2026/NĐ-CP; Luật BVDLCN
-  91/2025/QH15 + NĐ 356/2025/NĐ-CP. Chủ shop/người phụ trách pháp lý rà trước ra mắt (đặc tả §11.2).
-- DPIA: `docs/ops/DPIA.md` (lát hoàn thiện).
+### Khung pháp lý
+
+Lập 2026-10-26. Chưa truy cập được văn bản gốc (vbpl.vn, thuvienphapluat.vn trả 403 từ môi trường chạy; không tìm được bản tin cổng chính thống nào) nên ngày hiệu lực và URL ghi "(chưa xác minh)" theo D-044: sai điều luật nguy hiểm hơn để trống có đánh dấu. Số hiệu và ngày hiệu lực lấy từ nguồn thứ cấp ở `docs/research/2026-10-24-stack.md` mục 9 (moit.gov.vn, pwc.com/vn, luatvietnam.vn; độ tin cậy F/T), chỉ để định hướng, pháp chế đối chiếu bản gốc trước G7 (đặc tả §11.2).
+
+| Văn bản | Áp dụng cho | Hiệu lực (nguồn thứ cấp, 2026-10-24) | URL văn bản gốc | Sửa đổi/thay thế |
+|---|---|---|---|---|
+| Luật Thương mại điện tử 122/2025/QH15 | bán hàng trực tuyến, thông tin bắt buộc, đổi trả | 01/07/2026 (chưa xác minh bản gốc) | (chưa xác minh) | (chưa xác minh) |
+| Nghị định 248/2026/NĐ-CP | hướng dẫn thi hành Luật TMĐT | 01/07/2026 (chưa xác minh bản gốc) | (chưa xác minh) | (chưa xác minh) |
+| Luật Bảo vệ dữ liệu cá nhân 91/2025/QH15 | họ tên, SĐT, email, địa chỉ khách | 01/01/2026 (chưa xác minh bản gốc) | (chưa xác minh) | (chưa xác minh) |
+| Nghị định 356/2025/NĐ-CP | hướng dẫn thi hành Luật 91/2025, hồ sơ đánh giá tác động | 01/01/2026 (chưa xác minh bản gốc) | (chưa xác minh) | (chưa xác minh) |
+| Nghị định 13/2023/NĐ-CP | bảo vệ dữ liệu cá nhân (khung trước) | (chưa xác minh) còn hay hết hiệu lực | (chưa xác minh) | (chưa xác minh) |
+
+Kiểm tra văn bản sửa đổi: trước mỗi mốc G7 và mỗi 6 tháng, pháp chế tra lại từng dòng trên cổng văn bản chính thức và cập nhật bảng kèm ngày tra; mục nào chưa đối chiếu giữ "(chưa xác minh)". Thuế/hóa đơn và thời hạn lưu dữ liệu: xem §10 và Q-20 của `docs/autopilot/PLAN-2.md`.
+
+- DPIA: `docs/ops/DPIA.md` (phần kỹ thuật hoàn tất 2026-10-26; chờ chủ dự án/pháp chế duyệt).
+- Phân loại và sổ dữ liệu cá nhân theo bảng/cột (loại, mục đích, cơ sở xử lý, thời hạn lưu đề xuất, bên nhận): `docs/privacy/data-map.yaml` +
+  `docs/compliance/data-inventory.csv`; bên xử lý: `docs/privacy/processors.md`, `docs/compliance/vendors.yaml`; chuyển dữ liệu: `docs/privacy/transfers.md`.
+  Kiểm đối chiếu với migration: `node scripts/check-data-map.mjs` (cột mới chưa phân loại → đỏ). Không thu dữ liệu nhạy cảm ở P0.
+
+### Dữ liệu test
+- **Cấm** dump hoặc export dữ liệu production (đơn, khách, vận đơn, log) vào repo, CI, staging, preview hay máy dev — kể cả tạm thời để tái hiện lỗi.
+  Dữ liệu cho dev/test/CI là dữ liệu tổng hợp: `apps/backend/src/scripts/seed*.ts`, `scripts/ops/drill/seed-*.sql`, `scripts/load/dataset.mjs`, fixture
+  trong test. Không đưa PII thật (họ tên, SĐT, email, địa chỉ của người thật) vào fixture/seed.
+- Tái hiện lỗi từ production: dựng ca bằng dữ liệu tổng hợp cùng hình dạng, không nhập dữ liệu thật. Vi phạm = sự cố bảo mật (SEV1, `docs/ops/RUNBOOK.md` §10–§11).
+- Cưỡng chế một phần: `node scripts/check-data-map.mjs` quét repo, đỏ khi có file `.sql/.csv/.json/.dump` > 1 MB hoặc CSV có tên cột PII ở dòng đầu;
+  quét `gitleaks` (secret-scan). Quét nội dung PII trong fixture/seed (email miền test): chưa có (PLAN-2 T-078).
 
 ## 7. Stack (chi tiết + phiên bản: ADR-0001)
 Next.js App Router + TypeScript (storefront) · Medusa v2 (commerce + Admin) · PostgreSQL · Redis · S3-compatible + CDN.
@@ -96,4 +134,4 @@ Next.js App Router + TypeScript (storefront) · Medusa v2 (commerce + Admin) · 
 - [ ] Tên/nhận diện shop — [không chặn] — token + nội dung thay được (D-002)
 - [ ] Email hay SMS là kênh bắt buộc — [không chặn] — P0: email tùy chọn khi có SĐT; adapter thông báo dạng log/outbox (D-002)
 - [ ] TTL giữ hàng online / hạn xác nhận COD — [không chặn] — 15 phút / 24 giờ, cấu hình (D-002)
-- [ ] Chính sách đổi trả, thuế/hóa đơn, phí ship — [chặn ra mắt, không chặn build] — cấu hình có version
+- [ ] Chính sách đổi trả, thuế/hóa đơn, phí ship — [chặn ra mắt, không chặn build] — cấu hình có version. Giả định đảo ngược được cho tới khi chủ dự án chốt (2026-10-26): hàng trả không hoàn phí ship, hủy đơn hoàn toàn bộ, đổi size cùng sản phẩm cùng giá (D-019); thuế/hóa đơn và phí cấu hình theo mô hình kinh doanh, không hardcode (đặc tả gốc §7.4); thời hạn đổi trả/mức phí ship/thuế suất cụ thể chưa có D-NNN riêng — chủ dự án + pháp chế xác nhận trước G7 (D-045/Q-20)

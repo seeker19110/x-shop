@@ -1,4 +1,4 @@
-import { PII, REDACTED, sanitizeChanges } from "../sanitize";
+import { maskFreeText, PII, REDACTED, sanitizeChanges } from "../sanitize";
 
 describe("sanitizeChanges (che PII trong audit)", () => {
   it("che theo tên khóa: bí mật bỏ hẳn, email/điện thoại che bằng mask, địa chỉ/họ tên thay hẳn", () => {
@@ -58,5 +58,29 @@ describe("sanitizeChanges (che PII trong audit)", () => {
     expect(
       (sanitizeChanges({ list: Array.from({ length: 500 }, (_, i) => i) }).list as number[]).length,
     ).toBe(100);
+  });
+});
+
+describe("maskFreeText (ghi chú/lý do tự do — T-054)", () => {
+  it("che SĐT VN dạng liền, có khoảng trắng/chấm/+84; email; địa chỉ theo cụm báo hiệu", () => {
+    expect(maskFreeText("gọi 0912345678 nhé")).toBe("gọi 091****678 nhé");
+    expect(maskFreeText("gọi +84 912 345 678 nhé")).toBe("gọi +84******678 nhé");
+    expect(maskFreeText("gọi 0912.345.678")).toBe("gọi 091****678");
+    expect(maskFreeText("mail lan.nguyen@example.com ạ")).toBe("mail l***@example.com ạ");
+    expect(maskFreeText("giao số nhà 12 ngõ 5 Lý Thường Kiệt, Hà Nội; cảm ơn")).toBe("giao [PII]; cảm ơn");
+    expect(maskFreeText("khách ở số 12 đường Lê Lợi, phường Bến Nghé, quận 1 gọi lại")).not.toMatch(
+      /Lê Lợi|Bến Nghé/,
+    );
+  });
+
+  it("không có PII → giữ nguyên từng ký tự (Unicode tiếng Việt, số tiền, mã); null/rỗng", () => {
+    for (const t of [
+      "Áo bị rách đường chỉ, khách muốn đổi size L — hoàn 250.000đ theo đơn XS-1234",
+      "Đường may lỗi",
+      "",
+    ])
+      expect(maskFreeText(t)).toBe(t);
+    expect(maskFreeText(null)).toBeNull();
+    expect(maskFreeText(undefined)).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import {
   IPN_RESPONSES,
   buildPaymentUrl,
   buildQueryDr,
+  buildReturnUrl,
   buildRefund,
   fromVnpDate,
   hmacSha512,
@@ -77,6 +78,44 @@ describe("buildPaymentUrl", () => {
     expect(() => buildPaymentUrl(cfg, { ...input, txnRef: "a&b" })).toThrow();
     expect(() => buildPaymentUrl(cfg, { ...input, expiresAt: created })).toThrow();
     expect(() => buildPaymentUrl(cfg, { ...input, bankCode: "NCB" })).not.toThrow();
+  });
+});
+
+describe("buildPaymentUrl — vnp_ReturnUrl kèm attempt", () => {
+  it("không có returnParams → giữ nguyên chuỗi cấu hình", () => {
+    const q = new URL(buildPaymentUrl(cfg, input)).searchParams;
+    expect(q.get("vnp_ReturnUrl")).toBe(cfg.returnUrl);
+    expect(buildReturnUrl(cfg.returnUrl, {})).toBe(cfg.returnUrl);
+  });
+  it("attempt nằm trong vnp_ReturnUrl và được ký (chữ ký vẫn hợp lệ, đổi attempt → đổi chữ ký)", () => {
+    const a = new URL(buildPaymentUrl(cfg, { ...input, returnParams: { attempt: "chk_01JABC" } }))
+      .searchParams;
+    const ret = new URL(a.get("vnp_ReturnUrl") as string);
+    expect(ret.origin + ret.pathname).toBe(cfg.returnUrl);
+    expect(ret.searchParams.get("attempt")).toBe("chk_01JABC");
+    const params = Object.fromEntries(a.entries());
+    expect(a.get("vnp_SecureHash")).toBe(hmacSha512(cfg.hashSecret, signData(params)));
+    const b = new URL(buildPaymentUrl(cfg, { ...input, returnParams: { attempt: "chk_KHAC" } })).searchParams;
+    expect(b.get("vnp_SecureHash")).not.toBe(a.get("vnp_SecureHash"));
+  });
+  it("giữ query sẵn có của returnUrl; ghi đè cùng khóa", () => {
+    expect(buildReturnUrl("https://shop.example/kq?src=vnp&attempt=cu", { attempt: "moi" })).toBe(
+      "https://shop.example/kq?src=vnp&attempt=moi",
+    );
+  });
+  it("từ chối khóa/giá trị lạ (không cho dữ liệu tùy ý, ký tự đặc biệt hay tham số vnp_ đi qua cổng)", () => {
+    const bads: Array<Record<string, string>> = [
+      { attempt: "" },
+      { attempt: "a&b=c" },
+      { attempt: "x".repeat(129) },
+      { attempt: "0912 345 678" },
+      { vnp_ResponseCode: "00" },
+      { "": "x" },
+      { Attempt: "x" },
+    ];
+    for (const bad of bads) {
+      expect(() => buildPaymentUrl(cfg, { ...input, returnParams: bad })).toThrow(/returnParams/);
+    }
   });
 });
 

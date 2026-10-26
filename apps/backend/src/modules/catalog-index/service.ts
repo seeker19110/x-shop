@@ -1,6 +1,6 @@
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import type { CatalogFilter, FacetName } from "@x-shop/domain";
-import { facetSql, inList, pageSql, TABLE, type Scope } from "./query";
+import { inList, listingSql, TABLE, type Scope } from "./query";
 
 /** Một dòng read model: một SKU đã publish ở một kênh bán. Tiền là số nguyên VND. */
 export interface CatalogIndexRow {
@@ -35,6 +35,13 @@ export interface DirtyClaim {
   product_id: string;
   /** Mốc đánh dấu dạng text của Postgres (độ chính xác micro giây). */
   marked_at: string;
+  /** Số lần đồng bộ trước đã bỏ qua sản phẩm này (lệch giá) — 0 với dấu mới. */
+  attempts: number;
+}
+
+/** Hẹn thử lại một dấu bẩn: `attempts` mới và số giây chờ tới lần lấy kế. */
+export interface DirtyDefer extends DirtyClaim {
+  delay_seconds: number;
 }
 
 export interface PageItem {
@@ -140,16 +147,18 @@ export default class CatalogIndexModuleService {
     await this.db.raw(
       `INSERT INTO catalog_index_dirty (product_id, marked_at)
        SELECT x, clock_timestamp() FROM (SELECT jsonb_array_elements_text(?::jsonb) AS x) s
-       ON CONFLICT (product_id) DO UPDATE SET marked_at = EXCLUDED.marked_at`,
+       ON CONFLICT (product_id) DO UPDATE SET marked_at = EXCLUDED.marked_at, attempts = 0, next_attempt_at = NULL`,
       w.bindings as Knex.ValueDict[],
     );
   }
 
-  /** Lấy một lô sản phẩm bẩn (không xoá) — xoá sau khi đồng bộ xong bằng `clearDirty` với đúng mốc đã lấy. */
+  /** Lấy một lô sản phẩm bẩn ĐẾN HẠN (không xoá) — xoá sau khi đồng bộ xong bằng `clearDirty` với đúng mốc đã lấy. */
   async claimDirty(limit: number): Promise<DirtyClaim[]> {
     // marked_at dạng text: giữ đủ micro giây (Date của JS chỉ tới mili giây → so sánh `<=` sai).
     const res = await this.db.raw(
-      `SELECT product_id, marked_at::text AS marked_at FROM catalog_index_dirty ORDER BY marked_at ASC LIMIT ?`,
+      `SELECT product_id, marked_at::text AS marked_at, attempts FROM catalog_index_dirty
+       WHERE next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()
+       ORDER BY marked_at ASC LIMIT ?`,
       [limit],
     );
     return res.rows as DirtyClaim[];
@@ -167,8 +176,42 @@ export default class CatalogIndexModuleService {
     );
   }
 
-  async dirtyCount(): Promise<number> {
-    const res = await this.db.raw(`SELECT count(*)::int AS n FROM catalog_index_dirty`);
+  /**
+   * Hẹn thử lại các dấu (sản phẩm bị bỏ qua): đặt `attempts` và lùi `next_attempt_at`. Dấu đã được đặt lại sau khi lấy
+   * (marked_at mới hơn; markDirty cũng reset attempts) thì giữ nguyên để lấy ngay lượt sau.
+   */
+  async deferDirty(items: DirtyDefer[]): Promise<void> {
+    if (items.length === 0) return;
+    await this.db.raw(
+      `UPDATE catalog_index_dirty d
+          SET attempts = c.attempts, next_attempt_at = clock_timestamp() + c.delay_seconds * interval '1 second'
+         FROM (
+           SELECT x->>'product_id' AS product_id, (x->>'marked_at')::timestamptz AS marked_at,
+                  (x->>'attempts')::int AS attempts, (x->>'delay_seconds')::int AS delay_seconds
+             FROM jsonb_array_elements(?::jsonb) x
+         ) c WHERE d.product_id = c.product_id AND d.marked_at <= c.marked_at`,
+      [JSON.stringify(items)],
+    );
+  }
+
+  /** Số dòng read model (toàn bảng, hoặc chỉ của các sản phẩm) — kiểm cuối sau rebuild/sync. */
+  async countRows(productIds?: string[]): Promise<number> {
+    if (productIds && productIds.length === 0) return 0;
+    const w = productIds ? inList("product_id", productIds) : null;
+    const res = await this.db.raw(
+      `SELECT count(*)::int AS n FROM ${TABLE}${w ? ` WHERE ${w.sql}` : ""}`,
+      (w?.bindings ?? []) as Knex.ValueDict[],
+    );
+    return (res.rows[0] as { n: number }).n;
+  }
+
+  /** Số dấu bẩn; `dueOnly` chỉ đếm dấu đã đến hạn lấy (không tính dấu đang chờ backoff). */
+  async dirtyCount(dueOnly = false): Promise<number> {
+    const res = await this.db.raw(
+      `SELECT count(*)::int AS n FROM catalog_index_dirty${
+        dueOnly ? " WHERE next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()" : ""
+      }`,
+    );
     return (res.rows[0] as { n: number }).n;
   }
 
@@ -211,14 +254,21 @@ export default class CatalogIndexModuleService {
     return (res.rows as Record<string, unknown>[]).map(fromDb);
   }
 
-  async page(
+  /**
+   * Trang + tổng + 3 facet của một listing trong MỘT câu lệnh (T-058, `listingSql`). Kết quả y hệt bản 4 câu cũ
+   * (`pageSql` + `facetSql`), chỉ rẻ hơn.
+   */
+  async listing(
     scope: Scope,
     f: CatalogFilter,
     pageSize: number,
-  ): Promise<{ total: number; items: PageItem[] }> {
-    const q = pageSql(scope, f, pageSize);
+  ): Promise<{ total: number; items: PageItem[]; facets: Record<FacetName, FacetValue[]> }> {
+    const q = listingSql(scope, f, pageSize);
     const res = await this.db.raw(q.sql, q.bindings as Knex.ValueDict[]);
-    const row = res.rows[0] as { total: number; items: Record<string, unknown>[] };
+    const row = res.rows[0] as {
+      total: number;
+      items: Record<string, unknown>[];
+    } & Record<FacetName, FacetValue[]>;
     return {
       total: row.total,
       items: row.items.map((i) => ({
@@ -227,6 +277,7 @@ export default class CatalogIndexModuleService {
         price_max: num(i.price_max),
         in_stock: i.in_stock as boolean,
       })),
+      facets: { color: row.color, size: row.size, material: row.material },
     };
   }
 
@@ -242,11 +293,5 @@ export default class CatalogIndexModuleService {
       ch.bindings as Knex.ValueDict[],
     );
     return res.rows as { handle: string; count: number }[];
-  }
-
-  async facet(scope: Scope, f: CatalogFilter, facet: FacetName): Promise<FacetValue[]> {
-    const q = facetSql(scope, f, facet);
-    const res = await this.db.raw(q.sql, q.bindings as Knex.ValueDict[]);
-    return res.rows as FacetValue[];
   }
 }

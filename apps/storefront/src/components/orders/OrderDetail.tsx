@@ -5,6 +5,8 @@ import type { OrderDetails } from "../../lib/orders/types";
 import { Button } from "../ui/Button";
 import { cx } from "../ui/cx";
 import { OrderActions } from "./OrderActions";
+import { PurchaseAnalytics } from "./PurchaseAnalytics";
+import { purchaseEventOf } from "./purchase-event";
 import styles from "./Order.module.css";
 
 function Block({ block, id }: { block: StatusBlock; id: string }) {
@@ -26,12 +28,14 @@ function Block({ block, id }: { block: StatusBlock; id: string }) {
 
 /**
  * Trang chi tiết đơn (CHK06, POST01): ba khối Đặt đơn / Thanh toán / Giao hàng trình bày riêng + timeline, dòng hàng,
- * tổng tiền, mã tham chiếu và kênh hỗ trợ. Mọi trạng thái lấy từ server tại thời điểm dựng trang.
+ * tổng tiền, mã tham chiếu và kênh hỗ trợ. Mọi trạng thái lấy từ server tại thời điểm dựng trang; đơn đã thanh toán /
+ * COD đã xác nhận → sự kiện `purchase` (một lần mỗi đơn).
  */
 export function OrderDetail({ order, now = new Date() }: { order: OrderDetails; now?: Date }) {
   const p = presentOrder(order, now);
   return (
     <section className={styles.page} aria-labelledby="don-hang-tieu-de">
+      <PurchaseAnalytics event={purchaseEventOf(order)} />
       <div>
         <h1 id="don-hang-tieu-de" className={styles.title}>
           Đơn hàng <span className={styles.ref}>{order.ref}</span>

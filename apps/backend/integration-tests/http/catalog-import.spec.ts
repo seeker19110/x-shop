@@ -2,7 +2,11 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { IMPORT_COLUMNS, parseCsv } from "@x-shop/domain";
+import { commitImportJob } from "../../src/lib/catalog/import";
+import { IMPORT_AUDIT_ACTIONS } from "../../src/lib/catalog/import-audit";
 import { loadProductSources } from "../../src/lib/catalog/product-source";
+import { AUDIT_MODULE } from "../../src/modules/audit";
+import type AuditModuleService from "../../src/modules/audit/service";
 import { CATALOG_IMPORT_MODULE } from "../../src/modules/catalog-import";
 import type CatalogImportModuleService from "../../src/modules/catalog-import/service";
 import { DEMO_PRODUCTS } from "../../src/scripts/catalog-demo-data";
@@ -228,6 +232,106 @@ medusaIntegrationTestRunner({
 
       it("không có import id → 404", async () => {
         expect((await fail(commit("cimp_khong_co"))).status).toBe(404);
+      });
+    });
+
+    describe("audit nhập CSV (che PII)", () => {
+      const auditOf = async (action: string, resourceId: string) =>
+        (
+          await container
+            .resolve<AuditModuleService>(AUDIT_MODULE)
+            .list({ action, resource_id: resourceId }, { limit: 50, offset: 0 })
+        ).entries;
+
+      it("preview → catalog.import.previewed (người làm, băm file, số đếm); không tên file/nội dung/thông điệp lỗi", async () => {
+        const form = new FormData();
+        const csv = [
+          HEADER,
+          "ao-loi,Áo lỗi 0912345678,apparel,khong-co,Cotton,Mô tả,AL-DEN-S,den,s,100000,1",
+        ].join("\n");
+        form.append("file", new Blob([csv], { type: "text/csv" }), "khach-an@example.vn.csv");
+        const res = (await api.post("/admin/x/imports/preview", form, {
+          headers: { ...admin, "x-request-id": "req-import-1" },
+        })) as Res;
+        expect(res.status).toBe(201);
+        const id = res.data.import_id as string;
+        const [row, ...rest] = await auditOf(IMPORT_AUDIT_ACTIONS.previewed, id);
+        expect(rest).toHaveLength(0);
+        expect(row).toMatchObject({
+          actor_type: "user",
+          actor_id: adminId,
+          resource_type: "catalog_import",
+          request_id: "req-import-1",
+          changes: {
+            status: "previewed",
+            summary: { rows_total: 1, rows_valid: 0 },
+            errors_count: 1,
+            error_columns: ["category"],
+          },
+        });
+        expect(String(row?.changes.file_sha256).replace(/:/g, "")).toBe(res.data.file_hash);
+        expect(row?.ip_hash).toMatch(/^[0-9a-f]{32}$/);
+        const raw = JSON.stringify(row);
+        for (const leak of ["khach-an", "@example.vn", "0912345678", "Áo lỗi", "khong-co"]) {
+          expect(raw).not.toContain(leak);
+        }
+      });
+
+      it("commit → catalog.import.committed đúng MỘT lần (cả khi gọi lại và đồng thời); còn lỗi → commit_rejected", async () => {
+        const id = (await csvPost("/admin/x/imports/preview", NEW_CSV)).data.import_id as string;
+        const [a, b] = await Promise.all([commit(id), commit(id)]);
+        expect([a.data.replayed, b.data.replayed].sort()).toEqual([false, true]);
+        expect((await commit(id)).data.replayed).toBe(true);
+        const committed = await auditOf(IMPORT_AUDIT_ACTIONS.committed, id);
+        expect(committed).toHaveLength(1);
+        expect(committed[0]).toMatchObject({
+          actor_id: adminId,
+          changes: {
+            status: "committed",
+            backfilled: false,
+            errors_count: 0,
+            result: { products_created: 2, products_updated: 0, price_changes: expect.any(Number) },
+          },
+        });
+
+        const bad = [HEADER, "ao-loi,Áo lỗi,apparel,ao-nu,Cotton,Mô tả,,den,s,100000,1"].join("\n");
+        const badId = (await csvPost("/admin/x/imports/preview", bad)).data.import_id as string;
+        expect((await fail(commit(badId))).status).toBe(422);
+        expect(await auditOf(IMPORT_AUDIT_ACTIONS.committed, badId)).toHaveLength(0);
+        const [rejected] = await auditOf(IMPORT_AUDIT_ACTIONS.rejected, badId);
+        expect(rejected).toMatchObject({
+          actor_id: adminId,
+          reason: "IMPORT_HAS_ERRORS",
+          changes: { errors_count: 1, error_columns: ["sku"] },
+        });
+        // Import không tồn tại → 404, không ghi audit commit_failed.
+        expect((await fail(commit("cimp_khong_co"))).status).toBe(404);
+        expect(await auditOf(IMPORT_AUDIT_ACTIONS.failed, "cimp_khong_co")).toHaveLength(0);
+      });
+
+      it("commit đã ghi catalog nhưng thiếu dòng audit → lần gọi lại tự bù (backfilled), không bù lần hai", async () => {
+        const id = (await csvPost("/admin/x/imports/preview", NEW_CSV)).data.import_id as string;
+        // Commit ngoài HTTP, không hook audit — mô phỏng lần ghi audit sau commit bị lỗi.
+        await commitImportJob(container, id, adminId);
+        expect(await auditOf(IMPORT_AUDIT_ACTIONS.committed, id)).toHaveLength(0);
+        expect((await commit(id)).data.replayed).toBe(true);
+        expect((await commit(id)).data.replayed).toBe(true);
+        const rows = await auditOf(IMPORT_AUDIT_ACTIONS.committed, id);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.changes).toMatchObject({ backfilled: true, status: "committed" });
+      });
+
+      it("vai trò thiếu catalog.import → 403, không có import/audit preview; chỉ có dòng rbac.denied", async () => {
+        const acc = await adminHeaders(api, container, { roles: ["accountant"] });
+        const denied = await fail(
+          api.post("/admin/x/imports/preview", NEW_CSV, {
+            headers: { ...acc.headers, "content-type": "text/csv" },
+          }),
+        );
+        expect(denied.status).toBe(403);
+        const audit = container.resolve<AuditModuleService>(AUDIT_MODULE);
+        const mine = await audit.list({ actor_id: acc.userId }, { limit: 10, offset: 0 });
+        expect(mine.entries.map((e) => e.action)).toEqual(["rbac.denied"]);
       });
     });
 

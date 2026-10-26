@@ -7,7 +7,7 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import type { OutboxClaim } from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG } from "./config";
 import { readCheckoutError } from "./errors";
-import { acquireOrdered, lockKeys, releaseOwned } from "./locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
 import { syncNativePayment } from "./payment";
 import { queryAndProcess } from "./recheck";
@@ -43,7 +43,7 @@ async function withLock<T>(
   try {
     return await fn();
   } finally {
-    await releaseOwned(locking, owner, null);
+    await releaseOwnedOrWarn(locking, owner, logger(container), "job");
   }
 }
 
@@ -146,6 +146,41 @@ async function ordersOfAttempt(container: MedusaContainer, attemptId: string): P
   return (res.rows as Array<{ id: string }>).map((r) => r.id);
 }
 
+/** Mô tả reservation do submit tạo (workflows/checkout/submit-checkout.ts) — tìm lại được cả khi đơn native đã bị xoá. */
+export const attemptReservationDescription = (attemptId: string) => `checkout ${attemptId}`;
+
+/**
+ * Phần dở còn lại của một attempt: đơn native chưa xoá + reservation của nó. Reservation tìm theo dòng đơn VÀ theo mô tả
+ * `checkout <id>`: bù trừ có thể đã xoá đơn nhưng không xoá được reservation (khóa native cần Redis — T-042).
+ */
+export async function leftoversOfAttempt(
+  container: MedusaContainer,
+  attemptId: string,
+): Promise<{ orderIds: string[]; reservationIds: string[] }> {
+  const orderIds = await ordersOfAttempt(container, attemptId);
+  const inventory = container.resolve(Modules.INVENTORY);
+  const ids = new Set<string>();
+  if (orderIds.length > 0) {
+    const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
+      entity: "order",
+      fields: ["id", "items.id"],
+      filters: { id: orderIds },
+    });
+    const lineIds = (data as Array<{ items?: Array<{ id: string } | null> }>).flatMap((o) =>
+      (o.items ?? []).flatMap((i) => (i ? [i.id] : [])),
+    );
+    if (lineIds.length > 0) {
+      for (const r of await inventory.listReservationItems({ line_item_id: lineIds })) ids.add(r.id);
+    }
+  }
+  for (const r of await inventory.listReservationItems({
+    description: attemptReservationDescription(attemptId),
+  })) {
+    ids.add(r.id);
+  }
+  return { orderIds, reservationIds: [...ids] };
+}
+
 /**
  * Attempt `preparing` quá lease (tiến trình submit đã chết — AT10): lấy khóa giỏ (submit còn sống thì đang giữ → bỏ
  * qua), nhận quyền bù trừ, rồi nhả reservation đã tạo, hủy đơn native, mã → released, order_finance → cancelled.
@@ -160,25 +195,11 @@ export async function reconcileAttempts(
   for (const a of await s.listStaleAttempts(now, opts.limit ?? 50)) {
     const outcome = await withLock(container, lockKeys.cart(a.cart_id), 1_000, "cart", async () => {
       if (!(await s.claimStaleAttempt(a.id, now))) return "skipped" as const;
-      const orderIds = await ordersOfAttempt(container, a.id);
-      if (orderIds.length > 0) {
-        const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
-          entity: "order",
-          fields: ["id", "items.id"],
-          filters: { id: orderIds },
-        });
-        const lineIds = (data as Array<{ items?: Array<{ id: string } | null> }>).flatMap((o) =>
-          (o.items ?? []).flatMap((i) => (i ? [i.id] : [])),
-        );
-        const reservations =
-          lineIds.length > 0
-            ? await container.resolve(Modules.INVENTORY).listReservationItems({ line_item_id: lineIds })
-            : [];
-        if (reservations.length > 0) {
-          await deleteReservationsWorkflow(container).run({ input: { ids: reservations.map((r) => r.id) } });
-        }
-        for (const id of orderIds) await cancelNativeOrder(container, id);
+      const { orderIds, reservationIds } = await leftoversOfAttempt(container, a.id);
+      if (reservationIds.length > 0) {
+        await deleteReservationsWorkflow(container).run({ input: { ids: reservationIds } });
       }
+      for (const id of orderIds) await cancelNativeOrder(container, id);
       await s.compensateAttemptRecords(a.id, orderIds);
       return "compensated" as const;
     });

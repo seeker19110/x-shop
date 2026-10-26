@@ -3,6 +3,7 @@ import { cache } from "react";
 import { categoryName, NAV_CATEGORIES } from "../content/navigation";
 import { mapCategories, mapList, mapProduct, mapSearch, type CategoryEntry } from "./backend-map";
 import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
+import { clientIpHeader } from "../security/client-ip";
 import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
 
@@ -21,7 +22,12 @@ interface ListOptions {
   pageSize?: number;
 }
 
-async function backendGet<T>(path: string, params?: URLSearchParams, fresh = false): Promise<T> {
+async function backendGet<T>(
+  path: string,
+  params?: URLSearchParams,
+  fresh = false,
+  extraHeaders: Record<string, string> = {},
+): Promise<T> {
   const base = getServerEnv().MEDUSA_BACKEND_URL;
   const qs = params && params.size > 0 ? `?${params.toString()}` : "";
   let res: Response;
@@ -30,6 +36,7 @@ async function backendGet<T>(path: string, params?: URLSearchParams, fresh = fal
       headers: {
         accept: "application/json",
         "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
+        ...extraHeaders,
       },
       signal: AbortSignal.timeout(TIMEOUT_MS),
       ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: 60 } }),
@@ -86,7 +93,12 @@ export async function search(
     }
     return fixtureSearch(filter, { pageSize: opts.pageSize ?? CATALOG_PAGE_SIZE });
   }
-  return mapSearch(await backendGet<unknown>("/store/x/search", listParams(filter, opts)), backendBase());
+  // Tìm kiếm bị giới hạn theo IP khách ở backend (SEC03): chuyển tiếp IP (khi tin proxy) — khoá cache dữ liệu vì vậy
+  // tách theo IP, chấp nhận được vì truy vấn tìm kiếm vốn phân tán.
+  return mapSearch(
+    await backendGet<unknown>("/store/x/search", listParams(filter, opts), false, await clientIpHeader()),
+    backendBase(),
+  );
 }
 
 /** `null` khi không có hoặc chưa publish (404). Bọc `cache` để `generateMetadata` và trang dùng chung một lần gọi. */

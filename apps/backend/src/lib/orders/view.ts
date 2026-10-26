@@ -1,8 +1,12 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { ledgerTotals, type AddressSnapshot, type QuoteBreakdown } from "@x-shop/domain";
+import { ledgerTotals, type AddressSnapshot, type QuoteBreakdown, type ShipmentState } from "@x-shop/domain";
+import { maskFreeText } from "../audit/sanitize";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
+import { SHIPPING_MODULE } from "../../modules/shipping";
+import type ShippingModuleService from "../../modules/shipping/service";
+import type { ShipmentRow } from "../../modules/shipping/service";
 
 /**
  * Hình đơn trả cho khách (API-CONTRACT "Đơn hàng sau mua"): ba trạng thái tách riêng — đặt đơn (`state`), thanh toán
@@ -103,6 +107,47 @@ export function shipmentStateOf(fulfillments: readonly NativeFulfillment[]): Shi
   return "picking";
 }
 
+/** Trạng thái vận đơn GHN → trạng thái giao khách thấy (giao lỗi/đang hoàn vẫn là "đã giao cho hãng"). */
+const ROW_VIEW: Record<ShipmentState, ShipmentStateView> = {
+  unfulfilled: "unfulfilled",
+  picking: "picking",
+  packed: "packed",
+  shipped: "shipped",
+  failed: "shipped",
+  returning: "shipped",
+  returned: "shipped",
+  delivered: "delivered",
+};
+
+/**
+ * Trạng thái giao của đơn: fulfillment native là nguồn chính (T-043 tạo cùng vận đơn GHN); vận đơn đã có ở hãng mà
+ * fulfillment native chưa ghi nhận được (lỗi dữ liệu, chờ đồng bộ) → lấy theo vận đơn, không báo nhầm "chưa giao".
+ */
+export function orderShipmentState(
+  fulfillments: readonly NativeFulfillment[],
+  shipment: Pick<ShipmentRow, "state" | "provider_order_code"> | null,
+): ShipmentStateView {
+  const native = shipmentStateOf(fulfillments);
+  if (native !== "unfulfilled" || !shipment?.provider_order_code) return native;
+  return ROW_VIEW[shipment.state] ?? "packed";
+}
+
+/**
+ * Khách tự hủy được (POST02, S-309): trạng thái cho phép + chưa có fulfillment + CHƯA có vận đơn — kể cả vận đơn đang
+ * chờ hãng trả lời (giữ chỗ khi timeout) — cùng điều kiện với `cancelByCustomer`.
+ */
+export function customerCanCancel(
+  state: string,
+  shipmentState: ShipmentStateView,
+  shipment: unknown | null,
+): boolean {
+  return (
+    (CUSTOMER_CANCELLABLE_STATES as readonly string[]).includes(state) &&
+    shipmentState === "unfulfilled" &&
+    !shipment
+  );
+}
+
 export async function nativeOrderParts(
   container: MedusaContainer,
   orderId: string,
@@ -135,19 +180,21 @@ export async function nativeOrderParts(
 
 const CANCEL_LABELS: Record<string, string> = {
   CUSTOMER_CANCELLED: "Bạn đã hủy đơn",
+  SHOP_CANCELLED: "Cửa hàng đã hủy đơn",
   HOLD_EXPIRED: "Đơn đã hủy do quá hạn thanh toán",
 };
 
 export async function presentOrder(container: MedusaContainer, fin: OrderFinanceRow): Promise<OrderView> {
   const s = service(container);
   const orderId = fin.order_id;
-  const [entries, ledgerRows, outbox, payments, refundRequests, native] = await Promise.all([
+  const [entries, ledgerRows, outbox, payments, refundRequests, native, shipment] = await Promise.all([
     s.ledgerEntriesOf(orderId),
     s.listPaymentLedgers({ order_id: orderId }, { order: { created_at: "ASC" } }),
     s.listOutboxEvents({ aggregate_id: orderId }, { order: { created_at: "ASC" } }),
     s.listPaymentAttempts({ order_id: orderId }, { order: { created_at: "DESC" } }),
     s.listOpsExceptions({ order_id: orderId, kind: ["refund_request", "late_payment", "overpayment"] }),
     nativeOrderParts(container, orderId),
+    container.resolve<ShippingModuleService>(SHIPPING_MODULE).shipmentOfOrder(orderId),
   ]);
   const paid = Math.max(0, ledgerTotals(entries).net);
   const cancelEvent = outbox.find((e) => e.type === "order.cancelled");
@@ -168,7 +215,7 @@ export async function presentOrder(container: MedusaContainer, fin: OrderFinance
     paymentState = open?.state === "unknown" ? "unknown" : "pending";
   }
 
-  const shipmentState = shipmentStateOf(native.fulfillments);
+  const shipmentState = orderShipmentState(native.fulfillments, shipment);
 
   const timeline: OrderView["timeline"] = [
     {
@@ -238,8 +285,7 @@ export async function presentOrder(container: MedusaContainer, fin: OrderFinance
   const address = (fin.address ?? {}) as Partial<AddressSnapshot>;
   const contact = (fin.contact ?? {}) as { name?: string; phone?: string };
   const holdExpiresAt = iso(fin.hold_expires_at);
-  const cancellable =
-    (CUSTOMER_CANCELLABLE_STATES as readonly string[]).includes(fin.state) && shipmentState === "unfulfilled";
+  const cancellable = customerCanCancel(fin.state, shipmentState, shipment);
 
   return {
     display_ref: fin.display_ref,
@@ -250,7 +296,7 @@ export async function presentOrder(container: MedusaContainer, fin: OrderFinance
     created_at: iso(fin.created_at) as string,
     hold_expires_at: holdExpiresAt,
     cod_confirm_by: iso(fin.cod_confirm_by),
-    cancel_reason: cancelReason,
+    cancel_reason: maskFreeText(cancelReason),
     timeline,
     lines,
     totals: {

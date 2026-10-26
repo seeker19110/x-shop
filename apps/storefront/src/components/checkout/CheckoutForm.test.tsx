@@ -18,7 +18,7 @@ vi.mock("../../lib/checkout/actions", () => ({
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: m.push }) }));
 vi.mock("next/image", () => ({
-  // eslint-disable-next-line @next/next/no-img-element
+  // eslint-disable-next-line @next/next/no-img-element -- mock next/image trong test, cần thẻ img thuần
   default: ({ src, alt }: { src: string; alt: string }) => <img src={src} alt={alt} />,
 }));
 
@@ -319,6 +319,24 @@ describe("đặt hàng", () => {
     await advance(1600);
     await waitFor(() => expect(m.push).toHaveBeenCalledWith("/don-hang/XS-ABC123"));
     expect(m.poll).toHaveBeenCalledWith("chk_77");
+  });
+
+  it("503 LOCK_UNAVAILABLE: thông điệp tiếng Việt, giữ dữ liệu form, nút thử lại dùng CÙNG khóa, không tự gửi lại", async () => {
+    m.submit.mockResolvedValueOnce({ kind: "unavailable", retryAfterSeconds: 60 });
+    ui();
+    await fillAll();
+    fireEvent.click(submitBtn());
+    const banner = await screen.findByTestId("checkout-banner");
+    expect(banner).toHaveTextContent("Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít phút");
+    expect(screen.getByLabelText(/Họ và tên/)).toHaveValue("Nguyễn Văn A");
+    expect(screen.getByLabelText(/Số nhà, tên đường/)).toHaveValue("12 Phố Điện Biên Phủ");
+    await advance(120_000);
+    expect(m.submit).toHaveBeenCalledTimes(1); // không tự gửi lại
+    m.submit.mockResolvedValueOnce(placed);
+    fireEvent.click(within(banner).getByRole("button", { name: "Thử lại" }));
+    await waitFor(() => expect(m.submit).toHaveBeenCalledTimes(2));
+    expect(m.submit.mock.calls[1]?.[0].idempotencyKey).toBe(m.submit.mock.calls[0]?.[0].idempotencyKey);
+    await waitFor(() => expect(m.push).toHaveBeenCalledWith("/don-hang/XS-ABC123"));
   });
 
   it("lỗi gắn trường từ server (SĐT) hiện tại trường và focus; BUSY_RETRY hết lượt báo bấm lại", async () => {

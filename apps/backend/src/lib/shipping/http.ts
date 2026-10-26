@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
 import type { ShipmentRow } from "../../modules/shipping/service";
+import { readCheckoutError, sendProblem as sendCheckoutProblem } from "../checkout/errors";
 import { sendProblem } from "../http/problem";
 import { ShippingError } from "./shipments";
 
@@ -31,6 +32,9 @@ export function handleShippingRouteError(req: MedusaRequest, res: MedusaResponse
       res.setHeader("Retry-After", "2");
     return sendProblem(res, error.status, error.code, error.message, [], error.detail);
   }
+  // Hạ tầng khóa (Redis) hỏng/không trả lời → 503 LOCK_UNAVAILABLE + Retry-After như route checkout.
+  const checkout = readCheckoutError(error);
+  if (checkout && checkout.code !== "INTERNAL") return sendCheckoutProblem(res, checkout);
   if (error instanceof MedusaError) {
     const status =
       error.type === MedusaError.Types.UNAUTHORIZED

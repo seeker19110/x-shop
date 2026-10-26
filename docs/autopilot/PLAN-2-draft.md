@@ -1,0 +1,447 @@
+# PLAN đợt 2 — NHÁP (chưa duyệt, chưa nằm trong `docs/autopilot/PLAN.md`)
+
+> Nguồn: 302 mục MUST `[ ]` của `BLUEPRINT.md` (`— Thiếu:`), `docs/ops/blueprint-audit/batch-1..5.md`, `GO-NO-GO.md`, `docs/ops/THREAT-MODEL.md` §8–9, `docs/ops/DPIA.md` §7–9. Lập 2026-10-26 trên nhánh sau `087157e`.
+> Quy ước: task đánh số tiếp từ `T-062` (T-060 vẫn mở trong PLAN hiện tại; `loop-opt` phụ thuộc nó). **Đóng** = tick ID trong BLUEPRINT.md kèm `— Kiểm:` chạy lại được (việc nằm trong task); **Góp** = đóng một phần, ID vẫn mở. Task chạm CI/xt.yaml: PR riêng, nêu lý do, không nới ngưỡng. Không task nào phụ thuộc quyết định chưa có: ID đó nằm ở §3 (`Q-nn`) và task mở khoá sinh sau `loop decide`.
+
+## 0. Tóm tắt
+- 302 mục = 191 do 66 task tự làm (T-062…T-127) + 47 chờ quyết định phiên chính (25 điểm Q-01…Q-25, §3; Q-25 không gắn ID) + 17 chờ người (6 việc H-01…H-06, §4) + 47 chờ hạ tầng (§4).
+- Thứ tự gợi ý: A tài liệu/kho → B vận hành → C lint/kiến trúc → D lỗi/log → E độ bền → F cấu hình/auth → G DB → H phụ thuộc/CI → I a11y/E2E → J nghiệp vụ. Chạy `loop next` theo `sau:`; task chạm cùng `files:` không song song.
+
+## 1. Bảng phân loại mọi mục MUST còn mở
+
+| ID | Nhóm |
+|---|---|
+| ARC-ADR-003 | chờ quyết định Q-17 |
+| ARC-ADR-004 | chờ quyết định Q-17 |
+| ARC-INT-001 | chờ quyết định Q-06 |
+| ARC-INT-008 | chờ quyết định Q-08 |
+| ARC-MOD-004 | T-084 |
+| ARC-MOD-005 | T-084 |
+| ARC-MOD-008 | T-070 |
+| ARC-RES-001 | T-092 |
+| ARC-RES-002 | T-093 |
+| ARC-RES-005 | T-095 |
+| ARC-RES-009 | T-094 |
+| ARC-STYLE-001 | T-069 |
+| ARC-STYLE-002 | T-069 |
+| BASE-CFG-003 | chờ quyết định Q-18 |
+| BASE-CFG-005 | T-098 |
+| BASE-CFG-007 | T-098 |
+| BASE-DATA-003 | T-082 |
+| BASE-DEP-004 | T-104 |
+| BASE-DEP-005 | T-105 |
+| BASE-DEP-006 | T-103 |
+| BASE-DEP-007 | T-103 |
+| BASE-DEP-008 | T-106 |
+| BASE-DEP-009 | chờ hạ tầng |
+| BASE-DOC-001 | T-062 |
+| BASE-DOC-003 | chờ quyết định Q-17 |
+| BASE-DOC-004 | T-073 |
+| BASE-DOC-005 | T-063 |
+| BASE-DOC-006 | T-065 |
+| BASE-DOC-007 | T-087 |
+| BASE-ERR-001 | T-081 |
+| BASE-ERR-002 | T-088 |
+| BASE-ERR-003 | T-088 |
+| BASE-ERR-004 | T-092 |
+| BASE-ERR-005 | T-090 |
+| BASE-ERR-006 | T-090 |
+| BASE-ERR-007 | T-090 |
+| BASE-ERR-008 | T-090 |
+| BASE-ERR-009 | T-090 |
+| BASE-ERR-011 | chờ hạ tầng |
+| BASE-GATE-009 | chờ quyết định Q-19 |
+| BASE-REPO-003 | T-064 |
+| BASE-REPO-004 | chờ người H-01 |
+| BASE-REPO-005 | T-111 |
+| BASE-REPO-006 | T-112 |
+| BASE-REPO-007 | T-064 |
+| BASE-SEC-001 | T-085 |
+| BASE-SEC-007 | T-084 |
+| BASE-SEC-009 | T-064 |
+| BASE-SEC-010 | T-098 |
+| BASE-SEC-013 | T-077 |
+| BE-API-001 | T-087 |
+| BE-API-003 | T-085 |
+| BE-API-008 | chờ quyết định Q-07 |
+| BE-API-009 | T-085 |
+| BE-AUTH-001 | chờ quyết định Q-01 |
+| BE-AUTH-003 | T-099 |
+| BE-AUTH-004 | T-099 |
+| BE-AUTH-009 | T-085 |
+| BE-CACHE-007 | T-096 |
+| BE-FILE-003 | T-100 |
+| BE-FILE-004 | chờ hạ tầng |
+| BE-INT-002 | T-099 |
+| BE-INT-007 | T-093 |
+| BE-JOB-003 | T-093 |
+| BE-JOB-004 | T-073 |
+| BE-JOB-007 | T-093 |
+| BE-REL-001 | T-092 |
+| BE-REL-003 | T-093 |
+| BE-REL-004 | T-094 |
+| CMP-AUDIT-002 | T-091 |
+| CMP-AUDIT-003 | T-077 |
+| CMP-AUDIT-007 | T-077 |
+| CMP-AUDIT-010 | T-075 |
+| CMP-INTL-002 | T-077 |
+| CMP-INTL-006 | T-075 |
+| CMP-INTL-007 | chờ quyết định Q-20 |
+| CMP-LIC-001 | chờ người H-01 |
+| CMP-LIC-002 | T-105 |
+| CMP-LIC-003 | T-105 |
+| CMP-LIC-004 | T-105 |
+| CMP-PRIV-001 | T-077 |
+| CMP-PRIV-005 | chờ quyết định Q-20 |
+| CMP-PRIV-008 | T-090 |
+| CMP-PRIV-010 | T-090 |
+| CMP-RIGHTS-001 | chờ quyết định Q-21 |
+| CMP-RIGHTS-004 | chờ quyết định Q-20 |
+| CMP-RIGHTS-007 | chờ quyết định Q-20 |
+| CMP-VN-001 | chờ quyết định Q-21 |
+| CMP-VN-004 | chờ hạ tầng |
+| CMP-VN-006 | T-075 |
+| CMP-VN-007 | chờ quyết định Q-20 |
+| DB-BACKUP-001 | T-074 |
+| DB-BACKUP-002 | chờ hạ tầng |
+| DB-BACKUP-004 | chờ hạ tầng |
+| DB-MIG-001 | T-102 |
+| DB-MIG-003 | T-102 |
+| DB-MIG-008 | T-102 |
+| DB-MIG-011 | T-066 |
+| DB-MODEL-002 | chờ quyết định Q-22 |
+| DB-MODEL-004 | T-101 |
+| DB-MODEL-005 | T-101 |
+| DB-PERF-001 | T-074 |
+| DB-PERF-004 | T-092 |
+| DB-PERF-005 | chờ quyết định Q-02 |
+| DB-PERF-008 | chờ hạ tầng |
+| DB-SEARCH-001 | T-074 |
+| DB-SEC-002 | chờ quyết định Q-02 |
+| DB-SEC-003 | chờ hạ tầng |
+| DB-SEC-004 | chờ hạ tầng |
+| DB-SEC-007 | chờ quyết định Q-02 |
+| DB-TX-003 | T-092 |
+| FE-BUILD-003 | chờ quyết định Q-05 |
+| FE-BUILD-004 | T-081 |
+| FE-BUILD-005 | T-098 |
+| FE-FORM-001 | chờ quyết định Q-03 |
+| FE-PERF-001 | chờ hạ tầng |
+| FE-PERF-002 | T-108 |
+| FE-PERF-004 | T-108 |
+| FE-RENDER-001 | T-126 |
+| FE-SEC-001 | T-083 |
+| FE-SEC-002 | T-083 |
+| FE-STATE-001 | chờ quyết định Q-04 |
+| FE-STATE-005 | T-096 |
+| FE-STATE-008 | T-126 |
+| FE-TEST-001 | T-083 |
+| FE-TEST-002 | T-116 |
+| FE-TEST-003 | T-083 |
+| FE-TEST-006 | T-067 |
+| IND-ECOM-001 | chờ quyết định Q-13 |
+| IND-ECOM-003 | chờ người H-06 |
+| IND-ECOM-004 | T-122 |
+| IND-ECOM-005 | T-118 |
+| IND-ECOM-006 | T-123 |
+| IND-ECOM-007 | chờ người H-06 |
+| IND-ECOM-008 | chờ quyết định Q-20 |
+| IND-ECOM-009 | chờ người H-06 |
+| IND-ECOM-010 | chờ quyết định Q-21 |
+| IND-ECOM-015 | chờ người H-06 |
+| IND-ECOM-016 | T-114 |
+| LOOP-CTX-002 | chờ quyết định Q-15 |
+| LOOP-CTX-006 | chờ quyết định Q-24 |
+| LOOP-DESIGN-001 | chờ quyết định Q-15 |
+| LOOP-DESIGN-003 | chờ quyết định Q-16 |
+| LOOP-HARNESS-003 | chờ quyết định Q-15 |
+| LOOP-HARNESS-008 | chờ người H-04 |
+| LOOP-OPT-001 | T-127 |
+| LOOP-OPT-002 | T-127 |
+| LOOP-OPT-003 | T-127 |
+| LOOP-OPT-004 | T-127 |
+| LOOP-ORCH-004 | chờ quyết định Q-16 |
+| OPS-COST-001 | chờ hạ tầng |
+| OPS-COST-004 | T-097 |
+| OPS-COST-005 | chờ hạ tầng |
+| OPS-DEPLOY-001 | chờ hạ tầng |
+| OPS-DEPLOY-002 | chờ hạ tầng |
+| OPS-DEPLOY-003 | T-102 |
+| OPS-DEPLOY-004 | chờ hạ tầng |
+| OPS-DR-003 | chờ hạ tầng |
+| OPS-DR-004 | chờ hạ tầng |
+| OPS-DR-007 | chờ hạ tầng |
+| OPS-DR-008 | chờ hạ tầng |
+| OPS-IAC-001 | chờ hạ tầng |
+| OPS-IAC-003 | chờ hạ tầng |
+| OPS-IAC-004 | chờ hạ tầng |
+| OPS-IAC-006 | chờ hạ tầng |
+| OPS-IR-001 | T-075 |
+| OPS-IR-004 | T-075 |
+| OPS-IR-006 | T-075 |
+| OPS-IR-010 | T-075 |
+| OPS-MAINT-001 | T-103 |
+| OPS-MAINT-003 | T-103 |
+| OPS-MAINT-004 | T-104 |
+| OPS-MAINT-005 | T-103 |
+| OPS-OBS-001 | chờ hạ tầng |
+| OPS-OBS-003 | chờ hạ tầng |
+| OPS-OBS-006 | T-079 |
+| OPS-OBS-008 | chờ hạ tầng |
+| OPS-SLO-001 | T-079 |
+| OPS-SLO-004 | chờ hạ tầng |
+| OPS-SLO-005 | chờ hạ tầng |
+| OPS-SLO-006 | chờ hạ tầng |
+| PM-HANDOVER-002 | T-076 |
+| PM-HANDOVER-004 | T-076 |
+| PM-HANDOVER-005 | T-076 |
+| PM-HANDOVER-009 | T-076 |
+| PM-METRIC-006 | chờ quyết định Q-20 |
+| PM-PLAN-005 | T-071 |
+| PM-PRIO-003 | chờ hạ tầng |
+| PM-PRIO-004 | T-071 |
+| PM-REQ-019 | T-070 |
+| PM-RISK-001 | T-071 |
+| PM-RISK-003 | T-071 |
+| PM-RISK-006 | T-071 |
+| PM-RISK-007 | T-071 |
+| PM-SPEC-001 | T-072 |
+| PM-SPEC-003 | T-072 |
+| PM-SPEC-004 | chờ quyết định Q-14 |
+| PM-SPEC-020 | chờ người H-06 |
+| PRF-WEB-001 | T-069 |
+| PRF-WEB-002 | chờ quyết định Q-05 |
+| PRF-WEB-004 | T-085 |
+| PRF-WEB-005 | T-108 |
+| PRF-WEB-006 | T-116 |
+| PRF-WEB-008 | chờ hạ tầng |
+| PRF-WEB-009 | chờ hạ tầng |
+| QA-COV-001 | T-110 |
+| QA-COV-002 | T-110 |
+| QA-COV-004 | T-081 |
+| QA-DATA-001 | T-077 |
+| QA-DATA-002 | T-078 |
+| QA-E2E-001 | chờ người H-04 |
+| QA-E2E-003 | T-114 |
+| QA-E2E-005 | chờ quyết định Q-10 |
+| QA-E2E-006 | T-117 |
+| QA-INT-006 | T-086 |
+| QA-INT-007 | chờ quyết định Q-11 |
+| QA-PERF-002 | chờ hạ tầng |
+| QA-PERF-006 | T-109 |
+| QA-PERF-007 | T-109 |
+| QA-STATIC-004 | T-081 |
+| QA-STATIC-005 | T-081 |
+| QA-STRAT-002 | chờ người H-02 |
+| QA-STRAT-005 | T-067 |
+| QA-STRAT-008 | T-081 |
+| SEC-INFRA-001 | chờ hạ tầng |
+| SEC-INFRA-002 | chờ hạ tầng |
+| SEC-INFRA-003 | chờ hạ tầng |
+| SEC-INFRA-010 | chờ hạ tầng |
+| SEC-LOG-001 | T-091 |
+| SEC-LOG-002 | T-091 |
+| SEC-LOG-006 | chờ hạ tầng |
+| SEC-SECRET-005 | chờ hạ tầng |
+| SEC-SECRET-007 | T-090 |
+| SEC-SECRET-011 | T-073 |
+| SEC-SUPPLY-006 | T-104 |
+| SEC-TM-006 | T-080 |
+| SEC-WEB-001 | T-107 |
+| SEC-WEB-004 | T-083 |
+| STD-A11Y-002 | T-114 |
+| STD-A11Y-004 | chờ người H-05 |
+| STD-API-008 | chờ quyết định Q-11 |
+| STD-PRIV-002 | T-077 |
+| STD-PRIV-004 | chờ quyết định Q-20 |
+| STD-PRIV-005 | chờ quyết định Q-20 |
+| STD-PROC-001 | T-070 |
+| STD-PROC-002 | T-112 |
+| STD-PROC-003 | chờ quyết định Q-11 |
+| STD-SEC-004 | T-086 |
+| STD-SEC-007 | chờ hạ tầng |
+| UX-A11Y-001 | T-114 |
+| UX-A11Y-003 | T-115 |
+| UX-CONTENT-001 | T-124 |
+| UX-CONTENT-005 | T-124 |
+| UX-CONTENT-006 | T-124 |
+| UX-DS-002 | T-125 |
+| UX-RESP-001 | T-116 |
+| UX-RESP-005 | T-116 |
+| UX-RESP-008 | T-116 |
+| UX-STATE-001 | chờ quyết định Q-09 |
+| UX-STATE-005 | T-089 |
+| UX-STATE-008 | T-089 |
+| UX-VISUAL-007 | T-070 |
+| WF-DOC-001 | T-066 |
+| WF-DOC-002 | T-065 |
+| WF-DOC-008 | T-073 |
+| WF-ENV-006 | chờ hạ tầng |
+| WF-ENV-008 | chờ hạ tầng |
+| WF-ENV-010 | T-073 |
+| WF-ENV-012 | chờ hạ tầng |
+| WF-GIT-001 | chờ người H-02 |
+| WF-GIT-002 | chờ người H-02 |
+| WF-REL-001 | T-112 |
+| WF-REL-003 | T-112 |
+| WF-REL-004 | chờ hạ tầng |
+| WF-REL-007 | chờ hạ tầng |
+| WF-REVIEW-002 | T-066 |
+| WF-REVIEW-005 | chờ người H-02 |
+| WF-REVIEW-007 | T-068 |
+| WF-SDD-001 | T-072 |
+| WF-SDD-002 | chờ quyết định Q-14 |
+| WF-SDD-003 | chờ quyết định Q-14 |
+| WF-TEAM-003 | T-066 |
+| WF-TEAM-004 | T-066 |
+| XC-DOCAI-001 | T-062 |
+| XC-DOCAI-005 | T-062 |
+| XC-DX-001 | T-062 |
+| XC-DX-002 | T-113 |
+| XC-DX-006 | chờ quyết định Q-19 |
+| XC-GREEN-001 | chờ hạ tầng |
+| XC-GREEN-002 | T-108 |
+| XC-GREEN-005 | T-066 |
+| XC-GREEN-007 | chờ hạ tầng |
+| XC-I18N-001 | chờ quyết định Q-12 |
+| XC-OSS-001 | chờ người H-01 |
+| XC-OSS-004 | chờ người H-03 |
+| XC-OSS-005 | chờ quyết định Q-23 |
+| XC-OSS-007 | chờ người H-06 |
+| XC-PERF-003 | T-108 |
+| XC-PERF-006 | T-121 |
+| XC-UNITS-001 | T-119 |
+| XC-UNITS-006 | T-072 |
+| XC-UNITS-009 | T-120 |
+
+## 2. Task tự làm được (T-062…)
+
+### A. Tài liệu gốc / kho
+- [ ] `T-062` README ≤3 lệnh từ clone sạch + AGENTS.md liệt kê lệnh cài/chạy/test/lint (trích xt.yaml) + rà AGENTS/CLAUDE không chứa tên model/phiên. Đóng: BASE-DOC-001, XC-DX-001, XC-DOCAI-001, XC-DOCAI-005 (sau: T-038; files: README.md, AGENTS.md) — Gate: `test -f README.md && grep -q 'pnpm install --frozen-lockfile' README.md && grep -q 'pnpm test' AGENTS.md && ! grep -Eqi 'claude (sonnet|opus)|claude.ai/code' AGENTS.md CLAUDE.md && pnpm format:check`
+- [ ] `T-063` Job CI `readme-smoke`: chạy đúng các lệnh trong README từ clone sạch (chạm CI: PR riêng, nêu lý do). Đóng: BASE-DOC-005 (sau: T-062; files: .github/workflows/ci.yml) — Gate: `python3 .xtemplates/scripts/xt.py ci-check && grep -q 'readme-smoke' .github/workflows/ci.yml`
+- [ ] `T-064` CHANGELOG (Keep a Changelog), `.gitattributes`, SECURITY.md, CONTRIBUTING, CODE_OF_CONDUCT, SUPPORT, ISSUE_TEMPLATE, `security.txt`; LICENSE KHÔNG tạo ở đây (chờ H-01). Đóng: BASE-REPO-003, BASE-REPO-007, BASE-SEC-009. Góp: XC-OSS-001 (sau: T-062; files: CHANGELOG.md, .gitattributes, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, SUPPORT.md, .github/ISSUE_TEMPLATE/, apps/storefront/public/.well-known/security.txt) — Gate: `python3 .xtemplates/scripts/xt.py changelog-check && grep -q 'text=auto' .gitattributes && test -f SECURITY.md && test -f apps/storefront/public/.well-known/security.txt && pnpm format:check`
+- [ ] `T-065` Sửa 12 liên kết hỏng (10 anchor DAC-TA-GOC, 1 BLUEPRINT, 1 BACKLOG) + bước link-check trong job `gate` (chạm CI). Đóng: WF-DOC-002, BASE-DOC-006 (sau: T-038; files: docs/specs/DAC-TA-GOC.md, BLUEPRINT-BACKLOG.md, .github/workflows/ci.yml (BLUEPRINT.md: chỉ sửa link qua `/blueprint`, không sửa mục)) — Gate: `python3 .xtemplates/scripts/check-links.py && python3 .xtemplates/scripts/xt.py ci-check`
+- [ ] `T-066` PR template (Docs cập nhật, DoD ca biên/tự review/map tiêu chí→test, bảng trước/sau tài nguyên, Backup trước migrate) + ISSUE_TEMPLATE task (DoR) + `pr-policy.yml` kiểm mục bắt buộc qua `env:` (chạm CI). Đóng: WF-REVIEW-002, WF-DOC-001, WF-TEAM-003, WF-TEAM-004, XC-GREEN-005, DB-MIG-011 (sau: T-064; files: .github/pull_request_template.md, .github/ISSUE_TEMPLATE/task.md, .github/workflows/pr-policy.yml) — Gate: `python3 .xtemplates/scripts/xt.py ci-check && grep -q 'Docs cập nhật' .github/pull_request_template.md && grep -q 'Backup trước migrate' .github/pull_request_template.md && test -f .github/ISSUE_TEMPLATE/task.md && pnpm format:check`
+- [ ] `T-067` Kiểm CI: PR `fix:` phải đổi ≥1 file test (đỏ trước/xanh sau ghi trong mô tả); ngoại lệ có nhãn + lý do. Đóng: QA-STRAT-005, FE-TEST-006 (sau: T-066; files: scripts/check-fix-pr.mjs, scripts/check-fix-pr.test.mjs, .github/workflows/pr-policy.yml) — Gate: `node --test scripts/check-fix-pr.test.mjs && python3 .xtemplates/scripts/xt.py ci-check`
+- [ ] `T-068` CODEOWNERS cho vùng nhạy cảm (auth, payment, migration, `.github/`, `.claude/`, PII) + `merge_risk_paths` ở xt.yaml (chạm cấu hình cổng: nêu lý do). Đóng: WF-REVIEW-007 (sau: T-038; files: .github/CODEOWNERS, xt.yaml) — Gate: `test -f .github/CODEOWNERS && grep -q merge_risk_paths xt.yaml && python3 .xtemplates/scripts/xt.py ci-check`
+- [ ] `T-069` ADR mới: modular monolith + 2 deployable (≥2 phương án, 'Điều kiện đọc lại', bằng chứng) và ADR chiến lược render theo nhóm route; script lint heading ADR chạy cho ADR ≥0002 (ADR-0001 xem Q-17). Đóng: ARC-STYLE-001, ARC-STYLE-002, PRF-WEB-001 (sau: T-038; files: docs/adr/0002-*.md, docs/adr/0003-*.md, scripts/check-adr.mjs, scripts/check-adr.test.mjs) — Gate: `node scripts/check-adr.mjs && node --test scripts/check-adr.test.mjs && grep -rq 'Điều kiện đọc lại' docs/adr && pnpm format:check`
+- [ ] `T-070` PROJECT.md: bảng ISO/IEC 25010:2023 (≥3 đặc tính, số đo+ngưỡng), `docs/architecture/domains.md` (miền = bounded context), `assets/CREDITS.md` (hoặc ghi ảnh SVG tự tạo), PM-REQ-019 gắn D-NNN+ngày cho câu `[chặn ra mắt]`. Đóng: STD-PROC-001, ARC-MOD-008, UX-VISUAL-007, PM-REQ-019 (sau: T-038; files: PROJECT.md, docs/architecture/domains.md, assets/CREDITS.md) — Gate: `grep -q 'ISO/IEC 25010' PROJECT.md && test -f docs/architecture/domains.md && test -f assets/CREDITS.md && grep -n 'chặn ra mắt' PROJECT.md | grep -q 'D-' && pnpm format:check`
+- [ ] `T-071` Sổ rủi ro `docs/RISKS.md` (RK-001…RK-006 đủ cột + bảng thẩm định phụ thuộc), `SCOPE.md`, mục Khung pháp lý trong PROJECT.md (nguồn sống, ghi ngày; không xác minh → '(chưa xác minh)'), mục Điểm dừng ≥4 dòng ở PLAN, gắn RK-001 vào spike ở lát đầu của PLAN-2. Đóng: PM-RISK-001, PM-RISK-003, PM-RISK-006, PM-RISK-007, PM-PRIO-004, PM-PLAN-005 (sau: T-038; files: docs/RISKS.md, SCOPE.md, PROJECT.md, docs/autopilot/PLAN.md) — Gate: `grep -q '^| RK-001' docs/RISKS.md && test -f SCOPE.md && grep -q 'Khung pháp lý' PROJECT.md && python3 .xtemplates/scripts/xt.py blueprint-status BLUEPRINT.md --run && pnpm format:check`
+- [ ] `T-072` SPEC: `## Ca biên` (≥6/8 nhóm) cho SPEC-admin/storefront, spec F-001/F-012 (hoặc ADR coi docs/ops là spec), `approved_by/approved_at` (phiên chính tự duyệt, D-NNN), mode làm tròn `percentOfVnd` vào SPEC-checkout. Đóng: PM-SPEC-001, PM-SPEC-003, WF-SDD-001, XC-UNITS-006 (sau: T-038; files: docs/specs/SPEC-*.md) — Gate: `grep -q '^## Ca biên' docs/specs/SPEC-admin.md docs/specs/SPEC-storefront.md && grep -q approved_by docs/specs/SPEC-checkout.md && grep -qi 'làm tròn' docs/specs/SPEC-checkout.md && pnpm format:check`
+### B. Tài liệu vận hành / tuân thủ
+- [ ] `T-073` RUNBOOK: Deploy, Rollback (bản trước + lệnh lùi + ngưỡng + `last_drilled`), Xoay secret, Lộ bí mật từng khoá VNPAY/GHN/JWT/MFA, chính sách dữ liệu staging, redrive outbox `failed`. Đóng: BASE-DOC-004, WF-DOC-008, SEC-SECRET-011, WF-ENV-010, BE-JOB-004. Góp: WF-REL-004, WF-REL-007 (sau: T-037; files: docs/ops/RUNBOOK.md, docs/ops/ENV.md) — Gate: `grep -q last_drilled docs/ops/RUNBOOK.md && grep -q 'Lộ bí mật' docs/ops/RUNBOOK.md && grep -q 'Xoay secret' docs/ops/RUNBOOK.md && pnpm format:check`
+- [ ] `T-074` `docs/ops/RPO-RTO.md` (kho→RPO→RTO→cơ chế→diễn tập), EXPLAIN đường nóng `docs/db/explain/*` + script tái lập, đo+ghi thời gian `catalog:reindex` ở 50k SKU. Đóng: DB-BACKUP-001, DB-PERF-001, DB-SEARCH-001 (sau: T-037, T-058; files: docs/ops/RPO-RTO.md, docs/db/explain/, scripts/ops/) — Gate: `test -f docs/ops/RPO-RTO.md && ls docs/db/explain/*.md >/dev/null && grep -q 'catalog:reindex' docs/ops/perf/load-dataset.md && pnpm format:check`
+- [ ] `T-075` INCIDENT-RESPONSE (SEV1–4 ví dụ thật, thứ tự giảm thiệt hại→chẩn đoán, 'Trước khi chạy lệnh lên dữ liệu thật', sự cố bảo mật=SEV1), `runbooks/data-breach.md` (SLA thông báo ngắn nhất áp dụng, mẫu), sổ sự cố `docs/ops/incidents/`. Đóng: OPS-IR-001, OPS-IR-004, OPS-IR-006, OPS-IR-010, CMP-VN-006, CMP-INTL-006, CMP-AUDIT-010 (sau: T-073; files: docs/ops/INCIDENT-RESPONSE.md, docs/ops/runbooks/data-breach.md, docs/ops/incidents/.gitkeep) — Gate: `test -f docs/ops/INCIDENT-RESPONSE.md && test -f docs/ops/runbooks/data-breach.md && grep -q 'SEV1' docs/ops/INCIDENT-RESPONSE.md && pnpm format:check`
+- [ ] `T-076` Gói bàn giao: `docs/handover/accounts.md`, `renewals.md` (domain/chứng chỉ/license/SaaS/khoá API + ngày hết hạn), mẫu offboarding (thu hồi trong ngày), RUNBOOK gốc trỏ docs/ops. Đóng: PM-HANDOVER-002, PM-HANDOVER-004, PM-HANDOVER-005, PM-HANDOVER-009 (sau: T-062, T-073; files: docs/handover/, RUNBOOK.md) — Gate: `test -f docs/handover/accounts.md && test -f docs/handover/renewals.md && grep -qi 'offboarding' docs/handover/*.md && pnpm format:check`
+- [ ] `T-077` Sổ dữ liệu: `docs/privacy/data-map.yaml` (+legal_basis), `data-inventory.csv`, `processors.md`, `transfers.md`, `docs/compliance/vendors.yaml`, mục 'Dữ liệu test' ở PROJECT.md (cấm dump production) + script kiểm khớp bảng/cột với migration. Đóng: CMP-PRIV-001, CMP-INTL-002, CMP-AUDIT-003, CMP-AUDIT-007, BASE-SEC-013, STD-PRIV-002, QA-DATA-001 (sau: T-038; files: docs/privacy/, docs/compliance/, PROJECT.md, scripts/check-data-map.mjs) — Gate: `node scripts/check-data-map.mjs && test -f docs/compliance/data-inventory.csv && grep -q 'Dữ liệu test' PROJECT.md && pnpm format:check`
+- [ ] `T-078` Quét fixture/seed: không PII thật, email test domain dành riêng (`example.test`). Đóng: QA-DATA-002 (sau: T-077; files: scripts/check-fixtures.mjs, scripts/check-fixtures.test.mjs) — Gate: `node scripts/check-fixtures.mjs && node --test scripts/check-fixtures.test.mjs`
+- [ ] `T-079` `/readyz` (DB+Redis có timeout, 503 khi down, không lộ chi tiết) + `docs/ops/SLO.md` (SLI availability/latency dạng tỷ lệ, truy vấn). Đóng: OPS-OBS-006, OPS-SLO-001 (sau: T-037; files: apps/backend/src/api/x/readyz/route.ts, docs/ops/SLO.md) — Gate: `pnpm --filter @x-shop/backend test:integration -- health && test -f docs/ops/SLO.md`
+- [ ] `T-080` THREAT-MODEL: mọi mối đe doạ Cao trỏ ID checklist/test/cấu hình, cột Quyết định, `updated:` (duyệt O-06 vẫn chờ người). Đóng: SEC-TM-006 (sau: T-038; files: docs/ops/THREAT-MODEL.md) — Gate: `grep -q '^updated:' docs/ops/THREAT-MODEL.md && ! (grep -E '^\| T-[0-9]+ ' docs/ops/THREAT-MODEL.md | grep -vqE 'mitigate|eliminate|transfer|accept')`
+### C. Lint / kiến trúc / tĩnh
+- [ ] `T-081` ESLint cưỡng chế: không catch rỗng/`.catch(()=>{})`, `no-explicit-any`/`ban-ts-comment`, `eslint-comments/require-description` (thêm lý do cho 10 `eslint-disable`), `no-console`, `no-focused/disabled-tests`, `expect-expect`, `--max-warnings 0`. Đóng: BASE-ERR-001, QA-STATIC-004, QA-STATIC-005, QA-STRAT-008, QA-COV-004, FE-BUILD-004 (sau: T-038; files: eslint.config.mjs, package.json, scripts/ (2 `.catch(()=>{})`), apps/storefront/src/components/**, e2e/) — Gate: `pnpm lint`
+- [ ] `T-082` Bật `prefer-nullish-coalescing` + `strict-boolean-expressions` (bật dần theo gói, sửa phân biệt null/rỗng/0). Đóng: BASE-DATA-003 (sau: T-081; files: eslint.config.mjs, apps/*/src/, packages/domain/src/; exec: deep) — Gate: `pnpm lint && pnpm typecheck && pnpm --filter @x-shop/domain test`
+- [ ] `T-083` Storefront: `no-danger` + lý do ở 3 chỗ JSON-LD, `safeUrl()` allowlist scheme + test, eslint-plugin-testing-library (cấm getByTestId mặc định), `TZ=UTC` trong test.mjs. Đóng: FE-SEC-001, FE-SEC-002, SEC-WEB-004, FE-TEST-001, FE-TEST-003 (sau: T-081; files: apps/storefront/src/lib/safe-url.ts, apps/storefront/eslint, apps/storefront/scripts/test.mjs) — Gate: `pnpm lint && pnpm --filter @x-shop/storefront test -- safe-url`
+- [ ] `T-084` Kiểm kiến trúc/SQL tự động: dependency-cruiser (không vòng, không import nội bộ module khác) + quét `knex.raw`/nối chuỗi SQL có allowlist. Đóng: ARC-MOD-004, ARC-MOD-005, BASE-SEC-007 (sau: T-038; files: .dependency-cruiser.cjs, scripts/check-sql-safety.mjs, package.json) — Gate: `pnpm depcruise && node scripts/check-sql-safety.mjs && pnpm lint`
+- [ ] `T-085` Test quét mọi route Store/Admin: schema validate có mặt, body xấu→4xx không 500, danh sách route công khai khớp allowlist, endpoint ghi có authn/authz. Đóng: BASE-SEC-001, BE-API-003, BE-AUTH-009, BE-API-009, PRF-WEB-004 (sau: T-034; files: apps/backend/integration-tests/http/route-inventory.spec.ts) — Gate: `pnpm --filter @x-shop/backend test:integration -- route-inventory security rbac`
+- [ ] `T-086` Gắn tag `api1-bola`/`api5-bfla` vào test rbac/returns-privacy + `scripts/check-authz-tests.mjs` đối chiếu route chạm dữ liệu cá nhân. Đóng: QA-INT-006, STD-SEC-004 (sau: T-085; files: apps/backend/integration-tests/http/, scripts/check-authz-tests.mjs) — Gate: `node scripts/check-authz-tests.mjs && grep -rqE 'api1-bola' apps/backend/integration-tests && grep -rqE 'api5-bfla' apps/backend/integration-tests`
+- [ ] `T-087` OpenAPI: spectral lint, sinh/đối chiếu từ nguồn route (BASE-DOC-007), đặt đường dẫn `openapi.yaml` hoặc trỏ rõ. Đóng: BE-API-001, BASE-DOC-007 (sau: T-038; files: docs/design/openapi.yaml, scripts/check-openapi.mjs, .spectral.yaml) — Gate: `pnpm check:openapi && pnpm check:openapi:test && grep -Eq '^openapi: 3\.(1|2)' docs/design/openapi.yaml`
+### D. Lỗi / log
+- [ ] `T-088` Handler lỗi toàn cục backend: problem+json có `trace_id`, 500 không lộ stack/đường dẫn/SQL/phiên bản, `unhandledRejection` ghi log + thoát có kiểm soát. Đóng: BASE-ERR-002, BASE-ERR-003 (sau: T-038; files: apps/backend/src/lib/errors/, apps/backend/src/api/middlewares.ts) — Gate: `pnpm --filter @x-shop/backend test -- error-handler`
+- [ ] `T-089` Storefront `app/error.tsx` + `global-error.tsx` (thông báo không lộ chi tiết, nút Thử lại), dialog huỷ/không hoàn tác nêu mã đơn + hậu quả + Esc. Đóng: UX-STATE-005, UX-STATE-008 (sau: T-088; files: apps/storefront/src/app/error.tsx, apps/storefront/src/app/global-error.tsx, apps/storefront/src/components/) — Gate: `pnpm --filter @x-shop/storefront test -- error dialog`
+- [ ] `T-090` Logger JSON một dòng/stdout: `timestamp` RFC3339 UTC, `service/version/env/trace_id`, redact bí mật+PII VN (`redactLog`), chống log injection (CR/LF), ngoại lệ theo tên OTel; áp cho `track()` (không PII ra ngoài). Đóng: BASE-ERR-005, BASE-ERR-006, BASE-ERR-007, BASE-ERR-008, BASE-ERR-009, SEC-SECRET-007, CMP-PRIV-008, CMP-PRIV-010 (sau: T-088; files: apps/backend/src/lib/log/, apps/storefront/src/lib/analytics/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test -- logging redact && pnpm --filter @x-shop/storefront test -- analytics`
+- [ ] `T-091` Audit/sự kiện bảo mật đủ trường: migration MỚI thêm `user_agent`, `outcome` vào `audit_log`; ghi xuất dữ liệu; `docs/security/security-events.md`. Đóng: SEC-LOG-001, SEC-LOG-002, CMP-AUDIT-002 (sau: T-090; files: apps/backend/src/modules/ (migration mới), apps/backend/src/lib/audit/, docs/security/security-events.md) — Gate: `pnpm --filter @x-shop/backend test:integration -- audit && test -f docs/security/security-events.md`
+### E. Độ bền
+- [ ] `T-092` Timeout tường minh: pool + connect timeout (`medusa-config.ts`), HTTP client vendor, Redis; `pool × tiến trình ≤ max_connections` (`docs/db/connections.md`); rà gọi mạng trong transaction + test. Đóng: BASE-ERR-004, ARC-RES-001, BE-REL-001, DB-PERF-004, DB-TX-003 (sau: T-038; files: apps/backend/medusa-config.ts, apps/backend/src/lib/, docs/db/connections.md) — Gate: `pnpm --filter @x-shop/backend test -- timeout && pnpm --filter @x-shop/backend test:integration -- checkout-lock-outage`
+- [ ] `T-093` Retry hữu hạn: jitter cho `outboxBackoffMs`, lỗi vĩnh viễn→DLQ ngay, schema payload job, đọc `Retry-After` của GHN, 429 `Retry-After`, `Idempotency-Key` vendor khi hỗ trợ. Đóng: ARC-RES-002, BE-JOB-003, BE-JOB-007, BE-REL-003, BE-INT-007 (sau: T-092; files: apps/backend/src/lib/outbox/, apps/backend/src/lib/shipping/, apps/backend/src/jobs/) — Gate: `pnpm --filter @x-shop/backend test -- outbox retry && pnpm --filter @x-shop/backend test:integration -- notify shipping`
+- [ ] `T-094` Tắt êm: SIGTERM→readiness lỗi→chờ request/job dở→đóng pool; test tiến trình thật. Đóng: ARC-RES-009, BE-REL-004 (sau: T-079; files: apps/backend/src/lib/lifecycle/, apps/backend/integration-tests/) — Gate: `pnpm --filter @x-shop/backend test -- shutdown && pnpm --filter @x-shop/backend test:integration -- shutdown`
+- [ ] `T-095` Tiến trình không giữ trạng thái: rà `FixedWindowLimiter` GHN callback (chuyển sang bộ đếm Postgres), E2E hai bản sao backend chạy song song. Đóng: ARC-RES-005 (sau: T-094; files: apps/backend/src/api/x/webhooks/shipping/, e2e/; exec: deep) — Gate: `pnpm --filter @x-shop/backend test:integration -- webhook rate && pnpm e2e`
+- [ ] `T-096` Chiến lược vô hiệu hoá từng loại cache (TTL/sự kiện/phiên bản) + test cập nhật nguồn thì cache hết hạn; retry client chỉ lỗi tạm thời (408/429/5xx) có backoff. Đóng: BE-CACHE-007, FE-STATE-005 (sau: T-038; files: docs/ops/CACHE.md, apps/storefront/src/lib/catalog/, apps/storefront/src/lib/) — Gate: `pnpm --filter @x-shop/storefront test -- cache retry && test -f docs/ops/CACHE.md`
+- [ ] `T-097` Circuit breaker chi phí cho job nền/outbox (trần vòng/lượt, dừng+ngoại lệ khi vượt) + test. Đóng: OPS-COST-004 (sau: T-093; files: apps/backend/src/jobs/, apps/backend/src/lib/) — Gate: `pnpm --filter @x-shop/backend test -- breaker`
+### F. Cấu hình / bí mật / auth
+- [ ] `T-098` Cấu hình: đánh dấu trường bí mật + hàm che khi dump, mặc định an toàn (DEBUG tắt, bind 127.0.0.1) có test, schema env client/server tách (`NEXT_PUBLIC_ANALYTICS_TRANSPORT` vào schema). Đóng: BASE-CFG-005, BASE-CFG-007, BASE-SEC-010, FE-BUILD-005 (sau: T-038; files: apps/backend/src/lib/env/, apps/storefront/src/lib/env/, apps/storefront/src/proxy.ts) — Gate: `pnpm --filter @x-shop/backend test -- env && pnpm --filter @x-shop/storefront test -- env`
+- [ ] `T-099` Xoay secret VNPAY (nhận hiện tại + trước), thời gian phản hồi đăng nhập không phân biệt tài khoản tồn tại, cookie phiên admin `__Host-` nếu Medusa cho cấu hình. Đóng: BE-INT-002, BE-AUTH-003, BE-AUTH-004 (sau: T-034; files: apps/backend/src/lib/payment/, apps/backend/src/lib/admin-security/, apps/backend/medusa-config.ts) — Gate: `pnpm --filter @x-shop/backend test -- vnpay-secret login-timing && pnpm --filter @x-shop/backend test:integration -- payment-ipn security`
+- [ ] `T-100` Tên tệp upload do server sinh (ULID + đuôi chuẩn hoá), bọc file provider; `../../etc/passwd` không lọt vào khoá. Đóng: BE-FILE-003 (sau: T-034; files: apps/backend/src/lib/upload/) — Gate: `pnpm --filter @x-shop/backend test -- upload-key`
+### G. DB
+- [ ] `T-101` Truy vấn catalog: FK thiếu `ON DELETE`/index; cột bắt buộc `NOT NULL`, bất biến đơn giản `CHECK` (migration MỚI nếu cần). Đóng: DB-MODEL-004, DB-MODEL-005 (sau: T-038; files: scripts/ops/check-schema.mjs, apps/backend/src/modules/**/migrations/ (chỉ thêm file mới)) — Gate: `node scripts/ops/check-schema.mjs && pnpm --filter @x-shop/backend test:integration -- checkout-module`
+- [ ] `T-102` CI migration: script drift schema, SHA migration cũ khớp `master`, squawk/expand-contract (`check-migrations.mjs` cấm DROP/RENAME không cờ contract) (chạm CI). Đóng: DB-MIG-001, DB-MIG-003, DB-MIG-008, OPS-DEPLOY-003 (sau: T-101; files: scripts/check-migrations.mjs, scripts/check-migrations.test.mjs, .github/workflows/ci.yml) — Gate: `node scripts/check-migrations.mjs && node --test scripts/check-migrations.test.mjs && python3 .xtemplates/scripts/xt.py ci-check`
+### H. Phụ thuộc / CI
+- [ ] `T-103` Dependabot `npm` cho 4 manifest + `github-actions` + `docker` (groups minor/patch, giới hạn PR), `eol-check.mjs` (endoflife.date), mẫu PR nâng major, mục kiểm phụ thuộc mới ở PR template (chạm CI). Đóng: BASE-DEP-006, BASE-DEP-007, OPS-MAINT-001, OPS-MAINT-003, OPS-MAINT-005 (sau: T-066; files: .github/dependabot.yml, scripts/eol-check.mjs, .github/PULL_REQUEST_TEMPLATE/major-upgrade.md) — Gate: `python3 .xtemplates/scripts/xt.py ci-check && node scripts/eol-check.mjs && grep -q 'package-ecosystem: "*npm' .github/dependabot.yml`
+- [ ] `T-104` OSV-Scanner mỗi PR + cron tuần, `osv-scanner.toml` (ngoại lệ có cve/reason/expires), `docs/ops/VULN-SLA.md`, high/critical chặn merge (chạm CI). Đóng: BASE-DEP-004, SEC-SUPPLY-006, OPS-MAINT-004 (sau: T-038; files: .github/workflows/vuln-scan.yml, osv-scanner.toml, docs/ops/VULN-SLA.md) — Gate: `python3 .xtemplates/scripts/xt.py ci-check && test -f osv-scanner.toml && test -f docs/ops/VULN-SLA.md && grep -q schedule .github/workflows/vuln-scan.yml`
+- [ ] `T-105` `license-policy.yaml` (SPDX allow/deny/review), `scripts/licenses.mjs`, SBOM CycloneDX trong CI, cấm gói/asset không license (source-available cần quyết định ghi). Đóng: BASE-DEP-005, CMP-LIC-002, CMP-LIC-003, CMP-LIC-004 (sau: T-103; files: license-policy.yaml, license-allow.json, scripts/licenses.mjs, .github/workflows/ci.yml) — Gate: `python3 .xtemplates/scripts/xt.py license-check && node scripts/licenses.mjs && python3 .xtemplates/scripts/xt.py ci-check`
+- [ ] `T-106` Ghim digest image `postgres`/`redis` ở CI/compose + kiểm (action đã ghim SHA). Đóng: BASE-DEP-008 (sau: T-038; files: .github/workflows/ci.yml, scripts/dev-services.sh) — Gate: `python3 .xtemplates/scripts/xt.py ci-check && ! grep -En 'image: *(postgres|redis)[^@]*$' .github/workflows/ci.yml`
+- [ ] `T-107` SAST CodeQL/Semgrep (`js/sql-injection`, allowlist `knex.raw`) trong CI (chạm CI). Đóng: SEC-WEB-001 (sau: T-084; files: .github/workflows/codeql.yml) — Gate: `python3 .xtemplates/scripts/xt.py ci-check && test -f .github/workflows/codeql.yml`
+- [ ] `T-108` Nối `perf:budget` + Lighthouse (≥5 URL, a11y ≥0.9, ngân sách ảnh) vào CI/PR; ngân sách bundle trong repo (`.size-limit.json`/`budgets`); không nới ngưỡng (chạm xt.yaml/ci.yml). Đóng: XC-PERF-003, FE-PERF-002, FE-PERF-004, PRF-WEB-005, XC-GREEN-002 (sau: T-035; files: xt.yaml, .github/workflows/ci.yml, scripts/perf/, docs/PERF-BUDGET.md) — Gate: `pnpm perf:budget && python3 .xtemplates/scripts/xt.py ci-check && grep -q 'perf:' xt.yaml`
+- [ ] `T-109` Báo cáo tải kèm SHA commit (`report.mjs`), cấm BASE_URL production trong cấu hình load/CI. Đóng: QA-PERF-006, QA-PERF-007 (sau: T-036; files: scripts/load/report.mjs, .github/workflows/) — Gate: `pnpm load:smoke && ! grep -rEi 'x-shop\.(vn|com)' scripts/load .github/workflows`
+- [ ] `T-110` Coverage nhánh (vitest + jest), artifact CI, ratchet baseline chỉ tăng; không hạ ngưỡng sẵn có (chạm CI). Đóng: QA-COV-001, QA-COV-002 (sau: T-081; files: apps/storefront/vitest.config.ts, apps/backend/jest.config.js, package.json, .github/workflows/ci.yml, coverage-baseline.json) — Gate: `pnpm -r --if-present test:coverage && python3 .xtemplates/scripts/xt.py ci-check`
+- [ ] `T-111` Kiểm Conventional Commits 1.0.0 cho mọi commit của PR trong CI (regex, `BREAKING CHANGE:` footer) (chạm CI). Đóng: BASE-REPO-005 (sau: T-038; files: scripts/check-commits.mjs, scripts/check-commits.test.mjs, .github/workflows/pr-title.yml) — Gate: `node --test scripts/check-commits.test.mjs && python3 .xtemplates/scripts/xt.py ci-check`
+- [ ] `T-112` Phát hành SemVer: một nguồn phiên bản, release-please/changesets, workflow `release.yml`, bước tag `v*` bất biến (bật ruleset tag là H-02); KHÔNG tạo tag ở task này. Đóng: BASE-REPO-006, STD-PROC-002, WF-REL-001, WF-REL-003 (sau: T-111, T-064; files: .github/workflows/release.yml, release-please-config.json, package.json) — Gate: `python3 .xtemplates/scripts/xt.py ci-check && test -f .github/workflows/release.yml && ! git tag --list 'v*' | grep -qvE '^v[0-9]+\.[0-9]+\.[0-9]+$'`
+- [ ] `T-113` xt.yaml khai `dev` và `migrate` (lệnh thật từ package.json) (chạm cấu hình cổng: PR riêng, nêu lý do); KHÔNG đụng `e2e`/`perf` (patch T-048 là H-04). Đóng: XC-DX-002 (sau: T-038; files: xt.yaml) — Gate: `grep -Eq '^dev:' xt.yaml && grep -Eq '^migrate:' xt.yaml && python3 .xtemplates/scripts/xt.py ci-check`
+### I. A11y / E2E
+- [ ] `T-114` Axe `wcag2a,wcag2aa,wcag21aa,wcag22aa` ở mọi route sitemap, 0 vi phạm (không chỉ serious/critical); helper `expectNoA11yViolations`; checkout/COD/VNPAY kèm axe. Đóng: STD-A11Y-002, UX-A11Y-001, QA-E2E-003, IND-ECOM-016 (sau: T-038; files: e2e/helpers.ts, e2e/a11y-reflow.spec.ts, e2e/) — Gate: `grep -q wcag22aa e2e/a11y-reflow.spec.ts && pnpm e2e`
+- [ ] `T-115` E2E bàn phím (Tab/Enter/Esc) cho giỏ→thanh toán→xác nhận, không bẫy focus (trừ dialog Esc). Đóng: UX-A11Y-003 (sau: T-114; files: e2e/keyboard-flow.spec.ts) — Gate: `pnpm e2e -- keyboard-flow`
+- [ ] `T-116` Playwright project `desktop` + `mobile` (Pixel 7), spec phủ mọi route sitemap, không cuộn ngang ở 320px, `:hover` bọc `@media (hover: hover)`. Đóng: UX-RESP-001, UX-RESP-005, UX-RESP-008, FE-TEST-002, PRF-WEB-006 (sau: T-114; files: playwright.config.ts, e2e/, apps/storefront/src/**/*.css) — Gate: `grep -q mobile playwright.config.ts && pnpm e2e`
+- [ ] `T-117` E2E tự tạo dữ liệu (`+e2e-<uuid>`, tồn riêng từng test), dọn sau; gắn `@smoke` ≥3 spec (đóng QA-E2E-001 chờ H-04). Đóng: QA-E2E-006. Góp: QA-E2E-001 (sau: T-116; files: e2e/helpers.ts, e2e/*.spec.ts) — Gate: `pnpm e2e && grep -rc '@smoke' e2e | grep -vq ':0$'`
+### J. Nghiệp vụ / tài liệu miền
+- [ ] `T-118` Property test state machine đơn/trả/hoàn bằng fast-check (bất biến: chuyển hợp lệ, idempotent, không về trạng thái cuối). Đóng: IND-ECOM-005 (sau: T-038; files: packages/domain/src/state/state.property.test.ts) — Gate: `pnpm --filter @x-shop/domain test -- state`
+- [ ] `T-119` API từ chối thời gian không offset (RFC3339) + lint cấm `new Date().toLocale*`/Date không offset. Đóng: XC-UNITS-001 (sau: T-081; files: apps/backend/src/lib/http/, eslint.config.mjs) — Gate: `pnpm --filter @x-shop/backend test -- time-offset && pnpm lint`
+- [ ] `T-120` `packages/domain/src/units.ts` + thay ~39 chỗ `* 1000`/`* 1024` bằng hằng/hàm; tên trường mang đơn vị (`_ms`, `_bytes`…). Đóng: XC-UNITS-009 (sau: T-119; files: packages/domain/src/units.ts, apps/*/src/; exec: deep) — Gate: `pnpm --filter @x-shop/domain test && pnpm typecheck && pnpm lint`
+- [ ] `T-121` Mọi endpoint danh sách có `limit` tối đa + phân trang, bỏ `take: null`; test kích thước lớn. Đóng: XC-PERF-006 (sau: T-057; files: apps/backend/src/api/, apps/backend/src/lib/) — Gate: `pnpm --filter @x-shop/backend test:integration -- list-bounds catalog-search`
+- [ ] `T-122` Khuyến mãi: bảng test chồng mã (thứ tự, giới hạn chồng, tổng không âm), kiểm giới hạn/người + ngân sách mã hiện có; thiếu hành vi → ghi câu hỏi mở, không tự thêm. Đóng: IND-ECOM-004 (sau: T-038; files: packages/domain/src/pricing/, docs/specs/SPEC-checkout.md) — Gate: `pnpm --filter @x-shop/domain test -- quote coupon`
+- [ ] `T-123` Phạm vi PCI SAQ A + chống phát lại webhook (cửa sổ `vnp_PayDate`/dedupe) ghi tài liệu + test. Đóng: IND-ECOM-006 (sau: T-038; files: docs/ops/PCI-SCOPE.md, apps/backend/integration-tests/http/payment-ipn.spec.ts) — Gate: `test -f docs/ops/PCI-SCOPE.md && pnpm --filter @x-shop/backend test:integration -- payment-ipn`
+- [ ] `T-124` `check:vi-diacritics` (chuỗi UI tiếng Việt có dấu), biên bản rà dark pattern, E2E tổng bước đầu = tổng ở bước xác nhận. Đóng: UX-CONTENT-001, UX-CONTENT-005, UX-CONTENT-006 (sau: T-038; files: scripts/check-vi-diacritics.mjs, docs/ops/DARK-PATTERN-REVIEW.md, e2e/) — Gate: `node scripts/check-vi-diacritics.mjs && test -f docs/ops/DARK-PATTERN-REVIEW.md && pnpm e2e -- checkout-total`
+- [ ] `T-125` Thay `rgb(...)`/hex ở `CatalogView.module.css`, `Dialog.module.css` bằng token (`--shadow-*`, `--overlay`) + cặp tương phản. Đóng: UX-DS-002 (sau: T-038; files: apps/storefront/src/**/*.css, apps/storefront/src/styles/tokens.css) — Gate: `! grep -rEn '#[0-9a-fA-F]{3,8}\b|rgba?\(' apps/storefront/src --include=*.css | grep -v tokens.css`
+- [ ] `T-126` `docs/ROUTES.md` (chế độ render từng route) + `scripts/check-routes.mjs` so với `app/`; `docs/CLIENT-STORAGE.md` + test khoá localStorage không chứa token/PII. Đóng: FE-RENDER-001, FE-STATE-008 (sau: T-038; files: docs/ROUTES.md, docs/CLIENT-STORAGE.md, scripts/check-routes.mjs) — Gate: `node scripts/check-routes.mjs && pnpm --filter @x-shop/storefront test -- client-storage && pnpm format:check`
+- [ ] `T-127` Task tối ưu theo LOOP-OPT: mục tiêu số + điều kiện đo, khoá bộ đo (`scripts/load/`, `scripts/perf/`), `perf guard --locked`, `perf compare` ≥10 mẫu, `docs/ops/perf/PERF-LOG.md` (viết lại Gate T-060 là việc phiên chính). Đóng: LOOP-OPT-001, LOOP-OPT-002, LOOP-OPT-003, LOOP-OPT-004 (sau: T-060; files: docs/ops/perf/PERF-LOG.md, scripts/load/, scripts/perf/; exec: deep) — Gate: `test -f docs/ops/perf/PERF-LOG.md && python3 .xtemplates/scripts/xt.py perf guard --help >/dev/null && grep -q 'perf compare' docs/ops/perf/PERF-LOG.md`
+
+## 3. Điểm quyết định cho phiên chính tự duyệt (`xt.py loop decide`, AGENTS.md §5)
+Tiêu chí (trên thắng dưới): đúng/an toàn → đường lùi → đơn giản/chuẩn/test được → trải nghiệm → tốc độ. "Mở khoá" = ID/task sinh ra sau khi ghi D-NNN.
+
+| Q | Câu hỏi · phương án · dữ kiện | Khuyến nghị | Mở khoá |
+|---|---|---|---|
+| Q-01 | Băm mật khẩu admin (BE-AUTH-001, R-02). A: giữ scrypt (`scrypt-kdf` của `auth-emailpass` 2.22.1), nâng `hashConfig` theo OWASP + test tham số + ADR ngoại lệ. B: provider Argon2id tuỳ biến (thư viện mới, rủi ro khoá đăng nhập admin). | A (an toàn + lùi được; tham số nằm trong chuỗi băm nên hash cũ vẫn xác minh — kiểm trước bằng test). Đổi sang B khi Medusa hỗ trợ. | BE-AUTH-001; ADR ngoại lệ + test `hashConfig` |
+| Q-02 | RLS + vai trò DB (DB-SEC-007/002, DB-PERF-005). Dữ kiện: một đơn vị bán, không đa tenant, bảng duy nhất có `user_id` là `user_role`. RLS: A `[~]` không áp dụng; B bật RLS `user_role`. Vai trò: C tạo vai trò `app` không owner + `MIGRATION_DATABASE_URL` riêng + `ALTER ROLE … statement_timeout/idle_in_transaction_session_timeout`; D bỏ. | RLS = A (quyền kiểm ở server theo token đơn); vai trò = C (compose dev/CI trước, prod theo hạ tầng). `[~]` DB-SEC-007 cần `Duyệt`. | DB-SEC-002, DB-PERF-005, DB-SEC-007; task migration `ALTER ROLE` + test |
+| Q-03 | FE-FORM-001 / D-008 (client không import giá trị từ `@x-shop/domain`; form có bản phản chiếu + test đối chiếu). A: giữ bản phản chiếu, thêm test đối chiếu cố định (`normalizePhone`, `validateAddress`). B: đổi D-008, tách `@x-shop/domain/validation` thuần (không kéo ledger/state vào bundle). | B (đúng chữ "một schema ở cả client và server"; đo bundle bằng `perf:budget`; lùi bằng cách bỏ export). A chỉ nếu B làm vỡ ngân sách. | FE-FORM-001 |
+| Q-04 | FE-STATE-001: 4 `fetch` trong `useEffect` (đếm giỏ, phường/xã, gợi ý tìm kiếm, đếm bộ lọc). A: chuyển 2 chỗ sang RSC/server action. B: giữ + nới mục (cần chủ dự án `— Miễn:`/`Duyệt:`). C: thêm TanStack Query + lint. D: một lớp `lib/client-fetch.ts` (AbortController, timeout, retry lỗi tạm thời) + lint cấm `fetch` ngoài lớp. | D (đúng chữ "một lớp", không phụ thuộc mới, cùng lớp đóng FE-STATE-005); C nếu số fetch tăng. | FE-STATE-001 |
+| Q-05 | `skipLibCheck: true` ở `tsconfig.base.json` (FE-BUILD-003, PRF-WEB-002). A: giữ + ADR ngoại lệ ghi lý do + cổng `tsc` mã dự án. B: tắt toàn cục, sửa d.ts phụ thuộc. | A theo từng gói: thử tắt ở `packages/domain` và storefront (đo số lỗi trước), giữ ở backend (Medusa) kèm ADR. | FE-BUILD-003, PRF-WEB-002 |
+| Q-06 | ARC-INT-001. A: bắt buộc `Idempotency-Key` cho mọi POST (breaking với admin UI). B: idempotent theo máy trạng thái cho POST admin (approve/execute/receive…) + test song song, bắt buộc key cho POST tạo. Dữ kiện: checkout/refund/IPN đã có key/dedupe; ~20 POST admin/store dựa trạng thái (refund-guard có ca song song). | B + allowlist có test (script đếm POST không key phải nằm trong allowlist có lý do). | ARC-INT-001 |
+| Q-07 | BE-API-008: hợp đồng hiện tại 422 thiếu key / 409 khác payload, mẫu khung 400/422. A: đổi mã theo khung (breaking storefront). B: giữ, ghi ngoại lệ trong OpenAPI/ADR. | B (không phá hợp đồng đang chạy; ghi ngoại lệ trong `openapi.yaml`). | BE-API-008 |
+| Q-08 | ARC-INT-008: IPN VNPAY ký HMAC-SHA512 theo giao thức nhà cung cấp; GHN callback chưa kiểm chữ ký (R-01). A: ADR ngoại lệ theo giao thức nhà cung cấp + cửa sổ `vnp_PayDate`; GHN theo tài liệu (token/IP allowlist, nghiên cứu nguồn sống, ghi ngày). B: giữ mở. | A; phần GHN chỉ tick khi tài liệu GHN xác minh được ("(chưa xác minh)" nếu không). | ARC-INT-008 |
+| Q-09 | UX-STATE-001 (Storybook chưa có). A: thêm Storybook (phụ thuộc lớn, phải qua BASE-DEP-006). B: test vitest theo 4 trạng thái + script đếm component thiếu trạng thái. | B (đơn giản, lùi được); A nếu cần duyệt trực quan. | UX-STATE-001 |
+| Q-10 | QA-E2E-005 (`retries`, `trace`, `forbidOnly`). A: đúng chữ (`retries: 2` ở CI). B: giữ `retries: 0`, ghi miễn kèm `Duyệt` chủ dự án. C: làm A sau khi `e2e-data` làm mọi test tự tạo dữ liệu riêng. Dữ kiện: `workers: 1`, chung DB/kho, `boost-stock.mjs` chỉnh tồn — retry trên trạng thái đã đổi có thể xanh giả. | C (đúng chữ + không xanh giả); không bật retry trước `e2e-data`. | QA-E2E-005 (task sau `e2e-data`) |
+| Q-11 | Hợp đồng API (QA-INT-007, STD-API-008, STD-PROC-003). A: oasdiff trên `docs/design/openapi.yaml` (đã có, viết tay) — thêm công cụ. B: contract test phía storefront (zod chung ở `packages/domain` + fixture đối chiếu). C: `[~]` vì một monorepo triển khai cùng nhau. | B trước (không thêm công cụ, bắt phá vỡ ở PR); A khi OpenAPI sinh từ mã. Kèm kiểm `BREAKING CHANGE:` ở CI. | QA-INT-007, STD-API-008, STD-PROC-003 |
+| Q-12 | XC-I18N-001 (≥50 component hard-code chuỗi, một locale `vi-VN`). A: `next-intl` + `messages/vi.json`. B: module hằng TS + lint no-literal-string. C: `[~]` một ngôn ngữ. D: `messages/vi.json` + helper `t()` có kiểu, không thư viện. | D (đúng chữ "file tài nguyên", không phụ thuộc mới, nâng lên A không đổi nơi gọi; C trái lời khuyên khung). Tách theo màn hình. | XC-I18N-001 (nhiều task theo màn hình) |
+| Q-13 | IND-ECOM-001 (R-06): CHECK tồn `stocked >= reserved`. A: CHECK trên `inventory_level` của Medusa (nguy cơ vỡ khi nâng cấp/thứ tự cập nhật trong giao dịch). B: constraint trigger trong module riêng. C: ADR coi khoá Redis + test AT04 là đủ (rủi ro mất khoá). | B dạng `DEFERRABLE INITIALLY DEFERRED` (kiểm tại commit) trong migration MỚI có `DROP TRIGGER` làm đường lùi + test checkout/fulfill/adjust; spike trước với luồng Medusa. | IND-ECOM-001 |
+| Q-14 | ID tiêu chí (WF-SDD-002/003, PM-SPEC-004): spec dùng `S-NNN` + `AT-NN`, khung gọi `AC-xx`. A: chấp nhận, bảng ánh xạ + `scripts/check-specs.mjs`/`spec-trace.mjs` đối chiếu theo tên. B: đổi nhãn 6 spec + test. | A (không phá tham chiếu `AT` của đặc tả gốc). | WF-SDD-002/003, PM-SPEC-004 |
+| Q-15 | "4 con số" ở `--single-session` (LOOP-HARNESS-003, LOOP-DESIGN-001, LOOP-CTX-002). A: đặt số cụ thể (`loop init --hours H`, trần vòng, ngân sách token) ghi vào PLAN. B: coi ADR-0009 đủ, `[~] — Miễn:` + duyệt chủ dự án. | A (chặt hơn; số lấy từ số task PLAN-2 × tối đa 3 vòng sửa/task). | 3 ID trên |
+| Q-16 | Bằng chứng `.autopilot/` gitignore (LOOP-DESIGN-003, LOOP-ORCH-004): kiểm đỏ ở worktree sạch. A: tick bằng `— Bằng chứng:` file cục bộ. B: xuất tóm tắt evidence (task, cmd, exit, sha) vào file commit được. C: giữ mở. Dữ kiện: `xt.py loop` không có lệnh xuất; guard chặn đọc/ghi tay `.autopilot/`. | A nay; `xt.py feedback add` đề nghị khung có lệnh xuất cho B. | LOOP-DESIGN-003, LOOP-ORCH-004 |
+| Q-17 | ADR-0001 đã accepted thiếu Date/Context/Decision Outcome/Consequences (BASE-DOC-003, ARC-ADR-003/004). A: thêm heading vào ADR-0001 (sửa ADR accepted, trái ARC-ADR-004). B: ADR mới "supersedes" theo mẫu MADR. | B (ARC-ADR-004 bất biến; Status ADR-0001 chỉ thêm "superseded by"). | BASE-DOC-003, ARC-ADR-003/004; mở rộng `check-adr` cho 0001 |
+| Q-18 | BASE-CFG-003: `.env.example` bị chặn ghi ở môi trường agent. A: người tạo file. B: `docs/ops/ENV.md` là "file tương đương" + test khớp khoá với schema zod. | B ngay (có test, không chờ người); A làm sau nếu muốn. | BASE-CFG-003 (task test `env-doc`) |
+| Q-19 | BASE-GATE-009 + XC-DX-006: đường dẫn cấu hình cổng/hook. A: CODEOWNERS + `pr-policy` đòi mục "chạm cấu hình cổng — lý do" khi diff đụng đường dẫn cấu hình. B: ghi miễn có chủ duyệt. C: hook hỏi người (trái ADR-0018). Hook git cục bộ: công cụ cài qua `prepare`. | A (máy kiểm được, không chờ người). Hook git: làm nếu guard cho phép, bị chặn → `loop defer`. | BASE-GATE-009, XC-DX-006 |
+| Q-20 | Thời hạn lưu + quyền chủ thể (DPIA §3/§9, DP-05/07). A: phiên chính tự duyệt mặc định đề xuất theo luật VN hiện hành (chứng từ/đơn giữ theo quy định kế toán, PII liên hệ ẩn danh sau hết đổi trả + hết nghĩa vụ; số ngày ở cấu hình; nguồn luật "(chưa xác minh)" nếu chưa kiểm), pháp chế xác nhận trước G7. B: chờ chủ dự án chốt rồi mới viết job. | A (job đọc cấu hình nên đổi số không đổi mã; ẩn danh thay vì xoá, giữ ledger/chứng từ; lùi bằng cấu hình). | STD-PRIV-004/005, CMP-RIGHTS-004/007, CMP-PRIV-005, CMP-VN-007, CMP-INTL-007, IND-ECOM-008, PM-METRIC-006; task job ẩn danh + E2E `rights-*` |
+| Q-21 | Đồng ý (CMP-RIGHTS-001, CMP-VN-001, IND-ECOM-010). Dữ kiện: hiện không tracker; `track()` chỉ beacon khi `NEXT_PUBLIC_ANALYTICS_TRANSPORT=beacon` + đồng ý. A: module `consent` tối thiểu (bảng append-only `subject_id, purpose_id, policy_version, granted_at, channel, ui_snapshot_hash, withdrawn_at`, migration mới) + UI cho mục đích tuỳ chọn mặc định tắt, rút cùng số bước. B: hoãn tới khi có tracker/marketing, `[~]` với điều kiện áp dụng lại. | A tối thiểu (cách hiểu chặt hơn; UI chỉ hiện khi bật beacon/marketing). | CMP-RIGHTS-001, CMP-VN-001, IND-ECOM-010 |
+| Q-22 | Cột tiền (DB-MODEL-002): hiện `integer` (zod ≤ 2.147.483.647, lý do ở migration, XC-UNITS-005 đã tick), mục đòi `bigint`. A: giữ + `[~]`/ngoại lệ có `Duyệt`. B: migration MỚI `ALTER … TYPE bigint` + parser trả `number` có `isSafeInteger`. | B (chưa có dữ liệu thật nên rẻ nhất lúc này; kiểm driver trả chuỗi cho bigint; không sửa migration cũ). | DB-MODEL-002 (+ rà XC-UNITS-005) |
+| Q-23 | XC-OSS-005: `required_approving_review_count: 0` (một chủ + agent). A: giữ, ghi ngoại lệ. B: đặt 1 khi vào `harden`/có ≥2 maintainer. | A đến `delivery_phase: harden`, rồi B; ID cần `Duyệt` chủ dự án trước đó. | XC-OSS-005 |
+| Q-24 | LOOP-CTX-006: phiên mới chỉ với AGENTS.md + PROGRESS.md làm tiếp được? A: chạy một phiên thử, ghi file bằng chứng rồi tick. B: giữ mở. | A, xếp cuối PLAN-2. | LOOP-CTX-006 |
+| Q-25 | Quy ước tick (không ID mở): `[~]` cho mục AI/CMP-INTL-005 (giữ, ghi "áp dụng lại khi…"); chấp nhận grep tên test tích hợp trong `— Kiểm:` (CI `gate` chạy thật, `loop verify` chạy ở cổng cuối); PM-PLAN-001 "ID tăng dần" = thứ tự cấp phát (thêm 1 dòng quy ước vào PLAN); gửi `feedback add` về regex PM-REQ-007 thiếu ranh giới từ. | Giữ cả bốn như trên. | — |
+
+## 4. Việc chờ người / chờ hạ tầng (không tự làm)
+**Chờ người** (17 mục ở bảng §1):
+- H-01 Chọn giấy phép (A: MIT/Apache-2.0 mở thật; B: giữ kho private + Proprietary + `[~]` nhóm XC-OSS). Task `repo-files` không tạo LICENSE; sau khi chọn: thêm `LICENSE` + `license` ở package.json (BASE-REPO-004, CMP-LIC-001, XC-OSS-001).
+- H-02 Bật ruleset sống (`enforcement: active`, đòi check `quality`, `gitleaks`), `required_approving_review_count` theo Q-23 (WF-GIT-001/002, WF-REVIEW-005, QA-STRAT-002). Kiểm: `gh api repos/seeker19110/x-shop/rules/branches/master`.
+- H-03 Bật GitHub private vulnerability reporting (XC-OSS-004; SECURITY.md do task `repo-files`).
+- H-04 Áp `docs/ops/patches/T-048-ci-e2e.patch` (xt.yaml `e2e: "pnpm e2e"` + ci.yml Postgres/Redis) (QA-E2E-001, LOOP-HARNESS-008; khoá `perf` ở xt.yaml nằm trong task `perf-ci`).
+- H-05 Kiểm tay a11y: biên bản người/ngày/luồng/công cụ trong GO-NO-GO §6 (STD-A11Y-004).
+- H-06 Pháp chế/chủ shop: thuế + hoá đơn điện tử, điều kiện giao dịch + chính sách có phiên bản, `returnWindowDays` (hiện `null`), luồng tự đổi trả, phát hành công khai (IND-ECOM-003/007/009/015, PM-SPEC-020, XC-OSS-007).
+- Không gắn ID MUST nhưng chặn GO: khoá merchant VNPAY + token/shop_id GHN (O-02); duyệt THREAT-MODEL + ASVS L2 con (O-06); pháp chế ký DPIA/chính sách `/bao-mat`/DPA GHN-VNPAY-email-SMS; chủ dự án quyết 4 đề xuất "Khi chạy thật" (D-005, D-024, D-027, D-039); `delivery_phase: harden`, `attack` ở xt.yaml, `docs/ops/AUDIT-STATUS.md` trước G7.
+
+**Chờ hạ tầng** (47 mục ở bảng §1): staging/production + domain/TLS, Postgres managed + PITR + backup tách vùng (DB-BACKUP-002/004, OPS-DR-*), IaC (OPS-IAC-*), deploy một artifact/rollback diễn tập/smoke sau deploy (OPS-DEPLOY-001/002/004, WF-ENV-*, WF-REL-004/007), preview mỗi PR (PRF-WEB-009), kho log/metric/cảnh báo/SLO burn rate (OPS-OBS-001/003/008, OPS-SLO-004/005/006, SEC-LOG-006, BASE-ERR-011, PRF-WEB-008), IAM/mạng/CIS (SEC-INFRA-*, STD-SEC-007, SEC-SECRET-005, DB-SEC-003/004), quét image (BASE-DEP-009), RUM (FE-PERF-001), load nightly (QA-PERF-002), bucket private + CDN (BE-FILE-004), ngân sách cloud/trần autoscale (OPS-COST-001/005), baseline/retention tài nguyên (XC-GREEN-001/007), walking skeleton deploy (PM-PRIO-003), chuyển dữ liệu ra ngoài VN (CMP-VN-004), autovacuum/XID (DB-PERF-008). Sau khi chọn nhà cung cấp: `loop decide` + ADR, rồi sinh PLAN-3.
+
+## 5. Kiểm phủ đủ (chạy lại được)
+```
+# bằng nhau tại thời điểm nháp (302 = 302), in OK:
+diff <(grep -oP '^- \[ \] `\K[A-Z0-9-]+' BLUEPRINT.md | sort) <(sed -n '/^## 1\./,/^## 2\./p' docs/autopilot/PLAN-2-draft.md | grep -oP '^\| \K[A-Z]+(-[A-Z0-9]+)+-[0-9]{3}' | sort) && echo OK
+# sau khi tick dần: mục mở nào chưa có trong bảng thì in ra (phải rỗng):
+comm -23 <(grep -oP '^- \[ \] `\K[A-Z0-9-]+' BLUEPRINT.md | sort) <(sed -n '/^## 1\./,/^## 2\./p' docs/autopilot/PLAN-2-draft.md | grep -oP '^\| \K[A-Z]+(-[A-Z0-9]+)+-[0-9]{3}' | sort)
+# mỗi task T-062+ có Gate:
+test "$(grep -c '^- \[ \] `T-' docs/autopilot/PLAN-2-draft.md)" = "$(grep -c '^- \[ \] `T-.* — Gate: `' docs/autopilot/PLAN-2-draft.md)" && echo GATES_OK
+```

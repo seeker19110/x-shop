@@ -50,7 +50,7 @@ export function ListAnalytics({ listId, items }: ListAnalyticsProps) {
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
     // `key` đại diện cho nội dung danh sách (tránh chạy lại khi mảng đổi tham chiếu nhưng cùng nội dung).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chỉ chạy lại theo khoá ổn định đã liệt kê; thêm phụ thuộc còn lại gây lặp/gửi trùng sự kiện
   }, [listId, key]);
 
   return null;

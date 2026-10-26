@@ -1,0 +1,18 @@
+diff --git a/xt.yaml b/xt.yaml
+index 8db692e..36cf3f9 100644
+--- a/xt.yaml
++++ b/xt.yaml
+@@ -19,8 +19,11 @@ test_fast: "pnpm test"         # test liên quan file đổi (XT_CHANGED_FILES,
+ # Ngưỡng coverage của CI mẫu nằm trong `test` (job `gate` chạy nó). Chia shard (chỉ khi đo thấy test là đường dài nhất
+ # và CI tách test ra job riêng; gate-fast cũng dùng khi diff đụng cấu hình cổng): test_list (in mỗi dòng một id) ·
+ # test_unit (chạy id "$1", coverage vào "$XT_COV_DIR" nếu có) · test_combine (gộp coverage, đòi ngưỡng).
+-# test_list: ""
+-# test_unit: ""
++# T-128/FB-001: khai test_list + test_unit để commit đụng cấu hình cổng (XT_GATE_ALL_TESTS=1) chạy mọi lớp test song song
++# trong trần 600 s của hook thay vì `test` tuần tự (tích hợp ~28 phút). Không khai test_combine → `test-mode` vẫn `whole`:
++# CI (`gate-par`) và `test`/`test_fast` giữ nguyên. Id: unit:<gói> · http:<file tích hợp>; ô Redis/song song: unit.sh.
++test_list: "node scripts/test-shards/list.mjs"
++test_unit: 'bash scripts/test-shards/unit.sh "$1"'
+ # test_combine: ""
+ # merge_autonomy: L3 = máy merge ghim head theo làn · L2 = chỉ làn nhanh · L1 = người merge (ADR-0015, D-122)
+ merge_autonomy: L3

@@ -9,6 +9,11 @@ export interface SecurityStore {
   set(key: string, value: string, ttlSeconds: number): Promise<void>;
   /** Tăng bộ đếm; lần đầu đặt TTL (cửa sổ cố định). Trả giá trị sau khi tăng. */
   incr(key: string, ttlSeconds: number): Promise<number>;
+  /**
+   * Tăng `key` (lần đầu đặt TTL) và đọc `peekKey` trong CÙNG một lệnh nguyên tử (Redis MULTI) — bộ đếm cửa sổ hiện tại +
+   * cửa sổ trước cho rate limit cửa sổ trượt (T-055). Trả `{ current: sau khi tăng, previous: 0 nếu không có }`.
+   */
+  incrPeek(key: string, ttlSeconds: number, peekKey: string): Promise<{ current: number; previous: number }>;
   /** Giảm bộ đếm (không xuống dưới 0). */
   decr(key: string): Promise<void>;
   del(key: string): Promise<void>;
@@ -38,6 +43,17 @@ class RedisStore implements SecurityStore {
       [Error | null, number],
     ];
     return n;
+  }
+  async incrPeek(key: string, ttlSeconds: number, peekKey: string) {
+    const k = KEY_PREFIX + key;
+    const res = (await this.redis
+      .multi()
+      .incr(k)
+      .expire(k, ttlSeconds, "NX")
+      .get(KEY_PREFIX + peekKey)
+      .exec()) as [Error | null, unknown][];
+    for (const [err] of res) if (err) throw err;
+    return { current: Number(res[0]![1]), previous: Number(res[2]![1] ?? 0) || 0 };
   }
   async decr(key: string) {
     const k = KEY_PREFIX + key;
@@ -76,6 +92,10 @@ export class MemoryStore implements SecurityStore {
     const n = (e ? Number(e.value) : 0) + 1;
     this.data.set(key, { value: String(n), expiresAt: e?.expiresAt ?? Date.now() + ttlSeconds * 1000 });
     return n;
+  }
+  async incrPeek(key: string, ttlSeconds: number, peekKey: string) {
+    const current = await this.incr(key, ttlSeconds);
+    return { current, previous: Number(this.live(peekKey)?.value ?? 0) || 0 };
   }
   async decr(key: string) {
     const e = this.live(key);

@@ -6,3 +6,8 @@ MetadataStorage.clear();
 // Bộ đếm rate limit/phiên admin (lib/admin-security/store.ts) dùng chung Redis giữa các suite và các lần chạy, cửa sổ
 // 15 phút: mỗi file test một namespace riêng để request của suite trước không làm suite sau chạm ngưỡng theo IP.
 process.env.XS_SECURITY_KEY_NAMESPACE = `test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+// Test gọi backend qua loopback và giả IP khách bằng `x-forwarded-for` (mỗi ca một IP → bộ đếm theo IP không lẫn). Backend
+// chỉ tin header này khi socket là proxy tin cậy (lib/security/client-ip.ts, mặc định không tin) → coi loopback là proxy
+// tin cậy trong test. Suite `security` tự đổi giá trị để kiểm cả mặc định.
+process.env.XS_TRUSTED_PROXIES ??= "loopback";

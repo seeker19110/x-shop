@@ -15,6 +15,12 @@ const HELD_REFUND_STATES: readonly RefundState[] = [
   "failed",
 ];
 
+/** Trạng thái hoàn đã nhả tiền giữ và không bao giờ chi: không tính vào "đã giữ", không chiếm chỗ của giao dịch gốc. */
+const RELEASED_REFUND_STATES: readonly RefundState[] = ["rejected", "cancelled"];
+
+/** Refund còn chiếm tiền của khoản thu (đang giữ hoặc đã hoàn) — dùng khi chia số hoàn theo giao dịch gốc. */
+export const refundOccupiesCapture = (state: RefundState): boolean => !RELEASED_REFUND_STATES.includes(state);
+
 export interface LedgerTotals {
   captured: number;
   refundSucceeded: number;

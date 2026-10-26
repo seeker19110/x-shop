@@ -4,9 +4,14 @@ import { createStep, StepResponse } from "@medusajs/framework/workflows-sdk";
 import { diffQuotes, orderMachine, vnpay, type AddressSnapshot, type QuoteBreakdown } from "@x-shop/domain";
 import { randomInt } from "node:crypto";
 import { cartFingerprint, loadCheckoutCart, toSafeInteger, type CheckoutCart } from "../../lib/checkout/cart";
+import {
+  NO_SIZE_CHART,
+  sizeChartsOfProducts,
+  type LineSizeChart,
+} from "../../lib/catalog/size-chart-snapshot";
 import { CHECKOUT_CONFIG, getVnpayConfig } from "../../lib/checkout/config";
 import { CheckoutError } from "../../lib/checkout/errors";
-import { acquireOrdered, lockKeys, releaseOwned } from "../../lib/checkout/locks";
+import { acquireOrdered, isLockUnavailable, lockKeys, releaseOwnedQuietly } from "../../lib/checkout/locks";
 import { buildQuote, presentQuote, type LoadedDiscount } from "../../lib/checkout/quote";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type { PaymentMethod } from "../../modules/checkout/models/constants";
@@ -34,30 +39,72 @@ export interface SubmitCheckoutInput {
 const checkoutService = (container: MedusaContainer) =>
   container.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
 const lockingOf = (container: MedusaContainer) => container.resolve(Modules.LOCKING);
+const causeOf = (e: unknown) =>
+  e instanceof Error && e.cause instanceof Error ? e.cause.message : String(e);
+
+/** Lấy khóa checkout; hạ tầng khóa hỏng → ghi log nguyên nhân gốc (chỉ phía server) rồi ném `LOCK_UNAVAILABLE`. */
+async function acquireCheckoutLocks(
+  container: MedusaContainer,
+  ownerId: string,
+  keys: Iterable<string>,
+  scope: string,
+): Promise<string[]> {
+  try {
+    return await acquireOrdered(lockingOf(container), keys, {
+      ownerId,
+      waitMs: CHECKOUT_CONFIG.lockWaitMs,
+      ttlSeconds: CHECKOUT_CONFIG.lockTtlSeconds,
+      scope,
+    });
+  } catch (e) {
+    if (isLockUnavailable(e)) {
+      container
+        .resolve(ContainerRegistrationKeys.LOGGER)
+        .error(`[checkout] hạ tầng khóa không dùng được (${scope}), dừng submit ${ownerId}: ${causeOf(e)}`);
+    }
+    throw e;
+  }
+}
+
+/**
+ * Nhả khóa không ném: dùng ở bù trừ và sau khi đơn đã chốt. Redis mất lúc này thì khóa tự hết hạn theo TTL (đã ngừng gia
+ * hạn) — ném lỗi ở đây sẽ làm bù trừ dừng giữa chừng hoặc kéo đổ một đơn đã chốt đúng.
+ */
+async function releaseLocksSafely(
+  container: MedusaContainer,
+  ownerId: string,
+  keys: readonly string[] | null,
+): Promise<void> {
+  const error = await releaseOwnedQuietly(lockingOf(container), ownerId, keys);
+  if (error) {
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .warn(`[checkout] không nhả được khóa của ${ownerId} (tự hết hạn sau TTL): ${causeOf(error)}`);
+  }
+}
 
 /* ---------------------------------------------------------------- khóa (bước 4) */
 
+/**
+ * Lấy khóa giỏ/tồn kho. Redis mất → `LOCK_UNAVAILABLE` (503) trước khi đọc tồn/giữ hàng: không bán bằng tồn đọc ngoài
+ * khóa, không có khóa in-memory thay thế (đặc tả §13.2).
+ */
 export const acquireCheckoutLocksStep = createStep(
   "x-checkout-acquire-locks",
   async (input: { owner_id: string; keys: string[]; scope: string }, { container }) => {
-    const held = await acquireOrdered(lockingOf(container), input.keys, {
-      ownerId: input.owner_id,
-      waitMs: CHECKOUT_CONFIG.lockWaitMs,
-      ttlSeconds: CHECKOUT_CONFIG.lockTtlSeconds,
-      scope: input.scope,
-    });
+    const held = await acquireCheckoutLocks(container, input.owner_id, input.keys, input.scope);
     return new StepResponse(held, { owner_id: input.owner_id, keys: held });
   },
   async (data, { container }) => {
     if (!data || data.keys.length === 0) return;
-    await releaseOwned(lockingOf(container), data.owner_id, data.keys);
+    await releaseLocksSafely(container, data.owner_id, data.keys);
   },
 );
 
 export const releaseCheckoutLocksStep = createStep(
   "x-checkout-release-locks",
   async (input: { owner_id: string }, { container }) => {
-    await releaseOwned(lockingOf(container), input.owner_id, null);
+    await releaseLocksSafely(container, input.owner_id, null);
     return new StepResponse(true);
   },
 );
@@ -75,7 +122,14 @@ export interface InventoryRequirement {
 export interface PreparedCheckout {
   now: string;
   cart: Pick<CheckoutCart, "id" | "region_id" | "currency_code" | "sales_channel_id">;
-  lines: Array<{ id: string; variant_id: string; title: string; quantity: number }>;
+  /** `size_chart`: bảng size (đúng phiên bản) gắn với sản phẩm lúc đặt — chụp vào dòng đơn (ADM03, T-027). */
+  lines: Array<{
+    id: string;
+    variant_id: string;
+    title: string;
+    quantity: number;
+    size_chart: LineSizeChart;
+  }>;
   breakdown: QuoteBreakdown;
   discount: LoadedDiscount | null;
   shipping_service: string;
@@ -157,6 +211,11 @@ export const prepareCheckoutStep = createStep(
       .flatMap((l) => (l?.id ? [l.id] : []))
       .sort();
 
+    const sizeCharts = await sizeChartsOfProducts(
+      container,
+      cart.items.flatMap((l) => (l.product_id ? [l.product_id] : [])),
+    );
+
     const prepared: PreparedCheckout = {
       now: now.toISOString(),
       cart: {
@@ -170,6 +229,7 @@ export const prepareCheckoutStep = createStep(
         variant_id: l.variant_id as string,
         title: l.title,
         quantity: l.quantity,
+        size_chart: (l.product_id && sizeCharts.get(l.product_id)) || NO_SIZE_CHART,
       })),
       breakdown: built.breakdown,
       discount: built.discount,
@@ -270,14 +330,8 @@ export const holdCouponStep = createStep(
     const d = input.discount;
     if (!d) return new StepResponse(false, null);
     const service = checkoutService(container);
-    const locking = lockingOf(container);
     const owner = `${input.attempt_id}:promotion`;
-    await acquireOrdered(locking, [lockKeys.promotion(d.code)], {
-      ownerId: owner,
-      waitMs: CHECKOUT_CONFIG.lockWaitMs,
-      ttlSeconds: CHECKOUT_CONFIG.lockTtlSeconds,
-      scope: "promotion",
-    });
+    await acquireCheckoutLocks(container, owner, [lockKeys.promotion(d.code)], "promotion");
     try {
       if (d.limit !== null && (await service.countCountedCouponUsage(d.code)) >= d.limit) {
         throw new CheckoutError("DISCOUNT_EXHAUSTED", undefined, { field: "discount_code" });
@@ -288,7 +342,7 @@ export const holdCouponStep = createStep(
         attempt_id: input.attempt_id,
       });
     } finally {
-      await releaseOwned(locking, owner, null);
+      await releaseLocksSafely(container, owner, null);
     }
     return new StepResponse(true, { attempt_id: input.attempt_id });
   },
@@ -415,12 +469,17 @@ export function computeDeadlines(method: PaymentMethod, nowIso: string): Deadlin
   };
 }
 
-/** VNPAY: payment_attempt (txn_ref PA_<ulid>) + URL đã ký, vnp_ExpireDate = hold_expires_at. COD: không làm gì. */
+/**
+ * VNPAY: payment_attempt (txn_ref PA_<ulid>) + URL đã ký, vnp_ExpireDate = hold_expires_at, vnp_ReturnUrl kèm
+ * `?attempt=<checkout attempt id>`. COD: không làm gì.
+ */
 export const createPaymentAttemptStep = createStep(
   "x-checkout-create-payment-attempt",
   async (
     input: {
       payment_method: PaymentMethod;
+      /** Checkout attempt — gắn vào `vnp_ReturnUrl` (`?attempt=`) để trang kết quả tra đúng lần đặt/thanh toán. */
+      attempt_id: string;
       order_id: string;
       display_ref: string;
       amount: number;
@@ -455,6 +514,8 @@ export const createPaymentAttemptStep = createStep(
       ipAddr: input.ip,
       createdAt: new Date(input.now),
       expiresAt,
+      // Storefront `/thanh-toan/ket-qua?attempt=` (API-CONTRACT): attempt của giỏ trong phiên → đúng đơn, không lấy từ URL.
+      returnParams: { attempt: input.attempt_id },
     });
     await service.markPaymentAttemptPending(id, paymentUrl);
     return new StepResponse({ payment_attempt_id: id, txn_ref: txnRef, payment_url: paymentUrl }, { id });

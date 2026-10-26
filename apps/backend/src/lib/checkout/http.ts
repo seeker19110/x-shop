@@ -4,6 +4,7 @@ import { normalizeVnPhone, validateAddress, type AddressSnapshot } from "@x-shop
 import { z } from "zod";
 import { PAYMENT_METHODS } from "../../modules/checkout/models/constants";
 import type { CartAccessContext } from "./cart";
+import { clientIpOf } from "../security/config";
 import { CheckoutError, readCheckoutError, sendProblem } from "./errors";
 
 /**
@@ -104,10 +105,12 @@ export function accessContext(req: MedusaStoreRequest): CartAccessContext {
   };
 }
 
-/** IP gửi VNPAY (vnp_IpAddr): IPv4 thuần nếu là địa chỉ ánh xạ IPv6. */
+/**
+ * IP khách (vnp_IpAddr, rate limit đơn sau mua): theo `XS_TRUSTED_PROXIES` — mặc định không tin X-Forwarded-For
+ * (lib/security/client-ip.ts); IPv4 thuần nếu là địa chỉ ánh xạ IPv6.
+ */
 export function clientIp(req: MedusaStoreRequest): string {
-  const raw = (req.ip ?? "").replace(/^::ffff:/, "");
-  return /^[0-9a-fA-F:.]{2,45}$/.test(raw) ? raw : "127.0.0.1";
+  return clientIpOf(req).ip ?? "127.0.0.1";
 }
 
 /** Lỗi nghiệp vụ → problem+json; lỗi khác → log + 500 INTERNAL (không lộ chi tiết nội bộ). */

@@ -1,0 +1,11 @@
+# Nguồn và giấy phép tài nguyên hình ảnh, phông
+
+Cập nhật 2026-10-26. Chưa có ảnh chụp sản phẩm thật: ảnh dưới đây là minh họa demo. Không có ảnh do mô hình AI sinh; nếu thêm, phải ghi dòng riêng với nhãn "AI tạo". Ảnh sản phẩm thật của chủ shop thêm vào đây kèm quyền sử dụng trước khi ra mắt.
+
+| Đường dẫn (glob)                      | Nội dung                               | Nguồn                                                                | Giấy phép / quyền                                    | Ghi chú                                                         |
+| ------------------------------------- | -------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------- |
+| `apps/storefront/public/demo/*.svg`   | Minh họa sản phẩm, hero, look, danh mục | SVG hình khối tự tạo cho dự án (placeholder, không lấy từ bên thứ ba; mã sinh không còn trong repo)     | Thuộc dự án x-shop (cùng giấy phép của mã nguồn)     | Chỉ để demo/fixtures; thay bằng ảnh thật trước ra mắt            |
+| `apps/backend/static/demo/*.svg`      | Ảnh màu demo cho seed backend          | SVG hình khối tự tạo cho dự án (placeholder, dùng bởi `src/scripts/catalog-demo-data.ts`)                         | Thuộc dự án x-shop                                   | Chỉ có ở dev; production dùng CDN                               |
+| `apps/storefront/public/icons/*.svg`  | Biểu tượng ứng dụng (SVG nguồn)        | SVG tự tạo cho dự án                                            | Thuộc dự án x-shop                                   | Biểu tượng nền màu nhấn + chữ X                                  |
+| `apps/storefront/public/icons/*.png`  | Biểu tượng PWA 192/512, maskable, apple-touch | Sinh bằng `apps/storefront/scripts/gen-pwa-icons.mjs` (không tải mạng) | Thuộc dự án x-shop                                   | Nhận diện shop là mặc định, chủ dự án thay được (D-002)          |
+| Be Vietnam Pro (woff2 subset vietnamese + latin) | Phông chữ giao diện         | Gói `@fontsource/be-vietnam-pro` 5.3.0, tự host                      | SIL OFL-1.1 (khai báo trong `package.json` của gói)  | Nạp qua `apps/storefront/src/styles/fonts.css`, không ở `public` |

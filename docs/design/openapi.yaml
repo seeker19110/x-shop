@@ -1,0 +1,2312 @@
+openapi: 3.1.0
+info:
+  title: "x-shop custom API"
+  version: 1.0.0
+  summary: "Route tùy biến của x-shop trên Medusa v2 (store, admin, webhook)."
+  description: |
+    Hợp đồng máy đọc được cho các route TÙY BIẾN do dự án viết: `/store/x/*`, `/admin/x/*`, `/x/webhooks/*` và `/x/health`.
+    Route native của Medusa (`/store/carts`, `/auth/*`, `/admin/uploads`…) KHÔNG nằm ở đây — xem tài liệu Medusa.
+
+    Nguồn sự thật: mã route `apps/backend/src/api/**/route.ts` (schema zod) và `docs/design/API-CONTRACT.md`;
+    `scripts/check-openapi.mjs` (`pnpm check:openapi`) kiểm mỗi route file có đúng đường dẫn + phương thức ở đây và ngược lại.
+    Khi mô tả lệch mã, mã + test tích hợp là chuẩn. Phần thân phản hồi phức tạp (báo cáo, danh sách quản trị) mô tả bằng
+    các trường chính, `additionalProperties: true` — không phải danh sách đầy đủ.
+
+    Quy ước chung:
+    - Tiền: số nguyên VND. Thời gian: ISO 8601 UTC.
+    - Lỗi: `application/problem+json` theo RFC 9457 với `code` ổn định. Hai dạng cùng schema `Problem`: dạng checkout/đơn
+      (`type` = `https://x-shop.vn/problems/<code>`, có `detail`, `field?`, `action?`) và dạng chung (`type: about:blank`,
+      có `errors[{param, reason}]`). `detail`/`title` tiếng Việt.
+    - Route riêng tư trả `Cache-Control: private, no-store`; catalog công khai `public, s-maxage=60, stale-while-revalidate=300`.
+    - Idempotency: header `Idempotency-Key` (16–128 ký tự `[A-Za-z0-9_-]`) ở các POST có thể bị gửi lại; hợp đồng mã lỗi hiện
+      tại (422 thiếu/sai khóa, 409 `IDEMPOTENCY_CONFLICT` khi khác nội dung) là ngoại lệ có chủ đích so với mẫu 400/422 của khung.
+  license:
+    name: Chưa chọn (chờ chủ dự án)
+    identifier: NOASSERTION
+servers:
+  - url: /
+    description: "Cùng origin với backend Medusa (storefront gọi server-to-server; Admin cùng host backend)."
+tags:
+  - name: Catalog
+    description: "Danh mục, tìm kiếm, chi tiết sản phẩm, địa chỉ (công khai, cache được)."
+  - name: Checkout
+    description: "Báo giá, đặt hàng idempotent, trạng thái lần đặt."
+  - name: Orders
+    description: "Đơn sau mua của khách (token phiên đơn), hủy, kiểm tra lại thanh toán, đổi trả."
+  - name: Admin catalog
+    description: "Bảng size, thuộc tính thời trang, nhập/xuất CSV."
+  - name: Admin orders
+    description: "Xác nhận COD, vận đơn, hủy đơn, điều chỉnh tồn."
+  - name: Admin returns and refunds
+    description: "Đổi trả theo dòng và hoàn tiền hai người."
+  - name: Admin settlement
+    description: "Đối soát COD/sao kê, báo cáo, ngoại lệ."
+  - name: Admin security
+    description: "Vai trò, audit."
+  - name: Webhooks
+    description: "VNPAY IPN và callback GHN (không đăng nhập)."
+  - name: Ops
+    description: "Kiểm sống."
+security:
+  - publishableKey: []
+paths:
+  # ---------------------------------------------------------------- store: catalog
+  /store/x/products:
+    get:
+      tags: [Catalog]
+      operationId: storeListProducts
+      summary: "Danh sách sản phẩm có lọc và phân trang"
+      description: "Tham số theo allowlist; sai hoặc `price_min > price_max` → 422 `INVALID_QUERY`. Kênh bán lấy từ publishable key."
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: color, in: query, schema: { type: string } }
+        - { name: size, in: query, schema: { type: string } }
+        - { name: material, in: query, schema: { type: string } }
+        - { name: price_min, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: price_max, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: in_stock, in: query, schema: { type: string, enum: ["1"] } }
+        - { name: sort, in: query, schema: { type: string, enum: [newest, price_asc, price_desc] } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 48 } }
+      responses:
+        "200": { $ref: "#/components/responses/ProductListing" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /store/x/products/{handle}:
+    get:
+      tags: [Catalog]
+      operationId: storeGetProduct
+      summary: "Chi tiết sản phẩm cho trang chi tiết"
+      parameters:
+        - { name: handle, in: path, required: true, schema: { type: string, maxLength: 200 } }
+      responses:
+        "200":
+          description: "Sản phẩm (biến thể, giá, tồn, ảnh theo màu, bảng size, thuộc tính)."
+          headers: { Cache-Control: { $ref: "#/components/headers/CachePublicCatalog" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /store/x/search:
+    get:
+      tags: [Catalog]
+      operationId: storeSearch
+      summary: "Tìm kiếm (tên, SKU, danh mục; có/không dấu)"
+      description: "Cùng tham số với danh sách; `q` dài hơn 100 ký tự bị cắt. Không có kết quả → gợi ý danh mục."
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 48 } }
+      responses:
+        "200":
+          description: "Kết quả như danh sách, thêm `query` và `suggestions`."
+          headers: { Cache-Control: { $ref: "#/components/headers/CachePublicCatalog" } }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/ProductListing" }
+                  - type: object
+                    properties:
+                      query: { type: [string, "null"] }
+                      suggestions:
+                        type: object
+                        properties:
+                          categories:
+                            type: array
+                            items:
+                              type: object
+                              required: [handle, name]
+                              properties:
+                                handle: { type: string }
+                                name: { type: string }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /store/x/categories:
+    get:
+      tags: [Catalog]
+      operationId: storeListCategories
+      summary: "Danh mục đang có sản phẩm published trong kênh của publishable key"
+      responses:
+        "200":
+          description: "Danh mục kèm số sản phẩm (đếm cả danh mục con), xếp theo rank rồi tên."
+          headers: { Cache-Control: { $ref: "#/components/headers/CachePublicCatalog" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [categories]
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      required: [handle, name, parent_handle, product_count]
+                      properties:
+                        handle: { type: string }
+                        name: { type: string }
+                        parent_handle: { type: [string, "null"] }
+                        product_count: { type: integer, minimum: 1 }
+  /store/x/addresses/provinces:
+    get:
+      tags: [Catalog]
+      operationId: storeListProvinces
+      summary: "Tỉnh/thành phố (danh mục hai cấp)"
+      responses:
+        "200":
+          description: "Danh mục tĩnh theo bản phát hành, cache dài."
+          headers: { Cache-Control: { $ref: "#/components/headers/CacheAddress" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provinces]
+                properties:
+                  provinces:
+                    type: array
+                    items: { $ref: "#/components/schemas/GeoUnit" }
+  /store/x/addresses/provinces/{code}/wards:
+    get:
+      tags: [Catalog]
+      operationId: storeListWards
+      summary: "Phường/xã của một tỉnh/thành"
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string, pattern: "^[0-9]{1,10}$" } }
+      responses:
+        "200":
+          description: "Danh sách phường/xã."
+          headers: { Cache-Control: { $ref: "#/components/headers/CacheAddress" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [province_code, wards]
+                properties:
+                  province_code: { type: string }
+                  wards:
+                    type: array
+                    items: { $ref: "#/components/schemas/GeoUnit" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  # ---------------------------------------------------------------- store: checkout
+  /store/x/checkout/quote:
+    post:
+      tags: [Checkout]
+      operationId: storeCheckoutQuote
+      summary: "Báo giá do server tính (không nhận giá/tổng từ client)"
+      description: "Quote hết hạn sau 10 phút; kèm `cart_version`. Quyền với giỏ kiểm ở server (khách đăng nhập hoặc vãng lai sở hữu giỏ)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QuoteRequest" }
+      responses:
+        "200":
+          description: "Báo giá."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [quote]
+                properties:
+                  quote: { $ref: "#/components/schemas/Quote" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /store/x/checkout/submit:
+    post:
+      tags: [Checkout]
+      operationId: storeCheckoutSubmit
+      summary: "Đặt hàng idempotent (giữ hàng dưới khóa)"
+      description: |
+        200 = đơn đã tạo (COD `placed`; VNPAY `awaiting_payment` kèm `payment_url`) và token phiên đơn;
+        202 = đang xử lý (poll `status_url`). Lỗi nghiệp vụ → problem+json (`PRICE_CHANGED` kèm `quote`, `INSUFFICIENT_STOCK`
+        kèm `lines`, `BUSY_RETRY`, `LOCK_UNAVAILABLE` 503 kèm `Retry-After: 60`…).
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmitRequest" }
+      responses:
+        "200":
+          description: "Đơn đã tạo."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitResult" }
+        "202":
+          description: "Đang xử lý."
+          headers:
+            Location: { schema: { type: string }, description: status_url }
+            Retry-After: { schema: { type: integer } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AttemptView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /store/x/checkout/attempts/{id}:
+    get:
+      tags: [Checkout]
+      operationId: storeGetCheckoutAttempt
+      summary: "Trạng thái một lần submit (phục hồi sau timeout)"
+      description: "Chỉ phiên sở hữu giỏ của attempt xem được; thiếu/sai `cart_id` hoặc giỏ người khác → 404."
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+        - { name: cart_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: "Trạng thái attempt (kèm `order_access` khi `state=ready`)."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AttemptView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /store/x/checkout/attempts/{id}/recheck:
+    post:
+      tags: [Checkout]
+      operationId: storeRecheckCheckoutAttempt
+      summary: "Kiểm tra lại thanh toán sau khi quay về từ VNPAY"
+      description: |
+        Server hỏi cổng (querydr) và xử lý như IPN; KHÔNG đổi trạng thái theo tham số trình duyệt. Tối đa 1 lần/10 giây mỗi
+        attempt (429 `RATE_LIMITED`); Redis lỗi → 503 `LOCK_UNAVAILABLE`.
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+        - { name: cart_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: "Attempt kèm `payment_check`."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/AttemptView" }
+                  - type: object
+                    properties:
+                      payment_check: { $ref: "#/components/schemas/PaymentCheck" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  # ---------------------------------------------------------------- store: orders
+  /store/x/orders/lookup:
+    post:
+      tags: [Orders]
+      operationId: storeOrderLookup
+      summary: "Yêu cầu liên kết xem đơn (mã đơn + SĐT)"
+      description: |
+        Luôn 202 cùng thông điệp dù khớp hay không (chống dò tồn tại); khớp → liên kết một lần 15 phút gửi qua SĐT/email đã dùng.
+        Định dạng sai → 422. Giới hạn 5/giờ/SĐT, 10/giờ/mã đơn, 20/giờ/IP → 429.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [display_ref, phone]
+              properties:
+                display_ref: { type: string, maxLength: 32 }
+                phone: { type: string, maxLength: 32 }
+      responses:
+        "202":
+          description: "Đã tiếp nhận."
+          headers: { Cache-Control: { $ref: "#/components/headers/PrivateNoStore" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, message]
+                properties:
+                  accepted: { type: boolean, const: true }
+                  message: { type: string }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /store/x/orders/session:
+    post:
+      tags: [Orders]
+      operationId: storeOrderSession
+      summary: "Đổi liên kết tra cứu thành phiên đơn"
+      description: "Token hết hạn/giả/đã dùng → 404 như nhau; hai request đồng thời chỉ một bên thắng."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, maxLength: 512 }
+      responses:
+        "200":
+          description: "Phiên đơn."
+          headers: { Cache-Control: { $ref: "#/components/headers/PrivateNoStore" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [display_ref, order_access, order_access_expires_at]
+                properties:
+                  display_ref: { type: string }
+                  order_access: { type: string, description: Token phiên đơn; storefront giữ trong cookie HttpOnly, không đưa lên URL. }
+                  order_access_expires_at: { type: string, format: date-time }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /store/x/orders/{display_ref}:
+    get:
+      tags: [Orders]
+      operationId: storeGetOrder
+      summary: "Xem đơn (header x-order-access)"
+      description: "Token thiếu/sai/hết hạn hoặc của đơn khác → 404 như không tồn tại. Không trả email/id nội bộ; SĐT đã che."
+      security:
+        - publishableKey: []
+          orderAccess: []
+      parameters:
+        - { $ref: "#/components/parameters/DisplayRef" }
+      responses:
+        "200":
+          description: "Đơn với trạng thái tách riêng (state / payment_state / shipment_state) và timeline."
+          headers: { Cache-Control: { $ref: "#/components/headers/PrivateNoStore" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /store/x/orders/{display_ref}/cancel:
+    post:
+      tags: [Orders]
+      operationId: storeCancelOrder
+      summary: "Khách hủy đơn (idempotent)"
+      description: "Đơn đã thu tiền → mở yêu cầu hoàn (`cancel.refund_requested`). 409 `NOT_CANCELLABLE` / `PAYMENT_PENDING`."
+      security:
+        - publishableKey: []
+          orderAccess: []
+      parameters:
+        - { $ref: "#/components/parameters/DisplayRef" }
+      responses:
+        "200":
+          description: "Đơn sau hủy kèm `cancel`."
+          headers: { Cache-Control: { $ref: "#/components/headers/PrivateNoStore" } }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/OrderView" }
+                  - type: object
+                    properties:
+                      cancel:
+                        type: object
+                        properties:
+                          outcome: { type: string, enum: [cancelled, already_cancelled] }
+                          refund_requested: { type: boolean }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /store/x/orders/{display_ref}/recheck:
+    post:
+      tags: [Orders]
+      operationId: storeRecheckOrder
+      summary: "Kiểm tra lại thanh toán của đơn (querydr cùng giao dịch)"
+      description: "Dùng chung khóa tần suất với recheck attempt (1 lần/10 giây mỗi lần đặt)."
+      security:
+        - publishableKey: []
+          orderAccess: []
+      parameters:
+        - { $ref: "#/components/parameters/DisplayRef" }
+      responses:
+        "200":
+          description: "Đơn kèm `payment_check`."
+          headers: { Cache-Control: { $ref: "#/components/headers/PrivateNoStore" } }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/OrderView" }
+                  - type: object
+                    properties:
+                      payment_check: { $ref: "#/components/schemas/PaymentCheck" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /store/x/orders/{display_ref}/returns:
+    get:
+      tags: [Orders]
+      operationId: storeListOrderReturns
+      summary: "Dòng còn đổi/trả được và các yêu cầu của chính khách"
+      security:
+        - publishableKey: []
+          orderAccess: []
+      parameters:
+        - { $ref: "#/components/parameters/DisplayRef" }
+      responses:
+        "200":
+          description: "Danh sách. Hàng hoàn từ hãng (nội bộ kho) không hiện."
+          headers: { Cache-Control: { $ref: "#/components/headers/PrivateNoStore" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [display_ref, can_request, lines, returns]
+                properties:
+                  display_ref: { type: string }
+                  can_request: { type: boolean }
+                  lines: { type: array, items: { type: object, additionalProperties: true } }
+                  returns: { type: array, items: { $ref: "#/components/schemas/ReturnView" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      tags: [Orders]
+      operationId: storeCreateOrderReturn
+      summary: "Khách tạo yêu cầu đổi/trả theo dòng"
+      description: "Gửi lại cùng `Idempotency-Key` → 200 yêu cầu cũ (`Idempotent-Replayed: true`)."
+      security:
+        - publishableKey: []
+          orderAccess: []
+      parameters:
+        - { $ref: "#/components/parameters/DisplayRef" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReturnRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/ReturnReplayed" }
+        "201": { $ref: "#/components/responses/ReturnCreated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  # ---------------------------------------------------------------- admin: catalog
+  /admin/x/size-charts:
+    get:
+      tags: [Admin catalog]
+      operationId: adminListSizeCharts
+      summary: "Bảng size (hiện hành, hoặc mọi phiên bản theo code)"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.read
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: "Danh sách bảng size."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  size_charts: { type: array, items: { $ref: "#/components/schemas/SizeChart" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Admin catalog]
+      operationId: adminCreateSizeChart
+      summary: "Tạo bảng size phiên bản 1"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [code]
+                  properties:
+                    code: { type: string, minLength: 1, maxLength: 60 }
+                - { $ref: "#/components/schemas/SizeChartContent" }
+      responses:
+        "201":
+          description: "Đã tạo."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  size_chart: { $ref: "#/components/schemas/SizeChart" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/size-charts/{code}/revise:
+    post:
+      tags: [Admin catalog]
+      operationId: adminReviseSizeChart
+      summary: "Tạo phiên bản mới của bảng size và chuyển sản phẩm sang bản mới"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.write
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SizeChartContent" }
+      responses:
+        "201":
+          description: "Bản mới, bản bị thay và sản phẩm đã chuyển."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  size_chart: { $ref: "#/components/schemas/SizeChart" }
+                  superseded: { type: [object, "null"], additionalProperties: true }
+                  product_ids: { type: array, items: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /admin/x/products/{id}/fashion:
+    post:
+      tags: [Admin catalog]
+      operationId: adminSetProductFashion
+      summary: "Đặt thuộc tính thời trang, bảng size, số đo người mẫu"
+      description: "Sản phẩm đang published mà thay đổi làm mất điều kiện xuất bản → bị từ chối và hoàn tác."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.write
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductFashionRequest" }
+      responses:
+        "200":
+          description: "Thuộc tính và bảng size sau cập nhật."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  product_id: { type: string }
+                  attributes: { type: [object, "null"], additionalProperties: true }
+                  size_chart: { type: [object, "null"], additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/products/{id}/publish-check:
+    get:
+      tags: [Admin catalog]
+      operationId: adminProductPublishCheck
+      summary: "Danh sách vấn đề chặn xuất bản"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.read
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      responses:
+        "200":
+          description: "Kết quả kiểm."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [product_id, status, ready, issues]
+                properties:
+                  product_id: { type: string }
+                  status: { type: string }
+                  ready: { type: boolean }
+                  issues: { type: array, items: { type: object, additionalProperties: true } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/x/imports/preview:
+    post:
+      tags: [Admin catalog]
+      operationId: adminPreviewImport
+      summary: "Xem trước file CSV nhập catalog (không ghi catalog)"
+      description: "Nhận `text/csv` hoặc multipart trường `file`, tối đa 2 MB; kiểm từng dòng, lưu import job."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.import
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: { type: string }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: "Dòng hợp lệ, lỗi theo dòng/cột và `can_commit`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/ProblemGeneric" }
+        "415": { $ref: "#/components/responses/ProblemGeneric" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/imports/{id}:
+    get:
+      tags: [Admin catalog]
+      operationId: adminGetImport
+      summary: "Trạng thái một lần nhập"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.import
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      responses:
+        "200":
+          description: "Import job."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/x/imports/{id}/commit:
+    post:
+      tags: [Admin catalog]
+      operationId: adminCommitImport
+      summary: "Ghi kế hoạch đã preview (idempotent theo import id)"
+      description: "Cần đủ `catalog.import`, `price.write`, `inventory.adjust`. Còn lỗi → 422 `IMPORT_HAS_ERRORS`; khóa lỗi → 503/409."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.import
+      x-also-permissions: [price.write, inventory.adjust]
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      responses:
+        "200":
+          description: "Kết quả commit (`replayed: true` khi gọi lại)."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/ImportJob" }
+                  - type: object
+                    properties:
+                      replayed: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /admin/x/exports/products.csv:
+    get:
+      tags: [Admin catalog]
+      operationId: adminExportProductsCsv
+      summary: "Xuất catalog cùng định dạng nhập"
+      description: "Ô có thể bị hiểu là công thức (`=`, `+`, `-`, `@`) được vô hiệu bằng tiền tố `'`."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: catalog.read
+      responses:
+        "200":
+          description: "Tệp CSV."
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            text/csv:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  # ---------------------------------------------------------------- admin: orders
+  /admin/x/orders/{id}/confirm-cod:
+    post:
+      tags: [Admin orders]
+      operationId: adminConfirmCod
+      summary: "Xác nhận đơn COD (`placed` → `confirmed`)"
+      description: "Gọi lại khi đã xác nhận → 200 `changed: false`."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: order.confirm
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      responses:
+        "200":
+          description: "Kết quả."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Changed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /admin/x/orders/{id}/shipments:
+    post:
+      tags: [Admin orders]
+      operationId: adminCreateShipment
+      summary: "Tạo vận đơn GHN cho đơn đã xác nhận (idempotent)"
+      description: "201 = vừa tạo · 200 = đã có · 202 = chưa rõ kết quả ở hãng (gọi lại sau, `Retry-After: 10`). 409 `FULFILLMENT_BLOCKED` khi chưa ghi nhận xuất kho."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: fulfillment.create
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      responses:
+        "200": { $ref: "#/components/responses/Shipment" }
+        "201": { $ref: "#/components/responses/Shipment" }
+        "202": { $ref: "#/components/responses/Shipment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /admin/x/orders/{id}/cancel:
+    post:
+      tags: [Admin orders]
+      operationId: adminCancelOrder
+      summary: "Nhân viên hủy đơn (lý do và Idempotency-Key bắt buộc)"
+      description: "Đơn chưa thu → hủy + nhả hàng; đơn đã thu → mở yêu cầu hoàn toàn bộ chờ người thứ hai duyệt."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: order.cancel
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200":
+          description: "Kết quả hủy."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order_id: { type: string }
+                  state: { type: [string, "null"] }
+                  cancel:
+                    type: object
+                    properties:
+                      outcome: { type: string, enum: [cancelled, already_cancelled] }
+                      refund_requested: { type: boolean }
+                      refund_id: { type: [string, "null"] }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/inventory/adjustments:
+    post:
+      tags: [Admin orders]
+      operationId: adminAdjustInventory
+      summary: "Điều chỉnh tồn (lý do + Idempotency-Key bắt buộc)"
+      description: "Gửi lại cùng khóa + nội dung → 200 (`Idempotent-Replayed`); khác nội dung → 409; giảm dưới số đang giữ → 409 `BELOW_RESERVED`."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: inventory.adjust
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdjustmentRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/AdjustmentReplayed" }
+        "201": { $ref: "#/components/responses/AdjustmentCreated" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  # ---------------------------------------------------------------- admin: returns
+  /admin/x/returns:
+    get:
+      tags: [Admin returns and refunds]
+      operationId: adminListReturns
+      summary: "Danh sách yêu cầu đổi/trả cho kho"
+      description: "Quyền `return.receive`; tham số lạ hoặc vượt khoảng → 422. Hàng hoàn từ hãng có `source=carrier`."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: return.receive
+      parameters:
+        - { name: state, in: query, schema: { $ref: "#/components/schemas/ReturnState" } }
+        - { name: order_id, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: source, in: query, schema: { type: string, enum: [request, carrier] } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+      responses:
+        "200":
+          description: "Danh sách."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Page" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminCreateReturn
+      summary: "CSKH tạo yêu cầu đổi/trả hộ khách"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: return.request
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/ReturnRequest" }
+                - type: object
+                  required: [order_id]
+                  properties:
+                    order_id: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "200": { $ref: "#/components/responses/ReturnReplayed" }
+        "201": { $ref: "#/components/responses/ReturnCreated" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/returns/{id}:
+    get:
+      tags: [Admin returns and refunds]
+      operationId: adminGetReturn
+      summary: "Chi tiết yêu cầu đổi/trả (không trả liên hệ/địa chỉ khách)"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: return.receive
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      responses:
+        "200":
+          description: "Chi tiết."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  return: { $ref: "#/components/schemas/ReturnView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/x/returns/{id}/approve:
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminApproveReturn
+      summary: "Duyệt yêu cầu đổi/trả"
+      description: "Đổi size tạo đơn thay thế và giữ hàng (409 `INSUFFICIENT_STOCK` khi hết). Gọi lại → `changed: false`."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: return.approve
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/ReturnChanged" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/returns/{id}/reject:
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminRejectReturn
+      summary: "Từ chối yêu cầu đổi/trả"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: return.approve
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/ReturnChanged" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/returns/{id}/receive:
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminReceiveReturn
+      summary: "Kho nhận hàng trả"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: return.receive
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                lines:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [line_id, quantity]
+                    properties:
+                      line_id: { type: string, minLength: 1, maxLength: 128 }
+                      quantity: { type: integer, minimum: 0, maximum: 99 }
+      responses:
+        "200": { $ref: "#/components/responses/ReturnChanged" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/returns/{id}/inspect:
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminInspectReturn
+      summary: "Kết quả kiểm định từng dòng (nhập lại tồn một lần)"
+      description: "Trả hàng → mở yêu cầu hoàn theo giá thực trả; đổi size → xác nhận/hủy đơn thay thế."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: return.inspect
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [lines]
+              properties:
+                lines:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [line_id, restock_quantity, damaged_quantity]
+                    properties:
+                      line_id: { type: string, minLength: 1, maxLength: 128 }
+                      restock_quantity: { type: integer, minimum: 0, maximum: 99 }
+                      damaged_quantity: { type: integer, minimum: 0, maximum: 99 }
+                      note: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: "Kết quả kiểm định."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changed: { type: boolean }
+                  return: { $ref: "#/components/schemas/ReturnView" }
+                  refund:
+                    oneOf:
+                      - { $ref: "#/components/schemas/Refund" }
+                      - { type: "null" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  # ---------------------------------------------------------------- admin: refunds
+  /admin/x/refunds:
+    get:
+      tags: [Admin returns and refunds]
+      operationId: adminListRefunds
+      summary: "Tóm tắt hoàn tiền của một đơn, hoặc hàng đợi theo trạng thái"
+      description: |
+        Có `order_id` (và không tham số khác) → tóm tắt đã thu/đã hoàn/đang giữ/còn hoàn được + danh sách yêu cầu.
+        Không có `order_id` → `state` bắt buộc, hàng đợi cũ nhất trước.
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: refund.request
+      parameters:
+        - { name: order_id, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: state, in: query, schema: { $ref: "#/components/schemas/RefundState" } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+      responses:
+        "200":
+          description: "Tóm tắt hoặc hàng đợi."
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminCreateRefund
+      summary: "Tạo yêu cầu hoàn tiền"
+      description: |
+        Σ hoàn ≤ Σ đã thu kể cả khoản đang giữ (422 `REFUND_EXCEEDS_CAPTURED`). Vượt ngưỡng 1.000.000 đ (hoặc hoàn toàn bộ khi hủy đơn)
+        → xác thực lại MFA ≤ 5 phút (403 `REAUTH_REQUIRED`) và người thứ hai duyệt.
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: refund.request
+      x-reauth: conditional
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefundCreateRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/RefundReplayed" }
+        "201": { $ref: "#/components/responses/RefundCreated" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/refunds/{id}/approve:
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminApproveRefund
+      summary: "Người thứ hai duyệt hoàn tiền"
+      description: "Khác người tạo (403 `SELF_APPROVAL`). Yêu cầu vượt ngưỡng → xác thực lại MFA ≤ 5 phút."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: refund.approve
+      x-reauth: conditional
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/RefundChanged" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/refunds/{id}/reject:
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminRejectRefund
+      summary: "Từ chối yêu cầu hoàn chưa duyệt (nhả số đang giữ)"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: refund.approve
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/RefundChanged" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/refunds/{id}/execute:
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminExecuteRefund
+      summary: "Thực hiện hoàn đã duyệt"
+      description: "Retry/timeout dùng CÙNG mã yêu cầu, hỏi lại cổng trước khi gửi lại. 200 succeeded · 202 unknown (`Retry-After: 30`) · 502 failed. Hoàn ngoài hệ thống cần `evidence_ref`."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: refund.execute
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                evidence_ref: { type: string, minLength: 3, maxLength: 128 }
+      responses:
+        "200": { $ref: "#/components/responses/RefundOutcome" }
+        "202": { $ref: "#/components/responses/RefundOutcome" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "502": { $ref: "#/components/responses/RefundOutcome" }
+  /admin/x/refunds/{id}/cancel:
+    post:
+      tags: [Admin returns and refunds]
+      operationId: adminCancelRefund
+      summary: "Hủy yêu cầu hoàn đã thất bại (nhả số đang giữ)"
+      description: "409 `INVALID_STATE` khi không ở `failed` hoặc cổng báo đã hoàn; 409 `REFUND_PROVIDER_UNCONFIRMED`."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: refund.execute
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/RefundChanged" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  # ---------------------------------------------------------------- admin: settlement and reports
+  /admin/x/settlements/batches:
+    get:
+      tags: [Admin settlement]
+      operationId: adminListSettlementBatches
+      summary: "Danh sách batch đối soát (mới nhất trước)"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: settlement.read
+      parameters:
+        - { name: source, in: query, schema: { $ref: "#/components/schemas/SettlementSource" } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+      responses:
+        "200":
+          description: "Danh sách batch."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batches: { type: array, items: { type: object, additionalProperties: true } }
+                  count: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+    post:
+      tags: [Admin settlement]
+      operationId: adminImportSettlementBatch
+      summary: "Nhập chứng từ đối soát (CSV)"
+      description: |
+        Thân `text/csv` hoặc multipart trường `file`; một dòng sai → 422 cả file. Cùng chứng từ nhập lại → 200 +
+        `Idempotent-Replayed: true`; mới → 201. Mã batch hãng trùng mà khác nội dung → 409 `BATCH_CONFLICT`. Cần MFA.
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: settlement.import
+      parameters:
+        - { name: source, in: query, required: true, schema: { $ref: "#/components/schemas/SettlementSource" } }
+        - { name: external_ref, in: query, schema: { type: string } }
+        - { name: period_end, in: query, schema: { type: string, format: date-time } }
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: { type: string }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: "Chứng từ đã có (replay)."
+          headers:
+            Idempotent-Replayed: { schema: { type: string, enum: ["true"] } }
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "201":
+          description: "Batch mới kèm dòng đã đối chiếu và chênh lệch mở ra."
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/settlements/batches/{id}:
+    get:
+      tags: [Admin settlement]
+      operationId: adminGetSettlementBatch
+      summary: "Batch kèm từng dòng đã đối chiếu và chênh lệch mở"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: settlement.read
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      responses:
+        "200":
+          description: "Chi tiết batch."
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/x/settlements/discrepancies:
+    get:
+      tags: [Admin settlement]
+      operationId: adminListDiscrepancies
+      summary: "Chênh lệch đối soát kèm lịch sử"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: settlement.read
+      parameters:
+        - { name: state, in: query, schema: { type: string, enum: [open, resolved] } }
+        - { name: kind, in: query, schema: { type: string, enum: [missing, amount_mismatch, unexpected, overpaid, late_after_cancel] } }
+        - { name: source, in: query, schema: { $ref: "#/components/schemas/SettlementSource" } }
+        - { name: batch_id, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: order_id, in: query, schema: { type: string, maxLength: 128 } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+      responses:
+        "200":
+          description: "Danh sách chênh lệch."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  discrepancies: { type: array, items: { type: object, additionalProperties: true } }
+                  count: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/settlements/discrepancies/{id}/resolve:
+    post:
+      tags: [Admin settlement]
+      operationId: adminResolveDiscrepancy
+      summary: "Đóng chênh lệch có lý do (open → resolved một lần)"
+      description: "Cần `exception.resolve` và `settlement.read`. Không động tới tiền. Lần sau → 409 `INVALID_STATE`."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: exception.resolve
+      x-also-permissions: [settlement.read]
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [note]
+              properties:
+                note: { type: string, minLength: 3, maxLength: 500 }
+                evidence_ref: { type: string, minLength: 3, maxLength: 128 }
+      responses:
+        "200":
+          description: "Chênh lệch đã đóng."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  discrepancy: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/reports/summary:
+    get:
+      tags: [Admin settlement]
+      operationId: adminReportSummary
+      summary: "Báo cáo tiền tách theo định nghĩa"
+      description: "Mỗi chỉ số lọc theo thời điểm phát sinh của chính nó trong [from, to)."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: report.read
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: "Báo cáo."
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/reports/exceptions:
+    get:
+      tags: [Admin settlement]
+      operationId: adminReportExceptions
+      summary: "Dashboard ngoại lệ vận hành, đối soát và COD chưa đối soát đủ"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: exception.read
+      parameters:
+        - { name: source, in: query, schema: { type: string, enum: [ops, settlement, cod] } }
+        - { name: kind, in: query, schema: { type: string, pattern: "^[a-z_]{1,40}$" } }
+        - { name: priority, in: query, schema: { type: string, enum: [low, normal, high, urgent] } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+      responses:
+        "200":
+          description: "Danh sách ngoại lệ và `by_kind`."
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+  # ---------------------------------------------------------------- admin: security
+  /admin/x/audit:
+    get:
+      tags: [Admin security]
+      operationId: adminListAudit
+      summary: "Đọc audit log (chỉ đọc, mới nhất trước)"
+      description: "Bảng chỉ ghi thêm (trigger DB chặn UPDATE/DELETE); `changes` đã che PII."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: audit.read
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+        - { name: action, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: actor_id, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: resource_type, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: resource_id, in: query, schema: { type: string, maxLength: 256 } }
+      responses:
+        "200":
+          description: "Trang audit."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit_logs: { type: array, items: { type: object, additionalProperties: true } }
+                  count: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/users/{id}/roles:
+    get:
+      tags: [Admin security]
+      operationId: adminListUserRoles
+      summary: "Vai trò của một người dùng admin"
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: user.manage
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      responses:
+        "200": { $ref: "#/components/responses/UserRoles" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Admin security]
+      operationId: adminGrantUserRole
+      summary: "Cấp vai trò (idempotent; cần xác thực lại MFA)"
+      description: "201 khi mới cấp; 200 khi đã có. Ghi audit trước/sau và lý do."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: user.manage
+      x-reauth: required
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UserRoles" }
+        "201": { $ref: "#/components/responses/UserRoles" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Validation" }
+    delete:
+      tags: [Admin security]
+      operationId: adminRevokeUserRole
+      summary: "Thu hồi vai trò (cần xác thực lại MFA)"
+      description: "Thân JSON hoặc query `role`/`reason`. Không thu hồi owner cuối cùng (409 `LAST_OWNER`)."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: user.manage
+      x-reauth: required
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+        - { name: role, in: query, schema: { $ref: "#/components/schemas/Role" } }
+        - { name: reason, in: query, schema: { type: string, maxLength: 500 } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UserRoles" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  # ---------------------------------------------------------------- webhooks and ops
+  /x/webhooks/vnpay/ipn:
+    get:
+      tags: [Webhooks]
+      operationId: vnpayIpn
+      summary: "VNPAY gọi báo kết quả thanh toán (IPN)"
+      description: |
+        Chỉ VNPAY gọi; không cần publishable key hay đăng nhập — tin cậy duy nhất là chữ ký HMAC-SHA512 (`vnp_SecureHash`) cùng
+        so khớp tmn/mã giao dịch/số tiền. Luôn trả HTTP 200 với `RspCode` theo protocol (lỗi nội bộ → `99` để VNPAY gửi lại);
+        quá 300 request/10 giây/IP → 429 với body `RspCode 99`. Idempotent: IPN lặp không ghi thu hai lần.
+      security: []
+      parameters:
+        - name: vnp_SecureHash
+          in: query
+          required: true
+          schema: { type: string }
+          description: "Chữ ký HMAC-SHA512 trên các tham số `vnp_*` đã sắp xếp."
+        - name: vnp_TxnRef
+          in: query
+          required: true
+          schema: { type: string }
+        - name: vnp_Amount
+          in: query
+          required: true
+          schema: { type: string }
+          description: "Số tiền nhân 100 theo protocol VNPAY."
+        - name: vnp_ResponseCode
+          in: query
+          schema: { type: string }
+        - name: vnp_TransactionStatus
+          in: query
+          schema: { type: string }
+        - name: vnp_TransactionNo
+          in: query
+          schema: { type: string }
+        - name: vnp_TmnCode
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: "Kết quả xử lý theo protocol VNPAY."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IpnResponse" }
+        "429":
+          description: "Vượt giới hạn tần suất (body như `RspCode 99`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IpnResponse" }
+  /x/webhooks/shipping/ghn:
+    post:
+      tags: [Webhooks]
+      operationId: ghnCallback
+      summary: "GHN gọi khi vận đơn đổi trạng thái hoặc COD"
+      description: |
+        Không có chữ ký đáng tin (chưa xác minh tài liệu GHN) nên KHÔNG tin nội dung: lưu sự kiện đã lọc PII rồi tra lại vận đơn
+        qua API có token trước khi đổi trạng thái. 503 = chưa xử lý xong, hãng gửi lại. Quá 300 request/10 giây/IP → 429.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: "Đã tiếp nhận (hoặc bỏ qua có chủ đích)."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CallbackAck" }
+        "400":
+          description: "Thân không hợp lệ (`INVALID_CALLBACK`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CallbackAck" }
+        "429":
+          description: "Vượt giới hạn tần suất."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CallbackAck" }
+        "503":
+          description: "Chưa xử lý xong (`BUSY_RETRY`, `PROVIDER_UNAVAILABLE`, `INTERNAL`), hãng gửi lại."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CallbackAck" }
+  /x/health:
+    get:
+      tags: [Ops]
+      operationId: health
+      summary: "Kiểm sống tối giản (không chạm DB, không lộ phiên bản)"
+      security: []
+      responses:
+        "200":
+          description: "Còn sống."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+components:
+  securitySchemes:
+    publishableKey:
+      type: apiKey
+      in: header
+      name: x-publishable-api-key
+      description: "Khóa publishable của Medusa (xác định kênh bán). Bắt buộc cho `/store/*`; khóa công khai, không phải bí mật."
+    orderAccess:
+      type: apiKey
+      in: header
+      name: x-order-access
+      description: |
+        Token phiên đơn HMAC (7 ngày, dùng lại được) lấy từ submit/attempt/session. Storefront giữ trong cookie HttpOnly và
+        gửi qua header ở server; không bao giờ đặt trên URL. Thiếu/sai/hết hạn/của đơn khác → 404.
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: connect.sid
+      description: "Phiên admin của Medusa (HttpOnly; production Secure + SameSite=Lax). Ghi (POST/PUT/PATCH/DELETE) kèm cookie phải qua kiểm Origin (CSRF) — `CSRF_REJECTED` 403."
+    adminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "JWT admin của Medusa (thay cho cookie ở client không phải trình duyệt)."
+  headers:
+    NoStore:
+      description: "Không cache."
+      schema: { type: string, const: no-store }
+    PrivateNoStore:
+      description: "Phản hồi riêng tư, không cache dùng chung."
+      schema: { type: string, const: "private, no-store" }
+    CachePublicCatalog:
+      description: "Cache công khai ngắn cho catalog."
+      schema: { type: string, const: "public, s-maxage=60, stale-while-revalidate=300" }
+    CacheAddress:
+      description: "Danh mục địa chỉ tĩnh, cache dài."
+      schema: { type: string, const: "public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800" }
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$" }
+      description: "Thiếu/sai → 422 `VALIDATION`. Cùng khóa + cùng nội dung → trả kết quả cũ; khác nội dung → 409 `IDEMPOTENCY_CONFLICT`."
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    DisplayRef:
+      name: display_ref
+      in: path
+      required: true
+      schema: { type: string, maxLength: 32 }
+      description: "Mã đơn hiển thị cho khách."
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      description: "Vượt khoảng → 422 (không kẹp ngầm)."
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, maximum: 100000, default: 0 }
+  responses:
+    ProblemGeneric:
+      description: "Lỗi theo RFC 9457."
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unauthorized:
+      description: "Chưa đăng nhập hoặc phiên hết hạn/nhàn rỗi (`UNAUTHORIZED`, `SESSION_EXPIRED`, `SESSION_IDLE`)."
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Forbidden:
+      description: "Thiếu quyền (`FORBIDDEN`, `SELF_APPROVAL`), cần MFA (`MFA_REQUIRED`) hoặc xác thực lại (`REAUTH_REQUIRED`), hoặc `CSRF_REJECTED`."
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: "Không tồn tại — hoặc không có quyền với đối tượng (không phân biệt) — `NOT_FOUND`."
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Conflict:
+      description: "Xung đột trạng thái/idempotency/khóa (`INSUFFICIENT_STOCK`, `IDEMPOTENCY_CONFLICT`, `BUSY_RETRY`, `INVALID_STATE`…)."
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Validation:
+      description: "Dữ liệu không hợp lệ (`VALIDATION`, `INVALID_QUERY`, `IMPORT_HAS_ERRORS`…); `field` hoặc `errors[]` chỉ trường lỗi."
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    RateLimited:
+      description: "Vượt giới hạn tần suất (`RATE_LIMITED`); header `Retry-After`."
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unavailable:
+      description: "Hạ tầng khóa không dùng được (`LOCK_UNAVAILABLE`, kèm `Retry-After: 60`) hoặc dịch vụ ngoài tạm lỗi (`SHIPPING_UNAVAILABLE`). Không tạo đơn/giữ hàng."
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    ProductListing:
+      description: "Danh sách sản phẩm, facet và tổng số."
+      headers: { Cache-Control: { $ref: "#/components/headers/CachePublicCatalog" } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ProductListing" }
+    ReturnCreated:
+      description: "Đã tạo yêu cầu đổi/trả."
+      headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ReturnEnvelope" }
+    ReturnReplayed:
+      description: "Gửi lại cùng `Idempotency-Key` → yêu cầu cũ."
+      headers:
+        Idempotent-Replayed: { schema: { type: string, enum: ["true"] } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ReturnEnvelope" }
+    ReturnChanged:
+      description: "Kết quả quyết định; `changed: false` khi gọi lại."
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              changed: { type: boolean }
+              return: { $ref: "#/components/schemas/ReturnView" }
+    RefundCreated:
+      description: "Đã tạo yêu cầu hoàn."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RefundEnvelope" }
+    RefundReplayed:
+      description: "Gửi lại cùng khóa → bản cũ."
+      headers:
+        Idempotent-Replayed: { schema: { type: string, enum: ["true"] } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RefundEnvelope" }
+    RefundChanged:
+      description: "Kết quả; `changed: false` khi gọi lại."
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              changed: { type: boolean }
+              refund: { $ref: "#/components/schemas/Refund" }
+    RefundOutcome:
+      description: "Kết quả thực hiện hoàn (`succeeded`, `already_succeeded`, `unknown`, `failed`)."
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              outcome: { type: string, enum: [succeeded, already_succeeded, unknown, failed] }
+              refund: { $ref: "#/components/schemas/Refund" }
+    Shipment:
+      description: "Kết quả tạo vận đơn."
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              outcome: { type: string, enum: [created, existing, pending] }
+              shipment: { type: object, additionalProperties: true }
+    AdjustmentCreated:
+      description: "Đã điều chỉnh tồn."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AdjustmentEnvelope" }
+    AdjustmentReplayed:
+      description: "Gửi lại cùng khóa → kết quả cũ."
+      headers:
+        Idempotent-Replayed: { schema: { type: string, enum: ["true"] } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AdjustmentEnvelope" }
+    UserRoles:
+      description: "Vai trò hiện tại của người dùng."
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              user_id: { type: string }
+              roles: { type: array, items: { $ref: "#/components/schemas/Role" } }
+              changed: { type: boolean }
+  schemas:
+    Problem:
+      type: object
+      description: |
+        RFC 9457 problem details. `code` ổn định để client xử lý; `detail`/`title` tiếng Việt. Khóa riêng theo `code`
+        (vd `quote`, `lines`, `current_cart_version`, `retry_after_seconds`, `permission`, `import_id`) nằm cùng cấp.
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, description: "`https://x-shop.vn/problems/<code>` (checkout/đơn) hoặc `about:blank` (dạng chung)." }
+        title: { type: string }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        code: { type: string, description: "Mã ổn định, vd `VALIDATION`, `NOT_FOUND`, `INSUFFICIENT_STOCK`." }
+        detail: { type: string }
+        field: { type: string, description: "Trường gây lỗi, vd `contact.phone`." }
+        action: { type: string, description: "Gợi ý cho client, vd `requote`, `retry_same_key`." }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [param, reason]
+            properties:
+              param: { type: string }
+              reason: { type: string }
+      additionalProperties: true
+    GeoUnit:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string }
+        name: { type: string }
+    ProductListing:
+      type: object
+      required: [items, facets, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [product_id, handle, title, price_min, price_max, in_stock]
+            properties:
+              product_id: { type: string }
+              handle: { type: string }
+              title: { type: string }
+              price_min: { type: integer }
+              price_max: { type: integer }
+              compare_at: { type: [integer, "null"] }
+              colors: { type: array, items: { $ref: "#/components/schemas/ColorSwatch" } }
+              thumbnail: { type: [string, "null"] }
+              in_stock: { type: boolean }
+        facets:
+          type: object
+          properties:
+            color: { type: array, items: { $ref: "#/components/schemas/Facet" } }
+            size: { type: array, items: { $ref: "#/components/schemas/Facet" } }
+            material: { type: array, items: { $ref: "#/components/schemas/Facet" } }
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 48 }
+        filter: { type: string }
+        category: { type: [string, "null"] }
+    ColorSwatch:
+      type: object
+      required: [value, label]
+      properties:
+        value: { type: string }
+        label: { type: string }
+        hex: { type: [string, "null"] }
+    Facet:
+      type: object
+      required: [value, label, count]
+      properties:
+        value: { type: string }
+        label: { type: string }
+        count: { type: integer, minimum: 0 }
+        hex: { type: [string, "null"] }
+    ProductDetail:
+      type: object
+      required: [product_id, handle, title, variants]
+      properties:
+        product_id: { type: string }
+        handle: { type: string }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        kind: { type: string }
+        attributes: { type: object, additionalProperties: true }
+        category:
+          type: [object, "null"]
+          properties:
+            handle: { type: string }
+            name: { type: string }
+        options:
+          type: object
+          properties:
+            colors: { type: array, items: { $ref: "#/components/schemas/ColorSwatch" } }
+            sizes: { type: array, items: { type: object, additionalProperties: true } }
+        variants:
+          type: array
+          items:
+            type: object
+            required: [variant_id, sku, price, in_stock]
+            properties:
+              variant_id: { type: string }
+              sku: { type: string }
+              color: { type: [string, "null"] }
+              size: { type: [string, "null"] }
+              price: { type: integer }
+              compare_at: { type: [integer, "null"] }
+              in_stock: { type: boolean }
+        images: { type: array, items: { type: object, additionalProperties: true } }
+        size_chart: { type: [object, "null"], additionalProperties: true }
+        model_measurements: { type: array, items: { type: object, additionalProperties: true } }
+        updated_at: { type: string, format: date-time }
+    AddressInput:
+      type: object
+      additionalProperties: false
+      required: [province_code, ward_code, line]
+      properties:
+        province_code: { type: string, minLength: 1, maxLength: 10 }
+        ward_code: { type: string, minLength: 1, maxLength: 10 }
+        line: { type: string, maxLength: 500, description: "Số nhà, tên đường." }
+    PaymentMethod:
+      type: string
+      enum: [cod, vnpay]
+    QuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [cart_id, payment_method, address]
+      properties:
+        cart_id: { type: string, minLength: 1, maxLength: 100 }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        address: { $ref: "#/components/schemas/AddressInput" }
+        discount_code: { type: [string, "null"], maxLength: 64 }
+    Quote:
+      type: object
+      required: [id, cart_id, cart_version, payment_method, expires_at, currency_code, lines, subtotal, total]
+      properties:
+        id: { type: string }
+        cart_id: { type: string }
+        cart_version: { type: integer }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        discount_code: { type: [string, "null"] }
+        expires_at: { type: string, format: date-time }
+        currency_code: { type: string }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              line_item_id: { type: string }
+              variant_id: { type: string }
+              unit_price: { type: integer }
+              quantity: { type: integer }
+              subtotal: { type: integer }
+              discount: { type: integer }
+              total: { type: integer }
+        subtotal: { type: integer }
+        discount_total: { type: integer }
+        shipping_fee: { type: integer }
+        shipping_discount: { type: integer }
+        shipping_total: { type: integer }
+        total: { type: integer }
+        address: { type: object, additionalProperties: true }
+    SubmitRequest:
+      type: object
+      additionalProperties: false
+      required: [cart_id, cart_version, quote_id, payment_method, contact, address]
+      properties:
+        cart_id: { type: string, minLength: 1, maxLength: 100 }
+        cart_version: { type: integer, minimum: 1, maximum: 1000000 }
+        quote_id: { type: string, minLength: 1, maxLength: 100 }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        contact:
+          type: object
+          additionalProperties: false
+          required: [name, phone]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            phone: { type: string, maxLength: 32 }
+            email: { type: [string, "null"], maxLength: 254 }
+        address: { $ref: "#/components/schemas/AddressInput" }
+    AttemptView:
+      type: object
+      required: [checkout_attempt_id, state]
+      properties:
+        checkout_attempt_id: { type: string }
+        state: { type: string, enum: [preparing, ready, failed, compensated] }
+        cart_id: { type: string }
+        cart_version: { type: integer }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        order:
+          type: [object, "null"]
+          properties:
+            id: { type: string }
+            display_ref: { type: string }
+            state: { type: string, enum: [placed, awaiting_payment] }
+            total: { type: integer }
+            payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+            hold_expires_at: { type: [string, "null"], format: date-time }
+            cod_confirm_by: { type: [string, "null"], format: date-time }
+        payment_url: { type: [string, "null"] }
+        error:
+          type: [object, "null"]
+          properties:
+            code: { type: string }
+            message: { type: string }
+        status_url: { type: string }
+        order_access: { type: string, description: "Có khi `state=ready`." }
+        order_access_expires_at: { type: string, format: date-time }
+    SubmitResult:
+      allOf:
+        - { $ref: "#/components/schemas/AttemptView" }
+        - type: object
+          required: [status_url]
+    PaymentCheck:
+      type: string
+      enum: [paid, not_paid, failed, unknown, skipped]
+    OrderView:
+      type: object
+      required: [display_ref, state, payment_method, payment_state, shipment_state, totals, lines, actions]
+      properties:
+        display_ref: { type: string }
+        state: { type: string }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        payment_state: { type: string, enum: [cod, pending, unknown, paid, refund_pending, expired, void] }
+        shipment_state: { type: string, enum: [unfulfilled, picking, packed, shipped, delivered] }
+        created_at: { type: string, format: date-time }
+        hold_expires_at: { type: [string, "null"], format: date-time }
+        cod_confirm_by: { type: [string, "null"], format: date-time }
+        cancel_reason: { type: [string, "null"] }
+        timeline:
+          type: array
+          items:
+            type: object
+            properties:
+              at: { type: string, format: date-time }
+              kind: { type: string }
+              label: { type: string }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              title: { type: string }
+              variant_title: { type: [string, "null"] }
+              quantity: { type: integer }
+              unit_price: { type: integer }
+              total: { type: integer }
+              thumbnail: { type: [string, "null"] }
+        totals:
+          type: object
+          properties:
+            subtotal: { type: integer }
+            discount_total: { type: integer }
+            shipping_total: { type: integer }
+            total: { type: integer }
+            paid: { type: integer }
+        address:
+          type: object
+          properties:
+            province_name: { type: string }
+            ward_name: { type: string }
+            line: { type: string }
+        contact:
+          type: object
+          properties:
+            name: { type: string }
+            phone: { type: string, description: "Đã che, vd `0912***678`." }
+        actions:
+          type: object
+          properties:
+            can_cancel: { type: boolean }
+            can_recheck: { type: boolean }
+    ReturnState:
+      type: string
+      enum: [requested, approved, rejected, received, inspected, closed]
+    RefundState:
+      type: string
+      enum: [requested, approved, rejected, processing, succeeded, failed, unknown, cancelled]
+    SettlementSource:
+      type: string
+      enum: [ghn_cod, vnpay]
+    Role:
+      type: string
+      enum: [owner, catalog_manager, order_staff, warehouse, support, accountant]
+    ReturnRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, reason, lines]
+      properties:
+        kind: { type: string, enum: [return, exchange] }
+        reason: { type: string, enum: [wrong_size, defective, not_as_described, changed_mind, other] }
+        note: { type: string, maxLength: 500 }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [line_id, quantity]
+            properties:
+              line_id: { type: string, minLength: 1, maxLength: 128 }
+              quantity: { type: integer, minimum: 1, maximum: 99 }
+              exchange_variant_id: { type: string, minLength: 1, maxLength: 128 }
+    ReturnView:
+      type: object
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        state: { $ref: "#/components/schemas/ReturnState" }
+        kind: { type: string, enum: [return, exchange] }
+        reason: { type: string }
+        lines: { type: array, items: { type: object, additionalProperties: true } }
+    ReturnEnvelope:
+      type: object
+      properties:
+        return: { $ref: "#/components/schemas/ReturnView" }
+    Refund:
+      type: object
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        order_id: { type: string }
+        state: { $ref: "#/components/schemas/RefundState" }
+        amount: { type: integer }
+        reason: { type: string }
+    RefundEnvelope:
+      type: object
+      properties:
+        refund: { $ref: "#/components/schemas/Refund" }
+    RefundCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id, reason]
+      description: |
+        `reason=return` bắt buộc `return_id` và cấm `amount` (lấy theo kiểm định). `reason` khác `cancellation` bắt buộc `amount`.
+        `other`/`overpayment` bắt buộc `note`.
+      properties:
+        order_id: { type: string, minLength: 1, maxLength: 128 }
+        reason: { type: string, enum: [return, cancellation, overpayment, late_payment, other] }
+        return_id: { type: string, minLength: 1, maxLength: 128 }
+        amount: { type: integer, exclusiveMinimum: 0, maximum: 2147483647 }
+        method: { type: string, enum: [provider, manual, auto] }
+        note: { type: string, maxLength: 500 }
+    DecisionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        note: { type: string, maxLength: 500 }
+    ReasonRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 500 }
+    Changed:
+      type: object
+      additionalProperties: true
+      properties:
+        changed: { type: boolean }
+    AdjustmentRequest:
+      type: object
+      additionalProperties: false
+      required: [inventory_item_id, location_id, delta, reason]
+      properties:
+        inventory_item_id: { type: string, minLength: 1, maxLength: 128 }
+        location_id: { type: string, minLength: 1, maxLength: 128 }
+        delta:
+          type: integer
+          minimum: -1000000
+          maximum: 1000000
+          not: { const: 0 }
+        reason: { type: string, description: "Một khóa lý do điều chỉnh; hướng (tăng/giảm) kiểm cùng `delta`." }
+        note: { type: string, maxLength: 500 }
+    AdjustmentEnvelope:
+      type: object
+      properties:
+        adjustment: { type: object, additionalProperties: true }
+    SizeChartContent:
+      type: object
+      required: [name, garment_type, columns, rows]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        garment_type: { type: string, minLength: 1, maxLength: 60 }
+        unit: { type: string, const: cm, default: cm }
+        columns:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            required: [key, label, basis]
+            properties:
+              key: { type: string, pattern: "^[a-z][a-z0-9_]{0,29}$" }
+              label: { type: string, minLength: 1, maxLength: 60 }
+              basis: { type: string, enum: [body, garment] }
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items:
+            type: object
+            required: [size, label, values]
+            properties:
+              size: { type: string, minLength: 1, maxLength: 20 }
+              label: { type: string, minLength: 1, maxLength: 20 }
+              values:
+                type: object
+                description: "Mỗi ô là số cm (0–400) hoặc cặp [min, max] với min ≤ max."
+                additionalProperties:
+                  oneOf:
+                    - { type: number, minimum: 0, maximum: 400 }
+                    - type: array
+                      minItems: 2
+                      maxItems: 2
+                      items: { type: number, minimum: 0, maximum: 400 }
+    SizeChart:
+      type: object
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        code: { type: string }
+        version: { type: integer }
+        name: { type: string }
+    ProductFashionRequest:
+      type: object
+      required: [attributes]
+      properties:
+        attributes:
+          type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [apparel, shoes, accessory] }
+            material: { type: [string, "null"], maxLength: 60 }
+            material_label: { type: [string, "null"], maxLength: 60 }
+            composition: { type: [string, "null"], maxLength: 255 }
+            stretch: { type: [string, "null"], enum: [none, low, medium, high, null] }
+            fit: { type: [string, "null"], maxLength: 60 }
+            care: { type: [string, "null"], maxLength: 1000 }
+            origin: { type: [string, "null"], maxLength: 60 }
+            image_exception_by: { type: [string, "null"], maxLength: 120 }
+            image_exception_reason: { type: [string, "null"], maxLength: 500 }
+        size_chart_id: { type: [string, "null"], description: "Bỏ qua = giữ nguyên; null = gỡ bảng size." }
+        model_measurements:
+          type: array
+          maxItems: 20
+          description: "Bỏ qua = giữ nguyên; mảng = thay toàn bộ."
+          items:
+            type: object
+            required: [image_set, height_cm, size_worn]
+            properties:
+              image_set: { type: string, minLength: 1, maxLength: 60 }
+              color: { type: [string, "null"], maxLength: 40 }
+              height_cm: { type: integer, minimum: 50, maximum: 250 }
+              chest_cm: { type: [integer, "null"], minimum: 20, maximum: 250 }
+              waist_cm: { type: [integer, "null"], minimum: 20, maximum: 250 }
+              hip_cm: { type: [integer, "null"], minimum: 20, maximum: 250 }
+              size_worn: { type: string, minLength: 1, maxLength: 20 }
+              note: { type: [string, "null"], maxLength: 255 }
+    ImportJob:
+      type: object
+      additionalProperties: true
+      properties:
+        import_id: { type: string }
+        status: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              line: { type: integer }
+              column: { type: string }
+              message: { type: string }
+        rows: { type: array, items: { type: object, additionalProperties: true } }
+        can_commit: { type: boolean }
+    Page:
+      type: object
+      additionalProperties: true
+      properties:
+        count: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+    RoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        reason: { type: string, maxLength: 500 }
+    IpnResponse:
+      type: object
+      required: [RspCode, Message]
+      properties:
+        RspCode: { type: string, description: "Mã theo protocol VNPAY: `00` xác nhận, `01` không thấy đơn, `02` đã xác nhận trước đó, `04` sai số tiền, `97` sai chữ ký, `99` lỗi khác (VNPAY gửi lại)" }
+        Message: { type: string }
+    CallbackAck:
+      type: object
+      additionalProperties: true
+      properties:
+        ok: { type: boolean }
+        code: { type: string }

@@ -1,4 +1,6 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
+// Mặc định (không phải `* as`): spy phải gắn vào CHÍNH đối tượng module mà mã nguồn gọi, không phải bản sao namespace.
+import nodeCrypto from "node:crypto";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { vnpay } from "@x-shop/domain";
@@ -8,6 +10,12 @@ import {
   type VnpayGateway,
 } from "../../src/lib/checkout/vnpay-gateway";
 import { issueOrderToken, ORDER_ACCESS_CONFIG } from "../../src/lib/orders/access";
+import {
+  DUMMY_LOOKUP_PHONE,
+  lookupPortsFor,
+  runOrderLookup,
+  type LookupPorts,
+} from "../../src/lib/orders/lookup";
 import { ORDER_RATE_LIMITS } from "../../src/lib/orders/rate-limit";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
@@ -32,10 +40,21 @@ class ScriptedGateway implements VnpayGateway {
   }
 }
 
-type J = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+type J = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- thân JSON phản hồi không có kiểu; kiểm bằng expect từng trường
 let ipSeq = 0;
 /** Mỗi ca một IP giả (x-forwarded-for, Express `trust proxy` = 1) → bộ đếm theo IP không lẫn giữa các ca. */
 const newIp = () => `10.21.${Math.floor(++ipSeq / 250)}.${(ipSeq % 250) + 1}`;
+
+/**
+ * T-050: với cửa sổ CỐ ĐỊNH, ca đếm vắt qua ranh giới thì bộ đếm về 0 và lần "phải bị chặn" nhận 200. Từ T-055 bộ đếm
+ * quyết định theo xấp xỉ cửa sổ trượt nên vắt qua ranh giới vẫn chặn đúng (ca hồi quy "sát ranh giới" bên dưới, đồng hồ
+ * tiêm). Giữ hàm này cho các ca kiểm ngưỡng thường: tách khỏi phần dư của ca trước trong cửa sổ trước (cùng khoá) — không
+ * còn cần cho tính đúng.
+ */
+async function alignToRateWindow(windowMs: number, needMs = 30_000): Promise<void> {
+  const left = windowMs - (Date.now() % windowMs);
+  if (left < needMs) await new Promise((r) => setTimeout(r, left + 50));
+}
 
 medusaIntegrationTestRunner({
   testSuite: ({ api: rawApi, getContainer }) => {
@@ -192,6 +211,7 @@ medusaIntegrationTestRunner({
       it("AT20: dò mã đơn — quá số lần bị từ chối theo IP → 429, IP khác không bị ảnh hưởng", async () => {
         const o = await place([["Đen/S", 1]], "cod");
         const limit = ORDER_RATE_LIMITS.deniedIp.limit;
+        await alignToRateWindow(ORDER_RATE_LIMITS.deniedIp.windowMs);
         for (let i = 0; i < limit; i++) {
           const ref = `XS-${String(100000 + i).replace(/[01]/g, "A")}`;
           expect((await getOrder(ref, o.access)).status).toBe(404);
@@ -202,6 +222,60 @@ medusaIntegrationTestRunner({
         expect(Number(blocked.headers["retry-after"])).toBeGreaterThan(0);
         ip = newIp();
         expect((await getOrder(o.ref, o.access)).status).toBe(200);
+      });
+
+      it("hồi quy T-055: dò mã bắt đầu sát ranh giới cửa sổ — lần thứ N+1 (sau ranh giới) vẫn 429; hết cửa sổ trượt thì mở", async () => {
+        const o = await place([["Đen/S", 1]], "cod");
+        const { limit, windowMs } = ORDER_RATE_LIMITS.deniedIp;
+        // Đồng hồ tiêm CHỈ cho bộ đếm (route vẫn dùng giờ thật cho token): N lần bị từ chối 50 ms trước ranh giới,
+        // lần N+1 ngay sau ranh giới — cửa sổ cố định cũ đếm lại từ 0 ở đây và cho 200.
+        const s = service();
+        const realHit = s.hitRateCounter.bind(s);
+        const realPeek = s.peekRateCounter.bind(s);
+        const boundary = (Math.floor(Date.now() / windowMs) + 1) * windowMs;
+        let clock = boundary - 50;
+        const hit = jest
+          .spyOn(s, "hitRateCounter")
+          .mockImplementation((b, w) => realHit(b, w, new Date(clock)));
+        const peek = jest
+          .spyOn(s, "peekRateCounter")
+          .mockImplementation((b, w) => realPeek(b, w, new Date(clock)));
+        try {
+          ip = newIp();
+          for (let i = 0; i < limit; i++) {
+            const ref = `XS-${String(200000 + i).replace(/[012]/g, "B")}`;
+            expect((await getOrder(ref, o.access)).status).toBe(404);
+          }
+          clock = boundary + 10;
+          const blocked = await getOrder(o.ref, o.access);
+          expect(blocked.status).toBe(429);
+          expect(blocked.data.code).toBe("RATE_LIMITED");
+          // Retry-After: lần kế qua khi 1 + N·(M − e)/M ≤ N ⇔ e ≥ M/N.
+          expect(Number(blocked.headers["retry-after"])).toBe(Math.ceil((windowMs / limit - 10) / 1000));
+          clock = boundary + Math.ceil(windowMs / limit);
+          expect((await getOrder(o.ref, o.access)).status).toBe(200);
+        } finally {
+          hit.mockRestore();
+          peek.mockRestore();
+        }
+      });
+
+      it("VNPAY_RETURN_URL kèm attempt = checkout attempt của lần đặt (đã ký); mỗi lần đặt một attempt riêng", async () => {
+        const a = await place([["Đen/M", 1]], "vnpay");
+        const b = await place([["Trắng/M", 1]], "vnpay");
+        const returnOf = (paymentUrl: string) =>
+          new URL(new URL(paymentUrl).searchParams.get("vnp_ReturnUrl") as string);
+        const ra = returnOf(a.paymentUrl);
+        expect(ra.pathname).toBe("/thanh-toan/ket-qua");
+        expect(ra.searchParams.get("attempt")).toBe(a.attemptId);
+        expect(returnOf(b.paymentUrl).searchParams.get("attempt")).toBe(b.attemptId);
+        expect(a.attemptId).not.toBe(b.attemptId);
+        // URL lưu ở payment attempt là bản đã ký có attempt (không token, không PII).
+        const [pa] = await service().listPaymentAttempts({ order_id: a.orderId });
+        expect(pa?.payment_url).toBe(a.paymentUrl);
+        expect(a.paymentUrl).not.toContain(a.access);
+        // SĐT đầy đủ/che/không số 0 đầu — không dò "0912" trần: vnp_ExpireDate (yyyyMMddHHmmss) có thể chứa nó theo giờ chạy.
+        expect(decodeURIComponent(a.paymentUrl)).not.toMatch(/0?912345678|0912\*+678|an@example/);
       });
 
       it("AT08/AT24: tham số return 'thành công' trên URL không đổi trạng thái; recheck hỏi cổng cùng giao dịch", async () => {
@@ -280,8 +354,107 @@ medusaIntegrationTestRunner({
         expect((await lookup({ display_ref: o.ref })).status).toBe(422);
       });
 
+      it("đồng đều: không có đơn / sai SĐT / đơn thiếu SĐT chạy CÙNG các bước, cùng thứ tự; khớp chỉ thêm bước gửi", async () => {
+        const o = await place([["Đen/S", 1]], "cod");
+        const real = lookupPortsFor(container);
+        const steps: string[] = [];
+        const compared: Array<[string, string]> = [];
+        const recording: LookupPorts = {
+          findByRef: async (ref) => {
+            steps.push("findByRef");
+            return real.findByRef(ref);
+          },
+          phoneEquals: (stored, given) => {
+            steps.push("phoneEquals");
+            compared.push([stored, given]);
+            return real.phoneEquals(stored, given);
+          },
+          issueLink: (orderId, now) => {
+            steps.push("issueLink");
+            return real.issueLink(orderId, now);
+          },
+          deliverLink: async (c, link) => {
+            steps.push("deliverLink");
+            return real.deliverLink(c, link);
+          },
+        };
+        const run = async (ref: string, phone: string) => {
+          steps.length = 0;
+          compared.length = 0;
+          const matched = await runOrderLookup(recording, ref, phone, new Date());
+          return { matched, steps: [...steps], compared: [...compared] };
+        };
+
+        const notFound = await run("XS-ZZZZZZ", "0912345678");
+        const wrongPhone = await run(o.ref, "0987654321");
+        expect(notFound).toEqual({
+          matched: false,
+          steps: ["findByRef", "phoneEquals", "issueLink"],
+          // Không có đơn → vẫn so sánh băm với giá trị giả (không short-circuit).
+          compared: [[DUMMY_LOOKUP_PHONE, "0912345678"]],
+        });
+        expect(wrongPhone.matched).toBe(false);
+        expect(wrongPhone.steps).toEqual(notFound.steps);
+        expect(await lookupLinks(o.orderId)).toHaveLength(0);
+
+        // Ca biên: đơn có thật nhưng snapshot liên hệ thiếu SĐT → không khớp, cùng các bước.
+        const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+        const other = await place([["Trắng/S", 1]], "cod");
+        await pg.raw(`UPDATE order_finance SET contact = contact - 'phone' WHERE order_id = ?`, [
+          other.orderId,
+        ]);
+        const noPhone = await run(other.ref, "0912345678");
+        expect(noPhone).toEqual({ ...notFound, compared: [["", "0912345678"]] });
+        expect(await lookupLinks(other.orderId)).toHaveLength(0);
+
+        // Khớp: cùng các bước + đúng một bước gửi liên kết.
+        const match = await run(o.ref, "0912345678");
+        expect(match.matched).toBe(true);
+        expect(match.steps).toEqual([...notFound.steps, "deliverLink"]);
+        expect(await lookupLinks(o.orderId)).toHaveLength(1);
+      });
+
+      it("đồng đều qua HTTP: không có đơn và sai SĐT → cùng số truy vấn, so sánh hằng thời gian, lần ký HMAC; không outbox; cùng phản hồi", async () => {
+        const o = await place([["Trắng/M", 1]], "cod");
+        const s = service();
+        const spies = {
+          find: jest.spyOn(s, "listOrderFinances"),
+          rate: jest.spyOn(s, "hitRateCounter"),
+          outbox: jest.spyOn(s, "insertOutbox"),
+          // So sánh hằng thời gian + ký HMAC: không có đơn vẫn phải so (giá trị giả) và ký như khi sai SĐT.
+          compare: jest.spyOn(nodeCrypto, "timingSafeEqual"),
+          hmac: jest.spyOn(nodeCrypto, "createHmac"),
+        };
+        const counted = async (body: unknown) => {
+          for (const spy of Object.values(spies)) spy.mockClear();
+          const r = await lookup(body);
+          return {
+            status: r.status,
+            body: JSON.stringify(r.data),
+            find: spies.find.mock.calls.length,
+            rate: spies.rate.mock.calls.length,
+            outbox: spies.outbox.mock.calls.length,
+            compare: spies.compare.mock.calls.length,
+            hmac: spies.hmac.mock.calls.length,
+          };
+        };
+        try {
+          const notFound = await counted({ display_ref: "XS-ZZZZZZ", phone: CONTACT.phone });
+          const wrongPhone = await counted({ display_ref: o.ref, phone: "0987654321" });
+          expect(notFound).toMatchObject({ status: 202, find: 1, rate: 3, outbox: 0 });
+          expect(notFound.compare).toBeGreaterThanOrEqual(1);
+          expect(notFound.hmac).toBeGreaterThanOrEqual(1);
+          expect(wrongPhone).toEqual(notFound);
+          const ok = await counted({ display_ref: o.ref, phone: CONTACT.phone });
+          expect(ok).toMatchObject({ ...notFound, outbox: 1, hmac: expect.any(Number) });
+        } finally {
+          for (const spy of Object.values(spies)) spy.mockRestore();
+        }
+      });
+
       it("rate limit: SĐT 5/giờ → lần 6 bị 429 kể cả khi khớp; IP khác vẫn bị chặn theo SĐT", async () => {
         const o = await place([["Đen/M", 1]], "cod");
+        await alignToRateWindow(ORDER_RATE_LIMITS.lookupPhone.windowMs);
         for (let i = 0; i < ORDER_RATE_LIMITS.lookupPhone.limit; i++) {
           expect((await lookup({ display_ref: "XS-ZZZZZZ", phone: "0912345678" })).status).toBe(202);
         }
@@ -290,6 +463,35 @@ medusaIntegrationTestRunner({
         expect(blocked.status).toBe(429);
         expect(blocked.data.code).toBe("RATE_LIMITED");
         expect(await lookupLinks(o.orderId)).toHaveLength(0);
+      });
+
+      it("hồi quy T-055: SĐT tra cứu bắt đầu sát ranh giới — lần thứ 6 ngay sau ranh giới vẫn 429 (đồng hồ tiêm)", async () => {
+        const o = await place([["Đen/M", 1]], "cod");
+        const { limit, windowMs } = ORDER_RATE_LIMITS.lookupPhone;
+        const s = service();
+        const realHit = s.hitRateCounter.bind(s);
+        const boundary = (Math.floor(Date.now() / windowMs) + 1) * windowMs;
+        let clock = boundary - 1;
+        const hit = jest
+          .spyOn(s, "hitRateCounter")
+          .mockImplementation((b, w) => realHit(b, w, new Date(clock)));
+        try {
+          const phone = "0933 222 111";
+          for (let i = 0; i < limit; i++) {
+            ip = newIp();
+            expect((await lookup({ display_ref: "XS-QQQQQQ", phone })).status).toBe(202);
+          }
+          clock = boundary;
+          ip = newIp();
+          const blocked = await lookup({ display_ref: o.ref, phone });
+          expect(blocked.status).toBe(429);
+          expect(blocked.data.code).toBe("RATE_LIMITED");
+          // Lần kế qua khi 1 + 1 + 5·(M − e)/M ≤ 5 ⇔ e ≥ 2M/5 (cửa sổ cố định cũ: 200 ngay tại đây).
+          expect(Number(blocked.headers["retry-after"])).toBe(Math.ceil((2 * windowMs) / 5 / 1000));
+          expect(await lookupLinks(o.orderId)).toHaveLength(0);
+        } finally {
+          hit.mockRestore();
+        }
       });
 
       it("đổi liên kết → phiên đơn; dùng lại/giả/hết hạn/sai loại → 404; hai lần đổi đồng thời chỉ một thành công", async () => {

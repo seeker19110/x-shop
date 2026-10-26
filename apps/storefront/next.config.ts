@@ -28,6 +28,9 @@ export const PRIVATE_SOURCES = [
 /** Đường mang token/tham số thanh toán trên URL: không bao giờ gửi Referer. */
 export const NO_REFERRER_SOURCES = ["/tra-cuu-don/xac-thuc", "/thanh-toan/ket-qua"] as const;
 
+/** Service worker và manifest: luôn kiểm tra lại với server để bản mới đến được khách (không cache dài hạn tệp SW). */
+export const SW_SOURCES = ["/sw.js", "/manifest.webmanifest"] as const;
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
@@ -49,14 +52,27 @@ const nextConfig: NextConfig = {
         source,
         headers: [{ key: "Cache-Control", value: "private, no-store" }],
       })),
+      ...SW_SOURCES.map((source) => ({
+        source,
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=0, must-revalidate" },
+          ...(source === "/sw.js"
+            ? [
+                { key: "Service-Worker-Allowed", value: "/" },
+                { key: "Content-Type", value: "text/javascript; charset=utf-8" },
+              ]
+            : []),
+        ],
+      })),
       {
+        // CSP (nonce mỗi request, frame-ancestors) và HSTS đặt ở src/proxy.ts (T-034).
         source: "/:path*",
         headers: [
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "X-Frame-Options", value: "DENY" },
-          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
         ],
       },
       // Sau quy tắc chung (cùng khóa → quy tắc sau thắng): trang có token tra cứu trên URL và trang trở về từ cổng thanh

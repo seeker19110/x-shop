@@ -28,6 +28,7 @@ import {
   RateLimitCounter,
   WebhookInbox,
 } from "./models/checkout-models";
+import { sampleAt, windowStartMs, type WindowSample } from "../../lib/security/sliding-window";
 
 /** Phần tối thiểu của repository Medusa (MikroOrmBaseRepository) dùng cho câu lệnh nguyên tử. */
 interface BaseRepositoryLike {
@@ -472,6 +473,33 @@ class CheckoutModuleService extends MedusaService({
     return rows.length === 1;
   }
 
+  /**
+   * Mở ngoại lệ chỉ khi CHƯA có ngoại lệ đang hoạt động (open/in_progress) cùng `kind`. Khác `openOpsException`
+   * (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại. Người gọi tự tuần tự hoá (khoá riêng).
+   */
+  async openOpsExceptionIfNoneActive(input: OpsExceptionInput, em?: SqlEntityManager): Promise<boolean> {
+    const rows = await this.exec(
+      `INSERT INTO ops_exception (id, kind, dedupe_key, order_id, amount, priority, due_at, detail)
+       SELECT ?, ?::text, ?, ?, ?, ?, ?, ?::jsonb
+        WHERE NOT EXISTS (
+          SELECT 1 FROM ops_exception WHERE kind = ?::text AND state IN ('open', 'in_progress') AND deleted_at IS NULL)
+       ON CONFLICT DO NOTHING RETURNING id`,
+      [
+        generateEntityId(undefined, "opx"),
+        input.kind,
+        input.dedupe_key,
+        input.order_id ?? null,
+        input.amount ?? null,
+        input.priority ?? "normal",
+        input.due_at ?? null,
+        json(input.detail ?? null),
+        input.kind,
+      ],
+      em,
+    );
+    return rows.length === 1;
+  }
+
   /** Attempt còn mở (created/pending/unknown) → `to` (failed|unknown) theo máy trạng thái thanh toán. */
   async movePaymentAttempt(
     id: string,
@@ -831,28 +859,49 @@ class CheckoutModuleService extends MedusaService({
   /* ------------------------------------------------------------ đơn sau mua (T-021) */
 
   /**
-   * Tăng bộ đếm của `bucket` trong cửa sổ cố định chứa `now` và trả số đếm SAU khi tăng — một câu UPSERT nên nhiều
-   * instance/request đồng thời vẫn đếm đúng (AT20).
+   * Tăng bộ đếm của `bucket` trong cửa sổ cố định chứa `now` và trả số đếm SAU khi tăng cùng số đếm của cửa sổ liền
+   * trước — một câu (UPSERT … RETURNING trong CTE + đọc cửa sổ trước trên cùng snapshot) nên nhiều instance/request đồng
+   * thời vẫn đếm đúng (AT20) và hai số đọc nhất quán. Quyết định chặn theo xấp xỉ cửa sổ trượt
+   * (lib/security/sliding-window.ts, T-055) do bên gọi làm; `now` do bên gọi tiêm (test tất định) và đi kèm mẫu qua
+   * `elapsedMs` — quyết định không đọc lại đồng hồ.
    */
-  async hitRateCounter(bucket: string, windowMs: number, now: Date): Promise<number> {
-    const windowStart = new Date(Math.floor(now.getTime() / windowMs) * windowMs);
+  async hitRateCounter(bucket: string, windowMs: number, now: Date): Promise<WindowSample> {
+    const start = windowStartMs(windowMs, now.getTime());
     const rows = await this.exec(
-      `INSERT INTO rate_limit_counter (id, bucket, window_start, count) VALUES (?, ?, ?, 1)
-       ON CONFLICT (bucket, window_start) DO UPDATE SET count = rate_limit_counter.count + 1, updated_at = now()
-       RETURNING count`,
-      [generateEntityId(undefined, "rlc"), bucket, windowStart],
+      `WITH hit AS (
+         INSERT INTO rate_limit_counter (id, bucket, window_start, count) VALUES (?, ?, ?, 1)
+         ON CONFLICT (bucket, window_start) DO UPDATE SET count = rate_limit_counter.count + 1, updated_at = now()
+         RETURNING count
+       )
+       SELECT hit.count AS current,
+              COALESCE((SELECT p.count FROM rate_limit_counter p WHERE p.bucket = ? AND p.window_start = ?), 0)
+                AS previous
+       FROM hit`,
+      [generateEntityId(undefined, "rlc"), bucket, new Date(start), bucket, new Date(start - windowMs)],
     );
-    return Number(rows[0]?.count ?? 0);
+    return sampleAt(
+      { current: Number(rows[0]?.current ?? 0), previous: Number(rows[0]?.previous ?? 0) },
+      windowMs,
+      now,
+    );
   }
 
-  /** Đọc số đếm hiện tại (không tăng) — dùng cho giới hạn chỉ đếm lần thất bại. */
-  async peekRateCounter(bucket: string, windowMs: number, now: Date): Promise<number> {
-    const windowStart = new Date(Math.floor(now.getTime() / windowMs) * windowMs);
+  /** Đọc (không tăng) số đếm cửa sổ hiện tại + cửa sổ trước trong một câu — dùng cho giới hạn chỉ đếm lần thất bại. */
+  async peekRateCounter(bucket: string, windowMs: number, now: Date): Promise<WindowSample> {
+    const start = windowStartMs(windowMs, now.getTime());
+    const cur = new Date(start);
+    const prev = new Date(start - windowMs);
     const rows = await this.exec(
-      `SELECT count FROM rate_limit_counter WHERE bucket = ? AND window_start = ?`,
-      [bucket, windowStart],
+      `SELECT COALESCE(SUM(count) FILTER (WHERE window_start = ?), 0) AS current,
+              COALESCE(SUM(count) FILTER (WHERE window_start = ?), 0) AS previous
+       FROM rate_limit_counter WHERE bucket = ? AND window_start IN (?, ?)`,
+      [cur, prev, bucket, cur, prev],
     );
-    return Number(rows[0]?.count ?? 0);
+    return sampleAt(
+      { current: Number(rows[0]?.current ?? 0), previous: Number(rows[0]?.previous ?? 0) },
+      windowMs,
+      now,
+    );
   }
 
   /** Đánh dấu token tra cứu đã đổi thành phiên. false = token đã được dùng (UNIQUE token_hash). */
@@ -901,7 +950,8 @@ class CheckoutModuleService extends MedusaService({
    * Khách hủy đơn (POST02, S-309) — MỘT transaction, chỉ khi đơn còn ở `from` (khóa lạc quan theo trạng thái):
    * order_finance → cancelled, payment attempt mở → failed, lượt mã (held/used) → released, checkout attempt → failed
    * (nhả phiên bản giỏ), outbox `order.cancelled`; đơn đã thu tiền (`refund_amount` > 0) → ngoại lệ `refund_request`
-   * (hoàn thật + hủy native ở T-027). Trả false nếu đơn đã rời `from` (nhánh khác thắng).
+   * (hoàn thật + hủy native ở T-027). Trả false nếu đơn đã rời `from` (nhánh khác thắng). `reason`: khách tự hủy
+   * (mặc định) hay cửa hàng hủy (nhân viên `order.cancel` — T-044).
    */
   async cancelOrderByCustomer(input: {
     order_id: string;
@@ -909,7 +959,9 @@ class CheckoutModuleService extends MedusaService({
     refund_amount: number;
     display_ref: string;
     now: Date;
+    reason?: "CUSTOMER_CANCELLED" | "SHOP_CANCELLED";
   }): Promise<boolean> {
+    const reason = input.reason ?? "CUSTOMER_CANCELLED";
     const t = orderMachine.transition(input.from, "cancelled");
     if (!t.ok) return false;
     return this.repo_.transaction(async (em) => {
@@ -933,9 +985,9 @@ class CheckoutModuleService extends MedusaService({
         em,
       );
       await this.exec(
-        `UPDATE checkout_attempt SET state = 'failed', error_code = 'CUSTOMER_CANCELLED', updated_at = now()
+        `UPDATE checkout_attempt SET state = 'failed', error_code = ?, updated_at = now()
          WHERE order_id = ? AND state = 'ready'`,
-        [input.order_id],
+        [reason, input.order_id],
         em,
       );
       await this.insertOutbox(
@@ -944,7 +996,7 @@ class CheckoutModuleService extends MedusaService({
         "order.cancelled",
         {
           order_id: input.order_id,
-          reason: "CUSTOMER_CANCELLED",
+          reason,
           from: input.from,
           refund_amount: input.refund_amount,
         },
@@ -960,7 +1012,7 @@ class CheckoutModuleService extends MedusaService({
             priority: "high",
             due_at: new Date(input.now.getTime() + 24 * 3600_000),
             detail: {
-              reason: "CUSTOMER_CANCELLED",
+              reason,
               display_ref: input.display_ref,
               order_state_before: input.from,
               native_cancel_pending: true,

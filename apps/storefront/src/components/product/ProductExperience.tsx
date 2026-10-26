@@ -72,7 +72,7 @@ export function ProductExperience({ product, initial, children }: ProductExperie
   useEffect(() => {
     track({ event: "view_item", items: trackItem(product, findVariant(product, initial)) });
     // Một lần mỗi lần mở trang sản phẩm.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chỉ chạy lại theo khoá ổn định đã liệt kê; thêm phụ thuộc còn lại gây lặp/gửi trùng sự kiện
   }, [product.handle]);
 
   const update = (next: Selection) => {

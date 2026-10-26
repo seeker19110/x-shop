@@ -10,7 +10,7 @@ import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG, getVnpayConfig } from "./config";
 import { readCheckoutError } from "./errors";
-import { acquireOrdered, lockKeys, releaseOwned } from "./locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 
 /**
  * Xử lý thông báo thanh toán VNPAY (docs/design/checkout-flow.md §4) — DÙNG CHUNG cho IPN (`source: "ipn"`) và kết quả
@@ -169,7 +169,13 @@ async function processUnderOrderLock(
     }
     return R.success;
   } finally {
-    if (!lockHeld) await releaseOwned(locking, owner, null);
+    if (!lockHeld)
+      await releaseOwnedOrWarn(
+        locking,
+        owner,
+        container.resolve(ContainerRegistrationKeys.LOGGER),
+        "payment",
+      );
   }
 }
 

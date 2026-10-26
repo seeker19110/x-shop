@@ -4,6 +4,8 @@
 |---|---|
 | ID tính năng | F-008, F-009 (yêu cầu gốc: CHK03, POST01–03, INV01, INV04, §6.3–6.5, AT13–15, AT17, AT20, AT23) |
 | Trạng thái | Approved for implementation (D-001) |
+| approved_by | Phiên chính, tự duyệt theo AGENTS.md §5 (D-001) |
+| approved_at | 2026-10-24 |
 | Nguồn | `docs/specs/DAC-TA-GOC.md` §4.5, §5.3, §6.3–6.5, §9.3 |
 
 ## 2. Tiêu chí chấp nhận

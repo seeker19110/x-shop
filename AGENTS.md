@@ -45,6 +45,7 @@ Máy chia ba nhóm, không hỏi người: **máy chặn** (không đảo ngư�
 `/autopilot` · `/blueprint` · `/gate` · `/research` · `/audit` · `/review` · `/adr` · `/handover`. Subagent: `researcher` · `executor`/`executor-deep` (tầng do `loop status` trả, ADR-0029) · `reviewer`/`reviewer-alt` (năng lực cao hơn người viết, `LOOP-ORCH-005`; không kết luận được → `pr reviewed --inconclusive`). Phiên chính điều phối; không lồng subagent; song song chỉ khi độc lập về file (trong sản phẩm: `AI-AGENTIC-007`).
 
 ## 9. Quy ước riêng của dự án
+- Lệnh chuẩn (trích `xt.yaml`/`package.json`): cài `corepack enable && pnpm install --frozen-lockfile` · chạy dev `pnpm --filter @x-shop/backend dev`, `pnpm --filter @x-shop/storefront dev` · test `pnpm test` (đơn vị), `pnpm test:integration` · lint `pnpm lint` · kiểu `pnpm typecheck` · format `pnpm format:check` · build `pnpm build`.
 - Cấu trúc thư mục: monorepo pnpm — `packages/domain` (lõi thuần TS: tiền, phân bổ, lọc, trạng thái, protocol VNPAY/GHN), `apps/backend` (Medusa v2 + module tùy biến), `apps/storefront` (Next.js App Router); `docs/` (specs, adr, ops, research).
 - Đặt tên / kiến trúc / thư viện chính và lý do: `docs/adr/` (ADR-0001 stack). Tiền = số nguyên VND (`number` an toàn ≤ 2^53, kiểm `Number.isSafeInteger`); logic tiền/tồn/trạng thái chỉ ở `packages/domain` + workflow backend, adapter không tính giá/tồn.
 - Môi trường & secrets: biến môi trường, mẫu ở `.env.example` từng app; validate bằng zod lúc khởi động; dev dùng Postgres/Redis cục bộ (`scripts/dev-services.sh`); khoá VNPAY/GHN chỉ ở server, dev/CI dùng mock.

@@ -49,15 +49,39 @@ describe("analytics: track() mặc định đẩy vào dataLayer", () => {
 });
 
 describe("analytics: purchase dedupe theo order_id", () => {
-  it("lần 2 cùng order_id bị bỏ; order_id khác vẫn qua; khóa sessionStorage không chứa PII", () => {
+  it("lần 2 cùng order_id bị bỏ; order_id khác vẫn qua; khóa localStorage không chứa PII", () => {
     const p = { event: "purchase", order_id: "XS-ABC123", value: 1330000 } as const;
     expect(track(p)).toBe(true);
     expect(track(p)).toBe(false);
     expect(track({ ...p, order_id: "XS-ZZZ999" })).toBe(true);
     expect(layer().filter((e) => e.event === "purchase")).toHaveLength(2);
-    const keys = Object.keys(window.sessionStorage);
+    const keys = Object.keys(window.localStorage);
     expect(keys.sort()).toEqual(["xs_purchase_XS-ABC123", "xs_purchase_XS-ZZZ999"]);
     expect(keys.some((k) => looksLikePii(k))).toBe(false);
+  });
+
+  it("bền qua phiên trình duyệt: mất sessionStorage + bộ nhớ (tab mới) vẫn không bắn lại", () => {
+    const p = { event: "purchase", order_id: "XS-BEN001", value: 10 } as const;
+    expect(track(p)).toBe(true);
+    window.sessionStorage.clear();
+    resetAnalyticsForTests();
+    expect(track(p)).toBe(false);
+  });
+
+  it("localStorage hỏng → dùng sessionStorage", () => {
+    const real = Storage.prototype.getItem;
+    const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
+      this: Storage,
+      k: string,
+    ) {
+      if (this === window.localStorage) throw new Error("denied");
+      return real.call(this, k);
+    });
+    const p = { event: "purchase", order_id: "XS-SES001", value: 5 } as const;
+    expect(track(p)).toBe(true);
+    expect(track(p)).toBe(false);
+    expect(window.sessionStorage.getItem("xs_purchase_XS-SES001")).toBe("1");
+    spy.mockRestore();
   });
 
   it("order_placed không bị dedupe (sự kiện vận hành riêng)", () => {
@@ -66,7 +90,7 @@ describe("analytics: purchase dedupe theo order_id", () => {
     expect(track(e)).toBe(true);
   });
 
-  it("sessionStorage hỏng → vẫn dedupe bằng bộ nhớ", () => {
+  it("mọi kho hỏng → vẫn dedupe bằng bộ nhớ", () => {
     const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("denied");
     });

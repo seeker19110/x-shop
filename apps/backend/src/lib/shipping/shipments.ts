@@ -7,6 +7,7 @@ import {
   type LedgerEntry,
   type QuoteBreakdown,
   type RefundState,
+  type ShipmentState,
 } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
@@ -14,14 +15,17 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import { SHIPPING_MODULE } from "../../modules/shipping";
 import type ShippingModuleService from "../../modules/shipping/service";
 import type { ShipmentRow } from "../../modules/shipping/service";
+import type { AuditEntryInput } from "../../modules/audit/service";
 import { toSafeInteger as toSafeIntegerOrNull } from "../checkout/cart";
 import { cartWeightGrams } from "../checkout/shipping";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { readCheckoutError } from "../checkout/errors";
-import { acquireOrdered, lockKeys, releaseOwned } from "../checkout/locks";
+import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
 import { SHIPPING_CONFIG } from "./config";
+import { FulfillmentSyncError, syncNativeProgress } from "./fulfillment";
 import { getGhnClient, GhnError, type GhnDetail } from "./ghn-client";
-import { planProgress } from "./progress";
+import { isCarrierCancelled, planCancel, planProgress, type ProgressPlan } from "./progress";
+import { settleCarrierReturn, type CarrierSettlement } from "./return-to-sender";
 
 /**
  * Tạo vận đơn GHN và xử lý callback (SPEC-fulfillment S-302…S-305, đặc tả §6.3–6.4). Mọi thay đổi chạy dưới khóa
@@ -35,6 +39,7 @@ export type ShippingErrorCode =
   | "BUSY_RETRY"
   | "PROVIDER_REJECTED"
   | "PROVIDER_UNAVAILABLE"
+  | "FULFILLMENT_BLOCKED"
   | "VALIDATION";
 
 const STATUS: Record<ShippingErrorCode, number> = {
@@ -43,6 +48,7 @@ const STATUS: Record<ShippingErrorCode, number> = {
   BUSY_RETRY: 409,
   PROVIDER_REJECTED: 422,
   PROVIDER_UNAVAILABLE: 503,
+  FULFILLMENT_BLOCKED: 409,
   VALIDATION: 422,
 };
 
@@ -58,6 +64,9 @@ export class ShippingError extends Error {
     this.status = STATUS[code];
   }
 }
+
+type AuditCtx = Pick<AuditEntryInput, "actor_type" | "actor_id" | "request_id" | "ip_hash">;
+const SYSTEM_AUDIT: AuditCtx = { actor_type: "system", actor_id: null, request_id: null, ip_hash: null };
 
 const checkoutOf = (c: MedusaContainer) => c.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
 const shippingOf = (c: MedusaContainer) => c.resolve<ShippingModuleService>(SHIPPING_MODULE);
@@ -86,7 +95,7 @@ export async function withOrderLock<T>(
   try {
     return await fn();
   } finally {
-    await releaseOwned(locking, owner, null);
+    await releaseOwnedOrWarn(locking, owner, container.resolve(ContainerRegistrationKeys.LOGGER), "shipping");
   }
 }
 
@@ -190,103 +199,137 @@ async function loadItems(container: MedusaContainer, orderId: string): Promise<g
  *    (payment_type_id 1), khách không trả phí hai lần.
  *  - Giữ chỗ dòng shipment với client_order_code ổn định `<mã đơn>-S1` (UNIQUE) TRƯỚC khi gọi hãng; timeout/lỗi mơ hồ
  *    → tra theo client_order_code trước khi gửi lại.
+ *  - Hãng đã nhận vận đơn (created/existing) → fulfillment native + nhả reservation + trừ tồn đúng một lần (T-043,
+ *    `./fulfillment.ts`), vẫn dưới khóa đơn. Lỗi ở bước này KHÔNG làm mất vận đơn đã ghi: gọi lại → `existing` → làm tiếp.
  */
 export async function createShipmentForOrder(
   container: MedusaContainer,
   orderId: string,
   actorId: string,
+  audit: AuditCtx = { ...SYSTEM_AUDIT, actor_type: "user", actor_id: actorId },
 ): Promise<CreateShipmentResult> {
   return withOrderLock(container, orderId, async () => {
-    const [fin] = await checkoutOf(container).listOrderFinances({ order_id: orderId });
-    if (!fin) throw new ShippingError("NOT_FOUND", "Không thấy đơn");
-    const snap: OrderSnapshot = {
-      order_id: fin.order_id,
-      display_ref: fin.display_ref,
-      state: fin.state,
-      payment_method: fin.payment_method,
-      total: Number(fin.total),
-      quote: fin.quote as unknown as QuoteBreakdown,
-      address: fin.address as unknown as AddressSnapshot,
-      contact: fin.contact as unknown as OrderSnapshot["contact"],
-    };
-    if (snap.state !== "confirmed") {
+    const r = await createShipmentLocked(container, orderId, actorId);
+    if (r.outcome !== "pending" && r.shipment.provider_order_code) {
+      await withFulfillmentErrors(r.shipment, () => syncNativeProgress(container, r.shipment, audit));
+    }
+    return r;
+  });
+}
+
+/** Lỗi đồng bộ fulfillment native → lỗi giao vận có nghĩa (vận đơn ở hãng đã ghi, gọi lại an toàn). */
+async function withFulfillmentErrors<T>(shipment: ShipmentRow, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof FulfillmentSyncError) {
       throw new ShippingError(
-        "ORDER_NOT_READY",
-        snap.payment_method === "cod" && snap.state === "placed"
-          ? "Đơn COD cần được nhân viên xác nhận trước khi tạo vận đơn"
-          : "Đơn chưa được xác nhận, chưa tạo vận đơn được",
-        { order_state: snap.state, payment_method: snap.payment_method },
+        "FULFILLMENT_BLOCKED",
+        "Đã có vận đơn ở hãng nhưng chưa ghi nhận xuất kho được — cần kiểm tra tồn/giữ hàng của đơn",
+        { reason: e.reason, shipment_id: shipment.id, ...e.detail },
       );
     }
-    const shipping = shippingOf(container);
-    const client = getGhnClient();
-    const existing = await shipping.shipmentOfOrder(orderId);
-    if (existing?.provider_order_code) return { outcome: "existing", shipment: existing };
+    if (readCheckoutError(e)?.code === "BUSY_RETRY") {
+      throw new ShippingError("BUSY_RETRY", "Kho đang được cập nhật, vui lòng thử lại sau giây lát");
+    }
+    throw e;
+  }
+}
 
-    const ledger = await loadLedger(container, orderId);
-    const cod = codAmount(snap.total, ledger);
-    const clientOrderCode = `${snap.display_ref}-S1`;
-    const items = await loadItems(container, orderId);
-    if (items.length === 0) throw new ShippingError("VALIDATION", "Đơn không có sản phẩm để giao");
-    const weight = Math.max(
-      SHIPPING_CONFIG.minWeightGrams,
-      items.reduce((s, i) => s + i.weightGrams * i.quantity, 0),
+async function createShipmentLocked(
+  container: MedusaContainer,
+  orderId: string,
+  actorId: string,
+): Promise<CreateShipmentResult> {
+  const [fin] = await checkoutOf(container).listOrderFinances({ order_id: orderId });
+  if (!fin) throw new ShippingError("NOT_FOUND", "Không thấy đơn");
+  const snap: OrderSnapshot = {
+    order_id: fin.order_id,
+    display_ref: fin.display_ref,
+    state: fin.state,
+    payment_method: fin.payment_method,
+    total: Number(fin.total),
+    quote: fin.quote as unknown as QuoteBreakdown,
+    address: fin.address as unknown as AddressSnapshot,
+    contact: fin.contact as unknown as OrderSnapshot["contact"],
+  };
+  if (snap.state !== "confirmed") {
+    throw new ShippingError(
+      "ORDER_NOT_READY",
+      snap.payment_method === "cod" && snap.state === "placed"
+        ? "Đơn COD cần được nhân viên xác nhận trước khi tạo vận đơn"
+        : "Đơn chưa được xác nhận, chưa tạo vận đơn được",
+      { order_state: snap.state, payment_method: snap.payment_method },
     );
-    const input: ghn.CreateShipmentInput = {
-      clientOrderCode,
-      to: { name: snap.contact.name, phone: snap.contact.phone.replace(/\D/g, ""), address: snap.address },
-      codAmount: cod,
-      insuranceValue: Math.max(0, snap.quote.total - snap.quote.shippingTotal),
-      weightGrams: weight,
-      items,
-      paymentTypeId: 1,
-      requiredNote: SHIPPING_CONFIG.requiredNote,
-    };
+  }
+  const shipping = shippingOf(container);
+  const client = getGhnClient();
+  const existing = await shipping.shipmentOfOrder(orderId);
+  if (existing?.provider_order_code) return { outcome: "existing", shipment: existing };
 
-    const { shipment, inserted } = existing
-      ? { shipment: existing, inserted: false }
-      : await shipping.reserveShipment({
-          order_id: orderId,
-          client_order_code: clientOrderCode,
-          provider: GHN_PROVIDER,
-          cod_amount: cod,
-          payer: "shop",
-          created_by: actorId,
-        });
-    if (shipment.provider_order_code) return { outcome: "existing", shipment };
+  const ledger = await loadLedger(container, orderId);
+  const cod = codAmount(snap.total, ledger);
+  const clientOrderCode = `${snap.display_ref}-S1`;
+  const items = await loadItems(container, orderId);
+  if (items.length === 0) throw new ShippingError("VALIDATION", "Đơn không có sản phẩm để giao");
+  const weight = Math.max(
+    SHIPPING_CONFIG.minWeightGrams,
+    items.reduce((s, i) => s + i.weightGrams * i.quantity, 0),
+  );
+  const input: ghn.CreateShipmentInput = {
+    clientOrderCode,
+    to: { name: snap.contact.name, phone: snap.contact.phone.replace(/\D/g, ""), address: snap.address },
+    codAmount: cod,
+    insuranceValue: Math.max(0, snap.quote.total - snap.quote.shippingTotal),
+    weightGrams: weight,
+    items,
+    paymentTypeId: 1,
+    requiredNote: SHIPPING_CONFIG.requiredNote,
+  };
 
-    const adopt = async (d: Pick<GhnDetail, "orderCode">, fee: number | null) => ({
-      outcome: "created" as const,
-      shipment: await shipping.markCreated(shipment.id, d.orderCode, fee, "packed"),
-    });
-    /** Tra theo reference của shop; lỗi tra cứu → kết quả vẫn mơ hồ (pending), KHÔNG gửi lại mù. */
-    const lookup = async (): Promise<GhnDetail | null | "unknown"> => {
-      try {
-        return await client.detailByClientCode(clientOrderCode);
-      } catch {
-        return "unknown";
-      }
-    };
+  const { shipment, inserted } = existing
+    ? { shipment: existing, inserted: false }
+    : await shipping.reserveShipment({
+        order_id: orderId,
+        client_order_code: clientOrderCode,
+        provider: GHN_PROVIDER,
+        cod_amount: cod,
+        payer: "shop",
+        created_by: actorId,
+      });
+  if (shipment.provider_order_code) return { outcome: "existing", shipment };
 
-    if (!inserted) {
-      // Lần trước đã giữ chỗ mà chưa biết kết quả (timeout/sập) → tra trước khi gửi lại (S-303, AT11).
-      const found = await lookup();
-      if (found === "unknown") return { outcome: "pending", shipment };
-      if (found) return adopt(found, null);
-    }
-    try {
-      const created = await client.createOrder(input);
-      return adopt(created, created.fee);
-    } catch (e) {
-      if (!(e instanceof GhnError)) throw e;
-      const found = await lookup();
-      if (found && found !== "unknown") return adopt(found, null);
-      if (e.kind === "rejected" && found === null) {
-        throw new ShippingError("PROVIDER_REJECTED", e.message);
-      }
-      return { outcome: "pending", shipment };
-    }
+  const adopt = async (d: Pick<GhnDetail, "orderCode">, fee: number | null) => ({
+    outcome: "created" as const,
+    shipment: await shipping.markCreated(shipment.id, d.orderCode, fee, "packed"),
   });
+  /** Tra theo reference của shop; lỗi tra cứu → kết quả vẫn mơ hồ (pending), KHÔNG gửi lại mù. */
+  const lookup = async (): Promise<GhnDetail | null | "unknown"> => {
+    try {
+      return await client.detailByClientCode(clientOrderCode);
+    } catch {
+      return "unknown";
+    }
+  };
+
+  if (!inserted) {
+    // Lần trước đã giữ chỗ mà chưa biết kết quả (timeout/sập) → tra trước khi gửi lại (S-303, AT11).
+    const found = await lookup();
+    if (found === "unknown") return { outcome: "pending", shipment };
+    if (found) return adopt(found, null);
+  }
+  try {
+    const created = await client.createOrder(input);
+    return adopt(created, created.fee);
+  } catch (e) {
+    if (!(e instanceof GhnError)) throw e;
+    const found = await lookup();
+    if (found && found !== "unknown") return adopt(found, null);
+    if (e.kind === "rejected" && found === null) {
+      throw new ShippingError("PROVIDER_REJECTED", e.message);
+    }
+    return { outcome: "pending", shipment };
+  }
 }
 
 /* ---------------------------------------------------------------- callback */
@@ -380,13 +423,22 @@ export async function handleGhnCallback(
       await shipping.markEventApplied(ev.id, current.id, { ignored: "not_found_at_provider" });
       return { status: 200 as const, body: { ok: true, ignored: "not_found_at_provider" } };
     }
-    const target = ghn.mapGhnStatus(detail.status);
-    if (!target) {
-      const result = { ignored: "unmapped_status", provider_status: detail.status.slice(0, 50) };
+    const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+    const cancelledAtProvider = ghn.isGhnCancelled(detail.status);
+    const target = cancelledAtProvider ? null : ghn.mapGhnStatus(detail.status);
+    if (!cancelledAtProvider && !target) {
+      const result = {
+        ignored: "unmapped_status",
+        provider_status: detail.status.slice(0, 50),
+      };
       await shipping.markEventApplied(ev.id, current.id, result);
       return { status: 200 as const, body: { ok: true, ...result } };
     }
-    const plan = planProgress(current.state, target);
+    // Hãng hủy trước lấy hàng → về `unfulfilled` (T-045); vận đơn đã bị hủy thì không "sống lại" theo trạng thái khác.
+    let plan: ProgressPlan;
+    if (cancelledAtProvider) plan = planCancel(current.state);
+    else if (isCarrierCancelled(current)) plan = { steps: [], final: current.state, ignored: "out_of_order" };
+    else plan = planProgress(current.state, target as ShipmentState);
     let state = current.state;
     for (const step of plan.steps) {
       if (!(await shipping.moveState(current.id, step.from, step.to, now))) break;
@@ -404,12 +456,62 @@ export async function handleGhnCallback(
         },
       );
     }
+    if (cancelledAtProvider && plan.ignored === "out_of_order") {
+      logger.warn(
+        `[shipping] Hãng báo hủy vận đơn ${current.id} đang ở ${current.state} — đã lấy hàng, bỏ qua`,
+      );
+    }
+    const carrierCancelled = isCarrierCancelled({
+      state,
+      provider_order_code: current.provider_order_code,
+    });
+    // Fulfillment native theo trạng thái đã đối chiếu (T-043). Lỗi tạm → 503, sự kiện chưa `applied` để hãng gửi lại
+    // (bước trạng thái ở trên không lùi nên lần sau chỉ làm tiếp phần native); dữ liệu lệch → ghi lỗi, không chặn sự kiện.
+    // Vận đơn bị hủy trước lấy hàng: KHÔNG đồng bộ (không tạo fulfillment/trừ tồn cho hàng chưa rời shop).
+    let nativeSync: "ok" | "skipped" | FulfillmentSyncError["reason"] = carrierCancelled ? "skipped" : "ok";
+    if (!carrierCancelled) {
+      try {
+        const fresh = (await shipping.shipmentByClientCode(current.client_order_code)) as ShipmentRow;
+        await syncNativeProgress(container, fresh, SYSTEM_AUDIT);
+      } catch (e) {
+        if (!(e instanceof FulfillmentSyncError)) {
+          logger.warn(
+            `[shipping] Chưa đồng bộ fulfillment native cho vận đơn ${current.id}: ${(e as Error).message}`,
+          );
+          return {
+            status: 503 as const,
+            body: { ok: false, code: "FULFILLMENT_SYNC_RETRY" },
+          };
+        }
+        logger.error(`[shipping] Không ghi nhận được xuất kho cho vận đơn ${current.id}: ${e.reason}`);
+        nativeSync = e.reason;
+      }
+    }
+    // Hàng hoàn/hủy (T-045): kho cách ly + hủy đơn + hoàn tiền chờ duyệt. Chạy mỗi lần vận đơn ở trạng thái kết thúc
+    // (kể cả callback trùng trạng thái) — idempotent, nên lần trước dở dang được làm tiếp. Lỗi → 503 để hãng gửi lại.
+    let carrier: CarrierSettlement | null = null;
+    const outcome = carrierCancelled ? "cancelled" : state === "returned" ? "returned" : null;
+    if (outcome) {
+      try {
+        carrier = await settleCarrierReturn(container, current, outcome, detail.status, SYSTEM_AUDIT, now);
+      } catch (e) {
+        logger.error(
+          `[shipping] Chưa xử lý được hàng hoàn của vận đơn ${current.id}: ${(e as Error).message}`,
+        );
+        return {
+          status: 503 as const,
+          body: { ok: false, code: "CARRIER_RETURN_RETRY" },
+        };
+      }
+    }
     const result = {
       state,
       provider_status: detail.status.slice(0, 50),
       callback_status: cb.status.slice(0, 50),
       ignored: plan.ignored,
       settlement_state: current.settlement_state,
+      native_sync: nativeSync,
+      ...(carrier && { carrier }),
     };
     await shipping.markEventApplied(ev.id, current.id, result);
     return { status: 200 as const, body: { ok: true, ...result } };

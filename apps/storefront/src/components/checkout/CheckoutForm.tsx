@@ -41,6 +41,7 @@ type Banner =
   | { kind: "error"; message: string; cart: boolean }
   | { kind: "network" }
   | { kind: "busy" }
+  | { kind: "unavailable" }
   | { kind: "processing"; attemptId: string };
 
 const QUOTE_DEBOUNCE_MS = 500;
@@ -117,7 +118,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
   useEffect(() => {
     track({ event: "begin_checkout", value: subtotal, items: trackItems });
     // Một lần mỗi lần mở trang thanh toán.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chỉ chạy lại theo khoá ổn định đã liệt kê; thêm phụ thuộc còn lại gây lặp/gửi trùng sự kiện
   }, []);
   const shippingSent = useRef(false);
   useEffect(() => {
@@ -292,6 +293,10 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
       case "busy":
         setBanner({ kind: "busy" });
         return;
+      case "unavailable":
+        // Giữ khóa idempotency (retry_same_key) và dữ liệu form; không tự gửi lại.
+        setBanner({ kind: "unavailable" });
+        return;
       case "network":
         setBanner({ kind: "network" });
         return;
@@ -455,6 +460,15 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                 Mất kết nối khi đặt hàng. Thông tin của bạn vẫn được giữ nguyên — hãy bấm “Đặt hàng” lại để
                 thử tiếp. Đơn sẽ không bị tạo trùng.
               </p>
+            ) : null}
+            {banner.kind === "unavailable" ? (
+              <>
+                <p>Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít phút</p>
+                <p>Thông tin của bạn vẫn được giữ nguyên; đơn sẽ không bị tạo trùng.</p>
+                <Button type="submit" variant="secondary" loading={busy}>
+                  Thử lại
+                </Button>
+              </>
             ) : null}
             {banner.kind === "busy" ? (
               <p>

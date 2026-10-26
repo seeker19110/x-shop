@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyProviderState,
+  canRetryRefund,
   defineMachine,
   orderMachine,
   paymentMachine,
@@ -98,6 +99,28 @@ describe("giao vận / đổi trả / hoàn / đối soát", () => {
     expect(refundMachine.canTransition("failed", "processing")).toBe(true);
     expect(refundMachine.canTransition("unknown", "processing")).toBe(false);
     expect(refundMachine.isTerminal("succeeded")).toBe(true);
+  });
+  it("T-044: chỉ failed hủy được (→ cancelled, kết thúc); unknown/processing phải đối chiếu trước", () => {
+    expect(refundMachine.canTransition("failed", "cancelled")).toBe(true);
+    expect(refundMachine.isTerminal("cancelled")).toBe(true);
+    for (const s of ["requested", "approved", "processing", "unknown", "succeeded", "rejected"] as const) {
+      expect({ s, ok: refundMachine.canTransition(s, "cancelled") }).toEqual({ s, ok: false });
+    }
+    expect(refundMachine.canTransition("cancelled", "processing")).toBe(false);
+    // Đối chiếu trước khi hủy thấy cổng đã hoàn → succeeded (không hủy nhầm khoản đã chi).
+    expect(applyProviderState(refundMachine, "failed", "succeeded").changed).toBe(true);
+  });
+  it("T-044: retry có giới hạn — failed và attempts < max", () => {
+    expect(canRetryRefund({ state: "failed", attempts: 1 }, 3)).toBe(true);
+    expect(canRetryRefund({ state: "failed", attempts: 2 }, 3)).toBe(true);
+    expect(canRetryRefund({ state: "failed", attempts: 3 }, 3)).toBe(false);
+    expect(canRetryRefund({ state: "failed", attempts: 4 }, 3)).toBe(false);
+    expect(canRetryRefund({ state: "failed", attempts: 0 }, 1)).toBe(true);
+    expect(canRetryRefund({ state: "failed", attempts: Number.NaN }, 3)).toBe(false);
+    expect(canRetryRefund({ state: "cancelled", attempts: 0 }, 3)).toBe(false);
+    expect(canRetryRefund({ state: "approved", attempts: 0 }, 3)).toBe(false);
+    expect(() => canRetryRefund({ state: "failed", attempts: 0 }, 0)).toThrow(RangeError);
+    expect(() => canRetryRefund({ state: "failed", attempts: 0 }, 1.5)).toThrow(RangeError);
   });
   it("settled là kết thúc", () => {
     expect(settlementMachine.isTerminal("settled")).toBe(true);
