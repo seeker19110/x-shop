@@ -1,0 +1,1007 @@
+# data-map.yaml — sổ dữ liệu cá nhân (CMP-PRIV-001, CMP-INTL-002, STD-PRIV-002, BASE-SEC-013)
+# Sinh lần đầu từ migration thật; sửa tay khi schema đổi — script scripts/check-data-map.mjs bắt cột chưa phân loại.
+# Cột PII: category (basic|sensitive|children), purpose, legal_basis (GDPR Art. 6), retention (khoá trong retention_classes),
+# recipients (id trong docs/compliance/vendors.yaml), copies (nơi sao chép). Không có dữ liệu nhạy cảm (Art. 9) ở P0.
+# Khi thêm cột PII: khai ở `pii`, thêm dòng vào docs/compliance/data-inventory.csv (đúng nội dung), ghi docs/privacy/CHANGELOG.md.
+version: 1
+updated: 2026-10-26
+scope: Sổ dữ liệu cá nhân theo bảng/cột của x-shop. Mọi cột trong migration của apps/backend phải nằm ở `pii` hoặc `non_pii` — kiểm bằng `node scripts/check-data-map.mjs`. legal_basis và retention là ĐỀ XUẤT KỸ THUẬT, pháp chế xác nhận trước G7 (nguồn luật chưa xác minh — xem PROJECT.md §6, DPIA §9).
+retention_classes:
+  rate-limit-2d:
+    rule: xoá bản ghi quá 2 ngày
+    enforced: job x-order-access-cleanup (mỗi giờ) — đã thực thi
+    status: đã thực thi
+  contact-anonymize:
+    rule: ẩn danh hoá họ tên/SĐT/email/địa chỉ chi tiết sau khi hết hạn đổi trả và hết nghĩa vụ liên quan đơn; giữ tiền, mã, trạng thái; số ngày đọc từ cấu hình (đề xuất mặc định theo luật VN hiện hành — nguồn luật chưa xác minh)
+    enforced: chưa có job (PLAN-2 Q-20, task job ẩn danh + E2E rights-*)
+    status: đề xuất — pháp chế xác nhận trước G7
+  order-record:
+    rule: "giữ theo nghĩa vụ lưu chứng từ kế toán/đơn hàng (số năm: chưa xác minh, pháp chế/kế toán xác nhận); sau đó xoá hoặc ẩn danh"
+    enforced: chưa có job
+    status: đề xuất — pháp chế xác nhận trước G7
+  payment-evidence:
+    rule: "giữ cùng thời hạn chứng từ thanh toán/đối soát (số năm: chưa xác minh, kế toán xác nhận); append-only theo thiết kế"
+    enforced: chưa có job
+    status: đề xuất — pháp chế xác nhận trước G7
+  transient-90d:
+    rule: "bản ghi vận hành tạm: xoá sau 90 ngày kể từ khi đóng/gửi xong"
+    enforced: chưa có job
+    status: đề xuất
+  audit-1y:
+    rule: nhật ký kiểm toán giữ tối thiểu 1 năm; bảng append-only bằng trigger DB nên xoá cần quy trình riêng
+    enforced: chưa có job
+    status: đề xuất
+  staff-account:
+    rule: giữ trong thời gian tài khoản nhân viên còn hiệu lực; xoá/ẩn danh khi nhân viên nghỉ theo quy trình offboarding
+    enforced: chưa có job; thu hồi quyền thủ công
+    status: đề xuất
+  model-release:
+    rule: giữ trong thời hạn hợp đồng/giấy cho phép của người mẫu; xoá số đo khi sản phẩm/ảnh ngừng dùng
+    enforced: chưa có job
+    status: đề xuất — cần hợp đồng người mẫu (chủ dự án)
+tables:
+  audit_log:
+    system: x-shop/backend/audit
+    pii:
+      actor_id:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: &a1 []
+        copies: không
+      reason:
+        category: basic
+        purpose: lý do thao tác quản trị (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: []
+        copies: không
+      ip_hash:
+        category: basic
+        purpose: IP của người thao tác ở dạng băm — truy vết và chống gian lận
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - actor_type
+      - action
+      - resource_type
+      - resource_id
+      - changes
+      - request_id
+      - created_at
+  cart_version:
+    system: x-shop/backend/checkout
+    pii: {}
+    non_pii:
+      - id
+      - cart_id
+      - version
+      - fingerprint
+      - frozen_by_attempt
+      - created_at
+      - updated_at
+      - deleted_at
+  catalog_import_job:
+    system: x-shop/backend/catalog-import
+    pii:
+      previewed_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: *a1
+        copies: audit_log
+      committed_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: *a1
+        copies: audit_log
+    non_pii:
+      - id
+      - file_hash
+      - file_name
+      - content
+      - status
+      - rows_total
+      - rows_valid
+      - errors
+      - summary
+      - result
+      - last_error
+      - committed_at
+      - created_at
+      - updated_at
+      - deleted_at
+  catalog_index_dirty:
+    system: x-shop/backend/catalog-index
+    pii: {}
+    non_pii:
+      - product_id
+      - marked_at
+      - attempts
+      - next_attempt_at
+  catalog_variant_index:
+    system: x-shop/backend/catalog-index
+    pii: {}
+    non_pii:
+      - variant_id
+      - sales_channel_id
+      - product_id
+      - handle
+      - title
+      - sku
+      - search_text
+      - category_handles
+      - color
+      - color_label
+      - color_hex
+      - color_rank
+      - size
+      - size_label
+      - size_rank
+      - material
+      - material_label
+      - price
+      - compare_at
+      - price_valid_until
+      - in_stock
+      - variant_rank
+      - thumbnail
+      - product_thumbnail
+      - created_at
+      - indexed_at
+  checkout_attempt:
+    system: x-shop/backend/checkout
+    note: "không có PII trực tiếp: PII của đơn nằm ở order_finance; quote là bảng giá (tiền), error_detail là lỗi kỹ thuật theo mã"
+    pii: {}
+    non_pii:
+      - id
+      - cart_id
+      - cart_version
+      - idempotency_scope
+      - idempotency_key
+      - payload_hash
+      - quote_id
+      - state
+      - order_id
+      - quote
+      - payment_method
+      - hold_expires_at
+      - error_code
+      - error_detail
+      - lease_until
+      - created_at
+      - updated_at
+      - deleted_at
+  checkout_quote:
+    system: x-shop/backend/checkout
+    pii:
+      address:
+        category: basic
+        purpose: báo giá phí vận chuyển theo địa chỉ giao (AddressSnapshot)
+        legal_basis: contract
+        retention: transient-90d
+        recipients:
+          - ghn
+        copies: không
+    non_pii:
+      - id
+      - cart_id
+      - cart_version
+      - payment_method
+      - discount_code
+      - breakdown
+      - total
+      - expires_at
+      - created_at
+      - updated_at
+      - deleted_at
+  coupon_usage:
+    system: x-shop/backend/checkout
+    pii: {}
+    non_pii:
+      - id
+      - promotion_code
+      - promotion_id
+      - checkout_attempt_id
+      - order_id
+      - state
+      - created_at
+      - updated_at
+      - deleted_at
+  fashion_color:
+    system: x-shop/backend/fashion
+    pii: {}
+    non_pii:
+      - id
+      - value
+      - label
+      - hex
+      - rank
+      - created_at
+      - updated_at
+      - deleted_at
+  fashion_model_measurement:
+    system: x-shop/backend/fashion
+    pii:
+      height_cm:
+        category: basic
+        purpose: chiều cao người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật
+        legal_basis: contract
+        retention: model-release
+        recipients: []
+        copies: không
+      chest_cm:
+        category: basic
+        purpose: số đo ngực người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật
+        legal_basis: contract
+        retention: model-release
+        recipients: []
+        copies: không
+      waist_cm:
+        category: basic
+        purpose: số đo eo người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật
+        legal_basis: contract
+        retention: model-release
+        recipients: []
+        copies: không
+      hip_cm:
+        category: basic
+        purpose: số đo mông người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật
+        legal_basis: contract
+        retention: model-release
+        recipients: []
+        copies: không
+      size_worn:
+        category: basic
+        purpose: cỡ người mẫu mặc, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật
+        legal_basis: contract
+        retention: model-release
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - image_set
+      - color
+      - note
+      - attributes_id
+      - created_at
+      - updated_at
+      - deleted_at
+  fashion_product_attributes:
+    system: x-shop/backend/fashion
+    pii:
+      image_exception_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: *a1
+        copies: audit_log
+    non_pii:
+      - id
+      - kind
+      - material
+      - material_label
+      - composition
+      - stretch
+      - fit
+      - care
+      - origin
+      - image_exception_reason
+      - created_at
+      - updated_at
+      - deleted_at
+  fashion_size:
+    system: x-shop/backend/fashion
+    pii: {}
+    non_pii:
+      - id
+      - value
+      - label
+      - rank
+      - created_at
+      - updated_at
+      - deleted_at
+  inventory_adjustment:
+    system: x-shop/backend/audit
+    pii:
+      actor_id:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: *a1
+        copies: audit_log
+      note:
+        category: basic
+        purpose: ghi chú điều chỉnh tồn (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: []
+        copies: không
+      reason:
+        category: basic
+        purpose: lý do điều chỉnh tồn (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - idempotency_key
+      - payload_hash
+      - inventory_item_id
+      - location_id
+      - delta
+      - stocked_before
+      - stocked_after
+      - reserved_quantity
+      - created_at
+  ops_exception:
+    system: x-shop/backend/checkout
+    pii:
+      owner:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: không
+      detail:
+        category: basic
+        purpose: chi tiết ngoại lệ vận hành (mã đơn, nguyên nhân) (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: contract
+        retention: order-record
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - kind
+      - dedupe_key
+      - order_id
+      - amount
+      - state
+      - priority
+      - due_at
+      - created_at
+      - updated_at
+      - deleted_at
+  order_access_redemption:
+    system: x-shop/backend/checkout
+    note: token_hash là SHA-256 của token đã dùng, không đảo ngược, không chứa PII
+    pii: {}
+    non_pii:
+      - id
+      - token_hash
+      - order_id
+      - expires_at
+      - created_at
+      - updated_at
+      - deleted_at
+  order_finance:
+    system: x-shop/backend/checkout
+    pii:
+      contact:
+        category: basic
+        purpose: "giao kết và thực hiện đơn hàng: họ tên, SĐT, email? (JSON {name, phone, email?}); liên hệ giao hàng; gửi thông báo giao dịch; xác minh tra cứu đơn"
+        legal_basis: contract
+        retention: contact-anonymize
+        recipients:
+          - ghn
+          - notify-provider
+        copies: order_address của đơn Medusa native (tên, SĐT), metadata.x_contact_email của đơn native, vận đơn tại GHN, thư/SMS tại nhà cung cấp thông báo
+      address:
+        category: basic
+        purpose: "giao hàng: tỉnh/phường và địa chỉ chi tiết (JSON)"
+        legal_basis: contract
+        retention: contact-anonymize
+        recipients:
+          - ghn
+        copies: order_address của đơn Medusa native, vận đơn tại GHN
+    non_pii:
+      - id
+      - order_id
+      - display_ref
+      - checkout_attempt_id
+      - cart_id
+      - state
+      - total
+      - payment_method
+      - hold_expires_at
+      - cod_confirm_by
+      - policy_version
+      - quote
+      - version
+      - created_at
+      - updated_at
+      - deleted_at
+  outbound_message:
+    system: x-shop/backend/notify
+    pii:
+      recipient_masked:
+        category: basic
+        purpose: ghi nhận đã gửi thông báo cho ai (SĐT/email đã che một phần); chống gửi lặp
+        legal_basis: contract
+        retention: transient-90d
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - message_key
+      - aggregate_id
+      - template
+      - channel
+      - adapter
+      - live
+      - state
+      - attempts
+      - provider_message_id
+      - last_error
+      - sent_at
+      - created_at
+      - updated_at
+      - deleted_at
+  outbox_event:
+    system: x-shop/backend/checkout
+    pii:
+      payload:
+        category: basic
+        purpose: "hàng đợi sự kiện: mã đơn, display_ref, và với order.lookup_link là token liên kết tra cứu một lần 15 phút (cho phép xem đơn của khách)"
+        legal_basis: contract
+        retention: transient-90d
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - event_key
+      - aggregate_id
+      - type
+      - state
+      - attempts
+      - next_attempt_at
+      - last_error
+      - created_at
+      - updated_at
+      - deleted_at
+  payment_attempt:
+    system: x-shop/backend/checkout
+    pii:
+      payment_url:
+        category: basic
+        purpose: URL thanh toán đã ký; chứa vnp_IpAddr = IP khách ở dạng thô (xem DPIA §1) và mã đơn
+        legal_basis: contract
+        retention: payment-evidence
+        recipients:
+          - vnpay
+        copies: VNPAY nhận cùng URL khi khách chuyển hướng
+    non_pii:
+      - id
+      - order_id
+      - provider
+      - txn_ref
+      - amount
+      - state
+      - expires_at
+      - provider_txn_no
+      - created_at
+      - updated_at
+      - deleted_at
+  payment_ledger:
+    system: x-shop/backend/checkout
+    note: mã giao dịch/số tiền gắn order_id; không có định danh cá nhân trực tiếp
+    pii: {}
+    non_pii:
+      - id
+      - order_id
+      - kind
+      - amount
+      - provider
+      - provider_txn_id
+      - refund_id
+      - state
+      - created_at
+      - updated_at
+      - deleted_at
+  rate_limit_counter:
+    system: x-shop/backend/checkout
+    pii:
+      bucket:
+        category: basic
+        purpose: khoá giới hạn tần suất theo IP/SĐT/mã đơn, chỉ lưu bản băm (giả danh hoá) — chống dò và lạm dụng
+        legal_basis: legitimate_interests
+        retention: rate-limit-2d
+        recipients: []
+        copies: Redis (cửa sổ trượt bảo mật quản trị, tiền tố xs:sec:)
+    non_pii:
+      - id
+      - window_start
+      - count
+      - created_at
+      - updated_at
+      - deleted_at
+  shipment:
+    system: x-shop/backend/shipping
+    pii:
+      created_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: *a1
+        copies: không
+      label_url:
+        category: basic
+        purpose: liên kết nhãn vận đơn do GHN cấp (nhãn in có tên/SĐT/địa chỉ người nhận)
+        legal_basis: contract
+        retention: order-record
+        recipients:
+          - ghn
+        copies: GHN
+    non_pii:
+      - id
+      - order_id
+      - client_order_code
+      - provider
+      - provider_order_code
+      - state
+      - cod_amount
+      - shipping_fee
+      - payer
+      - cod_reported_amount
+      - cod_reported_at
+      - settlement_state
+      - delivered_at
+      - created_at
+      - updated_at
+      - deleted_at
+  shipment_event:
+    system: x-shop/backend/shipping
+    note: raw là callback GHN đã lọc PII trước khi lưu (lib/shipping/shipments.ts)
+    pii: {}
+    non_pii:
+      - id
+      - provider
+      - event_key
+      - shipment_id
+      - provider_order_code
+      - type
+      - status
+      - raw
+      - applied
+      - result
+      - created_at
+      - updated_at
+      - deleted_at
+  size_chart:
+    system: x-shop/backend/fashion
+    pii: {}
+    non_pii:
+      - id
+      - code
+      - version
+      - name
+      - garment_type
+      - unit
+      - columns
+      - rows
+      - superseded_at
+      - created_at
+      - updated_at
+      - deleted_at
+  user_role:
+    system: x-shop/backend/rbac
+    pii:
+      user_id:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: staff-account
+        recipients: *a1
+        copies: bảng user của Medusa (external_tables.user)
+      granted_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: staff-account
+        recipients: *a1
+        copies: audit_log
+    non_pii:
+      - role
+      - granted_at
+  webhook_inbox:
+    system: x-shop/backend/checkout
+    pii:
+      payload:
+        category: basic
+        purpose: bằng chứng thông báo thanh toán của VNPAY (mã giao dịch, số tiền, ngân hàng, thời điểm) gắn với đơn của cá nhân
+        legal_basis: legal_obligation
+        retention: payment-evidence
+        recipients:
+          - vnpay
+        copies: cổng merchant VNPAY
+    non_pii:
+      - id
+      - provider
+      - event_key
+      - source
+      - payload_hash
+      - verified
+      - result
+      - processed_at
+      - created_at
+      - updated_at
+      - deleted_at
+  x_order_cancel:
+    system: x-shop/backend/returns
+    pii:
+      actor_id:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+      reason:
+        category: basic
+        purpose: lý do huỷ đơn bởi nhân viên (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: contract
+        retention: order-record
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - order_id
+      - idempotency_key
+      - payload_hash
+      - outcome
+      - from_state
+      - refund_requested
+      - refund_id
+      - created_at
+  x_refund:
+    system: x-shop/backend/returns
+    pii:
+      note:
+        category: basic
+        purpose: ghi chú hoàn tiền (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: contract
+        retention: order-record
+        recipients: []
+        copies: không
+      reject_reason:
+        category: basic
+        purpose: lý do từ chối hoàn tiền (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: contract
+        retention: order-record
+        recipients: []
+        copies: không
+      cancel_reason:
+        category: basic
+        purpose: lý do huỷ yêu cầu hoàn tiền (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: contract
+        retention: order-record
+        recipients: []
+        copies: không
+      requested_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+      approved_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+      rejected_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+      executed_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+      cancelled_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+    non_pii:
+      - id
+      - order_id
+      - return_id
+      - reason
+      - amount
+      - method
+      - provider
+      - capture_ref
+      - state
+      - approval_required
+      - approved_at
+      - rejected_at
+      - provider_request_id
+      - provider_ref
+      - evidence_ref
+      - attempts
+      - last_error
+      - idempotency_key
+      - payload_hash
+      - succeeded_at
+      - created_at
+      - updated_at
+      - cancelled_at
+  x_return:
+    system: x-shop/backend/returns
+    pii:
+      note:
+        category: basic
+        purpose: ghi chú của khách khi yêu cầu đổi trả (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: contract
+        retention: order-record
+        recipients: []
+        copies: không
+      decision_note:
+        category: basic
+        purpose: ghi chú quyết định đổi trả (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: contract
+        retention: order-record
+        recipients: []
+        copies: không
+      requested_by:
+        category: basic
+        purpose: định danh người tạo yêu cầu đổi trả (nhân viên thay khách hoặc khách đã đăng nhập) để truy vết
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: không
+      decided_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+      received_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+      inspected_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: order-record
+        recipients: *a1
+        copies: audit_log
+    non_pii:
+      - id
+      - order_id
+      - kind
+      - state
+      - reason
+      - channel
+      - idempotency_key
+      - payload_hash
+      - decided_at
+      - received_at
+      - inspected_at
+      - closed_at
+      - replacement_order_id
+      - created_at
+      - updated_at
+  x_return_line:
+    system: x-shop/backend/returns
+    pii:
+      inspection_note:
+        category: basic
+        purpose: ghi chú kiểm định hàng trả (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: contract
+        retention: order-record
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - return_id
+      - order_line_item_id
+      - variant_id
+      - quantity
+      - exchange_variant_id
+      - size_chart
+      - received_quantity
+      - restock_quantity
+      - damaged_quantity
+      - rejected_quantity
+      - refund_amount
+      - created_at
+      - updated_at
+  x_settlement_batch:
+    system: x-shop/backend/settlement
+    pii:
+      imported_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: payment-evidence
+        recipients: *a1
+        copies: audit_log
+    non_pii:
+      - id
+      - source
+      - content_hash
+      - external_ref
+      - period_end
+      - row_count
+      - total_amount
+      - summary
+      - created_at
+  x_settlement_discrepancy:
+    system: x-shop/backend/settlement
+    pii:
+      owner:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: payment-evidence
+        recipients: *a1
+        copies: không
+      resolved_by:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: payment-evidence
+        recipients: *a1
+        copies: audit_log
+      resolution_note:
+        category: basic
+        purpose: ghi chú xử lý chênh lệch đối soát (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: legal_obligation
+        retention: payment-evidence
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - kind
+      - state
+      - priority
+      - source
+      - reference
+      - target_kind
+      - target_id
+      - order_id
+      - expected_amount
+      - actual_amount
+      - difference
+      - amount
+      - batch_id
+      - line_id
+      - dedupe_key
+      - resolved_at
+      - evidence_ref
+      - created_at
+      - updated_at
+  x_settlement_discrepancy_event:
+    system: x-shop/backend/settlement
+    pii:
+      actor_id:
+        category: basic
+        purpose: định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận
+        legal_basis: legitimate_interests
+        retention: payment-evidence
+        recipients: *a1
+        copies: audit_log
+      note:
+        category: basic
+        purpose: ghi chú sự kiện chênh lệch đối soát (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)
+        legal_basis: legal_obligation
+        retention: payment-evidence
+        recipients: []
+        copies: không
+    non_pii:
+      - id
+      - discrepancy_id
+      - action
+      - actor_type
+      - batch_id
+      - data
+      - created_at
+  x_settlement_line:
+    system: x-shop/backend/settlement
+    note: tham chiếu giao dịch và số tiền của file đối soát; không có định danh cá nhân trực tiếp
+    pii: {}
+    non_pii:
+      - id
+      - batch_id
+      - source
+      - line_no
+      - reference
+      - type
+      - amount
+      - occurred_at
+      - target_kind
+      - target_id
+      - order_id
+      - result
+      - expected_amount
+      - difference
+      - created_at
+external_tables:
+  _note: Bảng của Medusa 2.22.1 (node_modules, không có migration trong repo) — chỉ liệt kê, KHÔNG đối chiếu máy; cột liệt kê dựa trên mã x-shop ghi vào chúng, chưa đối chiếu schema Medusa (chưa xác minh)
+  order_address:
+    pii_columns:
+      - first_name
+      - phone
+      - address_1
+      - city
+      - province
+      - metadata
+    source: apps/backend/src/workflows/checkout/submit-checkout.ts (shipping_address của đơn native)
+    legal_basis: contract
+    retention: contact-anonymize
+    recipients:
+      - ghn
+    note: bản sao họ tên/SĐT/địa chỉ của order_finance; ẩn danh phải xử lý cả hai nơi
+  order:
+    pii_columns:
+      - metadata.x_contact_email
+      - customer_id
+    source: submit-checkout.ts (metadata.x_contact_email; customer_id chỉ khi khách đăng nhập)
+    legal_basis: contract
+    retention: contact-anonymize
+    recipients: []
+  user:
+    pii_columns:
+      - email
+      - first_name
+      - last_name
+      - avatar_url
+    source: tài khoản admin của nhân viên (medusa user / lời mời)
+    legal_basis: legitimate_interests
+    retention: staff-account
+    recipients: []
+  auth_identity:
+    pii_columns:
+      - provider_identity.entity_id (email)
+      - provider_identity.provider_metadata (băm mật khẩu)
+      - app_metadata
+    source: Auth Module của Medusa (đăng nhập admin, bí mật TOTP mã hoá bằng AUTH_MFA_ENCRYPTION_KEY)
+    legal_basis: legitimate_interests
+    retention: staff-account
+    recipients: []
+  invite:
+    pii_columns:
+      - email
+    source: lời mời nhân viên của Medusa
+    legal_basis: legitimate_interests
+    retention: staff-account
+    recipients: []
+  customer:
+    pii_columns:
+      - email
+      - first_name
+      - last_name
+      - phone
+      - addresses
+    source: chỉ nếu bật khách đăng nhập (storefront hiện mua không cần tài khoản — chưa xác minh luồng đăng ký)
+    legal_basis: contract
+    retention: contact-anonymize
+    recipients: []

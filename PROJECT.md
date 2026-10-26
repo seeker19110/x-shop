@@ -99,6 +99,17 @@ Lập 2026-10-26. Chưa truy cập được văn bản gốc (vbpl.vn, thuvienph
 Kiểm tra văn bản sửa đổi: trước mỗi mốc G7 và mỗi 6 tháng, pháp chế tra lại từng dòng trên cổng văn bản chính thức và cập nhật bảng kèm ngày tra; mục nào chưa đối chiếu giữ "(chưa xác minh)". Thuế/hóa đơn và thời hạn lưu dữ liệu: xem §10 và Q-20 của `docs/autopilot/PLAN-2.md`.
 
 - DPIA: `docs/ops/DPIA.md` (phần kỹ thuật hoàn tất 2026-10-26; chờ chủ dự án/pháp chế duyệt).
+- Phân loại và sổ dữ liệu cá nhân theo bảng/cột (loại, mục đích, cơ sở xử lý, thời hạn lưu đề xuất, bên nhận): `docs/privacy/data-map.yaml` +
+  `docs/compliance/data-inventory.csv`; bên xử lý: `docs/privacy/processors.md`, `docs/compliance/vendors.yaml`; chuyển dữ liệu: `docs/privacy/transfers.md`.
+  Kiểm đối chiếu với migration: `node scripts/check-data-map.mjs` (cột mới chưa phân loại → đỏ). Không thu dữ liệu nhạy cảm ở P0.
+
+### Dữ liệu test
+- **Cấm** dump hoặc export dữ liệu production (đơn, khách, vận đơn, log) vào repo, CI, staging, preview hay máy dev — kể cả tạm thời để tái hiện lỗi.
+  Dữ liệu cho dev/test/CI là dữ liệu tổng hợp: `apps/backend/src/scripts/seed*.ts`, `scripts/ops/drill/seed-*.sql`, `scripts/load/dataset.mjs`, fixture
+  trong test. Không đưa PII thật (họ tên, SĐT, email, địa chỉ của người thật) vào fixture/seed.
+- Tái hiện lỗi từ production: dựng ca bằng dữ liệu tổng hợp cùng hình dạng, không nhập dữ liệu thật. Vi phạm = sự cố bảo mật (SEV1, `docs/ops/RUNBOOK.md` §10–§11).
+- Cưỡng chế một phần: `node scripts/check-data-map.mjs` quét repo, đỏ khi có file `.sql/.csv/.json/.dump` > 1 MB hoặc CSV có tên cột PII ở dòng đầu;
+  quét `gitleaks` (secret-scan). Quét nội dung PII trong fixture/seed (email miền test): chưa có (PLAN-2 T-078).
 
 ## 7. Stack (chi tiết + phiên bản: ADR-0001)
 Next.js App Router + TypeScript (storefront) · Medusa v2 (commerce + Admin) · PostgreSQL · Redis · S3-compatible + CDN.

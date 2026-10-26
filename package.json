@@ -18,7 +18,9 @@
     "load:test": "node --test scripts/load/lib.test.mjs",
     "e2e": "node e2e/run.mjs",
     "check:openapi": "node scripts/check-openapi.mjs",
-    "check:openapi:test": "node --test scripts/check-openapi.test.mjs"
+    "check:openapi:test": "node --test scripts/check-openapi.test.mjs",
+    "check:data-map": "node scripts/check-data-map.mjs",
+    "check:data-map:test": "node --test scripts/check-data-map.test.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

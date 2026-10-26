@@ -1,12 +1,12 @@
 ---
 title: THREAT-MODEL x-shop
 kind: threat-model
-version: "1.0"
+version: "1.1"
 updated: 2026-10-26
 status: hoàn tất kỹ thuật (pha build); chờ chủ dự án duyệt (§9)
 ---
 
-# THREAT-MODEL — x-shop · phiên bản 1.0 · 2026-10-26
+# THREAT-MODEL — x-shop · phiên bản 1.1 · 2026-10-26
 
 > Chủ: phiên chính · Duyệt: chủ dự án chưa duyệt (§9) · Phạm vi: storefront Next.js, Medusa server/worker + Admin,
 > Postgres, Redis, VNPAY, GHN, email/SMS · Ngoài phạm vi: hạ tầng cloud cụ thể (chưa chọn — chủ dự án), CDN của bên thứ ba.
@@ -69,7 +69,9 @@ flowchart LR
 ```
 
 TB1 Internet↔storefront/API · TB2 API↔DB/Redis · TB3 API↔VNPAY/GHN/email · TB4 Admin↔API · TB5 storefront↔backend
-(cùng triển khai, nhưng cookie phiên khách chỉ tồn tại ở storefront; backend nhận token đơn qua header, không qua URL).
+(cùng triển khai, nhưng cookie phiên khách chỉ tồn tại ở storefront; backend nhận **token phiên đơn** qua header `x-order-access`
+do storefront chuyển từ cookie HttpOnly. **Token liên kết** tra cứu — một lần, 15 phút — nằm trên URL `/tra-cuu-don/xac-thuc?token=…`
+trong thư/SMS, đổi qua thân `POST /store/x/orders/session`, trang đó đặt `Referrer-Policy: no-referrer`; xem DPIA §5).
 
 Điểm vào có xác thực: `/admin/*` (phiên + RBAC + MFA — `apps/backend/src/lib/admin-security/guard.ts`, map quyền
 `apps/backend/src/api/admin/x/permissions.ts`, fail-closed). Điểm vào công khai: `/store/x/*` (publishable key, không đăng nhập),
@@ -95,13 +97,13 @@ pháp và bằng chứng đã nằm trong repo; **một phần** = còn rủi ro
 | T-03 | 5 | Tampering | Redirect "thành công" giả qua URL | Cao | mitigate | trang return KHÔNG đổi trạng thái tiền; chỉ `recheck` → server `querydr` cùng giao dịch | `apps/storefront/src/app/(shop)/thanh-toan/ket-qua/order-return.test.ts`; `apps/backend/integration-tests/http/payment-ipn.spec.ts` | có |
 | T-04 | 1–2 | Tampering | Client gửi tổng tiền/giá tùy ý | Cao | eliminate | submit/quote không nhận giá/tổng (`z.strictObject`); server `computeQuote` + `diffQuotes`; tiền số nguyên | `packages/domain/src/pricing/quote.test.ts`; `apps/backend/integration-tests/http/checkout-submit.spec.ts`; `apps/backend/src/lib/checkout/http.ts` | có |
 | T-05 | 1–2 | DoS/Tampering | Vét tồn/coupon bằng submit song song | Cao | mitigate | khóa Locking Module (Redis) + UNIQUE attempt/cart_version + quota coupon dưới khóa; Idempotency-Key | `apps/backend/integration-tests/http/checkout-submit.spec.ts`; `apps/backend/integration-tests/http/checkout-module.spec.ts` | có |
-| T-06 | 1–2 | Info disclosure | IDOR: xem/hủy/đổi trả đơn người khác | Cao | mitigate | token phiên đơn HMAC trong header (không URL); mã đơn+SĐT chỉ gửi liên kết 15 phút; 404 không phân biệt; rate limit theo IP/SĐT/mã; so sánh băm hằng thời gian | `apps/backend/integration-tests/http/order-lookup.spec.ts`; `apps/backend/integration-tests/http/returns-privacy.spec.ts`; `apps/backend/src/api/store/x/orders/lookup/route.ts` | có |
+| T-06 | 1–2 | Info disclosure | IDOR: xem/hủy/đổi trả đơn người khác | Cao | mitigate | token phiên đơn HMAC trong header (không URL); mã đơn+SĐT chỉ gửi liên kết một lần 15 phút (token liên kết trên URL trang xác thực, no-referrer, đổi qua POST); 404 không phân biệt; rate limit theo IP/SĐT/mã; so sánh băm hằng thời gian | `apps/backend/integration-tests/http/order-lookup.spec.ts`; `apps/backend/integration-tests/http/returns-privacy.spec.ts`; `apps/backend/src/api/store/x/orders/lookup/route.ts` | có |
 | T-07 | 1, PWA | Info disclosure | CDN/SW cache trang riêng tư | Cao | mitigate | `Cache-Control: private, no-store` trên route đơn/checkout; SW không cache URL có query và trang động | `apps/storefront/src/lib/pwa/cache-policy.test.ts`; `apps/storefront/public/sw.js`; `apps/storefront/src/lib/security/security.test.ts` | có |
 | T-08 | 7 | Spoofing/EoP | Chiếm admin bằng mật khẩu | Cao | mitigate | MFA TOTP bắt buộc cho quyền nhạy cảm; rate limit đăng nhập/MFA (email+IP, email, IP) cửa sổ trượt; phiên có hạn tuyệt đối/nhàn rỗi; refresh guard | `apps/backend/integration-tests/http/mfa.spec.ts`; `apps/backend/src/lib/admin-security/__tests__/admin-security.unit.spec.ts`; `apps/backend/src/lib/security/__tests__/sliding-rate.unit.spec.ts` | một phần (băm scrypt — §8) |
 | T-09 | 7 | EoP | Kho/CSKH gọi API hoàn tiền, phân quyền | Cao | mitigate | RBAC ở mọi `/admin/*` theo map tập trung, fail-closed; quét thư mục bắt route thiếu khai báo; hoàn tiền cần người thứ hai (cấm tự duyệt) + MFA gần đây | `apps/backend/integration-tests/http/rbac.spec.ts`; `apps/backend/src/api/admin/x/permissions.ts`; `apps/backend/integration-tests/http/refunds.spec.ts` | có |
 | T-10 | 9 | Spoofing | Callback GHN giả "đã giao"/COD | Trung | mitigate | không tin nội dung callback: lưu sự kiện đã lọc PII rồi tra lại vận đơn qua API có token trước khi đổi trạng thái; giới hạn 300/10 s/IP | `apps/backend/integration-tests/http/shipping.spec.ts`; `apps/backend/src/api/x/webhooks/shipping/ghn/route.ts`; `packages/domain/src/providers/ghn/ghn.test.ts` | một phần (không chữ ký — §8) |
 | T-11 | 1 | Tampering/XSS | Nội dung rich text/CMS/ghi chú chèn script | Trung | mitigate | React escape mặc định; CSP nonce + `strict-dynamic` (test khẳng định không unsafe-inline/unsafe-eval cho script) | `apps/storefront/src/proxy.ts`; `apps/storefront/src/lib/security/security.test.ts` | có |
-| T-12 | 1 | Info disclosure | PII trong log/analytics/URL/audit | Trung | mitigate | audit che PII theo tên khóa và giá trị; `maskFreeText` cho ghi chú tự do khi trả ra; sự kiện analytics không PII; token rời URL | `apps/backend/src/lib/audit/sanitize.ts`; `apps/backend/src/lib/audit/__tests__/sanitize.unit.spec.ts`; `apps/backend/integration-tests/http/audit.spec.ts` | có |
+| T-12 | 1 | Info disclosure | PII trong log/analytics/URL/audit | Trung | mitigate | audit che PII theo tên khóa và giá trị; `maskFreeText` cho ghi chú tự do khi trả ra; sự kiện analytics không PII; token phiên đơn rời URL (token liên kết một lần chỉ ở trang xác thực no-referrer) | `apps/backend/src/lib/audit/sanitize.ts`; `apps/backend/src/lib/audit/__tests__/sanitize.unit.spec.ts`; `apps/backend/integration-tests/http/audit.spec.ts` | có |
 | T-13 | 3–4 | Info disclosure | Lộ secret qua bundle/log/commit | Cao | mitigate | env tách server/client, zod che bí mật, test bundle không chứa bí mật; gitleaks quét toàn lịch sử trên PR | `apps/backend/src/lib/env.ts`; `apps/backend/src/lib/__tests__/env.unit.spec.ts`; `apps/storefront/src/lib/client-bundle.test.ts`; `.github/workflows/secret-scan.yml` | có |
 | T-14 | upload | Tampering/SSRF | Ảnh/CSV độc, URL ảnh trỏ nội bộ | Trung | mitigate | upload: multipart + `Content-Length` trần trước multer, loại theo magic bytes, đuôi khớp loại thật, presigned URL tắt; CSV import trần 2 MB, kiểm từng dòng, xuất CSV chống công thức | `apps/backend/src/lib/security/upload.ts`; `apps/backend/src/lib/security/__tests__/security.unit.spec.ts`; `apps/backend/integration-tests/http/security.spec.ts`; `apps/backend/integration-tests/http/catalog-import.spec.ts` | một phần (EXIF — §8) |
 | T-15 | 4 | DoS | Mất Redis → bán bằng tồn cache/khóa giả | Cao | mitigate | mất khóa → `503 LOCK_UNAVAILABLE` + `Retry-After`, không tạo đơn/giữ hàng; xem catalog vẫn được; diễn tập mất Redis | `apps/backend/integration-tests/http/checkout-lock-outage.spec.ts`; `apps/backend/integration-tests/ops/redis-loss-drill.ts`; `docs/ops/RUNBOOK.md` | có |
@@ -111,6 +113,28 @@ pháp và bằng chứng đã nằm trong repo; **một phần** = còn rủi ro
 | T-19 | 1 | DoS | Dội request rẻ tiền vào API công khai | Trung | mitigate | rate limit cửa sổ trượt (Postgres cho store, Redis cho login/MFA); IP khách xác định theo hop tin cậy, không tin `X-Forwarded-For` tùy ý | `apps/backend/src/lib/security/sliding-window.ts`; `apps/backend/src/lib/security/client-ip.ts`; `apps/backend/src/lib/security/__tests__/sliding-rate.unit.spec.ts` | có |
 | T-20 | 1–2 | Tampering | Đăng ký đơn qua đường native bỏ qua giữ hàng/ledger | Cao | eliminate | chặn `POST /store/carts/:id/complete`; chặn route native ghi tiền/hủy; mọi đường tạo đơn qua checkout tùy biến | `apps/backend/src/api/middlewares.ts`; `apps/backend/integration-tests/http/checkout-submit.spec.ts` | có |
 | T-21 | 1, 7 | Tampering | CSRF trên thao tác ghi dùng cookie | Trung | mitigate | storefront `proxy.ts` và backend `csrfGuard` kiểm Origin/Sec-Fetch-Site; `Origin: null` luôn từ chối; request không cookie không là đối tượng CSRF | `apps/backend/src/lib/security/csrf.ts`; `apps/storefront/src/proxy.ts`; `apps/backend/src/lib/security/__tests__/security.unit.spec.ts` | có |
+
+## 4.1 Hàng mức Cao ↔ ID checklist đã đạt (SEC-TM-006)
+Mỗi hàng Cao ở §4 có quyết định `mitigate`/`eliminate` (không có `accept`) và trỏ tới (a) bằng chứng test/cấu hình ở cột "Bằng chứng" của §4,
+(b) ID checklist đã đạt `[x]` trong `BLUEPRINT.md` ở cột dưới. Cột "ID còn mở" là ID liên quan chưa đạt — KHÔNG dùng làm bằng chứng và
+là rủi ro còn lại đã ghi ở §8. Kiểm tự động (cổng G4 của tài liệu này): xem lệnh `— Kiểm:` của `SEC-TM-006` trong `BLUEPRINT.md` — đỏ khi hàng
+Cao thiếu ở bảng này, quyết định là `accept`, ID đã đạt không còn `[x]`, hoặc đường dẫn bằng chứng ở §4 không tồn tại.
+
+| ID | Quyết định | ID checklist đã đạt | ID còn mở (liên quan) |
+|---|---|---|---|
+| T-01 | mitigate | BE-INT-004, BASE-ERR-010, DB-TX-004 | IND-ECOM-006 |
+| T-02 | mitigate | DB-TX-004, QA-UNIT-007, ARC-INT-005 | — |
+| T-03 | mitigate | BASE-ERR-010, QA-UNIT-010 | — |
+| T-04 | eliminate | XC-UNITS-005, QA-UNIT-004, IND-ECOM-002 | IND-ECOM-003 |
+| T-05 | mitigate | DB-TX-001, QA-UNIT-007, QA-UNIT-008 | IND-ECOM-001, IND-ECOM-004 |
+| T-06 | mitigate | BE-AUTH-010, BE-REL-006, BE-CACHE-001 | — |
+| T-07 | mitigate | BE-CACHE-001, FE-RENDER-002 | — |
+| T-08 | mitigate | BE-REL-006, SEC-LOG-007 | BE-AUTH-001, BE-AUTH-003, BE-AUTH-004 |
+| T-09 | mitigate | SEC-LOG-007, BE-AUTH-010, FE-RENDER-005 | BE-AUTH-009, STD-SEC-004 |
+| T-13 | mitigate | BASE-SEC-002, SEC-SECRET-001, SEC-SECRET-011, PRF-WEB-003 | SEC-SECRET-005, SEC-SECRET-007 |
+| T-15 | mitigate | BASE-ERR-010, QA-UNIT-010 | — |
+| T-17 | mitigate | DB-TX-001, QA-UNIT-007, QA-UNIT-008, SEC-LOG-007 | IND-ECOM-005 |
+| T-20 | eliminate | ARC-INT-003, IND-ECOM-002 | — |
 
 ## 5. Quyết định chấp nhận rủi ro (accept) và chuyển giao (transfer)
 Không có hàng mức Cao nào ở quyết định `accept`. Các rủi ro còn lại có quyết định `accept`/`transfer` được ghi ở §8 kèm chủ và
@@ -182,3 +206,4 @@ là bước của kiểm thử bảo mật độc lập trước G7 (§9).
 |---|---|---|
 | 0.1 | 2026-10-24 | nháp 16 mối đe doạ theo kế hoạch |
 | 1.0 | 2026-10-26 | theo hệ thống thật: DFD mermaid, STRIDE có quyết định + bằng chứng, OWASP Top 10:2025, ASVS 5.0.0 L2, rủi ro còn mở |
+| 1.1 | 2026-10-26 | §4.1 đối chiếu hàng Cao ↔ ID checklist đã đạt (SEC-TM-006); làm rõ hai loại token tra cứu đơn (liên kết ở URL, phiên ở header) theo mã |

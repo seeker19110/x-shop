@@ -103,3 +103,9 @@ Chỉ tiền tố `NEXT_PUBLIC_` vào bundle client; bí mật không bao giờ 
   (`user.manage`, `refund.*`, `settings.manage`, `customer.export`, `settlement.import`) đòi TOTP đã bật + đã xác minh
   trong phiên. Trạng thái nhàn rỗi phiên và bộ đếm rate limit đăng nhập/MFA nằm trong Redis (`REDIS_URL`, tiền tố
   `xs:sec:`), không lưu email/IP thô.
+
+## Dữ liệu staging / preview / dev
+
+Chỉ dùng dữ liệu tổng hợp; **cấm** copy hoặc khôi phục dữ liệu production (PII khách, đơn, log) vào staging, preview hay máy dev. Nguồn được phép:
+`apps/backend/src/scripts/seed*.ts`, `scripts/ops/drill/seed-*.sql`, `scripts/load/dataset.mjs`. Chi tiết và việc còn thiếu (môi trường staging,
+script ẩn danh hoá/quét PII): `docs/ops/RUNBOOK.md` §11. Xoay và xử lý lộ từng biến bí mật ở trên: RUNBOOK §9–§10.

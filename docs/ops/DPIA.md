@@ -34,6 +34,7 @@ Khách vãng lai không có tài khoản/mật khẩu; khách chỉ được xem
 | Nhóm | Dữ liệu | Bảng/cột (module) | Ghi chú |
 |---|---|---|---|
 | Liên hệ | họ tên, SĐT, email (tùy chọn) | `order_finance.contact` (JSON `{name, phone, email?}`) — `apps/backend/src/modules/checkout/models/checkout-models.ts` | nguồn chính; copy sang vận đơn GHN lúc tạo |
+| Bản sao ở đơn Medusa native | họ tên, SĐT, địa chỉ chi tiết, email | `order_address` (`first_name`, `phone`, `address_1`, `city`, `province`) và `order.metadata.x_contact_email` — `apps/backend/src/workflows/checkout/submit-checkout.ts` | bản sao của `order_finance.contact/address` trong bảng của Medusa (không có migration trong repo); ẩn danh phải xử lý cả hai nơi; liệt kê ở `external_tables` của `docs/privacy/data-map.yaml` |
 | Địa chỉ giao | mã tỉnh/phường, số nhà-tên đường (tự do ≤ 500 ký tự) | `order_finance.address` (JSON), `checkout_quote.address` (JSON) | quote hết hạn sau 10 phút nhưng bản ghi còn (không có job dọn — §3) |
 | Hiển thị đơn | SĐT che dạng `0912***678`, không trả email/id nội bộ | không lưu thêm; tính khi trả `GET /store/x/orders/:display_ref` | `apps/backend/src/lib/orders/view.ts` |
 | Thông báo | người nhận ĐÃ CHE (`recipient_masked`), không lưu nội dung thư/SMS | `outbound_message` — `apps/backend/src/modules/notify/models/outbound-message.ts` | `last_error` chỉ chứa lỗi kỹ thuật |
@@ -41,7 +42,7 @@ Khách vãng lai không có tài khoản/mật khẩu; khách chỉ được xem
 | Thanh toán | mã đơn, mã giao dịch, số tiền, tham số IPN VNPAY | `payment_attempt`, `payment_ledger`, `webhook_inbox.payload` | không lưu PAN/thẻ (thanh toán trên trang VNPAY); `vnp_IpAddr` gửi VNPAY lúc tạo giao dịch |
 | Vận chuyển | sự kiện callback GHN đã lọc PII | `shipping` module: bảng sự kiện (`raw` JSON, lọc PII trước khi lưu) — `apps/backend/src/modules/shipping/models/shipping-models.ts` | không lưu địa chỉ/SĐT đầy đủ trong `raw` |
 | Đổi trả/hoàn tiền | lý do, ghi chú tự do (≤ 500 ký tự), ghi chú kiểm định | module `returns` (`note`, `decision_note`, `inspection_note`, `reject_reason`, `cancel_reason`) | khách có thể gõ PII vào ghi chú; trả ra qua `maskFreeText` (§6). **Chưa lưu ảnh đổi trả** (bản nháp 0.1 từng ghi object storage — chưa có tính năng này) |
-| IP | IP khách | (a) khoá `rate_limit_counter.bucket` chỉ lưu **băm** (`sec.<tên>:<digest>`); (b) `audit_log.ip_hash` (băm); (c) gửi VNPAY làm `vnp_IpAddr`; (d) log máy chủ có thể chứa IP — chưa kiểm nhật ký thật | không có bảng nào lưu IP thô ngoài (c) |
+| IP | IP khách | (a) khoá `rate_limit_counter.bucket` chỉ lưu **băm** (`sec.<tên>:<digest>`); (b) `audit_log.ip_hash` (băm); (c) gửi VNPAY làm `vnp_IpAddr`; (d) **`payment_attempt.payment_url` lưu nguyên URL thanh toán đã ký, trong đó có `vnp_IpAddr` = IP khách ở dạng thô** (`packages/domain/src/providers/vnpay/vnpay.ts`, `UPDATE payment_attempt SET payment_url` trong `apps/backend/src/modules/checkout/service.ts`); (e) log máy chủ có thể chứa IP — chưa kiểm nhật ký thật | IP thô còn nằm ở (c) và (d); (d) theo thời hạn `payment-evidence` trong data-map — giảm thiểu là việc mở (cân nhắc cắt `vnp_IpAddr` khỏi URL lưu hoặc ẩn danh sau khi giao dịch chốt) |
 | Tra cứu đơn | băm token đã đổi | `order_access_redemption.token_hash` (SHA-256) | token thô không lưu |
 | Vận hành/an ninh | audit admin: actor, hành động, lý do, thay đổi đã che | `audit_log` (append-only) | `changes` qua `sanitizeChanges` — `apps/backend/src/lib/audit/sanitize.ts` |
 | Nhân viên | tài khoản admin (email), vai trò, yếu tố MFA | bảng user/auth của Medusa, `rbac` | dữ liệu của nhân viên, không phải khách |
@@ -75,7 +76,7 @@ dự án chốt thời hạn mới viết job tương ứng.
 | `order_access_redemption` (băm token đổi liên kết) | > 1 ngày sau hết hạn thì xoá | **Đã thực thi**: cùng job | như trên |
 | Giữ hàng hết hạn (`expire-holds`), huỷ COD quá hạn xác nhận | theo cấu hình giữ hàng | **Đã thực thi** nhưng chuyển trạng thái, không xoá PII | `apps/backend/src/jobs/expire-holds.ts`; `apps/backend/src/jobs/cod-confirm-timeout.ts` |
 | Đơn hàng, ledger, chứng từ đối soát (gồm liên hệ/địa chỉ trong `order_finance`) | theo nghĩa vụ lưu chứng từ — **chủ dự án/kế toán xác nhận số năm** | **Chưa có job**; ledger/đối soát là append-only có chủ đích | `apps/backend/src/modules/settlement/migrations/Migration20261025120000.ts` |
-| `checkout_quote`, `checkout_attempt` (chứa địa chỉ/snapshot) | ngắn (đề xuất ≤ 90 ngày sau đóng) | **Chưa có job** | — |
+| `checkout_quote` (chứa địa chỉ giao). `checkout_attempt` chỉ có bảng giá/mã lỗi, không có địa chỉ (đối chiếu migration) | ngắn (đề xuất ≤ 90 ngày sau đóng) | **Chưa có job** | `docs/privacy/data-map.yaml` |
 | `outbox_event`, `outbound_message` | đề xuất 90 ngày bản ghi đã gửi | **Chưa có job** (bản nháp 0.1 ghi 90 ngày — chưa thực thi) | — |
 | `webhook_inbox`, sự kiện callback GHN | đề xuất theo thời hạn chứng từ thanh toán/vận chuyển | **Chưa có job** | — |
 | Ghi chú đổi trả/hoàn tiền | cùng vòng đời đơn | **Chưa có job** | — |
@@ -102,7 +103,7 @@ Thông báo xử lý (chính sách quyền riêng tư công khai `/bao-mat`) do 
 ## 5. Nguyên tắc kỹ thuật (có test)
 - Thu tối thiểu: email tùy chọn khi có SĐT (D-002); không thu ngày sinh/giới tính (schema `submitBodySchema` trong `apps/backend/src/lib/checkout/http.ts`).
 - Không tạo tài khoản hay gộp lịch sử vì email trùng; không tiết lộ email đã có tài khoản.
-- Tra cứu đơn: mã đơn + SĐT KHÔNG trả dữ liệu đơn; chỉ gửi liên kết một lần 15 phút tới SĐT/email đã dùng; luôn 202 cùng thông điệp; token ở header `x-order-access`, không ở URL — `apps/backend/integration-tests/http/order-lookup.spec.ts`.
+- Tra cứu đơn: mã đơn + SĐT KHÔNG trả dữ liệu đơn; chỉ gửi liên kết một lần 15 phút tới SĐT/email đã dùng; luôn 202 cùng thông điệp. Hai loại token, vị trí khác nhau: (1) **token liên kết** (một lần, 15 phút) nằm trên URL `/tra-cuu-don/xac-thuc?token=…` trong thư/SMS; trang đó không tự đổi token khi GET, `Referrer-Policy: no-referrer` (`apps/storefront/next.config.ts` `NO_REFERRER_SOURCES`), khách bấm nút → Server Action gọi `POST /store/x/orders/session` với token trong thân JSON; (2) **token phiên đơn** nằm ở cookie HttpOnly phía storefront và storefront chuyển cho backend qua header `x-order-access`, không bao giờ trên URL (`apps/storefront/src/lib/orders/service.ts`) — `apps/backend/integration-tests/http/order-lookup.spec.ts`.
 - Phản hồi riêng tư `Cache-Control: private, no-store`; service worker không cache trang riêng tư — `apps/storefront/src/lib/pwa/cache-policy.test.ts`.
 - PII không vào audit/log: `sanitizeChanges` che theo tên khoá và theo giá trị — `apps/backend/src/lib/audit/__tests__/sanitize.unit.spec.ts`; IP trong audit/bộ đếm chỉ ở dạng băm.
 - Ghi chú tự do khi trả ra route Admin/Store đi qua `maskFreeText` (D-036; heuristic, có thể sót địa chỉ không có cụm báo hiệu) — `apps/backend/src/lib/audit/sanitize.ts`.
@@ -136,7 +137,7 @@ Thông báo xử lý (chính sách quyền riêng tư công khai `/bao-mat`) do 
 ## 8. Tự đánh giá tuân thủ (kỹ thuật)
 | Yêu cầu | Đạt / Chưa / N/A | Bằng chứng |
 |---|---|---|
-| Danh mục dữ liệu cá nhân theo bảng/cột | Đạt (mô tả) — chưa có `docs/compliance/data-inventory.csv`/`data-map.yaml` đối chiếu máy | §1 |
+| Danh mục dữ liệu cá nhân theo bảng/cột | Đạt — `docs/privacy/data-map.yaml` + `docs/compliance/data-inventory.csv`, đối chiếu máy với migration (`node scripts/check-data-map.mjs`) | §1 |
 | Thông báo xử lý cho chủ thể trước khi xử lý | Chưa — trang `/bao-mat` do chủ shop duyệt | §4 |
 | Đồng ý cho từng mục đích (marketing/cookie) | N/A cho marketing (không thu); analytics đồng ý ở client | §1 |
 | Thời hạn lưu có job thực thi | Chưa — mới có job cho bộ đếm/dấu đổi liên kết | §3 |
