@@ -590,7 +590,7 @@ medusaIntegrationTestRunner({
         return login.data.token as string;
       }
 
-      it("giỏ của người khác → 404 (vãng lai, khách khác, kênh bán khác); chủ giỏ → được phép", async () => {
+      it("[api1-bola post /store/x/checkout/quote, post /store/x/checkout/submit, get /store/x/checkout/attempts/{id}, post /store/x/checkout/attempts/{id}/recheck] giỏ của người khác → 404 (vãng lai, khách khác, kênh bán khác); chủ giỏ → được phép", async () => {
         const tokenA = await registerCustomer(`a-${randomUUID()}@example.test`);
         const tokenB = await registerCustomer(`b-${randomUUID()}@example.test`);
         const cartA = await createCart([["Đen/S", 1]], tokenA);
@@ -619,6 +619,15 @@ medusaIntegrationTestRunner({
           cfg({ authorization: `Bearer ${tokenB}` }),
         );
         expect(statusB.status).toBe(404);
+        // Recheck bằng khách khác hoặc vãng lai → 404 như attempt không tồn tại (không dò được, không tốn lượt giới hạn).
+        for (const auth of [{ authorization: `Bearer ${tokenB}` }, {}] as Array<Record<string, string>>) {
+          const recheckForeign = await api.post(
+            `/store/x/checkout/attempts/${mine.data.checkout_attempt_id}/recheck?cart_id=${cartA}`,
+            {},
+            cfg(auth),
+          );
+          expect(recheckForeign.status).toBe(404);
+        }
 
         // Publishable key của kênh bán khác không thấy giỏ của kênh này.
         const { result: channels } = await (

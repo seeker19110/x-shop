@@ -168,7 +168,7 @@ medusaIntegrationTestRunner({
         expect((await getOrder(o.ref, polled.data.order_access)).status).toBe(200);
       });
 
-      it("AT20: thiếu/giả/hết hạn/sai loại token, token của đơn khác, mã không tồn tại → 404 giống nhau, không PII", async () => {
+      it("[api1-bola get /store/x/orders/{display_ref}] AT20: thiếu/giả/hết hạn/sai loại token, token của đơn khác, mã không tồn tại → 404 giống nhau, không PII", async () => {
         const a = await place([["Đen/S", 1]], "cod");
         const b = await place([["Trắng/S", 1]], "cod");
         const forged = `${Buffer.from(`${a.orderId}.${Math.floor(Date.now() / 1000) + 3600}`).toString("base64url")}.AAAA`;
@@ -357,7 +357,7 @@ medusaIntegrationTestRunner({
         expect((await lookup({ display_ref: o.ref })).status).toBe(422);
       });
 
-      it("đồng đều: không có đơn / sai SĐT / đơn thiếu SĐT chạy CÙNG các bước, cùng thứ tự; khớp chỉ thêm bước gửi", async () => {
+      it("[api1-bola post /store/x/orders/lookup] đồng đều: không có đơn / sai SĐT / đơn thiếu SĐT chạy CÙNG các bước, cùng thứ tự; khớp chỉ thêm bước gửi", async () => {
         const o = await place([["Đen/S", 1]], "cod");
         const real = lookupPortsFor(container);
         const steps: string[] = [];
@@ -497,7 +497,7 @@ medusaIntegrationTestRunner({
         }
       });
 
-      it("đổi liên kết → phiên đơn; dùng lại/giả/hết hạn/sai loại → 404; hai lần đổi đồng thời chỉ một thành công", async () => {
+      it("[api1-bola post /store/x/orders/session] đổi liên kết → phiên đơn; dùng lại/giả/hết hạn/sai loại → 404; hai lần đổi đồng thời chỉ một thành công", async () => {
         const o = await place([["Trắng/S", 1]], "cod");
         expect((await lookup({ display_ref: o.ref, phone: CONTACT.phone })).status).toBe(202);
         const token = String((await lookupLinks(o.orderId))[0]!.payload.token);
