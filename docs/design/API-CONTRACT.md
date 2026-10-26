@@ -3,7 +3,7 @@
 > Hợp đồng dự án (đặc tả §9.1), không phải route native Medusa. Tiền: số nguyên VND. Thời gian: ISO 8601 UTC.
 > Lỗi: `application/problem+json` `{ type, title, status, code, detail, field? }` — `code` ổn định, `detail` tiếng Việt.
 > Mọi request store gửi header `x-publishable-api-key`. Route riêng tư (giỏ, checkout, đơn) trả `Cache-Control: private, no-store`.
-> Bản OpenAPI sinh ở T-038; khi lệch, file này + test tích hợp là chuẩn.
+> Bản OpenAPI 3.1 máy đọc được: `docs/design/openapi.yaml` (kiểm khớp route trong mã bằng `pnpm check:openapi`); khi lệch, file này + test tích hợp là chuẩn.
 
 ## Catalog (T-014) — shape THẬT của backend (đã đối chiếu bằng fixture phản hồi thật ở `apps/storefront/src/lib/catalog/__fixtures__/backend/`)
 Storefront ánh xạ sang kiểu nội bộ ở `lib/catalog/backend-map.ts`; backend là nguồn chuẩn.

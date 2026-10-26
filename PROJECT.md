@@ -62,7 +62,7 @@
 | CWV | LCP ≤ 2,5 s, INP ≤ 200 ms, CLS ≤ 0,1 (p75) | web.dev [S07] | Lighthouse lab (hồ sơ §10.1) trước ra mắt, RUM sau |
 | Ngân sách | JS đầu ≤ 200 KiB gzip, CSS ≤ 50 KiB, font ≤ 100 KiB | đặc tả §10.2 | `scripts/budget` trên build |
 | API | đọc p95 ≤ 300 ms, ghi p95 ≤ 700 ms, checkout nội bộ p95 ≤ 2 s | đặc tả §10.1 | k6 theo §10.3 |
-| Bảo mật | ASVS 5.0 ~L2 (chọn lọc) | OWASP [S14] | `docs/ops/THREAT-MODEL.md` + test |
+| Bảo mật | ASVS 5.0.0 L2 (chọn lọc theo bề mặt thật) | OWASP [S14] | `docs/ops/THREAT-MODEL.md` + test |
 | Tiếp cận | WCAG 2.2 AA | W3C [S08] | axe trong E2E + kiểm tay |
 | Thiết bị | 320–1440 px; Chrome/Safari/Firefox hiện hành; Android tầm trung, iPhone Safari | đặc tả §3.2 | Playwright viewport |
 
