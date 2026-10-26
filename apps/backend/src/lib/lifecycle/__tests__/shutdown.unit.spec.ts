@@ -150,6 +150,22 @@ describe("installGracefulShutdown — gỡ và giữ handler tín hiệu gắn s
     });
   });
 
+  it("emitLog (logger của ứng dụng) → mọi bản ghi tắt đi qua đó, có event=shutdown; không ghi thẳng stdout", async () => {
+    const h = harness();
+    const emitted: Array<[string, string, Record<string, unknown>]> = [];
+    installGracefulShutdown(
+      { drainDelayMs: 0, timeoutMs: 3_000 },
+      { ...deps(h), emitLog: (level, message, fields) => emitted.push([level, message, fields]) },
+    );
+    h.proc.on("SIGTERM", () => undefined);
+    await flush();
+    h.proc.emit("SIGTERM");
+    await flush();
+    expect(h.lines).toEqual([]);
+    expect(emitted.map(([level]) => level)).toEqual(["info", "info"]);
+    expect(emitted[0]![2]).toMatchObject({ event: "shutdown", signal: "SIGTERM", timeout_ms: 3_000 });
+  });
+
   it("idempotent: cài lần hai trên cùng tiến trình → null, không gắn thêm handler", () => {
     const h = harness();
     expect(installGracefulShutdown({ drainDelayMs: 0, timeoutMs: 1_000 }, deps(h))).not.toBeNull();

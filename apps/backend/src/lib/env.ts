@@ -197,6 +197,13 @@ const schema = z
         .optional(),
     ),
     SHUTDOWN_TIMEOUT_MS: intInRange(25_000, 1_000, 300_000, "mili giây"),
+    // Ngưỡng log (T-090): tên mức của Medusa/winston; vắng = info. Log truy cập của dự án ở mức info.
+    LOG_LEVEL: z.preprocess(
+      (v) => (v === undefined || (typeof v === "string" && v.trim() === "") ? "info" : v),
+      z.enum(["error", "warn", "info", "http", "verbose", "debug", "silly"], {
+        message: "phải là một trong error|warn|info|http|verbose|debug|silly",
+      }),
+    ),
     MEDUSA_WORKER_MODE: z.preprocess(
       (v) => (v === undefined || v === "" ? "shared" : v),
       z.enum(WORKER_MODES, { message: `phải là một trong ${WORKER_MODES.join("|")}` }),

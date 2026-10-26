@@ -138,6 +138,8 @@ interface Backend {
   child: ChildProcess;
   port: number;
   output: () => string;
+  /** Chỉ stdout (log ứng dụng). */
+  stdout: () => string;
   exited: Promise<{ code: number | null; signal: NodeJS.Signals | null; at: number }>;
 }
 
@@ -150,12 +152,16 @@ async function startBackend(extra: Record<string, string>): Promise<Backend> {
     env: childEnv(extra),
   });
   let output = "";
-  child.stdout?.on("data", (c: Buffer) => (output += c.toString("utf8")));
+  let stdout = "";
+  child.stdout?.on("data", (c: Buffer) => {
+    output += c.toString("utf8");
+    stdout += c.toString("utf8");
+  });
   child.stderr?.on("data", (c: Buffer) => (output += c.toString("utf8")));
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null; at: number }>((resolve) =>
     child.on("exit", (code, signal) => resolve({ code, signal, at: Date.now() })),
   );
-  const backend: Backend = { child, port, output: () => output, exited };
+  const backend: Backend = { child, port, output: () => output, stdout: () => stdout, exited };
   running = backend;
   let dead = false;
   void exited.then(() => (dead = true));
@@ -294,6 +300,51 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
     } finally {
       await slow.release();
     }
+  });
+
+  it("log của tiến trình thật (T-090): MỌI dòng stdout là một JSON đủ trường; không PII/bí mật từ request; có log truy cập", async () => {
+    const be = await startBackend({ SHUTDOWN_DRAIN_DELAY_MS: "0", SHUTDOWN_TIMEOUT_MS: "15000" });
+    const email = `khach-${randomUUID()}@x-shop.test`;
+    // Dữ liệu nhạy cảm đi vào qua query, thân, header — không được xuất hiện trong log.
+    await request(be.port, "GET", "/store/x/products?q=0912345678&token=bi-mat-query");
+    await request(be.port, "POST", "/auth/user/emailpass", { email, password: "mat-khau-sai-0123" });
+    await request(be.port, "GET", "/x/khong-co-route?sdt=0987654321");
+    be.child.kill("SIGTERM");
+    expect((await be.exited).code).toBe(0);
+
+    const lines = be
+      .stdout()
+      .split("\n")
+      .filter((l) => l.trim() !== "");
+    expect(lines.length).toBeGreaterThan(5);
+    const records = lines.map((l) => {
+      let r: Record<string, unknown> | null = null;
+      try {
+        r = JSON.parse(l) as Record<string, unknown>;
+      } catch {
+        // so sánh bên dưới sẽ báo dòng không phải JSON
+      }
+      expect({ line: l.slice(0, 200), json: r !== null }).toEqual({ line: l.slice(0, 200), json: true });
+      return r!;
+    });
+    for (const r of records) {
+      expect(String(r.timestamp)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(r).toMatchObject({ service: "x-shop-backend", version: "0.1.0", env: "development" });
+      expect(typeof r.level).toBe("string");
+      expect(typeof r.severity_number).toBe("number");
+      expect(typeof r.message).toBe("string");
+    }
+    const access = records.filter((r) => r.message === "http.server.request");
+    expect(access.map((r) => r["url.path"])).toEqual(
+      expect.arrayContaining(["/store/x/products", "/auth/user/emailpass", "/x/khong-co-route"]),
+    );
+    for (const r of access) {
+      expect(typeof r.trace_id).toBe("string");
+      expect(String(r.span_id)).toMatch(/^[0-9a-f]{16}$/);
+    }
+    const out = be.stdout();
+    for (const secret of ["0912345678", "bi-mat-query", email, "mat-khau-sai-0123", "0987654321"])
+      expect(out).not.toContain(secret);
   });
 
   it("request treo quá trần → thoát mã 1 trong khoảng trần (không chờ SIGKILL của nền tảng)", async () => {

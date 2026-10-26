@@ -43,8 +43,10 @@ export interface ShutdownOptions {
 export interface ShutdownDeps {
   proc?: SignalProcess;
   exit?: (code: number) => void;
-  /** Ghi một dòng log JSON (mặc định: ghi đồng bộ fd 1). */
+  /** Ghi một dòng log JSON (mặc định: ghi đồng bộ fd 1). Bỏ qua khi có `emitLog`. */
   write?: (line: string) => void;
+  /** Ghi qua logger của ứng dụng (lib/log, T-090) — cùng định dạng mọi bản ghi khác. */
+  emitLog?: (level: "info" | "warn" | "error", message: string, fields: Record<string, unknown>) => void;
   now?: () => Date;
   setTimer?: (fn: () => void, ms: number) => { unref?: () => unknown };
 }
@@ -109,16 +111,18 @@ export function createShutdownController(opts: ShutdownOptions, deps: ShutdownDe
   let started: Promise<void> | null = null;
 
   const log = (level: "info" | "warn" | "error", message: string, extra: Record<string, unknown> = {}) =>
-    write(
-      JSON.stringify({
-        timestamp: now().toISOString(),
-        level,
-        service: "x-shop-backend",
-        event: "shutdown",
-        message,
-        ...extra,
-      }),
-    );
+    deps.emitLog !== undefined
+      ? deps.emitLog(level, message, { event: "shutdown", ...extra })
+      : write(
+          JSON.stringify({
+            timestamp: now().toISOString(),
+            level,
+            service: "x-shop-backend",
+            event: "shutdown",
+            message,
+            ...extra,
+          }),
+        );
 
   const sleep = (ms: number) =>
     new Promise<void>((resolve) => {

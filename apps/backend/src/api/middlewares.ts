@@ -14,6 +14,7 @@ import {
   mfaIdentity,
 } from "../lib/admin-security/guard";
 import { xErrorHandler } from "../lib/errors/error-handler";
+import { requestLogContext } from "../lib/log/http";
 import { csrfGuard } from "../lib/security/csrf";
 import { securityHeaders } from "../lib/security/headers";
 import { rejectNulBytes } from "../lib/security/nul-bytes";
@@ -46,6 +47,9 @@ export default defineMiddlewares({
   // Handler lỗi toàn cục (T-088): problem+json có trace_id, 5xx không lộ stack/SQL/đường dẫn (lib/errors/error-handler.ts).
   errorHandler: xErrorHandler,
   routes: [
+    // Ngữ cảnh log (trace_id/span_id) + log truy cập đã che cho MỌI request (T-090, lib/log/http.ts). `matcher: "/"`
+    // không `methods` → Medusa xếp vào nhóm global, chạy trước mọi middleware khác của dự án.
+    { matcher: "/", middlewares: [requestLogContext] },
     // Header bảo mật + CSRF cho thao tác ghi dùng cookie (SEC01, SEC05, T-034). Middleware toàn cục (không `methods`)
     // chạy trước middleware theo method; mảng giữ thứ tự → CSRF trước cổng RBAC admin bên dưới.
     // `rejectNulBytes` (T-085): `%00`/U+0000 ở đường dẫn, query, thân → 400 trước khi tới DB (Postgres không nhận NUL).

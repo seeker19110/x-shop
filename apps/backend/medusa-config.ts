@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from "@medusajs/framework/utils";
 import { sessionCookieConfig } from "./src/lib/admin-security/session-cookie";
 import { loadEnvOrExit } from "./src/lib/env";
 import { databaseConfig, redisQueueOptions, redisRequestOptions } from "./src/lib/infra/timeouts";
+import { appLoggerFromEnv } from "./src/lib/log/app-logger";
 
 loadEnv(process.env.NODE_ENV || "development", process.cwd());
 
@@ -72,6 +73,8 @@ const http = {
 const db = databaseConfig(env);
 
 module.exports = defineConfig({
+  // Logger JSON một dòng/stdout có che bí mật + PII (T-090, src/lib/log/) thay logger mặc định của Medusa.
+  logger: appLoggerFromEnv(env),
   projectConfig: {
     databaseUrl: db.databaseUrl,
     databaseDriverOptions: db.databaseDriverOptions,

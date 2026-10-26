@@ -59,16 +59,27 @@ export interface AnalyticsEvent extends AnalyticsPayload {
 
 const EMAIL_RE = /[^\s@]+@[^\s@]+\.[^\s@]+/;
 const PHONE_RE = /(?:\+?84|0)\d{8,10}$/;
+/** SĐT VN nằm trong văn bản ("gọi 0912 345 678", "+84.912.345.678") — cùng mẫu với bộ che log backend (T-090). */
+// Không dùng lookbehind (bundle client): biên trái bằng nhóm `(?:^|…)` — chỉ cần `test()`.
+const PHONE_IN_TEXT_RE = /(?:^|[^\p{L}\p{N}+.])(?:\+84|84|0)(?![.])(?:[ .-]?\d){9,10}(?!\p{N})/u;
+/** CCCD 12 số (mã tỉnh 001–096 → luôn bắt đầu bằng 0), liền hoặc tách nhóm 3. */
+const CCCD_RE = /(?:^|[^\p{L}\p{N}])0\d{2}(?:[ .-]?\d{3}){3}(?![\p{L}\p{N}])/u;
 /** Từ khóa địa chỉ VN (không dấu và có dấu) và dạng số nhà `12/3`, `số 5`. */
 const ADDRESS_RE =
   /(?:^|[\s,])(?:số|so|đường|duong|phố|pho|ngõ|ngo|ngách|ngach|hẻm|hem|phường|phuong|quận|quan|huyện|huyen|xã|tỉnh|tinh|thành phố|tp\.?)(?=[\s\d.,]|$)|\d+\/\d+|\d+\s*[,]\s*\p{L}/iu;
 
-/** `true` nếu chuỗi giống email, số điện thoại hoặc địa chỉ. */
+/** Viết tắt hành chính có tên/số theo sau: `P. Bến Thành`, `Q.1`, `TP.HCM`, `H. Củ Chi`, `TX. Sơn Tây` (phân biệt hoa). */
+const ADDRESS_ABBR_RE = /(?:^|[\s,(])(?:P|Q|H|TX|TP|Tp)\.\s?(?:\p{Lu}|\d)/u;
+/** Số nhà + tên riêng viết hoa có dấu cách (`12 Nguyễn Trãi`) — định danh hợp lệ không có dấu cách (ID_RE). */
+const HOUSE_NAME_RE = /(?:^|[\s,(])\d+[a-zA-Z]?\s+\p{Lu}\p{Ll}/u;
+
+/** `true` nếu chuỗi giống email, số điện thoại, CCCD hoặc địa chỉ (T-090: thêm CCCD + SĐT lẫn trong văn bản). */
 export function looksLikePii(s: string): boolean {
   if (EMAIL_RE.test(s)) return true;
   const compact = s.replace(/[\s.()-]/g, "");
   if (PHONE_RE.test(compact) && /^\+?\d+$/.test(compact)) return true;
-  return ADDRESS_RE.test(s);
+  if (CCCD_RE.test(s) || PHONE_IN_TEXT_RE.test(s)) return true;
+  return ADDRESS_RE.test(s) || ADDRESS_ABBR_RE.test(s) || HOUSE_NAME_RE.test(s);
 }
 
 /** Quét mọi chuỗi (giá trị VÀ khóa) trong cấu trúc bất kỳ; trả đường dẫn đầu tiên giống PII, hoặc `null`. */

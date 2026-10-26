@@ -179,7 +179,7 @@ export function toHttpProblem(err: unknown, traceId: string): HttpProblem {
 }
 
 function describeError(error: unknown): string {
-  if (error instanceof Error) return error.stack ?? `${error.name}: ${error.message}`;
+  if (error instanceof Error) return `${error.name}: ${error.message}`;
   try {
     return JSON.stringify(error) ?? String(error);
   } catch {
@@ -188,7 +188,7 @@ function describeError(error: unknown): string {
 }
 
 interface LoggerLike {
-  error(msg: string): void;
+  error(msg: string, error?: Error): void;
   info(msg: string): void;
 }
 
@@ -201,12 +201,16 @@ function loggerOf(req: MedusaRequest): LoggerLike {
 }
 
 /**
- * Ghi log lỗi máy chủ đầy đủ (stack) kèm `trace_id` — cùng mã với phản hồi trả cho client. Dùng chung cho handler toàn cục
- * và các bộ map lỗi theo route (checkout, đổi trả, đối soát, giao vận). Trả `trace_id`.
+ * Ghi log lỗi máy chủ kèm `trace_id` — cùng mã với phản hồi trả cho client. Dùng chung cho handler toàn cục và các bộ map
+ * lỗi theo route (checkout, đổi trả, đối soát, giao vận). Error được chuyển nguyên cho logger (tham số thứ hai) → logger
+ * của dự án ghi `exception.type/message/stacktrace` kèm chuỗi `cause` (T-090, lib/log/logger.ts). Trả `trace_id`.
  */
 export function logServerError(req: MedusaRequest, tag: string, error: unknown): string {
   const traceId = traceIdOf(req);
-  loggerOf(req).error(`[${tag}] ${req.method} ${req.path} trace_id=${traceId}: ${describeError(error)}`);
+  loggerOf(req).error(
+    `[${tag}] ${req.method} ${req.path} trace_id=${traceId}: ${describeError(error)}`,
+    error instanceof Error ? error : undefined,
+  );
   return traceId;
 }
 

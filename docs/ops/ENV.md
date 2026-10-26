@@ -49,6 +49,8 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # (Kubernetes terminationGracePeriodSeconds mặc định 30 s); DRAIN_DELAY < TIMEOUT.
 # SHUTDOWN_DRAIN_DELAY_MS=5000   # vắng: 5000 ở production, 0 ở dev/test; [0, 60000]
 # SHUTDOWN_TIMEOUT_MS=25000      # [1000, 300000]
+# Log (T-090): JSON một dòng/stdout, đã che bí mật + PII. Ngưỡng: error|warn|info|http|verbose|debug|silly; vắng = info.
+# LOG_LEVEL=info
 
 # VNPAY (SPEC-payment). Bật mặc định (VNPAY_ENABLED=true). Production + bật → BẮT BUỘC đủ 5 biến dưới, URL phải https,
 # không được dùng khoá giả của dev. Dev/test vắng biến → dùng giá trị GIẢ trong env.ts (VNPAY_DEV_DEFAULTS) — chỉ ký/kiểm

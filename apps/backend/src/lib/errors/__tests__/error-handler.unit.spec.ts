@@ -43,9 +43,9 @@ function fakeRes(opts: { headersSent?: boolean } = {}) {
 }
 
 function fakeReq(requestId?: unknown) {
-  const logs: { level: "error" | "info"; msg: string }[] = [];
+  const logs: { level: "error" | "info"; msg: string; err?: Error }[] = [];
   const logger = {
-    error: (msg: string) => logs.push({ level: "error", msg }),
+    error: (msg: string, err?: Error) => logs.push({ level: "error", msg, ...(err && { err }) }),
     info: (msg: string) => logs.push({ level: "info", msg }),
   };
   const req = {
@@ -313,7 +313,7 @@ describe("toHttpProblem — 4xx giữ mã của Medusa, bỏ chi tiết nội b�
 });
 
 describe("xErrorHandler", () => {
-  it("ngoại lệ chưa bắt → 500 problem+json kèm trace_id, log ERROR có stack + cùng trace_id", () => {
+  it("ngoại lệ chưa bắt → 500 problem+json kèm trace_id, log ERROR có Error (stack) + cùng trace_id", () => {
     const err = new Error("kaboom at /home/app/x.ts");
     const { captured, body, logs, next } = run(err, "req-123");
     expect(captured.status).toBe(500);
@@ -326,7 +326,9 @@ describe("xErrorHandler", () => {
     expect(logs[0]!.level).toBe("error");
     expect(logs[0]!.msg).toContain("trace_id=req-123");
     expect(logs[0]!.msg).toContain("kaboom");
-    expect(logs[0]!.msg).toContain(err.stack!.split("\n")[1]!.trim());
+    // Stack đi theo Error (tham số thứ hai) → logger ghi exception.stacktrace (T-090), không nhồi vào message.
+    expect(logs[0]!.err).toBe(err);
+    expect(logs[0]!.msg).not.toContain(err.stack!.split("\n")[1]!.trim());
     expect(next).not.toHaveBeenCalled();
   });
 
