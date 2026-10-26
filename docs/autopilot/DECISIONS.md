@@ -404,3 +404,31 @@
 - Chọn: Giữ lịch sử; commit mới tuân thủ ≤ 72; chủ dự án squash-merge PR (tiêu đề PR đạt chuẩn) hoặc tự quyết rewrite
 - Lý do (tiêu chí chất lượng cuối): (1) AGENTS.md §4 cấm force-push, guard chặn; (3) không nới cổng (LOOP-CI-001); phương án 2 giữ đường lùi và lịch sử nhánh trên master là squash một commit hợp lệ
 - Đường lùi: Chủ dự án có thể rewrite tay rồi force-push nếu muốn giữ từng commit
+
+### D-058 · 2026-10-26T16:36:07+00:00 · Timeout lệnh cho kết nối BullMQ (event bus/workflow engine) — BASE-ERR-004, ARC-RES-001, BE-REL-001
+
+- Phương án: (1) commandTimeout ≥ 30 s lớn hơn hạn chặn worker · (2) Ghi ngoại lệ (BullMQ bắt buộc maxRetriesPerRequest:null) ở docs/db/connections.md, giữ 3 mục [ ] kèm Thiếu · (3) blockingTimeout của ioredis (chỉ bảo vệ lệnh chặn)
+- Chọn: Ghi ngoại lệ (BullMQ bắt buộc maxRetriesPerRequest:null) ở docs/db/connections.md, giữ 3 mục [ ] kèm Thiếu
+- Lý do (tiêu chí chất lượng cuối): (1) không cắt lệnh chặn hợp lệ của worker (phương án 1 có rủi ro mất job khi đổi cấu hình); (3) không tick khi chưa đủ — cách hiểu chặt
+- Đường lùi: Làm phương án 1 kèm test worker dài khi có metric job thật
+
+### D-059 · 2026-10-26T16:36:07+00:00 · Tạo lại session ID sau đăng nhập admin (BE-AUTH-004, session fixation)
+
+- Phương án: (1) Ghi đè POST /auth/session gọi req.session.regenerate (task mới T-133, có test) · (2) Để Thiếu, dựa vào cookie __Host-
+- Chọn: Ghi đè POST /auth/session gọi req.session.regenerate (task mới T-133, có test)
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: chống session fixation là yêu cầu bảo mật MUST, __Host- chỉ chặn cấy cookie từ subdomain; (3) test được bằng express-session thật như T-099
+- Đường lùi: Bỏ route ghi đè khi Medusa tự regenerate
+
+### D-060 · 2026-10-26T16:36:08+00:00 · Q-PROMO-1/2: giới hạn lượt/người và ngân sách khuyến mãi (mua không cần tài khoản)
+
+- Phương án: (1) Khoá theo SĐT + ngân sách tiền cộng dồn · (2) Giữ quota tổng lượt + giới hạn tốc độ; không ngân sách tiền ở v1 · (3) Chỉ mã gắn tài khoản
+- Chọn: Giữ quota tổng lượt + giới hạn tốc độ; không ngân sách tiền ở v1
+- Lý do (tiêu chí chất lượng cuối): (1) đúng đặc tả gốc (mua không cần tài khoản, chỉ có quota S-008); khoá SĐT dễ né và lưu thêm PII; (3) đơn giản; ngân sách tiền là tính năng mới cần chủ sản phẩm
+- Đường lùi: Thêm ngân sách tiền theo mã (cộng dồn, hoàn khi huỷ) khi chủ sản phẩm yêu cầu
+
+### D-061 · 2026-10-26T16:36:08+00:00 · Q-PROMO-3/4: chồng nhiều mã cấp đơn; snapshot khuyến mãi trong đơn
+
+- Phương án: (1) Một mã cấp đơn; snapshot lưu loại + giá trị + điều kiện tại lúc đặt · (2) Cho chồng mã có thứ tự + cờ stackable; snapshot chỉ mã + số giảm
+- Chọn: Một mã cấp đơn; snapshot lưu loại + giá trị + điều kiện tại lúc đặt
+- Lý do (tiêu chí chất lượng cuối): (1) đúng hành vi hiện có và đặc tả; snapshot đầy đủ giúp đối soát/đổi trả đúng khi mã đổi sau đó (cách chặt hơn); (3) không thêm tính năng chồng mã chưa yêu cầu
+- Đường lùi: Thêm stackable khi chủ sản phẩm yêu cầu
