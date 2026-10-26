@@ -10,6 +10,9 @@
 <!-- Lệnh + exit code thật, hoặc link lượt chạy CI — tick không kèm bằng chứng là chưa xong. -->
 - [ ] `.xtemplates/scripts/dev-task.sh gate` (build · typecheck · lint · test) — kết quả:
 - [ ] Test mới cho thay đổi hành vi, gồm ca biên; sửa lỗi có test đỏ trước, xanh sau — tên test:
+- Chỉ PR `fix:` (QA-STRAT-005; `pr-policy` kiểm): điền hai dòng dưới, hoặc nhãn `fix-no-test` + dòng `Ngoại lệ test: <lý do>`
+  - Đỏ trước:
+  - Xanh sau:
 - [ ] Mục blueprint liên quan tick kèm `— Kiểm: <lệnh>` hoặc `— Bằng chứng:` — ID:
 
 ## Docs cập nhật
