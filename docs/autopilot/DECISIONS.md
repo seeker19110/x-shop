@@ -369,3 +369,10 @@
 - Chọn: Commit script phân mảnh; dòng xt.yaml + mọi thay đổi xt.yaml/settings gom thành patch để chủ dự án áp (hoặc nâng timeout hook) — agent không sửa hàng rào của chính mình
 - Lý do (tiêu chí chất lượng cuối): Không hạ cổng, không tự nới hàng rào harness; settings.json cũng là cấu hình cổng nên agent không commit được; chủ dự án quyết
 - Đường lùi: Áp patch khi chủ dự án đồng ý
+
+### D-053 · 2026-10-26T11:03:18+00:00 · Xử lý 5 lỗ hổng high trong lockfile (graphql-tools, lodash, uuid, zod — gián tiếp, có bản vá) và ngưỡng VULN-SLA
+
+- Phương án: (1) Ngoại lệ có hạn trong osv-scanner.toml · (2) Vá bằng nâng bản/pnpm.overrides theo bản vá, chạy đủ cổng (build + test + tích hợp + e2e) để chứng minh không vỡ; SLA mặc định Critical 7/High 14/Medium 60/Low 90 ngày, ngoại lệ tối đa 90 ngày có duyệt chủ dự án
+- Chọn: Vá bằng nâng bản/pnpm.overrides theo bản vá, chạy đủ cổng (build + test + tích hợp + e2e) để chứng minh không vỡ; SLA mặc định Critical 7/High 14/Medium 60/Low 90 ngày, ngoại lệ tối đa 90 ngày có duyệt chủ dự án
+- Lý do (tiêu chí chất lượng cuối): Vá thật an toàn hơn che lỗi; ngoại lệ chỉ khi bản vá phá Medusa (major graphql-tools/uuid) — khi đó ghi lý do và đề xuất chủ dự án duyệt
+- Đường lùi: Bỏ overrides trong package.json
