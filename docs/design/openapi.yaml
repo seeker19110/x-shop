@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   summary: "Route tùy biến của x-shop trên Medusa v2 (store, admin, webhook)."
   description: |
-    Hợp đồng máy đọc được cho các route TÙY BIẾN do dự án viết: `/store/x/*`, `/admin/x/*`, `/x/webhooks/*` và `/x/health`.
+    Hợp đồng máy đọc được cho các route TÙY BIẾN do dự án viết: `/store/x/*`, `/admin/x/*`, `/x/webhooks/*`, `/x/health` và `/x/readyz`.
     Route native của Medusa (`/store/carts`, `/auth/*`, `/admin/uploads`…) KHÔNG nằm ở đây — xem tài liệu Medusa.
 
     Nguồn sự thật: mã route `apps/backend/src/api/**/route.ts` (schema zod) và `docs/design/API-CONTRACT.md`;
@@ -1612,6 +1612,29 @@ paths:
                 required: [status]
                 properties:
                   status: { type: string, const: ok }
+  /x/readyz:
+    get:
+      tags: [Ops]
+      operationId: readiness
+      summary: "Sẵn sàng phục vụ: Postgres + Redis trả lời trong 1 s (không lộ phụ thuộc nào hỏng, không phiên bản)"
+      security: []
+      responses:
+        "200":
+          description: "Sẵn sàng."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ready }
+        "503":
+          description: "Chưa sẵn sàng (`NOT_READY`) — chi tiết chỉ ở log server."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
 components:
   securitySchemes:
     publishableKey:
