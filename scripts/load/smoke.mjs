@@ -150,7 +150,11 @@ async function main() {
     if (!ok) console.error("\n[load] KHÔNG ĐẠT — xem bảng trên và docs/ops/perf/load-smoke-latest.md");
     return ok ? 0 : 1;
   } finally {
-    await db.end().catch(() => {});
+    await db
+      .end()
+      .catch((err) =>
+        console.error(`[load] đóng kết nối DB lỗi: ${err instanceof Error ? err.message : err}`),
+      );
     stopAll();
     // Chờ nhóm tiến trình backend (do script này tạo) nhận SIGTERM và thoát.
     await new Promise((r) => setTimeout(r, 1000));

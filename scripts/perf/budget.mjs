@@ -34,7 +34,10 @@ for (const route of routes) {
           // Ảnh/font đã nén sẵn: tính kích thước thật; văn bản: gzip mức 9 như CDN.
           sizes[k] += k === "image" || k === "font" ? body.length : gzipSync(body, { level: 9 }).length;
         })
-        .catch(() => {}),
+        .catch((err) => {
+          // Phản hồi redirect/bị hủy không có body: bỏ qua nhưng để lại dấu vết.
+          console.warn(`[budget] bỏ qua body ${res.url()}: ${err instanceof Error ? err.message : err}`);
+        }),
     );
   });
   const main = await page.goto(new URL(route, base).toString(), { waitUntil: "networkidle" });

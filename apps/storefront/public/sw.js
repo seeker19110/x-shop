@@ -1,4 +1,4 @@
-/* global self, caches, fetch, URL */
+/* global self, caches, fetch, URL -- biến toàn cục của môi trường ServiceWorker */
 /* Service worker X-Shop (S-505, S-507, đặc tả §12.2, AT22/AT24).
  *
  * Nguyên tắc: CHỈ cache tài nguyên công khai theo danh sách cho phép (allowlist). Mọi thứ khác — giỏ, thanh toán,

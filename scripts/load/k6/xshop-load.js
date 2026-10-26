@@ -1,4 +1,4 @@
-/* global __ENV */
+/* global __ENV -- biến toàn cục do runtime k6 cung cấp */
 /**
  * Kịch bản k6 ĐẦY ĐỦ theo đặc tả §10.3 (chạy trên staging/máy tải riêng — `pnpm load:smoke` là bản thu nhỏ bằng Node).
  *

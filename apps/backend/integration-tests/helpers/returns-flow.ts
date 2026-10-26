@@ -4,7 +4,7 @@ import type { MockModeGhnClient } from "../../src/lib/shipping/ghn-client";
 import { checkoutClient, ipn, type Api, type Res } from "./checkout-api";
 import type { CatalogFixture } from "./checkout-fixtures";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- thân JSON của API test không có kiểu; kiểm bằng expect từng trường
 export type J = Record<string, any>;
 
 export interface PlacedOrder {
