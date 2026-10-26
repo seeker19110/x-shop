@@ -46,9 +46,10 @@ jobs:
       - name: Quét lockfile (áp osv-scanner.toml)
         run: |
           set -uo pipefail
+          # Shell của bước là `bash -e`: bắt mã thoát bằng `|| code=$?`, nếu không mã 1 (có lỗ hổng) giết bước trước khi phân loại.
+          code=0
           "$RUNNER_TEMP/osv-scanner" scan source -r --config osv-scanner.toml --format json \
-            --output-file "$RUNNER_TEMP/osv.json" .
-          code=$?
+            --output-file "$RUNNER_TEMP/osv.json" . || code=$?
           # 0 = sạch, 1 = có lỗ hổng (phân loại ở bước sau); mã khác = lỗi công cụ → đỏ.
           if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then echo "::error::osv-scanner thoát mã $code"; exit "$code"; fi
       - name: Cổng — high/critical chưa có ngoại lệ còn hạn = đỏ
