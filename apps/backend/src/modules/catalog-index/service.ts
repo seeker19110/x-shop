@@ -167,6 +167,17 @@ export default class CatalogIndexModuleService {
     );
   }
 
+  /** Số dòng read model (toàn bảng, hoặc chỉ của các sản phẩm) — kiểm cuối sau rebuild/sync. */
+  async countRows(productIds?: string[]): Promise<number> {
+    if (productIds && productIds.length === 0) return 0;
+    const w = productIds ? inList("product_id", productIds) : null;
+    const res = await this.db.raw(
+      `SELECT count(*)::int AS n FROM ${TABLE}${w ? ` WHERE ${w.sql}` : ""}`,
+      (w?.bindings ?? []) as Knex.ValueDict[],
+    );
+    return (res.rows[0] as { n: number }).n;
+  }
+
   async dirtyCount(): Promise<number> {
     const res = await this.db.raw(`SELECT count(*)::int AS n FROM catalog_index_dirty`);
     return (res.rows[0] as { n: number }).n;

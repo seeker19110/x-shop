@@ -350,17 +350,27 @@ export function toProductSource(p: RawProduct): ProductSource {
   };
 }
 
+/**
+ * Số sản phẩm mỗi lời gọi `query.graph` của `loadProductSources`: mỗi sản phẩm kéo theo biến thể/giá/ảnh lồng nhau, lô
+ * nhỏ giữ số id lồng nhau dưới ngưỡng tự chia lô của Query (4.000) và bộ nhớ mỗi lượt có hạn (T-057).
+ */
+export const PRODUCT_SOURCE_BATCH = 100;
+
+/** Ảnh chụp nguồn theo danh sách id (đọc theo lô `PRODUCT_SOURCE_BATCH`, đủ mọi id) hoặc theo một handle. */
 export async function loadProductSources(
   container: MedusaContainer,
   filters: { id?: string[]; handle?: string },
 ): Promise<ProductSource[]> {
-  if (filters.id !== undefined && filters.id.length === 0) return [];
   const query = container.resolve(ContainerRegistrationKeys.QUERY);
-  const { data } = await query.graph({
-    entity: "product",
-    fields: PRODUCT_SOURCE_FIELDS,
-    filters: filters.id !== undefined ? { id: filters.id } : { handle: filters.handle },
-  });
-  const rows = data as unknown as RawProduct[];
-  return rows.map(toProductSource);
+  const fetch = async (f: { id: string[] } | { handle: string | undefined }): Promise<ProductSource[]> => {
+    const { data } = await query.graph({ entity: "product", fields: PRODUCT_SOURCE_FIELDS, filters: f });
+    return (data as unknown as RawProduct[]).map(toProductSource);
+  };
+  if (filters.id === undefined) return fetch({ handle: filters.handle });
+  const ids = [...new Set(filters.id)];
+  const out: ProductSource[] = [];
+  for (let i = 0; i < ids.length; i += PRODUCT_SOURCE_BATCH) {
+    out.push(...(await fetch({ id: ids.slice(i, i + PRODUCT_SOURCE_BATCH) })));
+  }
+  return out;
 }
