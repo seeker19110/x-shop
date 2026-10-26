@@ -3,6 +3,7 @@ import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { Migration20261024173210 } from "../../src/modules/checkout/migrations/Migration20261024173210";
+import { Migration20261026174000 } from "../../src/modules/checkout/migrations/Migration20261026174000";
 
 jest.setTimeout(180 * 1000);
 
@@ -260,6 +261,99 @@ medusaIntegrationTestRunner({
         expect(await s.releaseCouponHold("chk_a")).toBe(1);
         expect(await s.releaseCouponHold("chk_a")).toBe(0);
         expect(await s.countCountedCouponUsage(code)).toBe(1);
+      });
+    });
+
+    // Đặt TRƯỚC "migration có đường lùi": test đó dựng lại bảng bằng migration đầu (không có index của T-074).
+    describe("index trang đơn (T-074, Migration20261026174000)", () => {
+      const indexes = [
+        { name: "IDX_outbox_event_aggregate_id", table: "outbox_event", column: "aggregate_id" },
+        { name: "IDX_payment_attempt_order_id", table: "payment_attempt", column: "order_id" },
+        { name: "IDX_ops_exception_order_id", table: "ops_exception", column: "order_id" },
+      ];
+      const present = async () =>
+        (
+          await db().raw(
+            `SELECT indexname, indexdef FROM pg_indexes WHERE indexname = ANY(?) ORDER BY indexname`,
+            [indexes.map((i) => i.name)],
+          )
+        ).rows.map((r) => ({ name: String(r.indexname), def: String(r.indexdef) }));
+      const run = async (direction: "up" | "down") => {
+        const m = new Migration20261026174000({} as never, {} as never);
+        await m[direction]();
+        for (const q of m.getQueries()) await db().raw(String(q));
+      };
+
+      it("migration đã áp tạo đủ 3 index thường (không partial) trên đúng cột", async () => {
+        const rows = await present();
+        expect(rows.map((r) => r.name)).toEqual(indexes.map((i) => i.name).sort());
+        for (const i of indexes) {
+          const def = rows.find((r) => r.name === i.name)?.def ?? "";
+          expect(def).toContain(`ON public.${i.table} USING btree (${i.column})`);
+          expect(def).not.toMatch(/WHERE/i);
+        }
+      });
+
+      it("5.000 dòng + ANALYZE: planner chọn index mới cho đúng hình truy vấn của trang đơn (không Seq Scan)", async () => {
+        // Sinh dữ liệu, ANALYZE và EXPLAIN trong MỘT giao dịch rồi ROLLBACK — thống kê và dòng không lọt sang test khác.
+        const fill: Record<string, string> = {
+          outbox_event: `INSERT INTO outbox_event (id, event_key, aggregate_id, type, payload, state, next_attempt_at)
+            SELECT 'obx_t' || g, 'k:' || g, 'order_t' || (g / 3), 'order.placed', '{}'::jsonb, 'sent', now()
+              FROM generate_series(1, 5000) g`,
+          payment_attempt: `INSERT INTO payment_attempt (id, order_id, provider, txn_ref, amount, state, expires_at)
+            SELECT 'payatt_t' || g, 'order_t' || (g / 2), 'vnpay', 'T' || g, 1000, 'captured', now()
+              FROM generate_series(1, 5000) g`,
+          ops_exception: `INSERT INTO ops_exception (id, kind, order_id, state)
+            SELECT 'opx_t' || g, 'payment_unknown', 'order_t' || g, 'resolved' FROM generate_series(1, 5000) g`,
+        };
+        const knex = dbConnection as unknown as {
+          transaction(fn: (trx: RawDb) => Promise<void>): Promise<void>;
+        };
+        const ROLLBACK = new Error("rollback có chủ đích");
+        for (const i of indexes) {
+          let plan = "";
+          await knex
+            .transaction(async (trx) => {
+              const sql = fill[i.table];
+              if (!sql) throw new Error(`thiếu câu sinh dữ liệu cho ${i.table}`);
+              await trx.raw(sql);
+              await trx.raw(`ANALYZE ${i.table}`);
+              const r = await trx.raw(
+                `EXPLAIN SELECT * FROM ${i.table} WHERE ${i.column} = ? AND deleted_at IS NULL`,
+                ["order_t42"],
+              );
+              plan = r.rows.map((x) => String(x["QUERY PLAN"])).join("\n");
+              throw ROLLBACK;
+            })
+            .catch((e: unknown) => {
+              if (e !== ROLLBACK) throw e;
+            });
+          expect(plan).toMatch(new RegExp(`Index Scan (using|on) "${i.name}"`)); // Index Scan hoặc Bitmap Index Scan
+          expect(plan).not.toContain("Seq Scan");
+        }
+        expect(
+          Number(
+            (await db().raw(`SELECT count(*) AS n FROM outbox_event WHERE id LIKE 'obx_t%'`)).rows[0]?.n,
+          ),
+        ).toBe(0);
+      });
+
+      it("down() xoá đúng 3 index (không đụng index khác), up() tạo lại, up() lần hai không lỗi", async () => {
+        const others = async () =>
+          (
+            await db().raw(
+              `SELECT count(*)::int AS n FROM pg_indexes
+                WHERE tablename IN ('outbox_event', 'payment_attempt', 'ops_exception') AND NOT (indexname = ANY(?))`,
+              [indexes.map((i) => i.name)],
+            )
+          ).rows[0]?.n;
+        const before = await others();
+        await run("down");
+        expect(await present()).toEqual([]);
+        expect(await others()).toBe(before);
+        await run("up");
+        await run("up");
+        expect((await present()).map((r) => r.name)).toEqual(indexes.map((i) => i.name).sort());
       });
     });
 

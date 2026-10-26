@@ -1,0 +1,32 @@
+-- reconcile-attempts-due
+-- Nguồn: apps/backend/src/modules/checkout/service.ts listStaleAttempts (job x-reconcile-attempts, 1 phút)
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["2026-10-26T14:14:29.831Z",50]
+
+SELECT id, cart_id FROM checkout_attempt
+  WHERE ((state = 'preparing' AND lease_until < $1) OR (state = 'compensated' AND error_code = 'COMPENSATING'))
+  AND deleted_at IS NULL
+  ORDER BY lease_until LIMIT $2;
+
+Limit  (cost=145.41..145.50 rows=36 width=37) (actual time=0.036..0.039 rows=29 loops=1)
+  Buffers: shared hit=8
+  ->  Sort  (cost=145.41..145.50 rows=36 width=37) (actual time=0.036..0.037 rows=29 loops=1)
+        Sort Key: lease_until
+        Sort Method: quicksort  Memory: 27kB
+        Buffers: shared hit=8
+        ->  Bitmap Heap Scan on checkout_attempt  (cost=9.23..144.48 rows=36 width=37) (actual time=0.020..0.028 rows=29 loops=1)
+              Recheck Cond: (((state = 'preparing'::text) AND (lease_until < '2026-10-26 14:14:29.831+00'::timestamp with time zone)) OR (state = 'compensated'::text))
+              Filter: ((deleted_at IS NULL) AND (((state = 'preparing'::text) AND (lease_until < '2026-10-26 14:14:29.831+00'::timestamp with time zone)) OR ((state = 'compensated'::text) AND (error_code = 'COMPENSATING'::text))))
+              Heap Blocks: exact=2
+              Buffers: shared hit=8
+              ->  BitmapOr  (cost=9.23..9.23 rows=36 width=0) (actual time=0.015..0.016 rows=0 loops=1)
+                    Buffers: shared hit=6
+                    ->  Bitmap Index Scan on "IDX_checkout_attempt_state_lease"  (cost=0.00..4.78 rows=36 width=0) (actual time=0.012..0.012 rows=29 loops=1)
+                          Index Cond: ((state = 'preparing'::text) AND (lease_until < '2026-10-26 14:14:29.831+00'::timestamp with time zone))
+                          Buffers: shared hit=3
+                    ->  Bitmap Index Scan on "IDX_checkout_attempt_state_lease"  (cost=0.00..4.43 rows=1 width=0) (actual time=0.003..0.003 rows=0 loops=1)
+                          Index Cond: (state = 'compensated'::text)
+                          Buffers: shared hit=3
+Planning Time: 0.095 ms
+Execution Time: 0.055 ms

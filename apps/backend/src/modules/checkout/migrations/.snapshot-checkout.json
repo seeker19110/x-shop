@@ -1214,6 +1214,15 @@
           "expression": "CREATE INDEX IF NOT EXISTS \"IDX_ops_exception_state_due\" ON \"ops_exception\" (\"state\", \"due_at\")"
         },
         {
+          "keyName": "IDX_ops_exception_order_id",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE INDEX IF NOT EXISTS \"IDX_ops_exception_order_id\" ON \"ops_exception\" (\"order_id\")"
+        },
+        {
           "keyName": "ops_exception_pkey",
           "columnNames": ["id"],
           "composite": false,
@@ -1970,6 +1979,15 @@
           "expression": "CREATE INDEX IF NOT EXISTS \"IDX_outbox_event_state_next\" ON \"outbox_event\" (\"state\", \"next_attempt_at\")"
         },
         {
+          "keyName": "IDX_outbox_event_aggregate_id",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE INDEX IF NOT EXISTS \"IDX_outbox_event_aggregate_id\" ON \"outbox_event\" (\"aggregate_id\")"
+        },
+        {
           "keyName": "outbox_event_pkey",
           "columnNames": ["id"],
           "composite": false,
@@ -2212,6 +2230,15 @@
           "primary": false,
           "unique": false,
           "expression": "CREATE UNIQUE INDEX IF NOT EXISTS \"IDX_payment_attempt_order_active_unique\" ON \"payment_attempt\" (\"order_id\") WHERE state IN ('created', 'pending', 'unknown') AND deleted_at IS NULL"
+        },
+        {
+          "keyName": "IDX_payment_attempt_order_id",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE INDEX IF NOT EXISTS \"IDX_payment_attempt_order_id\" ON \"payment_attempt\" (\"order_id\")"
         },
         {
           "keyName": "payment_attempt_pkey",

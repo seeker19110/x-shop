@@ -1,0 +1,16 @@
+-- checkout-active-attempt-of-cart
+-- Nguồn: apps/backend/src/modules/checkout/service.ts findActiveAttemptId
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["cart_PF0123457",1,"preparing","ready"]
+
+SELECT id FROM checkout_attempt
+  WHERE cart_id = $1 AND cart_version = $2 AND state IN ($3, $4) AND deleted_at IS NULL LIMIT 1;
+
+Limit  (cost=0.42..8.44 rows=1 width=14) (actual time=0.007..0.007 rows=1 loops=1)
+  Buffers: shared hit=4
+  ->  Index Scan using "IDX_checkout_attempt_cart_version_active_unique" on checkout_attempt  (cost=0.42..8.44 rows=1 width=14) (actual time=0.007..0.007 rows=1 loops=1)
+        Index Cond: ((cart_id = 'cart_PF0123457'::text) AND (cart_version = 1))
+        Buffers: shared hit=4
+Planning Time: 0.059 ms
+Execution Time: 0.013 ms

@@ -160,6 +160,8 @@ export const PaymentAttempt = model
       unique: true,
       where: "state IN ('created', 'pending', 'unknown')",
     },
+    // T-074: trang đơn đọc mọi lượt thanh toán của đơn (index trên chỉ phủ lượt đang mở) — docs/db/explain/.
+    { name: "IDX_payment_attempt_order_id", on: ["order_id"], where: null },
   ])
   .checks([{ name: "payment_attempt_amount_pos", expression: (c) => `${c.amount} > 0` }]);
 
@@ -229,6 +231,8 @@ export const OutboxEvent = model
   .indexes([
     { name: "IDX_outbox_event_event_key_unique", on: ["event_key"], unique: true, where: null },
     { name: "IDX_outbox_event_state_next", on: ["state", "next_attempt_at"], where: null },
+    // T-074: dòng thời gian của trang đơn đọc sự kiện theo đơn — docs/db/explain/order-view-outbox.txt.
+    { name: "IDX_outbox_event_aggregate_id", on: ["aggregate_id"], where: null },
   ])
   .checks([{ name: "outbox_event_attempts_nonneg", expression: (c) => `${c.attempts} >= 0` }]);
 
@@ -254,6 +258,8 @@ export const OpsException = model
       where: "dedupe_key IS NOT NULL",
     },
     { name: "IDX_ops_exception_state_due", on: ["state", "due_at"], where: null },
+    // T-074: trang đơn/hủy đơn đọc ngoại lệ theo đơn — docs/db/explain/order-view-ops-exceptions.txt.
+    { name: "IDX_ops_exception_order_id", on: ["order_id"], where: null },
   ])
   .checks([
     {
