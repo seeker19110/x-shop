@@ -161,6 +161,7 @@ describe("CHK04: báo giá và tổng tiền trước nút đặt hàng", () => 
   it("chưa đủ địa chỉ: không gọi quote, tiền hàng từ giỏ, phí ship 'chưa tính'", () => {
     ui();
     expect(m.quote).not.toHaveBeenCalled();
+    // eslint-disable-next-line no-restricted-properties -- vùng tổng tiền là div không vai trò ngữ nghĩa; testid là hợp đồng với E2E
     const t = within(screen.getByTestId("totals"));
     expect(t.getByText("Tiền hàng").nextSibling).toHaveTextContent("1.300.000 ₫");
     expect(t.getByText("Phí vận chuyển").nextSibling).toHaveTextContent(/Nhập địa chỉ/);
@@ -184,6 +185,7 @@ describe("CHK04: báo giá và tổng tiền trước nút đặt hàng", () => 
       address: { provinceCode: "01", wardCode: "00004", line: "12 Phố Điện Biên Phủ" },
       discountCode: null,
     });
+    // eslint-disable-next-line no-restricted-properties -- vùng tổng tiền là div không vai trò ngữ nghĩa; testid là hợp đồng với E2E
     const t = within(screen.getByTestId("totals"));
     await waitFor(() => expect(t.getByText("Tổng phải trả").nextSibling).toHaveTextContent("1.200.000 ₫"));
     expect(t.getByText(/Giảm giá \(mã SALE10\)/).nextSibling).toHaveTextContent("130.000 ₫");
@@ -243,6 +245,7 @@ describe("đặt hàng", () => {
     ui();
     await fillAll();
     fireEvent.click(submitBtn());
+    // eslint-disable-next-line no-restricted-properties -- banner lỗi là vùng tổng hợp, testid là hợp đồng với E2E
     const banner = await screen.findByTestId("checkout-banner");
     expect(banner).toHaveTextContent("Mất kết nối");
     await waitFor(() => expect(document.activeElement).toBe(banner));
@@ -276,10 +279,12 @@ describe("đặt hàng", () => {
     ui();
     await fillAll();
     fireEvent.click(submitBtn());
+    // eslint-disable-next-line no-restricted-properties -- banner lỗi là vùng tổng hợp, testid là hợp đồng với E2E
     const banner = await screen.findByTestId("checkout-banner");
     expect(banner).toHaveTextContent("1.380.000 ₫");
     expect(banner).toHaveTextContent("1.330.000 ₫");
     expect(m.submit).toHaveBeenCalledTimes(1);
+    // eslint-disable-next-line no-restricted-properties -- vùng tổng tiền là div không vai trò ngữ nghĩa; testid là hợp đồng với E2E
     const t = within(screen.getByTestId("totals"));
     expect(t.getByText("Tổng phải trả").nextSibling).toHaveTextContent("1.380.000 ₫");
     const confirmBtn = screen.getByRole("button", { name: "Xác nhận tổng mới và đặt hàng" });
@@ -301,6 +306,7 @@ describe("đặt hàng", () => {
     ui();
     await fillAll();
     fireEvent.click(submitBtn());
+    // eslint-disable-next-line no-restricted-properties -- banner lỗi là vùng tổng hợp, testid là hợp đồng với E2E
     const banner = await screen.findByTestId("checkout-banner");
     expect(banner).toHaveTextContent("Quần tây: chỉ còn 1 (bạn chọn 2)");
     expect(banner).toHaveTextContent("Áo sơ mi lụa: đã hết hàng");
@@ -326,6 +332,7 @@ describe("đặt hàng", () => {
     ui();
     await fillAll();
     fireEvent.click(submitBtn());
+    // eslint-disable-next-line no-restricted-properties -- banner lỗi là vùng tổng hợp, testid là hợp đồng với E2E
     const banner = await screen.findByTestId("checkout-banner");
     expect(banner).toHaveTextContent("Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít phút");
     expect(screen.getByLabelText(/Họ và tên/)).toHaveValue("Nguyễn Văn A");

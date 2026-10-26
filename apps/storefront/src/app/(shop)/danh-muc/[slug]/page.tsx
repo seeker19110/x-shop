@@ -58,6 +58,7 @@ export default async function CategoryPage({ params, searchParams }: Props) {
         error={error}
         category={slug}
       />
+      {/* eslint-disable-next-line react/no-danger -- JSON-LD do serializeJsonLd tạo (thoát "<", U+2028/2029), không có dữ liệu thô */}
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: crumbsLd }} />
     </>
   );

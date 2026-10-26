@@ -2,6 +2,8 @@ import js from "@eslint/js";
 import nextPlugin from "@next/eslint-plugin-next";
 import reactHooks from "eslint-plugin-react-hooks";
 import eslintComments from "@eslint-community/eslint-plugin-eslint-comments";
+import react from "eslint-plugin-react";
+import testingLibrary from "eslint-plugin-testing-library";
 import jest from "eslint-plugin-jest";
 import vitest from "eslint-plugin-vitest";
 import globals from "globals";
@@ -35,6 +37,33 @@ export default tseslint.config(
       ...reactHooks.configs.recommended.rules,
       ...nextPlugin.configs.recommended.rules,
       ...nextPlugin.configs["core-web-vitals"].rules,
+    },
+  },
+  {
+    // FE-SEC-001 / SEC-WEB-004: mọi điểm tắt escape của React phải có eslint-disable kèm lý do (JSON-LD đã serialize).
+    files: ["apps/storefront/**/*.{ts,tsx}"],
+    plugins: { react },
+    rules: { "react/no-danger": "error" },
+  },
+  {
+    // FE-TEST-001: truy vấn theo vai trò/nhãn; getByTestId chỉ khi không còn lựa chọn và có eslint-disable kèm lý do.
+    files: ["apps/storefront/**/*.test.{ts,tsx}"],
+    plugins: { "testing-library": testingLibrary },
+    rules: {
+      // Theo FE-TEST-001: hai rule blueprint nêu tên + vài rule bắt lỗi thật; no-node-access để dành (nhiều test cũ).
+      "testing-library/prefer-screen-queries": "error",
+      "testing-library/no-container": "error",
+      "testing-library/no-await-sync-queries": "error",
+      "testing-library/no-wait-for-multiple-assertions": "error",
+      "testing-library/no-promise-in-fire-event": "error",
+      "no-restricted-properties": [
+        "error",
+        ...["get", "getAll", "query", "queryAll", "find", "findAll"].map((p) => ({
+          property: `${p}ByTestId`,
+          message:
+            "Dùng getByRole/getByLabelText/getByText; ByTestId chỉ khi không còn lựa chọn khác (FE-TEST-001).",
+        })),
+      ],
     },
   },
   {

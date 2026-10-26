@@ -1,3 +1,4 @@
+/* eslint-disable testing-library/no-container -- đếm <img> trang trí alt rỗng (vai trò presentation, không truy vấn được theo role) */
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ProductCard, type ProductCardProps } from "./ProductCard";
