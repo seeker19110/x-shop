@@ -3,6 +3,7 @@ import { Modules } from "@medusajs/framework/utils";
 import { PUBLIC_CATALOG_CACHE } from "../../../../lib/catalog/listing";
 import { CATALOG_INDEX_MODULE } from "../../../../modules/catalog-index";
 import type CatalogIndexModuleService from "../../../../modules/catalog-index/service";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * GET /store/x/categories — danh mục đang có sản phẩm đã publish trong kênh bán của publishable key, kèm số sản phẩm
@@ -28,7 +29,7 @@ export const GET = async (req: MedusaStoreRequest, res: MedusaResponse) => {
     .map((c) => ({
       handle: c.handle,
       name: c.name,
-      parent_handle: c.parent_category_id ? (handleOf.get(c.parent_category_id) ?? null) : null,
+      parent_handle: isNonEmpty(c.parent_category_id) ? (handleOf.get(c.parent_category_id) ?? null) : null,
       product_count: countOf.get(c.handle) as number,
     }));
   res.setHeader("Cache-Control", PUBLIC_CATALOG_CACHE);

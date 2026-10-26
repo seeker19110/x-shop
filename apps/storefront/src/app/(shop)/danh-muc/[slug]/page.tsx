@@ -8,6 +8,7 @@ import { buildBreadcrumbJsonLd } from "../../../../lib/seo/breadcrumb-jsonld";
 import { serializeJsonLd } from "../../../../lib/seo/product-jsonld";
 import { getClientEnv } from "../../../../lib/env";
 import { catalogMetadata } from "../../../../lib/seo/catalog-meta";
+import { isNonEmpty } from "../../../../lib/presence";
 
 interface Props {
   params: Promise<{ slug: string }>;
@@ -17,7 +18,7 @@ interface Props {
 export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
   const { slug } = await params;
   const name = await getCategoryName(slug);
-  if (!name) return { title: "Không tìm thấy danh mục", robots: { index: false } };
+  if (!isNonEmpty(name)) return { title: "Không tìm thấy danh mục", robots: { index: false } };
   const { filter, result } = await loadListing("category", slug, toQueryString(await searchParams));
   return catalogMetadata({
     basePath: categoryHref(slug),
@@ -32,7 +33,7 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
 export default async function CategoryPage({ params, searchParams }: Props) {
   const { slug } = await params;
   const name = await getCategoryName(slug);
-  if (!name) notFound();
+  if (!isNonEmpty(name)) notFound();
   const { filter, issues, result, error } = await loadListing(
     "category",
     slug,

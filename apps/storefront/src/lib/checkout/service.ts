@@ -11,6 +11,7 @@ import type {
   SubmitInput,
   SubmitResult,
 } from "./types";
+import { isNonEmpty } from "../presence";
 
 /**
  * Gọi `/store/x/checkout/*` từ server. Id giỏ LUÔN lấy từ cookie HttpOnly (không bao giờ từ client) nên khách A không
@@ -53,7 +54,7 @@ export async function requestQuote(input: {
 }): Promise<QuoteResult> {
   if (!cartEnabled()) return NO_CART;
   const cartId = await readCartId();
-  if (!cartId) return NO_CART;
+  if (!isNonEmpty(cartId)) return NO_CART;
   if (input?.paymentMethod !== "cod" && input?.paymentMethod !== "vnpay") {
     return {
       ok: false,
@@ -79,7 +80,7 @@ export async function requestSubmit(input: SubmitInput): Promise<SubmitResult> {
   if (!cartEnabled())
     return { kind: "error", code: "NOT_FOUND", message: NO_CART.ok ? "" : NO_CART.message, newKey: false };
   const cartId = await readCartId();
-  if (!cartId)
+  if (!isNonEmpty(cartId))
     return { kind: "error", code: "NOT_FOUND", message: NO_CART.ok ? "" : NO_CART.message, newKey: false };
   if (!KEY_RE.test(input?.idempotencyKey ?? "") || !ID_RE.test(input?.quoteId ?? "")) {
     return {
@@ -120,7 +121,8 @@ export async function requestAttempt(attemptId: string): Promise<PollResult> {
   if (!cartEnabled() || !ID_RE.test(attemptId ?? ""))
     return { kind: "failed", code: "NOT_FOUND", message: "Không tìm thấy lần đặt hàng." };
   const cartId = await readCartId();
-  if (!cartId) return { kind: "failed", code: "NOT_FOUND", message: "Không tìm thấy lần đặt hàng." };
+  if (!isNonEmpty(cartId))
+    return { kind: "failed", code: "NOT_FOUND", message: "Không tìm thấy lần đặt hàng." };
   const r = await call(
     `/store/x/checkout/attempts/${encodeURIComponent(attemptId)}?cart_id=${encodeURIComponent(cartId)}`,
     {},

@@ -16,6 +16,7 @@ import { ScrollRestorer } from "./ScrollRestorer";
 import { ListAnalytics } from "./ListAnalytics";
 import { ProductGrid } from "./ProductGrid";
 import { SortForm } from "./SortForm";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface CatalogViewProps {
   basePath: string;
@@ -61,7 +62,7 @@ export function CatalogView({
       <ScrollRestorer />
       <header className={styles.head}>
         <h1>{heading}</h1>
-        {intro ? <p className={styles.intro}>{intro}</p> : null}
+        {isNonEmpty(intro) ? <p className={styles.intro}>{intro}</p> : null}
         {header}
       </header>
 

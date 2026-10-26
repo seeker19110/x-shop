@@ -9,6 +9,7 @@ import type {
   StockShortage,
   SubmitResult,
 } from "./types";
+import { isNonEmpty } from "../presence";
 
 /**
  * Ánh xạ phản hồi THẬT của `/store/x/checkout/*` (xem `__fixtures__/` — lấy từ backend chạy thật) sang kiểu storefront.
@@ -129,7 +130,7 @@ export function mapQuoteResponse(status: number, body: unknown): QuoteResult {
   ];
   const mapped = (known as string[]).includes(code) ? (code as QuoteErrorCode) : "VALIDATION";
   const field = formFieldOf(body.field);
-  return { ok: false, code: mapped, message, ...(field ? { field } : {}) };
+  return { ok: false, code: mapped, message, ...(isNonEmpty(field) ? { field } : {}) };
 }
 
 function mapPlaced(view: Json): PlacedOrder | null {
@@ -163,7 +164,8 @@ export function mapSubmitResponse(
   retryAfterHeader?: string | null,
 ): SubmitResult {
   if (status === 503 && isObj(body) && str(body.code) === "LOCK_UNAVAILABLE") {
-    const s = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+    // Header rỗng KHÔNG được thành 0 giây (Number("") === 0) — coi như thiếu.
+    const s = isNonEmpty(retryAfterHeader) ? Number(retryAfterHeader) : NaN;
     return { kind: "unavailable", retryAfterSeconds: Number.isFinite(s) && s > 0 ? Math.ceil(s) : null };
   }
   if (status === 0 || status >= 500 || !isObj(body)) return { kind: "network" };
@@ -201,14 +203,15 @@ export function mapSubmitResponse(
   }
   if (code === "BUSY_RETRY") {
     const fromBody = int(body.retry_after_ms);
-    const header = retryAfterHeader ? Number(retryAfterHeader) * 1000 : NaN;
+    // Header rỗng KHÔNG được thành 0 ms (Number("") === 0) — coi như thiếu.
+    const header = isNonEmpty(retryAfterHeader) ? Number(retryAfterHeader) * 1000 : NaN;
     const ms = fromBody ?? (Number.isFinite(header) ? header : BUSY_DEFAULT_MS);
     return { kind: "busy", retryAfterMs: Math.min(Math.max(ms, 0), BUSY_MAX_MS) };
   }
   const field = formFieldOf(body.field);
   // Các mã chấm dứt lần đặt này → lần sau cần khóa mới; lỗi dữ liệu (422) chưa tạo attempt.
   const newKey = status === 409 || status === 404;
-  return { kind: "error", code: code || "ERROR", message, newKey, ...(field ? { field } : {}) };
+  return { kind: "error", code: code || "ERROR", message, newKey, ...(isNonEmpty(field) ? { field } : {}) };
 }
 
 export function mapAttemptResponse(status: number, body: unknown): PollResult {

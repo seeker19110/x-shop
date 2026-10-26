@@ -13,6 +13,7 @@ import { assertPublishable } from "../../lib/catalog/publish-readiness";
 import { FASHION_MODULE } from "../../modules/fashion";
 import type FashionModuleService from "../../modules/fashion/service";
 import type { ProductFashionInput } from "../../modules/fashion/validators";
+import { isNonEmpty } from "@x-shop/domain";
 
 export type SetProductFashionInput = ProductFashionInput & { product_id: string };
 
@@ -68,7 +69,7 @@ const upsertAttributesStep = createStep(
     const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
     const { attributesId } = await currentLinks(container, input.product_id);
     const payload = attributesPayload(input.attributes);
-    if (attributesId) {
+    if (isNonEmpty(attributesId)) {
       const prev = await fashion.retrieveFashionProductAttributes(attributesId);
       await fashion.updateFashionProductAttributes({ id: attributesId, ...payload } as never);
       const previous = Object.fromEntries(
@@ -133,12 +134,12 @@ export async function relinkSizeChart(
   to: string | null,
 ): Promise<void> {
   const link = container.resolve(ContainerRegistrationKeys.LINK);
-  if (from)
+  if (isNonEmpty(from))
     await link.dismiss({
       [Modules.PRODUCT]: { product_id: productId },
       [FASHION_MODULE]: { size_chart_id: from },
     });
-  if (to)
+  if (isNonEmpty(to))
     await link.create({
       [Modules.PRODUCT]: { product_id: productId },
       [FASHION_MODULE]: { size_chart_id: to },

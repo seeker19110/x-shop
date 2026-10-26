@@ -56,7 +56,7 @@ export async function readCsvBody(req: MedusaRequest, maxBytes: number): Promise
       return { ok: false, status: 422, code: "INVALID_MULTIPART", reason: "Không đọc được multipart" };
     }
     const file = form.get("file");
-    if (!file || typeof file === "string") {
+    if (file === null || typeof file === "string") {
       return { ok: false, status: 422, code: "FILE_MISSING", reason: "Thiếu trường file" };
     }
     bytes = Buffer.from(await file.arrayBuffer());

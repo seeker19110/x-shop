@@ -12,6 +12,7 @@ import {
   refundOccupiesCapture,
   sumVnd,
   type LedgerEntry,
+  isNonEmpty,
 } from "@x-shop/domain";
 import { recordAudit } from "../../lib/audit/record";
 import { maskFreeText } from "../../lib/audit/sanitize";
@@ -235,7 +236,7 @@ async function returnReplacementAmount(
   trx: Knex.Transaction,
   input: CreateRefundInput,
 ): Promise<number> {
-  const ret = input.return_id ? await svc.getReturn(input.return_id, trx) : null;
+  const ret = isNonEmpty(input.return_id) ? await svc.getReturn(input.return_id, trx) : null;
   if (!ret || ret.order_id !== input.order_id) {
     throw new ReturnsError("NOT_FOUND", "Không tìm thấy yêu cầu trả của đơn", { field: "return_id" });
   }
@@ -552,7 +553,7 @@ async function syncLedger(container: Scope, r: RefundRow): Promise<void> {
 async function afterRefundSucceeded(container: Scope, r: RefundRow): Promise<void> {
   await syncLedger(container, r);
   const svc = returnsOf(container);
-  if (r.return_id) {
+  if (isNonEmpty(r.return_id)) {
     await svc.updateReturn(null, r.return_id, ["inspected"], { state: "closed", closed_at: new Date() });
   }
   if (r.reason === "cancellation") {

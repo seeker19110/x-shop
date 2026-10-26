@@ -1,4 +1,5 @@
 export * from "./result.js";
+export * from "./presence.js";
 export * from "./money/index.js";
 export * from "./pricing/index.js";
 export * from "./catalog/index.js";

@@ -8,7 +8,7 @@ import { hrefFor, totalPages } from "../../components/catalog/filter-state";
  * (không disallow trong robots để bot còn đọc được noindex).
  */
 export function isIndexable(filter: CatalogFilter, opts: { search?: boolean } = {}): boolean {
-  return !opts.search && activeFilterCount(filter) === 0 && filter.sort === "newest";
+  return opts.search !== true && activeFilterCount(filter) === 0 && filter.sort === "newest";
 }
 
 export interface CatalogMetaInput {

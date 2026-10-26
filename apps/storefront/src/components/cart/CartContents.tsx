@@ -21,17 +21,18 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { InlineError } from "../ui/InlineError";
 import styles from "./Cart.module.css";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface CartContentsProps {
   cart: CartView;
 }
 
 function productHref(line: CartLineView): string {
-  if (!line.handle) return "/";
+  if (!isNonEmpty(line.handle)) return "/";
   const qs = new URLSearchParams();
   const c = line.choices;
-  if (c?.color) qs.set("color", c.color);
-  if (c?.size) qs.set("size", c.size);
+  if (c && isNonEmpty(c.color)) qs.set("color", c.color);
+  if (c && isNonEmpty(c.size)) qs.set("size", c.size);
   const q = qs.toString();
   return `/san-pham/${encodeURIComponent(line.handle)}${q ? `?${q}` : ""}`;
 }
@@ -64,7 +65,7 @@ export function CartContents({ cart }: CartContentsProps) {
       setLineErrors((e) => Object.fromEntries(Object.entries(e).filter(([id]) => id !== lineId)));
       setAnnounce(r.message);
       emitCartChanged(r.count);
-      if (opts.focusHeading) headingRef.current?.focus();
+      if (opts.focusHeading === true) headingRef.current?.focus();
     });
   };
 
@@ -97,7 +98,7 @@ export function CartContents({ cart }: CartContentsProps) {
             const busy = pending && busyLine === line.id;
             const errId = `loi-${line.id}`;
             const msg = lineErrors[line.id];
-            const describedBy = [line.issue ? `${errId}-van-de` : null, msg ? errId : null]
+            const describedBy = [line.issue ? `${errId}-van-de` : null, isNonEmpty(msg) ? errId : null]
               .filter(Boolean)
               .join(" ");
             const c = line.choices;
@@ -120,9 +121,15 @@ export function CartContents({ cart }: CartContentsProps) {
                 </div>
                 <div className={styles.info}>
                   <p className={styles.name}>
-                    {line.handle ? <Link href={productHref(line)}>{line.title}</Link> : line.title}
+                    {isNonEmpty(line.handle) ? (
+                      <Link href={productHref(line)}>{line.title}</Link>
+                    ) : (
+                      line.title
+                    )}
                   </p>
-                  {line.variantLabel ? <p className={styles.variant}>{line.variantLabel}</p> : null}
+                  {isNonEmpty(line.variantLabel) ? (
+                    <p className={styles.variant}>{line.variantLabel}</p>
+                  ) : null}
                   <p className={styles.unit}>{formatVnd(line.unitPrice)}</p>
 
                   {c && c.colors.length > 0 && c.sizes.length > 0 ? (
@@ -233,7 +240,7 @@ export function CartContents({ cart }: CartContentsProps) {
                       ) : null}
                     </div>
                   ) : null}
-                  {msg ? (
+                  {isNonEmpty(msg) ? (
                     <InlineError id={errId} alert>
                       {msg}
                     </InlineError>

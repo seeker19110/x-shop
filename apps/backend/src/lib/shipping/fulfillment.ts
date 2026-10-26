@@ -18,7 +18,7 @@ import {
   updateInventoryLevelsWorkflow,
   updateReservationsWorkflow,
 } from "@medusajs/medusa/core-flows";
-import { payloadHash, type ShipmentState } from "@x-shop/domain";
+import { payloadHash, type ShipmentState, isNonEmpty } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { AUDIT_MODULE } from "../../modules/audit";
 import type AuditModuleService from "../../modules/audit/service";
@@ -142,7 +142,7 @@ async function loadOrder(container: MedusaContainer, orderId: string): Promise<O
 }
 
 const activeFulfillments = (o: OrderRow) =>
-  (o.fulfillments ?? []).flatMap((f) => (f && !f.canceled_at ? [f] : []));
+  (o.fulfillments ?? []).flatMap((f) => (f && !isNonEmpty(f.canceled_at) ? [f] : []));
 /**
  * Fulfillment của vận đơn: bản còn hiệu lực trước; không có thì bản ĐÃ HỦY (vận đơn bị hãng hủy trước khi lấy hàng —
  * T-045) — để không bao giờ tạo fulfillment thứ hai (và trừ tồn lần hai) cho cùng vận đơn.
@@ -151,7 +151,7 @@ const fulfillmentOf = (o: OrderRow, shipmentId: string) => {
   const mine = (o.fulfillments ?? []).flatMap((f) =>
     f && f.metadata?.x_shipment_id === shipmentId ? [f] : [],
   );
-  return mine.find((f) => !f.canceled_at) ?? mine[0] ?? null;
+  return mine.find((f) => !isNonEmpty(f.canceled_at)) ?? mine[0] ?? null;
 };
 const qty = (v: unknown): number => toSafeInteger(v) ?? 0;
 
@@ -193,7 +193,7 @@ async function sellableLocationOf(
   container: MedusaContainer,
   salesChannelId: string | null,
 ): Promise<string | null> {
-  if (!salesChannelId) return null;
+  if (!isNonEmpty(salesChannelId)) return null;
   const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
     entity: "sales_channel",
     fields: ["id", "stock_locations.id"],
@@ -201,7 +201,7 @@ async function sellableLocationOf(
   });
   const locs =
     (data[0] as { stock_locations?: Array<{ id?: string } | null> } | undefined)?.stock_locations ?? [];
-  return locs.find((l) => l?.id)?.id ?? null;
+  return locs.find((l) => isNonEmpty(l?.id))?.id ?? null;
 }
 
 /**
@@ -229,7 +229,7 @@ async function planFulfillment(container: MedusaContainer, order: OrderRow): Pro
     };
     const mine = reservations.filter((r) => r.line_item_id === item.id);
     if (mine.length === 0) {
-      if (item.variant?.manage_inventory) {
+      if (item.variant?.manage_inventory === true) {
         throw new FulfillmentSyncError("NO_RESERVATION", "Dòng hàng quản lý tồn nhưng không còn giữ hàng", {
           line_item_id: item.id,
         });
@@ -239,7 +239,7 @@ async function planFulfillment(container: MedusaContainer, order: OrderRow): Pro
     }
     const required = new Map(
       (item.variant?.inventory_items ?? []).flatMap((ii) =>
-        ii?.inventory_item_id
+        ii && isNonEmpty(ii.inventory_item_id)
           ? [[ii.inventory_item_id, Math.max(1, qty(ii.required_quantity))] as const]
           : [],
       ),
@@ -277,7 +277,8 @@ async function planFulfillment(container: MedusaContainer, order: OrderRow): Pro
     throw new FulfillmentSyncError("NO_ITEMS", "Đơn không có dòng hàng để xuất kho");
   const location =
     plan.stock[0]?.location_id ?? (await sellableLocationOf(container, order.sales_channel_id));
-  if (!location) throw new FulfillmentSyncError("NO_LOCATION", "Không xác định được kho xuất hàng");
+  if (!isNonEmpty(location))
+    throw new FulfillmentSyncError("NO_LOCATION", "Không xác định được kho xuất hàng");
   plan.location_id = location;
   return plan;
 }
@@ -591,7 +592,7 @@ export async function ensureNativeFulfillment(
     if (!order || !ful) throw new Error(`Không đọc lại được fulfillment của vận đơn ${shipment.id}`);
   }
   // Fulfillment đã hủy (hãng hủy trước lấy hàng): không trừ tồn nữa — phần đã trừ (nếu có) đi luồng hàng hoàn (T-045).
-  if (!ful.canceled_at) await applyStock(container, ful, audit);
+  if (!isNonEmpty(ful.canceled_at)) await applyStock(container, ful, audit);
   return ful;
 }
 
@@ -616,7 +617,7 @@ export async function syncNativeProgress(
   audit: AuditCtx,
 ): Promise<{ fulfillment_id: string; shipped: boolean; delivered: boolean }> {
   const ful = await ensureNativeFulfillment(container, shipment, audit);
-  if (ful.canceled_at) return { fulfillment_id: ful.id, shipped: false, delivered: false };
+  if (isNonEmpty(ful.canceled_at)) return { fulfillment_id: ful.id, shipped: false, delivered: false };
   let shipped = Boolean(ful.shipped_at);
   let delivered = Boolean(ful.delivered_at);
   const reached = (s: ShipmentState) =>
@@ -624,7 +625,9 @@ export async function syncNativeProgress(
   const isDelivered = shipment.state === "delivered" || shipment.delivered_at !== null;
   if (!shipped && (reached("shipped") || isDelivered)) {
     const order = await loadOrder(container, shipment.order_id);
-    const lineIds = new Set((ful.items ?? []).flatMap((i) => (i?.line_item_id ? [i.line_item_id] : [])));
+    const lineIds = new Set(
+      (ful.items ?? []).flatMap((i) => (i && isNonEmpty(i.line_item_id) ? [i.line_item_id] : [])),
+    );
     const items = (order?.items ?? []).flatMap((i) =>
       i && lineIds.has(i.id) && qty(i.quantity) > 0 ? [{ id: i.id, quantity: qty(i.quantity) }] : [],
     );
@@ -664,14 +667,16 @@ export async function shippedOutQuantities(
     const k = stockKey(ful.id, e);
     if (!applied.has(k)) applied.set(k, Boolean(await ledger.findAdjustmentByKey(k)));
   }
-  const inFulfillment = new Set((ful.items ?? []).flatMap((i) => (i?.line_item_id ? [i.line_item_id] : [])));
+  const inFulfillment = new Set(
+    (ful.items ?? []).flatMap((i) => (i && isNonEmpty(i.line_item_id) ? [i.line_item_id] : [])),
+  );
   for (const item of order.items ?? []) {
     if (!item || !inFulfillment.has(item.id) || qty(item.quantity) <= 0) continue;
     const mine = entries.filter((e) => e.line_item_id === item.id);
     const left =
       mine.length > 0
         ? mine.every((e) => applied.get(stockKey(ful.id, e)) === true)
-        : !item.variant?.manage_inventory;
+        : item.variant?.manage_inventory !== true;
     if (left) lines.set(item.id, qty(item.quantity));
   }
   return { fulfillment: ful, lines };
@@ -685,7 +690,7 @@ export async function cancelUnshippedFulfillment(
   container: MedusaContainer,
   ful: Pick<NativeFulfillmentRow, "id" | "canceled_at" | "shipped_at" | "delivered_at">,
 ): Promise<boolean> {
-  if (ful.canceled_at || ful.shipped_at || ful.delivered_at) return false;
+  if (isNonEmpty(ful.canceled_at) || isNonEmpty(ful.shipped_at) || isNonEmpty(ful.delivered_at)) return false;
   await container.resolve(Modules.FULFILLMENT).cancelFulfillment(ful.id);
   return true;
 }
@@ -704,7 +709,10 @@ export async function shippedFromLocations(
   const byItem = new Map<string, string>();
   let fulfillmentLocation: string | null = null;
   const fs = (order?.fulfillments ?? []).flatMap((f) => (f ? [f] : []));
-  const ordered = [...fs.filter((f) => !f.canceled_at), ...fs.filter((f) => f.canceled_at)];
+  const ordered = [
+    ...fs.filter((f) => !isNonEmpty(f.canceled_at)),
+    ...fs.filter((f) => isNonEmpty(f.canceled_at)),
+  ];
   for (const f of ordered) {
     const hasLine = (f.items ?? []).some((i) => i?.line_item_id === lineItemId);
     for (const e of stockEntriesOf(f.metadata)) {
@@ -712,7 +720,8 @@ export async function shippedFromLocations(
         byItem.set(e.inventory_item_id, e.location_id);
       }
     }
-    if (hasLine && !fulfillmentLocation && f.location_id) fulfillmentLocation = f.location_id;
+    if (hasLine && !isNonEmpty(fulfillmentLocation) && isNonEmpty(f.location_id))
+      fulfillmentLocation = f.location_id;
   }
   return { byItem, fulfillmentLocation };
 }

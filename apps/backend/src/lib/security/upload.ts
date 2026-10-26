@@ -52,7 +52,8 @@ export interface UploadedFile {
   originalname: string;
   mimetype: string;
   size: number;
-  buffer: Buffer;
+  /** Multer lưu đĩa không đặt `buffer`; đầu vào ép kiểu từ `unknown` nên coi là có thể thiếu. */
+  buffer?: Buffer | null;
 }
 
 export type FileVerdict =

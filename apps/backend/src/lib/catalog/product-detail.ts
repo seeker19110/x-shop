@@ -2,6 +2,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { colorOf, loadDictionary, sizeOf } from "./dictionary";
 import { loadProductSources } from "./product-source";
 import { loadInStock, loadVariantPrices, resolvePricingContext } from "./sell-state";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Hợp đồng PDP (storefront T-018 dựng theo đúng shape này — giữ tên trường). Giá/tồn tính trực tiếp từ nguồn có
@@ -75,7 +76,7 @@ export async function loadProductDetail(
   const [p] = await loadProductSources(container, { handle });
   if (!p || p.status !== "published") return null;
   const channelId = p.salesChannelIds.find((id) => channelIds.includes(id));
-  if (!channelId) return null;
+  if (!isNonEmpty(channelId)) return null;
   const [dict, pricing] = await Promise.all([loadDictionary(container), resolvePricingContext(container)]);
   const [prices, stock] = await Promise.all([
     loadVariantPrices(

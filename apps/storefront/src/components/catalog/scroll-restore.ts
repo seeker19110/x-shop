@@ -1,3 +1,4 @@
+import { isNonEmpty } from "../../lib/presence";
 /**
  * Khôi phục vị trí cuộn của danh sách khi Back từ PDP (CAT03). Chỉ lưu `scrollY` (số) theo URL (đường dẫn + query) ở
  * sessionStorage — theo tab, mất khi đóng tab, KHÔNG chứa dữ liệu cá nhân. Hàm thuần nhận `Storage` để test.
@@ -16,7 +17,7 @@ export function scrollKeyOf(loc: { pathname: string; search: string }): string {
 function read(storage: Store): Record<string, number> {
   try {
     const raw = storage.getItem(SCROLL_STORAGE_KEY);
-    if (!raw) return {};
+    if (!isNonEmpty(raw)) return {};
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
     const out: Record<string, number> = {};
@@ -46,5 +47,5 @@ export function saveScroll(storage: Store, key: string, y: number): void {
 /** Vị trí đã lưu của URL; không có/không hợp lệ → null. */
 export function loadScroll(storage: Store, key: string): number | null {
   const v = read(storage)[key];
-  return v === undefined ? null : v;
+  return v ?? null;
 }

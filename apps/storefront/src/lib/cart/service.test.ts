@@ -27,6 +27,7 @@ import {
   resetCartServiceCacheForTests,
   setQuantity,
 } from "./service";
+import { isNonEmpty } from "../presence";
 
 interface FxVariant {
   variant_id: string;
@@ -71,7 +72,7 @@ class FakeBackend {
   fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const body = init?.body != null && init.body !== "" ? JSON.parse(String(init.body)) : undefined;
     this.log.push(`${method} ${url.pathname}`);
     const json = (data: unknown, status = 200) =>
       new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -95,7 +96,7 @@ class FakeBackend {
     if (!cart) return json({ type: "not_found", message: "Cart not found" }, 404);
     const isLine = p.includes("/line-items");
     if (!isLine) return json({ cart: this.view(cart.id) });
-    if (method === "POST" && !m[2]) {
+    if (method === "POST" && !isNonEmpty(m[2])) {
       const v = this.product.variants.find((x: FxVariant) => x.variant_id === body.variant_id);
       if (!v || !v.in_stock) {
         return json(

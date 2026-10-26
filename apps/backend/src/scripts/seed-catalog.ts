@@ -24,6 +24,7 @@ import {
   type DemoProduct,
 } from "./catalog-demo-data";
 import seedXShop, { type SeedResult } from "./seed";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Seed DỮ LIỆU DEMO cho catalog (T-013) — idempotent: khoá tự nhiên là value (màu/size), handle (danh mục, sản
@@ -78,7 +79,7 @@ async function seedUnlocked(container: MedusaContainer, base: SeedResult): Promi
     products[demo.handle] = await createDemoProduct(container, demo, {
       base,
       categoryId: categoryIds[demo.category] as string,
-      sizeChartId: demo.sizeChart ? (chartIds[demo.sizeChart] ?? null) : null,
+      sizeChartId: isNonEmpty(demo.sizeChart) ? (chartIds[demo.sizeChart] ?? null) : null,
     });
     created++;
   }
@@ -114,7 +115,7 @@ async function ensureCategories(container: MedusaContainer): Promise<Record<stri
             handle: c.handle,
             is_active: true,
             is_internal: false,
-            ...(c.parent ? { parent_category_id: ids[c.parent] as string } : {}),
+            ...(isNonEmpty(c.parent) ? { parent_category_id: ids[c.parent] as string } : {}),
             metadata: { demo: true, seed: DEMO_MARK },
           },
         ],
@@ -278,7 +279,7 @@ async function stockDemoVariants(
   );
   const levels = rows.flatMap((r) => {
     const itemId = r.inventory_items?.[0]?.inventory_item_id;
-    if (!itemId || !r.sku) return [];
+    if (!isNonEmpty(itemId) || !isNonEmpty(r.sku)) return [];
     return [
       { inventory_item_id: itemId, location_id: locationId, stocked_quantity: stockBySku.get(r.sku) ?? 0 },
     ];

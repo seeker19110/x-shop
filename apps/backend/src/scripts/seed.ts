@@ -10,6 +10,7 @@ import {
   updateStoresWorkflow,
 } from "@medusajs/medusa/core-flows";
 import { withOwnedLock } from "../lib/checkout/locks";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Seed nền của x-shop — idempotent: chạy lại (kể cả hai tiến trình cùng lúc) không tạo bản ghi trùng.
@@ -148,7 +149,7 @@ async function linkedSalesChannelIds(
   const query = container.resolve(ContainerRegistrationKeys.QUERY);
   const { data } = await query.graph({ entity, fields: ["id", "sales_channels.id"], filters: { id } });
   const rows: LinkedSalesChannels = data;
-  return (rows[0]?.sales_channels ?? []).flatMap((sc) => (sc?.id ? [sc.id] : []));
+  return (rows[0]?.sales_channels ?? []).flatMap((sc) => (sc && isNonEmpty(sc.id) ? [sc.id] : []));
 }
 
 async function ensureLocationSalesChannel(
@@ -167,7 +168,7 @@ async function ensurePublishableKey(container: MedusaContainer, salesChannelId: 
   const service = container.resolve(Modules.API_KEY);
   const [existing] = await service.listApiKeys({ title: SEED.publishableKeyTitle, type: "publishable" });
   let keyId = existing?.id;
-  if (!keyId) {
+  if (!isNonEmpty(keyId)) {
     const { result } = await createApiKeysWorkflow(container).run({
       input: { api_keys: [{ title: SEED.publishableKeyTitle, type: "publishable", created_by: "" }] },
     });
@@ -205,6 +206,6 @@ async function ensureStore(
 
 function firstId(rows: ReadonlyArray<{ id: string }>, what: string): string {
   const id = rows[0]?.id;
-  if (!id) throw new Error(`[seed] Tạo ${what} không trả về bản ghi.`);
+  if (!isNonEmpty(id)) throw new Error(`[seed] Tạo ${what} không trả về bản ghi.`);
   return id;
 }

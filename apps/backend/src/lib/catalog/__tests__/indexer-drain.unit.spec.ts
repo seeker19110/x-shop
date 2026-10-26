@@ -18,7 +18,7 @@ describe("drainCatalogIndex — lease khoá", () => {
   function setup(opts: { renewFails?: boolean } = {}) {
     let finishClaim: (v: never[]) => void = () => undefined;
     const acquire = jest.fn(async (_key: string, _args: { ownerId: string; expire: number }) => {
-      if (opts.renewFails && acquire.mock.calls.length > 1) throw new Error("Connection is closed.");
+      if (opts.renewFails === true && acquire.mock.calls.length > 1) throw new Error("Connection is closed.");
     });
     const release = jest.fn(async () => undefined);
     const index = {

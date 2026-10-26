@@ -33,7 +33,7 @@ export class AdminApiError extends Error {
 /** Dựng lỗi từ status + thân JSON (thân không phải problem+json → mã `HTTP_<status>`). */
 export function toApiError(status: number, json: unknown): AdminApiError {
   const body: ProblemBody =
-    json && typeof json === "object" && !Array.isArray(json) ? (json as ProblemBody) : {};
+    typeof json === "object" && json !== null && !Array.isArray(json) ? (json as ProblemBody) : {};
   const code = typeof body.code === "string" && body.code ? body.code : `HTTP_${status}`;
   const title = typeof body.title === "string" && body.title ? body.title : `Lỗi ${status}`;
   return new AdminApiError(status, code, title, body);
@@ -98,7 +98,7 @@ export function describeProblem(error: AdminApiError): ProblemView {
       const m = minutes(error.body.max_age_seconds);
       return {
         action: "reauth",
-        message: `Thao tác nhạy cảm cần xác thực lại: đăng xuất, đăng nhập lại và nhập mã TOTP${m ? ` (hiệu lực ${m} phút)` : ""}, rồi thực hiện lại.`,
+        message: `Thao tác nhạy cảm cần xác thực lại: đăng xuất, đăng nhập lại và nhập mã TOTP${m !== null ? ` (hiệu lực ${m} phút)` : ""}, rồi thực hiện lại.`,
       };
     }
     case "MFA_REQUIRED":
@@ -134,7 +134,7 @@ export function normalizeRowErrors(list: unknown): RowError[] {
   if (!Array.isArray(list)) return [];
   const out: RowError[] = [];
   for (const raw of list) {
-    if (!raw || typeof raw !== "object") continue;
+    if (typeof raw !== "object" || raw === null) continue;
     const e = raw as Record<string, unknown>;
     if (typeof e.message !== "string") continue;
     out.push({
@@ -159,7 +159,10 @@ export function rowErrorsOf(error: AdminApiError): RowError[] {
   for (const e of Array.isArray(error.body.errors) ? error.body.errors : []) {
     if (typeof e?.param !== "string" || typeof e.reason !== "string") continue;
     const m = LINE_PARAM.exec(e.param);
-    if (m) fallback.push({ line: Number(m[1]), column: m[2] || "*", message: e.reason });
+    if (!m) continue;
+    // Cột rỗng ("line 3: ") cố ý quy về "*" (cả dòng), như khi thiếu.
+    const column = m[2] === undefined || m[2] === "" ? "*" : m[2];
+    fallback.push({ line: Number(m[1]), column, message: e.reason });
   }
   return fallback;
 }

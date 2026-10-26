@@ -7,6 +7,7 @@ import {
   variantMatches,
   type CatalogFilter,
   type FacetName,
+  isNonEmpty,
 } from "@x-shop/domain";
 import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
 import type { Scope } from "../../modules/catalog-index/query";
@@ -113,7 +114,7 @@ function itemOf(
   const compare = cheapest.map((r) => r.compare_at).filter((c): c is number => c !== null);
   const colors = new Map<string, { value: string; label: string; hex: string | null; rank: number }>();
   for (const r of rows) {
-    if (r.color && !colors.has(r.color))
+    if (isNonEmpty(r.color) && !colors.has(r.color))
       colors.set(r.color, {
         value: r.color,
         label: r.color_label ?? r.color,

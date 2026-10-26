@@ -19,6 +19,7 @@ import {
 } from "./constants";
 import type { SettlementRow } from "./csv";
 import { classifyLine, nextSettlementState, type SettlementTarget } from "./match";
+import { isNonEmpty } from "@x-shop/domain";
 
 export const BATCH_TABLE = "x_settlement_batch";
 export const LINE_TABLE = "x_settlement_line";
@@ -35,7 +36,8 @@ export function toVnd(v: unknown): number {
   return n;
 }
 const toVndOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : toVnd(v));
-const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOString() : null);
+const iso = (v: unknown): string | null =>
+  isNonEmpty(v as string | Date | null | undefined) ? new Date(v as string).toISOString() : null;
 
 export interface BatchView {
   id: string;
@@ -285,7 +287,7 @@ export default class SettlementModuleService {
 
       const existing = await this.findBatchByHash(input.source, input.content_hash, trx);
       if (existing) return { ...(await this.batchDetail(existing, trx)), replayed: true };
-      if (input.external_ref) {
+      if (isNonEmpty(input.external_ref)) {
         const other = (await trx(BATCH_TABLE)
           .where({ source: input.source, external_ref: input.external_ref })
           .first()) as Row | undefined;
@@ -388,7 +390,11 @@ export default class SettlementModuleService {
     resolutions: Map<number, Resolution>,
     running: Map<string, number>,
   ): Promise<ImportBatchResult> {
-    const touched = new Set(p.lines.flatMap((l) => (l.target_id ? [String(l.target_id)] : [])));
+    const touched = new Set(
+      p.lines.flatMap((l) =>
+        isNonEmpty(l.target_id as string | null | undefined) ? [String(l.target_id)] : [],
+      ),
+    );
     const targets = new Map<string, SettlementTarget>();
     for (const r of resolutions.values()) if (r.target) targets.set(r.target.id, r.target);
     const exactlySettled = [...targets.values()]
@@ -617,7 +623,7 @@ export default class SettlementModuleService {
         const pa = payments.find((x) => x.txn_ref === row.reference);
         out.set(row.line, {
           target:
-            pa && pa.ledger_id
+            pa && pa.ledger_id != null
               ? {
                   kind: "capture",
                   id: String(pa.ledger_id),
@@ -871,7 +877,7 @@ export default class SettlementModuleService {
           actor_id: input.actor_id,
           batch_id: null,
           note: input.note,
-          data: input.evidence_ref ? { evidence_ref: input.evidence_ref } : null,
+          data: isNonEmpty(input.evidence_ref) ? { evidence_ref: input.evidence_ref } : null,
         },
       ]);
       const events = (

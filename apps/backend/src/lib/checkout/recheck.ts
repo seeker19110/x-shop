@@ -5,6 +5,7 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import { getVnpayConfig } from "./config";
 import { notificationFromQuery, processVerified } from "./payment";
 import { getVnpayGateway, type QueryStatusResult } from "./vnpay-gateway";
+import { isNonEmpty } from "@x-shop/domain";
 
 const service = (c: MedusaContainer) => c.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
 
@@ -63,7 +64,8 @@ export async function queryAndProcess(
 export async function recheckAttempt(container: MedusaContainer, attemptId: string): Promise<QueryCheck> {
   const s = service(container);
   const [a] = await s.listCheckoutAttempts({ id: attemptId });
-  if (!a?.order_id || a.payment_method !== "vnpay") return { outcome: "skipped", reason: "not_online" };
+  if (!a || !isNonEmpty(a.order_id) || a.payment_method !== "vnpay")
+    return { outcome: "skipped", reason: "not_online" };
   const [fin] = await s.listOrderFinances({ order_id: a.order_id });
   if (fin?.state !== "awaiting_payment")
     return { outcome: "skipped", reason: `order_${fin?.state ?? "missing"}` };

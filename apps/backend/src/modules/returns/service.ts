@@ -8,6 +8,7 @@ import {
   type ReturnKind,
   type ReturnReason,
 } from "./constants";
+import { isNonEmpty } from "@x-shop/domain";
 
 export const RETURN_TABLE = "x_return";
 export const RETURN_LINE_TABLE = "x_return_line";
@@ -257,7 +258,7 @@ export default class ReturnsModuleService {
   ): Promise<{ returns: ReturnWithLines[]; count: number }> {
     const where = (q: Knex.QueryBuilder) => {
       if (filter.state) q.where("state", filter.state);
-      if (filter.order_id) q.where("order_id", filter.order_id);
+      if (isNonEmpty(filter.order_id)) q.where("order_id", filter.order_id);
       if (filter.key_prefix) {
         const sql = `starts_with("idempotency_key", ?)`;
         if (filter.key_prefix.match) q.whereRaw(sql, [filter.key_prefix.prefix]);
@@ -381,21 +382,22 @@ export default class ReturnsModuleService {
   /* ------------------------------------------------------------------ hoàn tiền */
 
   async findRefundByKey(key: string, db: Db = this.db): Promise<RefundRow | null> {
-    const row = await db(REFUND_TABLE).where({ idempotency_key: key }).first();
+    const row = (await db(REFUND_TABLE).where({ idempotency_key: key }).first()) as
+      Record<string, unknown> | undefined;
     return row ? toRefund(row) : null;
   }
 
   async getRefund(id: string, db: Db = this.db): Promise<RefundRow | null> {
-    const row = await db(REFUND_TABLE).where({ id }).first();
+    const row = (await db(REFUND_TABLE).where({ id }).first()) as Record<string, unknown> | undefined;
     return row ? toRefund(row) : null;
   }
 
   /** Hoàn tiền của một yêu cầu trả: bản còn hiệu lực trước (bản `cancelled` chỉ còn là lịch sử — T-044). */
   async refundOfReturn(returnId: string, db: Db = this.db): Promise<RefundRow | null> {
-    const row = await db(REFUND_TABLE)
+    const row = (await db(REFUND_TABLE)
       .where({ return_id: returnId })
       .orderByRaw(`("state" = 'cancelled') asc, "created_at" desc, "id" desc`)
-      .first();
+      .first()) as Record<string, unknown> | undefined;
     return row ? toRefund(row) : null;
   }
 
@@ -469,7 +471,7 @@ export default class ReturnsModuleService {
       .whereIn("state", [...from])
       .update({
         ...rest,
-        ...(attempts_increment && { attempts: d.raw('"attempts" + 1') }),
+        ...(attempts_increment === true && { attempts: d.raw('"attempts" + 1') }),
         updated_at: d.fn.now(),
       })
       .returning("*")) as Record<string, unknown>[];

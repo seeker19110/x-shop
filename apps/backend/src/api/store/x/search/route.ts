@@ -1,6 +1,6 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
 import { Modules } from "@medusajs/framework/utils";
-import { searchKey } from "@x-shop/domain";
+import { searchKey, isNonEmpty } from "@x-shop/domain";
 import { parseListingQuery, PUBLIC_CATALOG_CACHE, runListing } from "../../../../lib/catalog/listing";
 import { sendProblem } from "../../../../lib/http/problem";
 
@@ -29,7 +29,7 @@ export const GET = async (req: MedusaStoreRequest, res: MedusaResponse) => {
       const words = searchKey(c.name).split(" ").filter(Boolean);
       return terms.some((t) => words.some((w) => w.startsWith(t) || t.startsWith(w)));
     });
-    const pick = (related.length ? related : cats.filter((c) => !c.parent_category_id))
+    const pick = (related.length ? related : cats.filter((c) => !isNonEmpty(c.parent_category_id)))
       .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0) || a.name.localeCompare(b.name, "vi"))
       .slice(0, SUGGESTION_LIMIT);
     suggestions = { categories: pick.map((c) => ({ handle: c.handle, name: c.name })) };

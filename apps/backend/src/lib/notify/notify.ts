@@ -8,6 +8,7 @@ import type NotifyModuleService from "../../modules/notify/service";
 import type { NotifyChannel } from "../../modules/notify/models/outbound-message";
 import { getNotificationAdapter, maskRecipient } from "./adapters";
 import { renderTemplate, type TemplateData, type TemplateName } from "./templates";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Gửi thông báo giao dịch từ outbox (T-029, SPEC-payment S-109, AT18): mỗi sự kiện outbox → tối đa một thông báo với
@@ -64,7 +65,7 @@ export async function sendNotification(
     adapter: adapter.name,
     live: adapter.live,
   });
-  if (!id) return "duplicate";
+  if (!isNonEmpty(id)) return "duplicate";
   try {
     const r = await adapter.send(
       {
@@ -119,7 +120,12 @@ export async function notificationHandler(container: MedusaContainer, event: Out
       return;
   }
   const contact = (fin.contact ?? {}) as Contact;
-  const channel: NotifyChannel | null = contact.email ? "email" : contact.phone ? "sms" : null;
+  // Email/điện thoại rỗng coi như không có (chuyển kênh kế tiếp), giữ hành vi cũ.
+  const channel: NotifyChannel | null = isNonEmpty(contact.email)
+    ? "email"
+    : isNonEmpty(contact.phone)
+      ? "sms"
+      : null;
   if (!channel) return;
   const to = channel === "email" ? String(contact.email) : String(contact.phone).replace(/\D/g, "");
   await sendNotification(container, {

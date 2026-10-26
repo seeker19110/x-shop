@@ -1,6 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { CURRENCY, FASHION_KINDS, OPTION_COLOR, OPTION_SIZE, type FashionKind } from "./constants";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Ảnh chụp đầy đủ một sản phẩm từ nguồn có thẩm quyền (Product/Pricing/Fashion qua Query) — một đường đọc duy nhất
@@ -233,7 +234,7 @@ export function toVnd(amount: unknown): number | null {
 
 function basePrice(v: RawVariant): number | null {
   const p = compact(v.prices).find(
-    (x) => x.currency_code === CURRENCY && !x.price_list_id && (x.rules_count ?? 0) === 0,
+    (x) => x.currency_code === CURRENCY && !isNonEmpty(x.price_list_id) && (x.rules_count ?? 0) === 0,
   );
   if (!p) return null;
   // Giá có phần lẻ vẫn trả về (không làm tròn) để kiểm xuất bản thấy PRICE_INVALID thay vì PRICE_MISSING.
@@ -262,8 +263,8 @@ export function toProductSource(p: RawProduct): ProductSource {
       if (color === null) {
         const linked = new Set(
           compact(img.variants)
-            .map((v) => (v.id ? colorOfVariant.get(v.id) : null))
-            .filter((c): c is string => !!c),
+            .map((v) => (isNonEmpty(v.id) ? colorOfVariant.get(v.id) : null))
+            .filter((c): c is string => isNonEmpty(c)),
         );
         if (linked.size === 1) color = [...linked][0] ?? null;
       }
@@ -289,7 +290,7 @@ export function toProductSource(p: RawProduct): ProductSource {
         c.handle,
         c.parent_category?.handle ?? null,
         c.parent_category?.parent_category?.handle ?? null,
-      ].filter((h): h is string => !!h),
+      ].filter((h): h is string => isNonEmpty(h)),
     }));
   const a = p.fashion_product_attributes;
   const attributes: SourceAttributes | null = a
@@ -331,7 +332,7 @@ export function toProductSource(p: RawProduct): ProductSource {
     categories,
     salesChannelIds: compact(p.sales_channels)
       .map((s) => s.id)
-      .filter((id): id is string => !!id),
+      .filter((id): id is string => isNonEmpty(id)),
     images,
     variants,
     attributes,

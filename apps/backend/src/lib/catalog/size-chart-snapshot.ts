@@ -1,5 +1,6 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { isNonEmpty } from "@x-shop/domain";
 
 /** Bảng size (đúng PHIÊN BẢN) của sản phẩm tại thời điểm đặt hàng — chụp vào metadata dòng đơn (ADM03, T-027). */
 export interface LineSizeChart {
@@ -35,7 +36,7 @@ export async function sizeChartsOfProducts(
     const c = p.size_chart;
     out.set(
       p.id,
-      c?.id && c.code && Number.isSafeInteger(c.version)
+      c && isNonEmpty(c.id) && isNonEmpty(c.code) && Number.isSafeInteger(c.version)
         ? { size_chart_id: c.id, size_chart_code: c.code, size_chart_version: Number(c.version) }
         : NO_SIZE_CHART,
     );

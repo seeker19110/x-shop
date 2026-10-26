@@ -8,6 +8,7 @@ import {
 import { CURRENCY, QUERY_ID_BATCH } from "./constants";
 import type { SourceVariant } from "./product-source";
 import { toVnd } from "./product-source";
+import { isNonEmpty } from "@x-shop/domain";
 
 /** Giá bán hiện hành + giá gạch + hạn giá + còn hàng của một SKU — tính từ nguồn có thẩm quyền (Pricing, Inventory). */
 export interface VariantPrice {
@@ -77,7 +78,7 @@ export async function loadVariantPrices(
       context: {
         calculated_price: QueryContext({
           currency_code: ctx.currencyCode,
-          ...(ctx.regionId ? { region_id: ctx.regionId } : {}),
+          ...(isNonEmpty(ctx.regionId) ? { region_id: ctx.regionId } : {}),
         }),
       },
     });
@@ -88,7 +89,7 @@ export async function loadVariantPrices(
       if (price === null) continue;
       const original = toVnd(cp.original_amount);
       const listId = cp.calculated_price?.price_list_id ?? null;
-      if (listId) priceListIds.add(listId);
+      if (isNonEmpty(listId)) priceListIds.add(listId);
       pending.push({
         id: r.id,
         price,
@@ -102,13 +103,13 @@ export async function loadVariantPrices(
     const lists = await container
       .resolve(Modules.PRICING)
       .listPriceLists({ id: batch }, { select: ["id", "ends_at"], take: null });
-    for (const l of lists) endsAt.set(l.id, l.ends_at ? new Date(l.ends_at) : null);
+    for (const l of lists) endsAt.set(l.id, isNonEmpty(l.ends_at) ? new Date(l.ends_at) : null);
   }
   for (const p of pending) {
     out.set(p.id, {
       price: p.price,
       compareAt: p.compareAt,
-      validUntil: p.listId ? (endsAt.get(p.listId) ?? null) : null,
+      validUntil: isNonEmpty(p.listId) ? (endsAt.get(p.listId) ?? null) : null,
     });
   }
   return out;

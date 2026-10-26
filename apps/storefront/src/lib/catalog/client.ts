@@ -6,6 +6,7 @@ import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
 import { clientIpHeader } from "../security/client-ip";
 import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
+import { isNonEmpty } from "../presence";
 
 /**
  * Client catalog phía server (không import vào client component): chọn nguồn bằng `XS_DATA_SOURCE`.
@@ -65,7 +66,7 @@ function backendBase(): string {
 
 function listParams(filter: CatalogFilter, opts: ListOptions): URLSearchParams {
   const p = new URLSearchParams(serializeFilter(filter));
-  if (opts.category) p.set("category", opts.category);
+  if (isNonEmpty(opts.category)) p.set("category", opts.category);
   p.set("page_size", String(opts.pageSize ?? CATALOG_PAGE_SIZE));
   return p;
 }

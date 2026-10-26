@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { ORDER_REF_RE } from "./map";
+import { isNonEmpty } from "../presence";
 
 /**
  * Cookie phiên đơn (POST01): mỗi đơn một cookie `xs_order_<mã đơn>` chứa token ngắn hạn do backend ký. HttpOnly (JS
@@ -21,7 +22,7 @@ export function orderCookieOptions(production: boolean, maxAgeS: number) {
 export async function readOrderAccess(ref: string): Promise<string | null> {
   if (!ORDER_REF_RE.test(ref)) return null;
   const v = (await cookies()).get(orderCookieName(ref))?.value;
-  return v && TOKEN_RE.test(v) ? v : null;
+  return isNonEmpty(v) && TOKEN_RE.test(v) ? v : null;
 }
 
 /** Lưu token phiên đơn (chỉ gọi được trong Server Action / Route Handler). */
@@ -38,7 +39,7 @@ export async function writeOrderAccess(ref: string, token: unknown, expiresAt: u
 
 export async function readLastOrderRef(): Promise<string | null> {
   const v = (await cookies()).get(LAST_ORDER_COOKIE)?.value;
-  return v && ORDER_REF_RE.test(v) ? v : null;
+  return isNonEmpty(v) && ORDER_REF_RE.test(v) ? v : null;
 }
 
 export async function clearOrderAccess(ref: string): Promise<void> {

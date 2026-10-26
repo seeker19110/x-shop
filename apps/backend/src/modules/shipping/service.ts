@@ -45,9 +45,9 @@ function toShipment(r: Row): ShipmentRow {
     payer: String(r.payer) as ShippingPayer,
     created_by: String(r.created_by),
     cod_reported_amount: num(r.cod_reported_amount),
-    cod_reported_at: r.cod_reported_at ? new Date(r.cod_reported_at as string) : null,
+    cod_reported_at: r.cod_reported_at != null ? new Date(r.cod_reported_at as string) : null,
     settlement_state: String(r.settlement_state) as SettlementState,
-    delivered_at: r.delivered_at ? new Date(r.delivered_at as string) : null,
+    delivered_at: r.delivered_at != null ? new Date(r.delivered_at as string) : null,
   };
 }
 

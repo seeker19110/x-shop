@@ -15,6 +15,7 @@ import {
   validateImport,
   type ImportRow,
   type ImportRowError,
+  isNonEmpty,
 } from "@x-shop/domain";
 import { CATALOG_IMPORT_MODULE } from "../../modules/catalog-import";
 import type CatalogImportModuleService from "../../modules/catalog-import/service";
@@ -88,7 +89,7 @@ function rawMaterials(text: string): Map<number, string> {
 
 async function storeDefaults(container: MedusaContainer) {
   const [store] = await container.resolve(Modules.STORE).listStores({}, { take: 1 });
-  if (!store?.default_sales_channel_id || !store.default_location_id) {
+  if (!store || !isNonEmpty(store.default_sales_channel_id) || !isNonEmpty(store.default_location_id)) {
     throw new MedusaError(
       MedusaError.Types.UNEXPECTED_STATE,
       "Store chưa có kênh bán/kho mặc định — chạy seed nền",
@@ -136,7 +137,7 @@ export async function previewImport(container: MedusaContainer, text: string): P
     const rowErrors: ImportRowError[] = [];
     const err = (column: string, message: string) => rowErrors.push({ line: r.line, column, message });
     const catId = categoryId.get(r.category);
-    if (!catId) err("category", `Danh mục "${r.category}" không tồn tại`);
+    if (!isNonEmpty(catId)) err("category", `Danh mục "${r.category}" không tồn tại`);
     if (r.color !== null && !dict.colors.has(r.color))
       err("color", `Màu "${r.color}" chưa có trong bảng màu`);
     if (r.size !== null && !dict.sizes.has(r.size)) err("size", `Size "${r.size}" chưa có trong bảng size`);
@@ -146,7 +147,7 @@ export async function previewImport(container: MedusaContainer, text: string): P
         if (head[f] !== r[f]) err(f, `Khác dòng ${head.line} của cùng sản phẩm "${r.handle}"`);
       }
       const p = plan.get(r.handle);
-      if (p?.variants.some((v) => v.color === r.color && v.size === r.size))
+      if (p?.variants.some((v) => v.color === r.color && v.size === r.size) === true)
         err("color,size", `Trùng biến thể ${r.color ?? "-"}/${r.size ?? "-"} trong sản phẩm`);
       if (
         p &&
@@ -164,7 +165,7 @@ export async function previewImport(container: MedusaContainer, text: string): P
         `SKU đã thuộc sản phẩm khác (${handleByProductId.get(existingVariant.product_id ?? "") ?? existingVariant.product_id})`,
       );
     }
-    if (existingProductId && !existingVariant) {
+    if (isNonEmpty(existingProductId) && !existingVariant) {
       err("sku", "Thêm SKU mới vào sản phẩm đã có chưa hỗ trợ qua CSV — tạo biến thể trong Admin");
     }
     if (rowErrors.length) {
@@ -206,10 +207,11 @@ export async function previewImport(container: MedusaContainer, text: string): P
     summary: {
       rows_total: rows.length + new Set(errors.map((e) => e.line).filter((l) => l > 1)).size,
       rows_valid: valid.length,
-      products_new: planned.filter((p) => !p.existingId).length,
-      products_existing: planned.filter((p) => p.existingId).length,
-      variants_new: planned.flatMap((p) => p.variants).filter((v) => !v.existingVariantId).length,
-      variants_existing: planned.flatMap((p) => p.variants).filter((v) => v.existingVariantId).length,
+      products_new: planned.filter((p) => !isNonEmpty(p.existingId)).length,
+      products_existing: planned.filter((p) => isNonEmpty(p.existingId)).length,
+      variants_new: planned.flatMap((p) => p.variants).filter((v) => !isNonEmpty(v.existingVariantId)).length,
+      variants_existing: planned.flatMap((p) => p.variants).filter((v) => isNonEmpty(v.existingVariantId))
+        .length,
     },
   };
 }
@@ -277,7 +279,7 @@ async function setStock(
   qty: number,
   result: ImportResult,
 ): Promise<void> {
-  if (!inv.inventoryItemId || inv.stocked === qty) return;
+  if (!isNonEmpty(inv.inventoryItemId) || inv.stocked === qty) return;
   if (inv.stocked === null) {
     await createInventoryLevelsWorkflow(container).run({
       input: {
@@ -317,7 +319,7 @@ export async function applyImport(container: MedusaContainer, plan: PlannedProdu
       material: p.material,
       material_label: p.materialLabel,
     };
-    if (!productId) {
+    if (!isNonEmpty(productId)) {
       const colors = [...new Set(p.variants.map((v) => v.color).filter((c): c is string => c !== null))].sort(
         (a, b) => colorOf(dict, a).rank - colorOf(dict, b).rank,
       );
@@ -341,15 +343,18 @@ export async function applyImport(container: MedusaContainer, plan: PlannedProdu
               ...(options.length ? { options } : {}),
               variants: p.variants.map((v, i) => ({
                 title:
-                  [v.color && colorOf(dict, v.color).label, v.size && sizeOf(dict, v.size).label]
+                  [
+                    isNonEmpty(v.color) ? colorOf(dict, v.color).label : null,
+                    isNonEmpty(v.size) ? sizeOf(dict, v.size).label : null,
+                  ]
                     .filter(Boolean)
                     .join(" / ") || p.title,
                 sku: v.sku,
                 manage_inventory: true,
                 variant_rank: i,
                 options: {
-                  ...(v.color ? { [OPTION_COLOR]: v.color } : {}),
-                  ...(v.size ? { [OPTION_SIZE]: v.size } : {}),
+                  ...(isNonEmpty(v.color) ? { [OPTION_COLOR]: v.color } : {}),
+                  ...(isNonEmpty(v.size) ? { [OPTION_SIZE]: v.size } : {}),
                 },
                 prices: [{ amount: v.price, currency_code: CURRENCY }],
               })),
@@ -480,7 +485,7 @@ export function jobView(j: JobRecord): ImportJobView {
     result: (j.result as ImportResult | null) ?? null,
     previewed_by: j.previewed_by,
     committed_by: j.committed_by,
-    committed_at: j.committed_at ? new Date(j.committed_at).toISOString() : null,
+    committed_at: isNonEmpty(j.committed_at) ? new Date(j.committed_at).toISOString() : null,
   };
 }
 

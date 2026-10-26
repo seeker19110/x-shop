@@ -1,5 +1,5 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
-import { isValidIdempotencyKey } from "@x-shop/domain";
+import { isValidIdempotencyKey, isNonEmpty } from "@x-shop/domain";
 import { assertCartAccess, loadCheckoutCart } from "../../../../../lib/checkout/cart";
 import { getVnpayConfig } from "../../../../../lib/checkout/config";
 import { CheckoutError, sendProblem } from "../../../../../lib/checkout/errors";
@@ -54,7 +54,7 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
 
     res.setHeader("Cache-Control", "no-store");
     if (outcome.kind === "error") {
-      if (outcome.attemptId) res.setHeader("X-Checkout-Attempt-Id", outcome.attemptId);
+      if (isNonEmpty(outcome.attemptId)) res.setHeader("X-Checkout-Attempt-Id", outcome.attemptId);
       sendProblem(res, outcome.error);
       return;
     }

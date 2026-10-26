@@ -1,4 +1,4 @@
-import { vnpay } from "@x-shop/domain";
+import { vnpay, isNonEmpty } from "@x-shop/domain";
 import { getVnpayConfig } from "../../lib/checkout/config";
 
 /**
@@ -57,7 +57,7 @@ export class MockVnpayRefundGateway implements RefundGateway {
   /** Tổng đã hoàn thật ở "cổng" (mọi requestId). */
   totalRefunded(txnRef?: string): number {
     let total = 0;
-    for (const r of this.executed.values()) if (!txnRef || r.txnRef === txnRef) total += r.amount;
+    for (const r of this.executed.values()) if (!isNonEmpty(txnRef) || r.txnRef === txnRef) total += r.amount;
     return total;
   }
 

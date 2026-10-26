@@ -10,6 +10,7 @@ import {
   refundForUnits,
   sumVnd,
   type AddressSnapshot,
+  isNonEmpty,
 } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { toSafeInteger } from "../../lib/checkout/cart";
@@ -107,7 +108,11 @@ async function loadVariants(container: Scope, ids: readonly string[]): Promise<M
   };
   for (const v of data as Row[]) {
     const base = (v.prices ?? []).find(
-      (p) => p && p.currency_code?.toLowerCase() === "vnd" && !p.price_list_id && !(p.rules_count ?? 0),
+      (p) =>
+        p != null &&
+        p.currency_code?.toLowerCase() === "vnd" &&
+        !isNonEmpty(p.price_list_id) &&
+        !(p.rules_count ?? 0),
     );
     out.set(v.id, {
       id: v.id,
@@ -118,7 +123,7 @@ async function loadVariants(container: Scope, ids: readonly string[]): Promise<M
       manage_inventory: v.manage_inventory === true,
       allow_backorder: v.allow_backorder === true,
       inventory: (v.inventory_items ?? []).flatMap((i) =>
-        i?.inventory_item_id
+        i && isNonEmpty(i.inventory_item_id)
           ? [
               {
                 inventory_item_id: i.inventory_item_id,
@@ -181,13 +186,13 @@ export async function requestReturn(
         field: "lines",
         line_id: l.line_id,
       });
-    if (input.kind === "exchange" && !l.exchange_variant_id) {
+    if (input.kind === "exchange" && !isNonEmpty(l.exchange_variant_id)) {
       throw new ReturnsError("VALIDATION", "Đổi size cần chọn biến thể mới", {
         field: "lines",
         line_id: l.line_id,
       });
     }
-    if (input.kind === "return" && l.exchange_variant_id) {
+    if (input.kind === "return" && isNonEmpty(l.exchange_variant_id)) {
       throw new ReturnsError("VALIDATION", "Trả hàng không kèm biến thể đổi", {
         field: "lines",
         line_id: l.line_id,
@@ -197,14 +202,15 @@ export async function requestReturn(
   if (input.kind === "exchange") {
     const variants = await loadVariants(container, [
       ...lines.map((l) => l.exchange_variant_id as string),
-      ...lines.flatMap((l) =>
-        byId.get(l.line_id)?.variant_id ? [byId.get(l.line_id)!.variant_id as string] : [],
-      ),
+      ...lines.flatMap((l) => {
+        const variantId = byId.get(l.line_id)?.variant_id;
+        return isNonEmpty(variantId) ? [variantId] : [];
+      }),
     ]);
     for (const l of lines) {
       const line = byId.get(l.line_id) as OrderLine;
       const target = variants.get(l.exchange_variant_id as string);
-      const original = line.variant_id ? variants.get(line.variant_id) : undefined;
+      const original = isNonEmpty(line.variant_id) ? variants.get(line.variant_id) : undefined;
       if (!target || !original || target.id === original.id || target.product_id !== original.product_id) {
         throw new ReturnsError("EXCHANGE_INVALID_VARIANT", "Chỉ đổi sang size/màu khác của cùng sản phẩm", {
           line_id: l.line_id,
@@ -297,14 +303,14 @@ export async function requestReturn(
 }
 
 async function sellableLocations(container: Scope, salesChannelId: string | null): Promise<string[]> {
-  if (!salesChannelId) return [];
+  if (!isNonEmpty(salesChannelId)) return [];
   const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
     entity: "sales_channel",
     fields: ["id", "stock_locations.id"],
     filters: { id: salesChannelId },
   });
   return ((data[0] as { stock_locations?: Array<{ id?: string } | null> } | undefined)?.stock_locations ?? [])
-    .flatMap((l) => (l?.id ? [l.id] : []))
+    .flatMap((l) => (l && isNonEmpty(l.id) ? [l.id] : []))
     .sort();
 }
 
@@ -324,7 +330,7 @@ async function ensureReplacementOrder(
   );
   const sizeCharts = await sizeChartsOfProducts(
     container,
-    [...variants.values()].flatMap((v) => (v.product_id ? [v.product_id] : [])),
+    [...variants.values()].flatMap((v) => (isNonEmpty(v.product_id) ? [v.product_id] : [])),
   );
   const requirements: InventoryRequirement[] = ret.lines.flatMap((l) => {
     const v = variants.get(l.exchange_variant_id as string);
@@ -356,7 +362,7 @@ async function ensureReplacementOrder(
     region_id: ctx.native.region_id ?? undefined,
     sales_channel_id: ctx.native.sales_channel_id ?? undefined,
     currency_code: ctx.native.currency_code,
-    ...(ctx.native.customer_id && { customer_id: ctx.native.customer_id }),
+    ...(isNonEmpty(ctx.native.customer_id) && { customer_id: ctx.native.customer_id }),
     status: "pending",
     no_notification: true,
     shipping_address: {
@@ -371,7 +377,7 @@ async function ensureReplacementOrder(
     },
     items: ret.lines.map((l) => {
       const v = variants.get(l.exchange_variant_id as string) as VariantInfo;
-      const chart = (v.product_id && sizeCharts.get(v.product_id)) || null;
+      const chart = (isNonEmpty(v.product_id) ? sizeCharts.get(v.product_id) : undefined) ?? null;
       return {
         variant_id: v.id,
         title: v.product_title,
@@ -545,7 +551,7 @@ async function moveStock(
   moves: (inv: { inventory_item_id: string; required_quantity: number }) => StockMove[],
   auditCtx: AuditCtx,
 ): Promise<void> {
-  if (!line.variant_id) return;
+  if (!isNonEmpty(line.variant_id)) return;
   const variant = (await loadVariants(container, [line.variant_id])).get(line.variant_id);
   if (!variant || !variant.manage_inventory) return;
   for (const inv of variant.inventory) {
@@ -595,8 +601,8 @@ export async function restockLocationsOf(
   const fallback = (await sellableLocations(container, ctx.native.sales_channel_id))[0] ?? null;
   return (inventoryItemId) => {
     const fromStock = shipped.byItem.get(inventoryItemId);
-    if (fromStock) return { location_id: fromStock, source: "fulfillment_stock" };
-    if (shipped.fulfillmentLocation)
+    if (isNonEmpty(fromStock)) return { location_id: fromStock, source: "fulfillment_stock" };
+    if (isNonEmpty(shipped.fulfillmentLocation))
       return {
         location_id: shipped.fulfillmentLocation,
         source: "fulfillment",
@@ -604,8 +610,8 @@ export async function restockLocationsOf(
     const held =
       reservations.find((r) => r.inventory_item_id === inventoryItemId)?.location_id ??
       reservations[0]?.location_id;
-    if (held) return { location_id: held, source: "reservation" };
-    if (fallback) return { location_id: fallback, source: "channel_default" };
+    if (isNonEmpty(held)) return { location_id: held, source: "reservation" };
+    if (isNonEmpty(fallback)) return { location_id: fallback, source: "channel_default" };
     throw new ReturnsError("INVALID_STATE", "Không xác định được kho bán để nhập lại", {
       line_id: line.order_line_item_id,
     });
@@ -910,7 +916,7 @@ async function settleReplacement(
   actor: Actor,
 ): Promise<void> {
   const replacement = ret.replacement_order_id;
-  if (!replacement) return;
+  if (!isNonEmpty(replacement)) return;
   await withOrderLock(container, replacement, async () => {
     const checkout = checkoutOf(container);
     if (accepted) {
@@ -1149,7 +1155,7 @@ export async function presentReturn(
 ) {
   const refund = opts.refund !== undefined ? opts.refund : await returnsOf(container).refundOfReturn(ret.id);
   let replacement: { display_ref: string; state: string } | null = null;
-  if (ret.replacement_order_id) {
+  if (isNonEmpty(ret.replacement_order_id)) {
     const [fin] = await checkoutOf(container).listOrderFinances({ order_id: ret.replacement_order_id });
     if (fin) replacement = { display_ref: fin.display_ref, state: fin.state };
   }

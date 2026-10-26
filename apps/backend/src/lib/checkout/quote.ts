@@ -6,6 +6,7 @@ import {
   type OrderDiscount,
   type QuoteBreakdown,
   type ShippingDiscount,
+  isNonEmpty,
 } from "@x-shop/domain";
 import type { CheckoutCart } from "./cart";
 import { toSafeInteger } from "./cart";
@@ -38,7 +39,7 @@ export interface BuiltQuote {
 /** Dòng không bán được (biến thể mất/ẩn/không có giá) → 409 CART_CHANGED kèm danh sách (S-010). */
 function assertLinesSellable(cart: CheckoutCart, prices: Map<string, number>): void {
   const unavailable = cart.items
-    .filter((l) => !l.variant_id || !l.product_published || !prices.has(l.variant_id))
+    .filter((l) => !isNonEmpty(l.variant_id) || !l.product_published || !prices.has(l.variant_id))
     .map((l) => ({ line_item_id: l.id, variant_id: l.variant_id, reason: "unavailable" }));
   if (unavailable.length > 0) {
     throw new CheckoutError(
@@ -56,7 +57,9 @@ export async function currentUnitPrices(
   container: MedusaContainer,
   cart: CheckoutCart,
 ): Promise<Map<string, number>> {
-  const variantIds = [...new Set(cart.items.flatMap((l) => (l.variant_id ? [l.variant_id] : [])))];
+  const variantIds = [
+    ...new Set(cart.items.flatMap((l) => (isNonEmpty(l.variant_id) ? [l.variant_id] : []))),
+  ];
   const prices = new Map<string, number>();
   if (variantIds.length === 0) return prices;
   const query = container.resolve(ContainerRegistrationKeys.QUERY);
@@ -67,13 +70,13 @@ export async function currentUnitPrices(
   });
   const variantToSet = new Map<string, string>();
   for (const v of data as Array<{ id: string; price_set?: { id?: string } | null }>) {
-    if (v.price_set?.id) variantToSet.set(v.id, v.price_set.id);
+    if (v.price_set && isNonEmpty(v.price_set.id)) variantToSet.set(v.id, v.price_set.id);
   }
   if (variantToSet.size === 0) return prices;
   const pricing = container.resolve(Modules.PRICING);
   const context: Record<string, string> = { currency_code: cart.currency_code };
-  if (cart.region_id) context.region_id = cart.region_id;
-  if (cart.customer_id) context.customer_id = cart.customer_id;
+  if (isNonEmpty(cart.region_id)) context.region_id = cart.region_id;
+  if (isNonEmpty(cart.customer_id)) context.customer_id = cart.customer_id;
   const calculated = await pricing.calculatePrices({ id: [...new Set(variantToSet.values())] }, { context });
   const bySet = new Map(calculated.map((c) => [c.id, c]));
   for (const [variantId, setId] of variantToSet) {
@@ -134,9 +137,9 @@ export async function loadDiscount(
     { relations: ["application_method", "campaign", "rules"] },
   )) as unknown as RawPromotion[];
   const p = found.find((x) => x.code.toUpperCase() === code);
-  if (!p || p.status !== "active" || p.type !== "standard" || p.is_automatic) throw notApplicable();
-  const startsAt = p.campaign?.starts_at ? new Date(p.campaign.starts_at) : null;
-  const endsAt = p.campaign?.ends_at ? new Date(p.campaign.ends_at) : null;
+  if (!p || p.status !== "active" || p.type !== "standard" || p.is_automatic === true) throw notApplicable();
+  const startsAt = p.campaign && isNonEmpty(p.campaign.starts_at) ? new Date(p.campaign.starts_at) : null;
+  const endsAt = p.campaign && isNonEmpty(p.campaign.ends_at) ? new Date(p.campaign.ends_at) : null;
   // Biên thời gian (DATA04): now >= ends_at là hết hạn.
   if ((startsAt && now < startsAt) || (endsAt && now >= endsAt)) throw notApplicable();
   if ((p.rules ?? []).length > 0) throw notApplicable("Mã giảm giá có điều kiện chưa được hỗ trợ");
@@ -190,7 +193,10 @@ export async function buildQuote(
   if (cart.items.length === 0) throw new CheckoutError("CART_EMPTY");
   const prices = await currentUnitPrices(container, cart);
   assertLinesSellable(cart, prices);
-  const discount = discountCode ? await loadDiscount(container, discountCode, cart.currency_code, now) : null;
+  // Mã rỗng = không áp mã (giữ hành vi cũ).
+  const discount = isNonEmpty(discountCode)
+    ? await loadDiscount(container, discountCode, cart.currency_code, now)
+    : null;
   const goodsValue = cart.items.reduce(
     (sum, l) => sum + (prices.get(l.variant_id as string) as number) * l.quantity,
     0,

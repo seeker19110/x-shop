@@ -76,9 +76,10 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
       setConfirmOpen(false);
       if (r.kind === "ok") {
         setMessage({
-          text: r.refundRequested
-            ? "Đơn đã được hủy. Chúng tôi đã ghi nhận yêu cầu hoàn tiền và sẽ liên hệ với bạn."
-            : "Đơn đã được hủy.",
+          text:
+            r.refundRequested === true
+              ? "Đơn đã được hủy. Chúng tôi đã ghi nhận yêu cầu hoàn tiền và sẽ liên hệ với bạn."
+              : "Đơn đã được hủy.",
           error: false,
         });
         router.refresh();
@@ -123,7 +124,7 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
           </Button>
         ) : null}
       </div>
-      <p role="status" aria-live="polite" className={message?.error ? styles.alert : undefined}>
+      <p role="status" aria-live="polite" className={message?.error === true ? styles.alert : undefined}>
         {message?.text ?? ""}
       </p>
       <Dialog

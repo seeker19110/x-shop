@@ -1,9 +1,10 @@
-import { formatVnd as domainFormatVnd } from "@x-shop/domain";
+import { formatVnd as domainFormatVnd, isNonEmpty as domainIsNonEmpty } from "@x-shop/domain";
 import { buildQuery } from "../api";
 import { checkCsvFile } from "../csv-file";
 import { formatAge, formatInstant, formatVnd } from "../format";
 import { checkInspection, type InspectDraft } from "../inspect";
 import { periodFromDays } from "../period";
+import { isNonEmpty } from "../presence";
 import { describeProblem, normalizeRowErrors, rowErrorsOf, toApiError } from "../problem";
 
 describe("formatVnd / formatAge / formatInstant", () => {
@@ -98,6 +99,16 @@ describe("describeProblem — lỗi API → tiếng Việt", () => {
   });
 });
 
+describe("isNonEmpty bản Admin (BASE-DATA-003)", () => {
+  it('khớp bản domain: thiếu/rỗng → false; có nội dung (kể cả "0", " ") và Date → true', () => {
+    for (const v of [null, undefined, "", " ", "0", "false", "id_1", new Date(0)]) {
+      expect(isNonEmpty(v)).toBe(domainIsNonEmpty(v));
+    }
+    expect(isNonEmpty("")).toBe(false);
+    expect(isNonEmpty("0")).toBe(true);
+  });
+});
+
 describe("lỗi theo dòng/cột", () => {
   it("commit catalog 422: rows {line,column,message}", () => {
     const e = toApiError(422, {
@@ -122,6 +133,10 @@ describe("lỗi theo dòng/cột", () => {
       ],
     });
     expect(rowErrorsOf(e)).toEqual([{ line: 7, column: "sku", message: "SKU trùng" }]);
+  });
+  it("param 'line N: ' cột rỗng → \"*\" (cả dòng), như khi thiếu (BASE-DATA-003)", () => {
+    const e = toApiError(422, { errors: [{ param: "line 4: ", reason: "Dòng lỗi" }] });
+    expect(rowErrorsOf(e)).toEqual([{ line: 4, column: "*", message: "Dòng lỗi" }]);
   });
   it("rỗng/sai hình dạng → danh sách rỗng, không ném lỗi", () => {
     expect(rowErrorsOf(toApiError(500, {}))).toEqual([]);

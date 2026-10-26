@@ -1,4 +1,5 @@
 import { AdminApiError, toApiError } from "./problem";
+import { isNonEmpty } from "./presence";
 
 /** Khoá idempotency 32 ký tự [0-9a-f] (hợp lệ 16–128 [A-Za-z0-9_-] của server). */
 export function newIdempotencyKey(): string {
@@ -50,7 +51,7 @@ export async function adminFetch<T>(
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(options.json);
   }
-  if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
+  if (isNonEmpty(options.idempotencyKey)) headers["Idempotency-Key"] = options.idempotencyKey;
 
   const signal = AbortSignal.timeout(timeoutMs);
   const isTimeout = (e: unknown) =>

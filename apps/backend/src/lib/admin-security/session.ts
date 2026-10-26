@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AdminSessionPolicy } from "./config";
 import type { SecurityStore } from "./store";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Chính sách phiên admin (SEC02, SPEC-admin S-402) — hàm thuần + lớp lưu "lần thấy cuối" trong SecurityStore.
@@ -23,7 +24,7 @@ export type SessionCode = "SESSION_EXPIRED" | "SESSION_IDLE";
 export type MfaCode = "MFA_REQUIRED" | "REAUTH_REQUIRED";
 
 export function mfaCompletedAtMs(ctx: AdminAuthContext): number | null {
-  if (!ctx.mfa_challenge_completed_at) return null;
+  if (!isNonEmpty(ctx.mfa_challenge_completed_at)) return null;
   const t = new Date(ctx.mfa_challenge_completed_at).getTime();
   return Number.isNaN(t) ? null : t;
 }
@@ -56,7 +57,7 @@ export function evaluateMfa(
   reauthSeconds: number | null,
 ): { ok: true } | { ok: false; code: MfaCode } {
   const at = mfaCompletedAtMs(ctx);
-  if (!ctx.mfa_enabled || at === null) return { ok: false, code: "MFA_REQUIRED" };
+  if (ctx.mfa_enabled !== true || at === null) return { ok: false, code: "MFA_REQUIRED" };
   if (reauthSeconds !== null && nowMs - at > reauthSeconds * 1000)
     return { ok: false, code: "REAUTH_REQUIRED" };
   return { ok: true };

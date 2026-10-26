@@ -78,7 +78,7 @@ export function findPii(value: unknown, path = "$", depth = 0): string | null {
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
       const hit = findPii(value[i], `${path}[${i}]`, depth + 1);
-      if (hit) return hit;
+      if (hit !== null) return hit;
     }
     return null;
   }
@@ -86,7 +86,7 @@ export function findPii(value: unknown, path = "$", depth = 0): string | null {
     for (const [k, v] of Object.entries(value)) {
       if (looksLikePii(k)) return `${path}.${k}`;
       const hit = findPii(v, `${path}.${k}`, depth + 1);
-      if (hit) return hit;
+      if (hit !== null) return hit;
     }
   }
   return null;

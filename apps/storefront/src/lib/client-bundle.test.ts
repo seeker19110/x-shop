@@ -47,7 +47,7 @@ function clientGraph(): Set<string> {
     if (/^\s*["']use server["']/.test(src)) continue;
     for (const m of src.matchAll(/(?:import|export)\s[^;]*?from\s+["'](\.[^"']*)["']/g)) {
       const dep = resolveImport(file, m[1]!);
-      if (dep) stack.push(dep);
+      if (dep !== null) stack.push(dep);
     }
   }
   return seen;
