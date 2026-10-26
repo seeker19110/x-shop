@@ -13,6 +13,7 @@ import {
 } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { toSafeInteger } from "../../lib/checkout/cart";
+import { maskFreeText } from "../../lib/audit/sanitize";
 import { readCheckoutError } from "../../lib/checkout/errors";
 import { cancelNativeOrder } from "../../lib/checkout/jobs";
 import { lockKeys } from "../../lib/checkout/locks";
@@ -1158,7 +1159,7 @@ export async function presentReturn(
     state: ret.state,
     status_label: STATUS_LABEL[ret.state] ?? ret.state,
     reason: ret.reason,
-    note: ret.note,
+    note: maskFreeText(ret.note),
     created_at: new Date(ret.created_at).toISOString(),
     ...(!opts.customer && {
       order_id: ret.order_id,
@@ -1170,7 +1171,7 @@ export async function presentReturn(
       inspected_by: ret.inspected_by,
       replacement_order_id: ret.replacement_order_id,
     }),
-    decision_note: ret.decision_note,
+    decision_note: maskFreeText(ret.decision_note),
     lines: ret.lines.map((l) => ({
       line_id: l.order_line_item_id,
       quantity: l.quantity,

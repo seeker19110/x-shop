@@ -2,6 +2,7 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
 import { z } from "zod";
 import { recordAudit } from "../audit/record";
+import { maskFreeText } from "../audit/sanitize";
 import { readCsvBody } from "../http/read-body";
 import { sendProblem, zodErrors } from "../http/problem";
 import { SETTLEMENT_MODULE } from "../../modules/settlement";
@@ -13,7 +14,10 @@ import {
   SETTLEMENT_SOURCES,
 } from "../../modules/settlement/constants";
 import { parseInstant, parseSettlementCsv } from "../../modules/settlement/csv";
-import SettlementModuleService, { SettlementError } from "../../modules/settlement/service";
+import SettlementModuleService, {
+  SettlementError,
+  type DiscrepancyView,
+} from "../../modules/settlement/service";
 
 /** Lỗi có mã ổn định của route đối soát/báo cáo (problem+json, đặc tả §9.1). */
 export class SettlementHttpError extends Error {
@@ -53,6 +57,18 @@ export function handleSettlementError(req: MedusaRequest, res: MedusaResponse, e
       `[settlement] ${req.method} ${req.path}: ${error instanceof Error ? error.stack : "lỗi không rõ"}`,
     );
   sendProblem(res, 500, "INTERNAL", "Không thể xử lý yêu cầu lúc này");
+}
+
+/**
+ * Hình chênh lệch trả ra Admin: ghi chú đóng tay (do nhân viên nhập) và ghi chú từng sự kiện lịch sử được che PII lẫn
+ * trong văn bản. Dữ liệu gốc trong bảng giữ nguyên (không đổi ghi) — che ở lúc trả ra, giống audit che lúc ghi.
+ */
+export function presentDiscrepancy(d: DiscrepancyView): DiscrepancyView {
+  return {
+    ...d,
+    resolution_note: maskFreeText(d.resolution_note),
+    ...(d.events && { events: d.events.map((e) => ({ ...e, note: maskFreeText(e.note) })) }),
+  };
 }
 
 export function parseInput<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {

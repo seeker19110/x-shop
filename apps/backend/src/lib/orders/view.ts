@@ -1,6 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { ledgerTotals, type AddressSnapshot, type QuoteBreakdown, type ShipmentState } from "@x-shop/domain";
+import { maskFreeText } from "../audit/sanitize";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { SHIPPING_MODULE } from "../../modules/shipping";
@@ -295,7 +296,7 @@ export async function presentOrder(container: MedusaContainer, fin: OrderFinance
     created_at: iso(fin.created_at) as string,
     hold_expires_at: holdExpiresAt,
     cod_confirm_by: iso(fin.cod_confirm_by),
-    cancel_reason: cancelReason,
+    cancel_reason: maskFreeText(cancelReason),
     timeline,
     lines,
     totals: {

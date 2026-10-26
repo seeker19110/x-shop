@@ -1,6 +1,6 @@
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { generateEntityId } from "@medusajs/framework/utils";
-import { sanitizeChanges } from "../../lib/audit/sanitize";
+import { maskFreeText, sanitizeChanges } from "../../lib/audit/sanitize";
 
 export const AUDIT_TABLE = "audit_log";
 export const ADJUSTMENT_TABLE = "inventory_adjustment";
@@ -81,7 +81,7 @@ export default class AuditModuleService {
       action: clip(entry.action, 128) ?? "unknown",
       resource_type: clip(entry.resource_type, 64) ?? "unknown",
       resource_id: clip(entry.resource_id, 256),
-      reason: clip(entry.reason, 1000),
+      reason: clip(maskFreeText(entry.reason), 1000),
       changes: JSON.stringify(sanitizeChanges(entry.changes ?? {})),
       request_id: clip(entry.request_id, 128),
       ip_hash: clip(entry.ip_hash, 128),

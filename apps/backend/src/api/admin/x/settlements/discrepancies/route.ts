@@ -4,6 +4,7 @@ import {
   DiscrepancyListQuery,
   handleSettlementError,
   parseInput,
+  presentDiscrepancy,
   settlementOf,
 } from "../../../../../lib/settlement/http";
 
@@ -17,7 +18,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void
     const { limit, offset, ...filter } = parseInput(DiscrepancyListQuery, req.query);
     const { discrepancies, count } = await settlementOf(req).listDiscrepancies(filter, { limit, offset });
     res.setHeader("Cache-Control", "no-store");
-    res.json({ discrepancies, count, limit, offset });
+    res.json({ discrepancies: discrepancies.map(presentDiscrepancy), count, limit, offset });
   } catch (error) {
     handleSettlementError(req, res, error);
   }

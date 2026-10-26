@@ -14,6 +14,7 @@ import {
   type LedgerEntry,
 } from "@x-shop/domain";
 import { recordAudit } from "../../lib/audit/record";
+import { maskFreeText } from "../../lib/audit/sanitize";
 import type { AuditEntryInput } from "../../modules/audit/service";
 import { cancelNativeOrder } from "../../lib/checkout/jobs";
 import { RETURNS_CONFIG, type RefundMethod, type RefundReason } from "../../modules/returns/constants";
@@ -836,17 +837,17 @@ export function presentRefund(r: RefundRow) {
     approved_by: r.approved_by,
     approved_at: r.approved_at ? new Date(r.approved_at).toISOString() : null,
     rejected_by: r.rejected_by,
-    reject_reason: r.reject_reason,
+    reject_reason: maskFreeText(r.reject_reason),
     executed_by: r.executed_by,
     provider_ref: r.provider_ref,
     evidence_ref: r.evidence_ref,
     attempts: r.attempts,
     last_error: r.last_error,
-    note: r.note,
+    note: maskFreeText(r.note),
     succeeded_at: r.succeeded_at ? new Date(r.succeeded_at).toISOString() : null,
     cancelled_by: r.cancelled_by ?? null,
     cancelled_at: r.cancelled_at ? new Date(r.cancelled_at).toISOString() : null,
-    cancel_reason: r.cancel_reason ?? null,
+    cancel_reason: maskFreeText(r.cancel_reason),
     created_at: new Date(r.created_at).toISOString(),
   };
 }

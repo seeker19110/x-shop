@@ -5,6 +5,7 @@ import { recordAudit } from "../../../../../../../lib/audit/record";
 import {
   handleSettlementError,
   parseInput,
+  presentDiscrepancy,
   ResolveBody,
   settlementOf,
 } from "../../../../../../../lib/settlement/http";
@@ -45,7 +46,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
         .error(`[settlement] Không ghi được audit đóng chênh lệch: ${e.message}`),
     );
     res.setHeader("Cache-Control", "no-store");
-    res.json({ discrepancy });
+    res.json({ discrepancy: presentDiscrepancy(discrepancy) });
   } catch (error) {
     handleSettlementError(req, res, error);
   }
