@@ -509,3 +509,17 @@
 - Chọn: Giữ: bị chặn bởi đơn cha / export theo thiết kế, ghi lý do trong bảng phân loại list-bounds
 - Lý do (tiêu chí chất lượng cuối): (1) phần tính tiền không được cắt dòng — trần có thể làm sai số hoàn/đổi trả; số con theo một đơn tự nhiên nhỏ; (3) đơn giản
 - Đường lùi: Thêm trần + truncated cho phần hiển thị nếu đo thấy đơn có quá nhiều dòng con
+
+### D-073 · 2026-10-26T22:37:42+00:00 · Đăng ký admin không kèm invite_token (dashboard Medusa gốc gọi register không token)
+
+- Phương án: (1) Giữ: cho qua khi có lời mời chưa nhận còn hạn đúng email (dashboard gốc chạy); chấp nhận rủi ro làm hỏng lời mời (không chiếm được tài khoản vì accept cần token) · (2) Bắt buộc invite_token, làm trang mời riêng trong src/admin
+- Chọn: Giữ: cho qua khi có lời mời chưa nhận còn hạn đúng email (dashboard gốc chạy); chấp nhận rủi ro làm hỏng lời mời (không chiếm được tài khoản vì accept cần token)
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi và UI admin gốc; (1) rủi ro còn lại chỉ là phá lời mời (DoS lời mời), có rate limit, không leo thang quyền — reviewer-alt kiểm lại điểm này
+- Đường lùi: Bắt buộc token + trang mời riêng nếu review/quan sát thấy lạm dụng
+
+### D-074 · 2026-10-26T22:37:43+00:00 · Tài khoản khách (P1, POST04) khi identity emailpass dùng chung actor
+
+- Phương án: (1) Đóng đăng ký khách tới khi làm P1 · (2) Mở kèm xác minh email · (3) Provider riêng cho khách
+- Chọn: Đóng đăng ký khách tới khi làm P1
+- Lý do (tiêu chí chất lượng cuối): (1) đặc tả: mua không cần tài khoản, tài khoản khách là P1; đóng là cách an toàn nhất; (2) quyết thiết kế cùng task P1
+- Đường lùi: Mở khi làm P1 với provider riêng hoặc xác minh email
