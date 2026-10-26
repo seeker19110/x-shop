@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { CheckoutError } from "./errors";
 
 /**
@@ -43,8 +44,11 @@ class LockCallTimeout extends Error {
   override readonly name = "LockCallTimeout";
 }
 
-/** Chờ `p` tối đa `ms`; quá hạn → ném LockCallTimeout (lời gọi gốc vẫn chạy tiếp ở nền — caller tự dọn). */
-async function within<T>(p: Promise<T>, ms: number): Promise<T> {
+/**
+ * Chờ `p` tối đa `ms`; quá hạn → ném LockCallTimeout (lời gọi gốc vẫn chạy tiếp ở nền — caller tự dọn). Dùng chung cho
+ * mọi lời gọi tới Locking Module (checkout, read model catalog, seed) để lệnh Redis treo không kẹt tiến trình.
+ */
+export async function withLockCallTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new LockCallTimeout(`lock call timed out after ${ms}ms`)), ms);
@@ -127,7 +131,7 @@ export async function acquireOrdered(
         try {
           const call = locking.acquire(key, { ownerId: opts.ownerId, expire: opts.ttlSeconds });
           try {
-            await within(call, callTimeout);
+            await withLockCallTimeout(call, callTimeout);
           } catch (e) {
             if (e instanceof LockCallTimeout) {
               // Lệnh có thể đã nằm trong hàng đợi ioredis và chạy khi Redis trở lại → trả khóa ngay khi nó xong, không
@@ -154,7 +158,9 @@ export async function acquireOrdered(
   } catch (e) {
     // Trả khóa đã lấy — có hạn chờ: Redis đang mất thì không treo request; khóa vẫn tự hết hạn theo TTL.
     if (held.length > 0) {
-      await within(locking.release(held, { ownerId: opts.ownerId }), callTimeout).catch(() => false);
+      await withLockCallTimeout(locking.release(held, { ownerId: opts.ownerId }), callTimeout).catch(
+        () => false,
+      );
     }
     throw e;
   }
@@ -177,9 +183,44 @@ export async function releaseOwned(
   stopRenewal(ownerId, keys);
   if (toRelease.length === 0) return;
   try {
-    await within(locking.release([...toRelease], { ownerId }), callTimeoutMs);
+    await withLockCallTimeout(locking.release([...toRelease], { ownerId }), callTimeoutMs);
   } catch (e) {
     throw lockUnavailable("release", e);
+  }
+}
+
+/**
+ * Chạy `fn` dưới khóa `key` của Locking Module với mọi lời gọi có hạn (acquire/gia hạn/release) — thay cho
+ * `locking.execute` không hạn. Chờ khóa bận tối đa `waitMs` (quá → BUSY_RETRY); Redis lỗi/không trả lời trong
+ * `callTimeoutMs` → LOCK_UNAVAILABLE (503) và KHÔNG chạy `fn`. Hạn chỉ áp cho bước giành/nhả khóa, KHÔNG cắt `fn` đang
+ * chạy (lease được gia hạn nền tới khi xong). Nhả lỗi/quá hạn không làm hỏng kết quả của `fn` — khóa tự hết hạn theo
+ * TTL; lỗi được báo qua `onReleaseError`.
+ */
+export async function withOwnedLock<T>(
+  locking: LockingLike,
+  key: string,
+  opts: {
+    waitMs: number;
+    ttlSeconds: number;
+    scope: string;
+    callTimeoutMs?: number;
+    onReleaseError?: (e: unknown) => void;
+  },
+  fn: () => Promise<T>,
+): Promise<T> {
+  const ownerId = `lock:${randomUUID()}`;
+  await acquireOrdered(locking, [key], {
+    ownerId,
+    waitMs: opts.waitMs,
+    ttlSeconds: opts.ttlSeconds,
+    scope: opts.scope,
+    callTimeoutMs: opts.callTimeoutMs,
+  });
+  try {
+    return await fn();
+  } finally {
+    const err = await releaseOwnedQuietly(locking, ownerId, [key], opts.callTimeoutMs);
+    if (err) opts.onReleaseError?.(err);
   }
 }
 
@@ -191,9 +232,10 @@ export async function releaseOwnedQuietly(
   locking: LockingLike,
   ownerId: string,
   keys: readonly string[] | null,
+  callTimeoutMs: number = LOCK_CALL_TIMEOUT_MS,
 ): Promise<unknown> {
   try {
-    await releaseOwned(locking, ownerId, keys);
+    await releaseOwned(locking, ownerId, keys, callTimeoutMs);
     return null;
   } catch (e) {
     return e;

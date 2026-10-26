@@ -5,6 +5,7 @@ import { searchKey } from "@x-shop/domain";
 import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
 import type CatalogIndexModuleService from "../../modules/catalog-index/service";
 import type { CatalogIndexRow } from "../../modules/catalog-index/service";
+import { acquireOrdered, isLockUnavailable, releaseOwnedQuietly, withOwnedLock } from "../checkout/locks";
 import { colorOf, loadDictionary, sizeOf, type Dictionary } from "./dictionary";
 import { loadProductSources, type ProductSource } from "./product-source";
 import {
@@ -17,7 +18,27 @@ import {
 
 /** Khoá ghi read model: đồng bộ theo sự kiện và rebuild toàn phần không xen kẽ (không ghi đè bằng dữ liệu cũ). */
 export const CATALOG_INDEX_LOCK = "x-shop:catalog-index";
-const LOCK_TIMEOUT_SECONDS = 300;
+/** Chờ tối đa khi khóa đang bị giữ (rebuild/xả dài); Redis câm thì lời gọi có hạn riêng (LOCK_CALL_TIMEOUT_MS). */
+const LOCK_WAIT_MS = 300_000;
+/** Lease khóa của sync/rebuild — gia hạn nền khi còn chạy; tiến trình chết thì tự hết sau ≤ 30 giây. */
+const WRITE_LOCK_TTL_SECONDS = 30;
+const LOCK_SCOPE = "catalog-index";
+
+const withIndexLock = <T>(container: MedusaContainer, fn: () => Promise<T>): Promise<T> =>
+  withOwnedLock(
+    container.resolve(Modules.LOCKING),
+    CATALOG_INDEX_LOCK,
+    {
+      waitMs: LOCK_WAIT_MS,
+      ttlSeconds: WRITE_LOCK_TTL_SECONDS,
+      scope: LOCK_SCOPE,
+      onReleaseError: (e) =>
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .warn(`[catalog-index] Nhả khoá lỗi/quá hạn (lease tự hết): ${(e as Error).message}`),
+    },
+    fn,
+  );
 const SOURCE_CHUNK = 100;
 
 export interface IndexContext {
@@ -154,24 +175,16 @@ async function rebuildUnlocked(container: MedusaContainer): Promise<{ products: 
 export async function syncCatalogProducts(container: MedusaContainer, productIds: string[]): Promise<number> {
   const ids = [...new Set(productIds.filter(Boolean))];
   if (ids.length === 0) return 0;
-  return container
-    .resolve(Modules.LOCKING)
-    .execute(
-      CATALOG_INDEX_LOCK,
-      async () => syncUnlocked(container, ids, await loadIndexContext(container)),
-      {
-        timeout: LOCK_TIMEOUT_SECONDS,
-      },
-    );
+  return withIndexLock(container, async () =>
+    syncUnlocked(container, ids, await loadIndexContext(container)),
+  );
 }
 
 /** Rebuild toàn phần: tính mọi dòng rồi thay cả bảng trong MỘT giao dịch (người đọc thấy bảng cũ tới khi commit). */
 export async function rebuildCatalogIndex(
   container: MedusaContainer,
 ): Promise<{ products: number; rows: number }> {
-  return container
-    .resolve(Modules.LOCKING)
-    .execute(CATALOG_INDEX_LOCK, () => rebuildUnlocked(container), { timeout: LOCK_TIMEOUT_SECONDS });
+  return withIndexLock(container, () => rebuildUnlocked(container));
 }
 
 /** Ký hiệu "cần rebuild toàn phần" trong hàng đợi sản phẩm bẩn. */
@@ -199,20 +212,23 @@ export async function drainCatalogIndex(container: MedusaContainer): Promise<num
   for (let attempt = 0; attempt < 3; attempt++) {
     const ownerId = `drain-${randomUUID()}`;
     try {
-      await locking.acquire(CATALOG_INDEX_LOCK, { ownerId, expire: DRAIN_LOCK_EXPIRE_SECONDS });
-    } catch {
-      return processed; // tiến trình khác đang giữ khoá (đang xả hoặc rebuild) — nó sẽ xử lý dấu này.
+      // Không chờ khoá (waitMs 0); gia hạn lease nền do acquireOrdered đảm nhiệm (cùng ownerId, bỏ qua lỗi tạm).
+      await acquireOrdered(locking, [CATALOG_INDEX_LOCK], {
+        ownerId,
+        waitMs: 0,
+        ttlSeconds: DRAIN_LOCK_EXPIRE_SECONDS,
+        scope: LOCK_SCOPE,
+      });
+    } catch (e) {
+      // Bận: tiến trình khác đang giữ (xả/rebuild) — nó sẽ xử lý dấu này. Redis lỗi/không trả lời: bỏ lượt, dấu bẩn còn
+      // trong DB nên lượt/job sau xả tiếp.
+      if (isLockUnavailable(e)) {
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .warn(`[catalog-index] Bỏ lượt xả — hạ tầng khoá không sẵn sàng: ${(e as Error).message}`);
+      }
+      return processed;
     }
-    // Acquire lại cùng ownerId = gia hạn (SET XX). Gia hạn lỗi (Redis mất, app đã tắt) → bỏ qua: lease tự hết.
-    const renewal = setInterval(
-      () => {
-        locking
-          .acquire(CATALOG_INDEX_LOCK, { ownerId, expire: DRAIN_LOCK_EXPIRE_SECONDS })
-          .catch(() => undefined);
-      },
-      (DRAIN_LOCK_EXPIRE_SECONDS * 1000) / 3,
-    );
-    renewal.unref?.();
     try {
       let ctx: IndexContext | null = null;
       for (;;) {
@@ -234,8 +250,12 @@ export async function drainCatalogIndex(container: MedusaContainer): Promise<num
         processed += claims.length;
       }
     } finally {
-      clearInterval(renewal);
-      await locking.release(CATALOG_INDEX_LOCK, { ownerId });
+      const err = await releaseOwnedQuietly(locking, ownerId, [CATALOG_INDEX_LOCK]);
+      if (err) {
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .warn(`[catalog-index] Nhả khoá xả lỗi/quá hạn (lease tự hết): ${(err as Error).message}`);
+      }
     }
     if ((await index.dirtyCount()) === 0) break;
   }

@@ -1,7 +1,14 @@
 import { Modules } from "@medusajs/framework/utils";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { CATALOG_INDEX_MODULE } from "../../../modules/catalog-index";
-import { CATALOG_INDEX_LOCK, DRAIN_LOCK_EXPIRE_SECONDS, drainCatalogIndex } from "../indexer";
+import { LOCK_CALL_TIMEOUT_MS } from "../../checkout/locks";
+import {
+  CATALOG_INDEX_LOCK,
+  DRAIN_LOCK_EXPIRE_SECONDS,
+  drainCatalogIndex,
+  rebuildCatalogIndex,
+  syncCatalogProducts,
+} from "../indexer";
 
 /** Lượt xả giữ khoá bằng lease ngắn có gia hạn — tiến trình chết thì khoá tự hết, không chặn rebuild 10 phút. */
 describe("drainCatalogIndex — lease khoá", () => {
@@ -43,7 +50,7 @@ describe("drainCatalogIndex — lease khoá", () => {
 
     finish();
     await expect(run).resolves.toBe(0);
-    expect(release).toHaveBeenCalledWith(CATALOG_INDEX_LOCK, { ownerId: first.ownerId });
+    expect(release).toHaveBeenCalledWith([CATALOG_INDEX_LOCK], { ownerId: first.ownerId });
     const after = acquire.mock.calls.length;
     await jest.advanceTimersByTimeAsync(DRAIN_LOCK_EXPIRE_SECONDS * 2000);
     expect(acquire).toHaveBeenCalledTimes(after);
@@ -56,5 +63,94 @@ describe("drainCatalogIndex — lease khoá", () => {
     finish();
     await expect(run).resolves.toBe(0);
     expect(release).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** Redis câm (lệnh treo): mọi lời gọi khoá có hạn, không kẹt job/shutdown. */
+describe("khoá read model — Redis không trả lời", () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  const never = () => new Promise<never>(() => undefined);
+
+  function setup(locking: Record<string, unknown>) {
+    const warn = jest.fn();
+    const index = {
+      claimDirty: jest.fn(async () => []),
+      clearDirty: jest.fn(),
+      dirtyCount: jest.fn(async () => 0),
+    };
+    const container = {
+      resolve: (key: string) =>
+        key === Modules.LOCKING
+          ? locking
+          : key === CATALOG_INDEX_MODULE
+            ? index
+            : { warn, info: jest.fn(), error: jest.fn() },
+    } as unknown as MedusaContainer;
+    return { container, index, warn };
+  }
+
+  it("acquire treo: drain bỏ lượt sau ≤ hạn, không đụng hàng đợi, log warn, không ném, không gia hạn", async () => {
+    const acquire = jest.fn(() => never());
+    const release = jest.fn(async () => true);
+    const { container, index, warn } = setup({ acquire, release });
+    let done: number | undefined;
+    const run = drainCatalogIndex(container).then((n) => (done = n));
+    await jest.advanceTimersByTimeAsync(LOCK_CALL_TIMEOUT_MS - 1);
+    expect(done).toBeUndefined();
+    await jest.advanceTimersByTimeAsync(1);
+    await run;
+    expect(done).toBe(0);
+    expect(index.claimDirty).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const calls = acquire.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(DRAIN_LOCK_EXPIRE_SECONDS * 3000);
+    expect(acquire).toHaveBeenCalledTimes(calls); // renewal không chạy
+  });
+
+  it("khoá bận (đang xả/rebuild): bỏ lượt ngay, không warn", async () => {
+    const acquire = jest.fn(async () => {
+      throw new Error("Failed to acquire lock for key x");
+    });
+    const { container, warn } = setup({ acquire, release: jest.fn() });
+    await expect(drainCatalogIndex(container)).resolves.toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("release treo: drain vẫn kết thúc sau ≤ hạn, log warn", async () => {
+    const acquire = jest.fn(async () => undefined);
+    const release = jest.fn(() => never());
+    const { container, warn } = setup({ acquire, release });
+    let done: number | undefined;
+    const run = drainCatalogIndex(container).then((n) => (done = n));
+    await jest.advanceTimersByTimeAsync(LOCK_CALL_TIMEOUT_MS);
+    await run;
+    expect(done).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("sync/rebuild gọi từ route/admin: acquire treo → LOCK_UNAVAILABLE sau ≤ hạn, không chạy việc", async () => {
+    const acquire = jest.fn(() => never());
+    const { container, index } = setup({ acquire, release: jest.fn(async () => true) });
+    for (const call of [
+      () => syncCatalogProducts(container, ["prod_1"]),
+      () => rebuildCatalogIndex(container),
+    ]) {
+      const settled = call().then(
+        () => "ok",
+        (e: { code?: string }) => e.code,
+      );
+      await jest.advanceTimersByTimeAsync(LOCK_CALL_TIMEOUT_MS);
+      await expect(settled).resolves.toBe("LOCK_UNAVAILABLE");
+    }
+    expect(index.claimDirty).not.toHaveBeenCalled();
+  });
+
+  it("syncCatalogProducts rỗng không chạm khoá", async () => {
+    const acquire = jest.fn(() => never());
+    const { container } = setup({ acquire, release: jest.fn() });
+    await expect(syncCatalogProducts(container, [])).resolves.toBe(0);
+    expect(acquire).not.toHaveBeenCalled();
   });
 });

@@ -249,11 +249,17 @@ medusaIntegrationTestRunner({
       expect(await reservationsOf(container, fx, "Trắng/S")).toHaveLength(0);
 
       // Một tác vụ nền (job mỗi phút `x-catalog-index-drain`, lượt xả hẹn giờ) gọi khóa đúng lúc Redis câm: lời gọi ấy
-      // không được kẹt vĩnh viễn — hạn đóng của runner (`jobWorker.close()` chờ job đang chạy) là nguyên nhân treo
-      // teardown 300 giây (T-047). Redis "về" (restoreRedis) thì mọi lời gọi còn treo phải kết thúc.
-      const background = drainCatalogIndex(container);
+      // không được kẹt — `jobWorker.close()` chờ job đang chạy (treo teardown 300 giây, T-047). Lượt xả phải bỏ lượt
+      // sau ≤ hạn một lời gọi NGAY CẢ KHI Redis chưa về (dấu bẩn còn trong DB cho lượt sau).
+      const bgStarted = Date.now();
+      const processed = await settlesWithin(
+        drainCatalogIndex(container),
+        LOCK_CALL_TIMEOUT_MS + 2_000,
+        "lượt xả catalog khi Redis câm",
+      );
+      expect(processed).toBeDefined();
+      expect(Date.now() - bgStarted).toBeLessThan(LOCK_CALL_TIMEOUT_MS + 2_000);
       await restoreRedis();
-      await expect(settlesWithin(background, 5_000, "lời gọi khóa của tác vụ nền")).resolves.toBeDefined();
       expect(await leakedLocks([lockKeys.cart(cartId)])).toEqual([]);
     });
 
