@@ -23,6 +23,8 @@
     "lint:openapi": "spectral lint docs/design/openapi.yaml --ruleset .spectral.yaml --fail-severity=warn",
     "check:openapi": "node scripts/check-openapi.mjs && pnpm lint:openapi",
     "check:openapi:test": "node --test scripts/check-openapi.test.mjs",
+    "check:authz": "node scripts/check-authz-tests.mjs",
+    "check:authz:test": "node --test scripts/check-authz-tests.test.mjs",
     "check:data-map": "node scripts/check-data-map.mjs",
     "check:data-map:test": "node --test scripts/check-data-map.test.mjs",
     "check:adr": "node scripts/check-adr.mjs",

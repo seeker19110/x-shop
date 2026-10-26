@@ -1,13 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { countOrders } from "./db.mjs";
 import { URLS } from "./env.mjs";
-import { guestJourneyToFilledCheckout, ORDER_REF } from "./helpers";
+import { expectNoA11yViolations, guestJourneyToFilledCheckout, ORDER_REF } from "./helpers";
 
 /** R-002: thanh toán VNPAY (cổng giả lập): chuyển cổng → IPN thành công → "Đang xác nhận" rồi "Đã thanh toán". */
 test.describe("R-002 — khách vãng lai thanh toán VNPAY (mock)", () => {
   test("chuyển sang cổng, IPN thành công, không tạo đơn hai lần khi reload", async ({ page, request }) => {
     const before = await countOrders();
-    await guestJourneyToFilledCheckout(page, "vnpay");
+    await guestJourneyToFilledCheckout(page, "vnpay", (label) =>
+      expectNoA11yViolations(page, `VNPAY — ${label}`),
+    );
 
     await page.getByRole("button", { name: "Đặt hàng", exact: true }).click();
 
@@ -25,6 +27,7 @@ test.describe("R-002 — khách vãng lai thanh toán VNPAY (mock)", () => {
     const ref = ORDER_REF.exec(new URL(page.url()).pathname)?.[0] ?? "";
     expect(ref).not.toBe("");
     await expect(page.getByText("Đang xác nhận thanh toán")).toBeVisible();
+    await expectNoA11yViolations(page, "VNPAY — trang đơn đang xác nhận");
     await expect(page.getByText(/^Đã thanh toán/)).toHaveCount(0);
 
     // "Kiểm tra lại" khi cổng chưa có kết quả → vẫn chưa xác nhận (trang kết quả vừa kiểm tra một lần nên có thể
@@ -40,6 +43,7 @@ test.describe("R-002 — khách vãng lai thanh toán VNPAY (mock)", () => {
 
     await page.reload();
     await expect(page.getByText(/^Đã thanh toán/)).toBeVisible();
+    await expectNoA11yViolations(page, "VNPAY — trang đơn đã thanh toán");
     await expect(page.getByText("Đang xác nhận thanh toán")).toHaveCount(0);
 
     // IPN gửi lặp → "đã xác nhận" (02), không ghi nhận tiền lần hai.

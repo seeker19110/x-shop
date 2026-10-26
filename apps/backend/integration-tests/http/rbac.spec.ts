@@ -71,7 +71,7 @@ medusaIntegrationTestRunner({
     const concrete = (route: AdminXRoute) =>
       route.path.replace(/:id\b/g, accounts.warehouse.userId).replace(/:(\w+)/g, "khong-co-$1");
 
-    describe("map quyền /admin/x/* × 6 vai trò (sinh tự động từ ADMIN_X_PERMISSIONS)", () => {
+    describe("[api5-bfla admin:*] map quyền /admin/x/* × 6 vai trò (sinh tự động từ ADMIN_X_PERMISSIONS)", () => {
       it.each(
         ADMIN_X_PERMISSIONS.map(
           (r) => [`${r.method} ${r.path} → ${requiredPermissions(r).join(" + ")}`, r] as const,
@@ -98,7 +98,7 @@ medusaIntegrationTestRunner({
     });
 
     describe("AT21 + fail-closed", () => {
-      it("AT21: warehouse gọi thẳng POST /admin/x/refunds → 403 problem+json, audit ghi lần bị từ chối", async () => {
+      it("[api5-bfla post /admin/x/refunds] AT21: warehouse gọi thẳng POST /admin/x/refunds → 403 problem+json, audit ghi lần bị từ chối", async () => {
         const res = await call("POST", "/admin/x/refunds", accounts.warehouse.headers, { amount: 100_000 });
         expect(res.status).toBe(403);
         expect(res.headers["content-type"]).toContain("application/problem+json");

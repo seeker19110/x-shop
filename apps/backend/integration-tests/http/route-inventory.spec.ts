@@ -303,7 +303,7 @@ medusaIntegrationTestRunner({
     });
 
     describe("authn/authz theo loại route", () => {
-      it("không danh tính: admin → 401, đơn → 404 như không tồn tại, công khai → không 401/403; không route nào 5xx", async () => {
+      it("[api5-bfla admin:*] [api1-bola order:*] không danh tính: admin → 401, đơn → 404 như không tồn tại, công khai → không 401/403; không route nào 5xx", async () => {
         const seen: Array<{ r: string; status: number }> = [];
         for (const r of routes()) {
           const { method, path } = split(r);
@@ -334,7 +334,7 @@ medusaIntegrationTestRunner({
         }
       });
 
-      it("admin đã đăng nhập nhưng không vai trò → 403 FORBIDDEN ở mọi route /admin/x", async () => {
+      it("[api5-bfla admin:*] admin đã đăng nhập nhưng không vai trò → 403 FORBIDDEN ở mọi route /admin/x", async () => {
         for (const r of routes().filter((x) => kind(x) === "admin")) {
           const { method, path } = split(r);
           const res = await send(method, concrete(path), noRole.headers, isWrite(r) ? "{}" : undefined);

@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page } from "@playwright/test";
 
 /** SĐT di động hợp lệ dùng cho mọi đơn E2E (không phải số thật của ai). */
@@ -73,13 +74,25 @@ export async function waitForQuote(page: Page): Promise<void> {
   await expect(page.getByTestId("totals")).not.toHaveAttribute("aria-busy", "true");
 }
 
-/** Cả hành trình khách vãng lai tới trang checkout đã điền xong. */
-export async function guestJourneyToFilledCheckout(page: Page, payment: "cod" | "vnpay"): Promise<void> {
+/**
+ * Cả hành trình khách vãng lai tới trang checkout đã điền xong. `onStep` (tuỳ chọn) chạy sau mỗi bước — dùng để quét
+ * axe ở từng màn (IND-ECOM-016).
+ */
+export async function guestJourneyToFilledCheckout(
+  page: Page,
+  payment: "cod" | "vnpay",
+  onStep: (label: string) => Promise<void> = async () => {},
+): Promise<void> {
   await openFirstProductFromHome(page);
+  await onStep("PDP");
   await addAvailableVariantToCart(page);
+  await onStep("PDP đã thêm giỏ");
   await openCartFromPdp(page);
+  await onStep("giỏ hàng");
   await openCheckoutFromCart(page);
+  await onStep("checkout trống");
   await fillCheckout(page, payment);
+  await onStep(`checkout đã điền (${payment})`);
 }
 
 /** Bấm "Đặt hàng" và trả mã đơn khi đã sang trang đơn (COD). */
@@ -89,4 +102,22 @@ export async function placeCodOrder(page: Page): Promise<string> {
   const ref = ORDER_REF.exec(new URL(page.url()).pathname)?.[0];
   if (!ref) throw new Error(`Không đọc được mã đơn từ ${page.url()}`);
   return ref;
+}
+
+/** Bộ tag axe bắt buộc (STD-A11Y-002, UX-A11Y-001): WCAG 2.0 A/AA + 2.1 AA + 2.2 AA. */
+export const A11Y_TAGS = ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"];
+
+/**
+ * Quét axe trang hiện tại: 0 vi phạm ở MỌI mức (minor/moderate/serious/critical). Có kiểm "không xanh giả": axe
+ * phải thật sự chạy luật. `label` nêu rõ màn/bước khi đỏ.
+ */
+export async function expectNoA11yViolations(page: Page, label: string): Promise<void> {
+  const results = await new AxeBuilder({ page }).withTags(A11Y_TAGS).analyze();
+  expect(results.passes.length, `axe (${label}): không có luật nào chạy`).toBeGreaterThan(10);
+  const report = results.violations.map(
+    (v) =>
+      `${v.id} [${v.impact ?? "?"}] ${v.help}\n` +
+      v.nodes.map((n) => `    ${n.target.join(" ")} — ${n.failureSummary?.split("\n")[1] ?? ""}`).join("\n"),
+  );
+  expect(results.violations, `axe (${label}):\n${report.join("\n")}`).toEqual([]);
 }

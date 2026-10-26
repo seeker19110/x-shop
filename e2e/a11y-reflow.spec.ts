@@ -1,7 +1,8 @@
-import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
+  A11Y_TAGS,
   addAvailableVariantToCart,
+  expectNoA11yViolations,
   fillCheckout,
   openCartFromPdp,
   openCheckoutFromCart,
@@ -9,29 +10,48 @@ import {
 } from "./helpers";
 
 /**
- * AT25: 6 màn cốt lõi (trang chủ, danh mục, PDP, giỏ, checkout, trang đơn) — axe WCAG 2.1 A/AA không có vi phạm
- * serious/critical, và reflow ở 320 px không cuộn ngang (WCAG 1.4.10). Mỗi màn kiểm ở desktop rồi ở 320 px.
+ * AT25 + T-114: axe (wcag2a, wcag2aa, wcag21aa, wcag22aa) KHÔNG vi phạm ở mọi mức trên 6 màn cốt lõi và trên MỌI route
+ * của sitemap + các trang tĩnh; reflow ở 320 px không cuộn ngang (WCAG 1.4.10). Màn cốt lõi kiểm ở desktop rồi 320 px.
  */
 const DESKTOP = { width: 1280, height: 800 };
 const NARROW = { width: 320, height: 640 };
-const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
-async function auditAxe(page: Page, label: string): Promise<void> {
-  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
-  // Chống "xanh giả": axe phải thật sự chạy luật trên trang (không phải trang rỗng/lỗi).
-  expect(results.passes.length, `axe (${label}): không có luật nào chạy`).toBeGreaterThan(10);
-  const blocking = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
-  const report = blocking.map(
-    (v) =>
-      `${v.id} [${v.impact}] ${v.help}\n` +
-      v.nodes.map((n) => `    ${n.target.join(" ")} — ${n.failureSummary?.split("\n")[1] ?? ""}`).join("\n"),
-  );
-  expect(blocking, `axe (${label}):\n${report.join("\n")}`).toEqual([]);
-}
+/** Trang không nằm trong sitemap nhưng là route công khai của storefront (docs/ROUTES.md). */
+const STATIC_ROUTES = [
+  "/bao-mat",
+  "/doi-tra-hoan-tien",
+  "/giao-hang",
+  "/tim-kiem?q=ao",
+  "/tra-cuu-don",
+  "/tra-cuu-don/xac-thuc",
+  "/offline",
+  "/gio-hang",
+];
+
+test("bộ tag axe không bị rút bớt (wcag22aa)", () => {
+  expect(A11Y_TAGS).toEqual(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]);
+  expect(A11Y_TAGS).toContain("wcag22aa");
+});
+
+test("axe 0 vi phạm ở mọi route trong sitemap + trang tĩnh", async ({ page, request }) => {
+  test.setTimeout(600_000);
+  const xml = await (await request.get("/sitemap/0.xml")).text();
+  const urls = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => new URL(m[1] ?? "").pathname);
+  expect(urls.length, "sitemap rỗng").toBeGreaterThan(2);
+  expect(urls).toContain("/");
+  expect(urls.some((u) => u.startsWith("/danh-muc/"))).toBe(true);
+  expect(urls.some((u) => u.startsWith("/san-pham/"))).toBe(true);
+  for (const route of [...new Set([...urls, ...STATIC_ROUTES])]) {
+    const res = await page.goto(route);
+    expect(res?.status(), `${route}: HTTP`).toBeLessThan(400);
+    await expect(page.locator("main").first(), `${route}: không có <main>`).toBeVisible();
+    await expectNoA11yViolations(page, route);
+  }
+});
 
 async function auditScreen(page: Page, name: string): Promise<void> {
   await page.setViewportSize(DESKTOP);
-  await auditAxe(page, `${name} @${DESKTOP.width}`);
+  await expectNoA11yViolations(page, `${name} @${DESKTOP.width}`);
   await page.setViewportSize(NARROW);
   // Chờ theo trạng thái (poll tới khi bố cục ổn định), không sleep cứng.
   await expect
@@ -40,7 +60,7 @@ async function auditScreen(page: Page, name: string): Promise<void> {
       { message: `${name}: cuộn ngang ở ${NARROW.width}px (scrollWidth > clientWidth)`, timeout: 5_000 },
     )
     .toBeLessThanOrEqual(0);
-  await auditAxe(page, `${name} @${NARROW.width}`);
+  await expectNoA11yViolations(page, `${name} @${NARROW.width}`);
   await page.setViewportSize(DESKTOP);
 }
 

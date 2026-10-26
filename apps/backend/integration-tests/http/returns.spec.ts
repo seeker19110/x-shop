@@ -152,7 +152,7 @@ medusaIntegrationTestRunner({
     });
 
     describe("AT15 + AT17 — trả một trong hai món, hoàn đúng phần thực trả, chưa kiểm định thì không tăng tồn bán", () => {
-      it("trả món 300.000 (giảm phân bổ 30.000) → hoàn 270.000; nhận hàng vào kho cách ly; restock chỉ sau kiểm định đạt", async () => {
+      it("[api5-bfla post /admin/x/returns/{id}/approve, post /admin/x/returns/{id}/receive, post /admin/x/returns/{id}/inspect] trả món 300.000 (giảm phân bổ 30.000) → hoàn 270.000; nhận hàng vào kho cách ly; restock chỉ sau kiểm định đạt", async () => {
         const o = await at15Order();
         expect(o.total).toBe(930_000); // 1.000.000 − 100.000 + phí ship 30.000
         const blackLine = await lineOf(o.orderId, "Đen/M");
@@ -359,7 +359,7 @@ medusaIntegrationTestRunner({
     });
 
     describe("yêu cầu đổi/trả — quyền, ca biên, idempotency, đồng thời", () => {
-      it("đơn chưa giao → 409 NOT_RETURNABLE; token sai → 404; trả vượt số đã giao → 422", async () => {
+      it("[api1-bola post /store/x/orders/{display_ref}/returns] đơn chưa giao → 409 NOT_RETURNABLE; token sai → 404; trả vượt số đã giao → 422", async () => {
         const o = await flow.place([["Đen/M", 1]], "vnpay");
         const line = await lineOf(o.orderId, "Đen/M");
         const notYet = await flow.requestReturn(o, {
@@ -437,7 +437,7 @@ medusaIntegrationTestRunner({
         expect(parallel.find((r) => r.status === 422)!.data.code).toBe("QUANTITY_EXCEEDS_DELIVERED");
       });
 
-      it("CSKH tạo hộ (return.request); kho không tạo được; COD đã giao → hoàn ngoài hệ thống cần chứng từ", async () => {
+      it("[api5-bfla post /admin/x/returns] CSKH tạo hộ (return.request); kho không tạo được; COD đã giao → hoàn ngoài hệ thống cần chứng từ", async () => {
         const o = await flow.deliveredOrder([["Đen/S", 1]], "cod");
         const line = await lineOf(o.orderId, "Đen/S");
         const body = {
