@@ -249,3 +249,10 @@
 - Chọn: acquireOrdered/withOwnedLock dùng chung locks.ts: khóa bận chờ tới 300 s, mỗi lời gọi Redis hạn 3 s → LOCK_UNAVAILABLE; drain bỏ lượt khi bận/câm
 - Lý do (tiêu chí chất lượng cuối): Tách được khóa bận (chờ hợp lệ) khỏi Redis câm (fail nhanh); một cơ chế cho cả hệ thống
 - Đường lùi: Trở lại locking.execute trong indexer.ts/seed-catalog.ts
+
+### D-036 · 2026-10-26T00:58:38+00:00 · T-054: che PII trong ghi chú tự do
+
+- Phương án: (1) Che lúc ghi vào bảng nghiệp vụ (mất dữ liệu gốc, cần migration dữ liệu) · (2) Che lúc trả ra ở route Admin/Store bằng maskFreeText dùng chung; audit che lúc ghi; địa chỉ nhận theo cụm báo hiệu (heuristic)
+- Chọn: Che lúc trả ra ở route Admin/Store bằng maskFreeText dùng chung; audit che lúc ghi; địa chỉ nhận theo cụm báo hiệu (heuristic)
+- Lý do (tiêu chí chất lượng cuối): Không phá dữ liệu gốc (có thể cần cho tranh chấp), mọi đường trả ra và audit đều che; heuristic có thể sót địa chỉ không có cụm — ghi nhận
+- Đường lùi: Bỏ gọi maskFreeText ở các hàm present*
