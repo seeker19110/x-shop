@@ -299,3 +299,10 @@
 - Chọn: Chỉ mở khi chưa có ngoại lệ cùng kind đang open/in_progress (tái diễn sau khi xử lý thì mở lại); sync bỏ qua từng sản phẩm lệch, sản phẩm tốt vẫn ghi
 - Lý do (tiêu chí chất lượng cuối): Lỗi tái diễn không bị nuốt; không chặn cập nhật sản phẩm đúng
 - Đường lùi: Đổi openOpsExceptionIfNoneActive về openOpsException
+
+### D-043 · 2026-10-26T06:39:13+00:00 · T-060: tiếp tục tối ưu PDP/ghi giỏ ở 30+3/s trên máy dev hay chờ staging
+
+- Phương án: (1) Tối ưu tiếp trên máy dev 4 CPU dùng chung · (2) Hoãn tới khi có staging nhiều instance; đo bằng k6 kịch bản §10.3 rồi tối ưu theo số đo thật
+- Chọn: Hoãn tới khi có staging nhiều instance; đo bằng k6 kịch bản §10.3 rồi tối ưu theo số đo thật
+- Lý do (tiêu chí chất lượng cuối): Listing/search đã đạt 20+2/s; số đo máy dev không đại diện production (một tiến trình Node, CPU dùng chung), tối ưu mù dễ thêm phức tạp vô ích
+- Đường lùi: Bỏ defer T-060
