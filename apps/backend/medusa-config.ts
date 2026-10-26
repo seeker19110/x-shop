@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from "@medusajs/framework/utils";
 import { sessionCookieConfig } from "./src/lib/admin-security/session-cookie";
 import { loadEnvOrExit } from "./src/lib/env";
+import { databaseConfig, redisQueueOptions, redisRequestOptions } from "./src/lib/infra/timeouts";
 
 loadEnv(process.env.NODE_ENV || "development", process.cwd());
 
@@ -11,12 +12,14 @@ const env = loadEnvOrExit(process.env);
  * Module hạ tầng chạy trên Redis khi có REDIS_URL (bắt buộc ở production): event bus, cache, caching,
  * workflow engine và Locking Module (provider Redis là mặc định — khoá phân tán giữa server và worker,
  * ADR-0001). Không có REDIS_URL (chỉ dev/test) → Medusa dùng bản in-memory, chỉ đúng cho một tiến trình.
+ * Timeout ioredis tường minh (T-092): connectTimeout mọi kết nối; commandTimeout trừ kết nối BullMQ (lệnh chặn) —
+ * src/lib/infra/timeouts.ts.
  */
 const redisModules = env.REDIS_URL
   ? [
       {
         resolve: "@medusajs/medusa/cache-redis",
-        options: { redisUrl: env.REDIS_URL },
+        options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
       },
       {
         resolve: "@medusajs/medusa/caching",
@@ -26,18 +29,18 @@ const redisModules = env.REDIS_URL
               resolve: "@medusajs/medusa/caching-redis",
               id: "caching-redis",
               is_default: true,
-              options: { redisUrl: env.REDIS_URL },
+              options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
             },
           ],
         },
       },
       {
         resolve: "@medusajs/medusa/event-bus-redis",
-        options: { redisUrl: env.REDIS_URL },
+        options: { redisUrl: env.REDIS_URL, redisOptions: redisQueueOptions() },
       },
       {
         resolve: "@medusajs/medusa/workflow-engine-redis",
-        options: { redis: { redisUrl: env.REDIS_URL } },
+        options: { redis: { redisUrl: env.REDIS_URL, redisOptions: redisQueueOptions() } },
       },
       {
         resolve: "@medusajs/medusa/locking",
@@ -47,7 +50,7 @@ const redisModules = env.REDIS_URL
               resolve: "@medusajs/medusa/locking-redis",
               id: "locking-redis",
               is_default: true,
-              options: { redisUrl: env.REDIS_URL },
+              options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
             },
           ],
         },
@@ -64,10 +67,16 @@ const http = {
   ...(env.COOKIE_SECRET !== undefined && { cookieSecret: env.COOKIE_SECRET }),
 };
 
+// Postgres: pool có trần (DB_POOL_MAX mỗi tiến trình), connect timeout, statement_timeout, idle_in_transaction (T-092,
+// docs/db/connections.md).
+const db = databaseConfig(env);
+
 module.exports = defineConfig({
   projectConfig: {
-    databaseUrl: env.DATABASE_URL,
-    ...(env.REDIS_URL !== undefined && { redisUrl: env.REDIS_URL }),
+    databaseUrl: db.databaseUrl,
+    databaseDriverOptions: db.databaseDriverOptions,
+    // redisOptions: client kho phiên (express-session/connect-redis) của Medusa.
+    ...(env.REDIS_URL !== undefined && { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() }),
     workerMode: env.MEDUSA_WORKER_MODE,
     http,
     // Production: cookie phiên `__Host-xshop_sid` (Secure, HttpOnly, SameSite=Lax, Path=/, không Domain) — BE-AUTH-004, T-099.

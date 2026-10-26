@@ -74,6 +74,8 @@ const MESSAGES: Record<string, string> = {
   HTTP_502:
     "Cổng thanh toán báo lỗi khi hoàn tiền. Yêu cầu được giữ nguyên — có thể thử lại (cùng mã yêu cầu).",
   NETWORK: "Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.",
+  TIMEOUT:
+    "Máy chủ không phản hồi kịp — kết quả CHƯA RÕ. Tải lại để xem trạng thái mới nhất trước khi thử lại.",
 };
 
 const minutes = (seconds: unknown): number | null =>

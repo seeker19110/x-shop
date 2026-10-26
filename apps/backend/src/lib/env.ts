@@ -140,15 +140,15 @@ const corsList = z.string().refine(
   },
 );
 
-/** Số nguyên giây trong [min, max]; vắng/rỗng → mặc định. */
-const intInRange = (fallback: number, min: number, max: number) =>
+/** Số nguyên (đơn vị `unit`, mặc định giây) trong [min, max]; vắng/rỗng → mặc định. */
+const intInRange = (fallback: number, min: number, max: number, unit = "giây") =>
   z.preprocess(
     (v) => (v === undefined || (typeof v === "string" && v.trim() === "") ? String(fallback) : v),
     z
       .string()
-      .regex(/^\d+$/, { message: `phải là số nguyên giây trong [${min}, ${max}]` })
+      .regex(/^\d+$/, { message: `phải là số nguyên ${unit} trong [${min}, ${max}]` })
       .transform(Number)
-      .refine((n) => n >= min && n <= max, { message: `phải là số nguyên giây trong [${min}, ${max}]` }),
+      .refine((n) => n >= min && n <= max, { message: `phải là số nguyên ${unit} trong [${min}, ${max}]` }),
   );
 
 const schema = z
@@ -181,6 +181,10 @@ const schema = z
         })
         .optional(),
     ),
+    // Pool Postgres MỖI tiến trình (T-092, DB-PERF-004): tổng `DB_POOL_MAX × số tiến trình` + dự phòng ≤ max_connections
+    // (docs/db/connections.md). statement_timeout của phiên ứng dụng; chạy migration dài → nâng tạm cho lệnh migrate.
+    DB_POOL_MAX: intInRange(10, 1, 100, "kết nối"),
+    DB_STATEMENT_TIMEOUT_MS: intInRange(30_000, 1_000, 3_600_000, "mili giây"),
     MEDUSA_WORKER_MODE: z.preprocess(
       (v) => (v === undefined || v === "" ? "shared" : v),
       z.enum(WORKER_MODES, { message: `phải là một trong ${WORKER_MODES.join("|")}` }),

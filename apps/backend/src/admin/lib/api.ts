@@ -27,10 +27,20 @@ export function buildQuery(query: AdminFetchOptions["query"]): string {
 }
 
 /**
- * Gọi API `/admin/x/*` bằng phiên đăng nhập của Admin (cookie). Lỗi → `AdminApiError` (problem+json hoặc thân lạ);
- * mất mạng → mã `NETWORK`. Thân thành công không phải JSON → `{}`.
+ * Hạn chờ mỗi lời gọi Admin → backend (T-092, BE-REL-001): phủ cả đọc thân. Rộng cho thao tác nặng (nhập CSV, báo cáo)
+ * nhưng không vô hạn — quá hạn → mã `TIMEOUT` (kết quả chưa rõ; thao tác ghi có Idempotency-Key nên thử lại an toàn).
  */
-export async function adminFetch<T>(path: string, options: AdminFetchOptions = {}): Promise<T> {
+export const ADMIN_FETCH_TIMEOUT_MS = 60_000;
+
+/**
+ * Gọi API `/admin/x/*` bằng phiên đăng nhập của Admin (cookie). Lỗi → `AdminApiError` (problem+json hoặc thân lạ);
+ * mất mạng → mã `NETWORK`; quá `timeoutMs` → `TIMEOUT`. Thân thành công không phải JSON → `{}`.
+ */
+export async function adminFetch<T>(
+  path: string,
+  options: AdminFetchOptions = {},
+  timeoutMs: number = ADMIN_FETCH_TIMEOUT_MS,
+): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json, application/problem+json" };
   let body: string | undefined;
   if (options.csv !== undefined) {
@@ -42,6 +52,10 @@ export async function adminFetch<T>(path: string, options: AdminFetchOptions = {
   }
   if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
 
+  const signal = AbortSignal.timeout(timeoutMs);
+  const isTimeout = (e: unknown) =>
+    signal.aborted ||
+    (typeof e === "object" && e !== null && (e as { name?: unknown }).name === "TimeoutError");
   let res: Response;
   try {
     res = await fetch(`${path}${buildQuery(options.query)}`, {
@@ -49,11 +63,20 @@ export async function adminFetch<T>(path: string, options: AdminFetchOptions = {
       credentials: "include",
       headers,
       body,
+      signal,
     });
-  } catch {
+  } catch (e) {
+    if (isTimeout(e)) throw new AdminApiError(0, "TIMEOUT", "Máy chủ không phản hồi kịp");
     throw new AdminApiError(0, "NETWORK", "Không kết nối được máy chủ");
   }
-  const json: unknown = await res.json().catch(() => ({}));
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch (e) {
+    // Thân treo giữa chừng → quá hạn; thân không phải JSON → `{}` như trước.
+    if (isTimeout(e)) throw new AdminApiError(0, "TIMEOUT", "Máy chủ không phản hồi kịp");
+    json = {};
+  }
   if (!res.ok) throw toApiError(res.status, json);
   return json as T;
 }

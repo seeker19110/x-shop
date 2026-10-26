@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { redisRequestOptions } from "../infra/timeouts";
 
 /**
  * Kho khóa–giá trị có TTL cho trạng thái bảo mật dùng chung giữa các instance (nhàn rỗi phiên, bộ đếm rate limit).
@@ -129,7 +130,12 @@ export class MemoryStore implements SecurityStore {
 export function createSecurityStore(redisUrl = process.env.REDIS_URL?.trim()): SecurityStore {
   return redisUrl
     ? new RedisStore(
-        new Redis(redisUrl, { maxRetriesPerRequest: 2, connectionName: "x-shop-admin-security" }),
+        new Redis(redisUrl, {
+          maxRetriesPerRequest: 2,
+          connectionName: "x-shop-admin-security",
+          // Timeout tường minh (T-092): mở kết nối + mỗi lệnh.
+          ...redisRequestOptions(),
+        }),
       )
     : new MemoryStore();
 }
