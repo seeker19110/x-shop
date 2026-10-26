@@ -15,3 +15,4 @@ playwright-report/
 test-results/
 .claude/worktrees/
 docs/ops/perf/*-latest.json
+__pycache__/
