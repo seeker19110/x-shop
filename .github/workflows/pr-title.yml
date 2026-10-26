@@ -36,3 +36,28 @@ jobs:
             || [ "${#TITLE}" -gt 72 ]; then
             echo "::error::Tiêu đề PR phải dạng '<type>(scope): mô tả' và ≤ 72 ký tự: $TITLE"; exit 1
           fi
+
+  # BASE-REPO-005: MỌI commit của PR theo Conventional Commits 1.0.0 (không chỉ tiêu đề squash). Cùng miễn như job trên
+  # (`pr_title_check: off`, PR của bot); commit merge/`Revert "…"`/bot miễn trong `scripts/check-commits.mjs`.
+  commits:
+    name: pr-commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # cần đủ lịch sử để liệt kê `base..head`
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Mọi commit của PR theo Conventional Commits, subject ≤ 72 ký tự
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if grep -Eq "^pr_title_check:[[:space:]]*[\"']?off" xt.yaml 2>/dev/null || [[ "$AUTHOR" == *"[bot]" ]]; then
+            echo "Bỏ qua kiểm commit (pr_title_check: off / bot)."; exit 0
+          fi
+          node scripts/check-commits.mjs "$BASE" "$HEAD"

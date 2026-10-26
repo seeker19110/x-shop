@@ -1,0 +1,71 @@
+# Quét lỗ hổng phụ thuộc mỗi PR + theo lịch tuần (BASE-DEP-004, SEC-SUPPLY-006, OPS-MAINT-004) và theo dõi EOL (OPS-MAINT-003).
+# OSV-Scanner cài bằng CLI ghim phiên bản + sha256 (không dùng action bên thứ ba: action của Google chạy image theo tag).
+# Ngưỡng: CVSS >= 7.0 (high/critical) chưa có ngoại lệ còn hạn = đỏ (`scripts/osv-gate.mjs`); ngoại lệ ở `osv-scanner.toml`.
+# Chính sách SLA: docs/ops/VULN-SLA.md. Muốn job này CHẶN merge thì thêm `vuln-scan` vào required check của
+# `.github/rulesets/main.json` (quyết định riêng — hiện chưa phải required check).
+name: vuln-scan
+
+on:
+  pull_request: { branches: [master], types: [opened, synchronize, reopened] }
+  push: { branches: [master] }
+  schedule:
+    - cron: "17 2 * * 1" # thứ Hai 02:17 UTC hằng tuần
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # v2.7.0 — phát hành google/osv-scanner, xác minh 2026-10-26: SHA256SUMS của release khớp tệp tải về.
+  OSV_VERSION: v2.7.0
+  OSV_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+
+jobs:
+  vuln-scan:
+    name: vuln-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Cài osv-scanner (phiên bản ghim + kiểm sha256)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+      - name: Quét lockfile (áp osv-scanner.toml)
+        run: |
+          set -uo pipefail
+          "$RUNNER_TEMP/osv-scanner" scan source -r --config osv-scanner.toml --format json \
+            --output-file "$RUNNER_TEMP/osv.json" .
+          code=$?
+          # 0 = sạch, 1 = có lỗ hổng (phân loại ở bước sau); mã khác = lỗi công cụ → đỏ.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then echo "::error::osv-scanner thoát mã $code"; exit "$code"; fi
+      - name: Cổng — high/critical chưa có ngoại lệ còn hạn = đỏ
+        run: node scripts/osv-gate.mjs "$RUNNER_TEMP/osv.json" osv-scanner.toml
+
+  # Theo dõi EOL (OPS-MAINT-003): chỉ chạy theo lịch/thủ công — đọc endoflife.date, đỏ khi runtime/CSDL đã EOL.
+  eol-check:
+    name: eol-check
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: EOL của Node/PostgreSQL/Redis đang dùng
+        run: node scripts/eol-check.mjs --strict

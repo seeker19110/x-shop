@@ -18,3 +18,40 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # pnpm workspace: Dependabot dùng hệ sinh thái `npm` cho pnpm; mỗi manifest một khối (BASE-DEP-007, OPS-MAINT-001).
+  # Gom minor+patch thành một PR; nâng MAJOR tách PR riêng (không vào group) để theo mẫu PR `major-upgrade` (OPS-MAINT-005).
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      root-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /apps/backend
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      backend-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /apps/storefront
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      storefront-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /packages/domain
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 2
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      domain-minor-patch: { update-types: [minor, patch] }
+  # Chưa khai `docker`: repo chưa có Dockerfile/compose (image service CI nằm trong `services:` của workflow — Dependabot không
+  # quét; digest ghim tay ở T-106). Có Dockerfile thì thêm khối `package-ecosystem: docker` cùng PR đó.

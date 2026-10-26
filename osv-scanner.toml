@@ -1,0 +1,9 @@
+# Cấu hình OSV-Scanner (BASE-DEP-004, SEC-SUPPLY-006). Hiện KHÔNG có ngoại lệ nào.
+# Thêm ngoại lệ chỉ khi chưa có bản vá/không gọi tới mã bị ảnh hưởng; mỗi khối phải có đủ các trường dưới đây
+# (`scripts/osv-gate.mjs` đỏ nếu thiếu, quá hạn, hoặc hạn > 90 ngày). Hết hạn = lỗ hổng hiện lại và chặn merge.
+#
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"      # cve/GHSA; ghi thêm CVE vào reason
+# # approved_by: <tên người duyệt>
+# ignoreUntil = "YYYY-MM-DD"      # tối đa 90 ngày kể từ ngày duyệt
+# reason = "<vì sao chấp nhận tạm, đường đi tới bản vá>"
