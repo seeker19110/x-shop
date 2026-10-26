@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 /** SĐT di động hợp lệ dùng cho mọi đơn E2E (không phải số thật của ai). */
 export const BUYER = {
@@ -102,6 +102,54 @@ export async function placeCodOrder(page: Page): Promise<string> {
   const ref = ORDER_REF.exec(new URL(page.url()).pathname)?.[0];
   if (!ref) throw new Error(`Không đọc được mã đơn từ ${page.url()}`);
   return ref;
+}
+
+/** Phần tử đang giữ focus có chỉ báo nhìn thấy được (outline ≥ 2px hoặc box-shadow) — WCAG 2.4.7/2.4.13. */
+export async function expectFocusVisible(page: Page, label: string): Promise<void> {
+  const info = await page.evaluate(() => {
+    const el = document.activeElement;
+    if (!el || el === document.body) return null;
+    // Chỉ báo có thể nằm ở chính phần tử hoặc ở ::after/::before (mẫu "link phủ toàn thẻ" của ProductCard).
+    const ring = (cs: CSSStyleDeclaration) => ({
+      outlineStyle: cs.outlineStyle,
+      outlineWidth: Number.parseFloat(cs.outlineWidth),
+      boxShadow: cs.boxShadow,
+    });
+    return {
+      tag: el.tagName.toLowerCase(),
+      rings: [
+        ring(getComputedStyle(el)),
+        ring(getComputedStyle(el, "::after")),
+        ring(getComputedStyle(el, "::before")),
+      ],
+    };
+  });
+  expect(info, `${label}: không có phần tử nào giữ focus`).not.toBeNull();
+  const visible = (info?.rings ?? []).some(
+    (r) => (r.outlineStyle !== "none" && r.outlineWidth >= 2) || r.boxShadow !== "none",
+  );
+  expect(visible, `${label}: focus không nhìn thấy được (${JSON.stringify(info)})`).toBe(true);
+}
+
+/**
+ * Chỉ dùng phím Tab để đưa focus tới `target`; tới nơi thì kiểm chỉ báo focus. Quá `max` lần Tab mà chưa tới → lỗi
+ * (bẫy focus hoặc thứ tự Tab hỏng).
+ */
+export async function tabTo(
+  page: Page,
+  target: Locator,
+  label: string,
+  { max = 80 }: { max?: number } = {},
+): Promise<void> {
+  const isFocused = () => target.first().evaluate((el) => el === document.activeElement);
+  for (let i = 0; i <= max; i += 1) {
+    if (await isFocused().catch(() => false)) {
+      await expectFocusVisible(page, label);
+      return;
+    }
+    await page.keyboard.press("Tab");
+  }
+  throw new Error(`${label}: không tới được bằng ${max} lần Tab (bẫy focus hoặc thứ tự Tab hỏng)`);
 }
 
 /** Bộ tag axe bắt buộc (STD-A11Y-002, UX-A11Y-001): WCAG 2.0 A/AA + 2.1 AA + 2.2 AA. */
