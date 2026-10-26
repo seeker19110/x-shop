@@ -1,0 +1,7 @@
+# Ruleset tối thiểu cho docs/design/openapi.yaml (BE-API-001). check-openapi.mjs lo phần khớp với mã.
+extends: ["spectral:oas"]
+rules:
+  operation-operationId: error
+  operation-description: off # mỗi thao tác đã có summary; mô tả dài không bắt buộc
+  operation-tags: error
+  info-contact: off
