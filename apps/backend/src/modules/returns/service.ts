@@ -1,7 +1,13 @@
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { generateEntityId } from "@medusajs/framework/utils";
 import type { RefundState, ReturnState } from "@x-shop/domain";
-import type { RefundMethod, RefundReason, ReturnKind, ReturnReason } from "./constants";
+import {
+  orderLockKey,
+  type RefundMethod,
+  type RefundReason,
+  type ReturnKind,
+  type ReturnReason,
+} from "./constants";
 
 export const RETURN_TABLE = "x_return";
 export const RETURN_LINE_TABLE = "x_return_line";
@@ -202,9 +208,12 @@ export default class ReturnsModuleService {
     return this.db.transaction(fn, { isolationLevel: "repeatable read", readOnly: true });
   }
 
-  /** Khóa advisory theo đơn trong transaction hiện tại (tự nhả khi commit/rollback). */
+  /**
+   * Khóa advisory theo đơn trong transaction hiện tại (tự nhả khi commit/rollback). Trigger trên `x_refund` (T-052) từ
+   * chối ghi làm tăng tiền chiếm chỗ khi phiên không giữ đúng khóa này — khóa phải lấy TRƯỚC khi gọi `insertRefund`.
+   */
   async lockOrder(trx: Knex.Transaction, orderId: string): Promise<void> {
-    await trx.raw("select pg_advisory_xact_lock(hashtext(?))", [`x-returns:order:${orderId}`]);
+    await trx.raw("select pg_advisory_xact_lock(hashtext(?))", [orderLockKey(orderId)]);
   }
 
   /* ------------------------------------------------------------------ đổi/trả */

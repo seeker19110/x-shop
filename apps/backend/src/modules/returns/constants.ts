@@ -54,3 +54,19 @@ export const RETURNS_CONFIG = {
   /** Chờ khóa `order:<id>` trước khi trả 409 BUSY_RETRY. */
   lockWaitMs: 15_000,
 } as const;
+
+/**
+ * Khóa advisory theo đơn (T-052, D-032): `pg_advisory_xact_lock(hashtext(ORDER_LOCK_KEY_PREFIX || order_id))`. MỘT nguồn
+ * cho `ReturnsModuleService.lockOrder` và trigger `x_refund_require_order_lock` (Migration20261026010000 — chép nguyên
+ * chuỗi vào SQL vì migration đã áp không được đổi). Đổi tiền tố ở đây PHẢI kèm migration MỚI thay function trong DB;
+ * test `refund-lock-guard` so khớp hai bên.
+ */
+export const ORDER_LOCK_KEY_PREFIX = "x-returns:order:";
+export const orderLockKey = (orderId: string): string => `${ORDER_LOCK_KEY_PREFIX}${orderId}`;
+
+/**
+ * SQLSTATE trigger trả khi ghi `x_refund` làm tăng tiền chiếm chỗ (chèn mới; đổi từ rejected/cancelled về trạng thái còn
+ * hiệu lực; tăng amount; đổi order_id) mà phiên hiện tại KHÔNG giữ khóa advisory của đơn — lỗi lập trình (quên
+ * `lockOrder`), không phải lỗi nghiệp vụ.
+ */
+export const REFUND_LOCK_REQUIRED_SQLSTATE = "XR001";
