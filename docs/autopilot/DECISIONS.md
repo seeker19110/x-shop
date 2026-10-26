@@ -397,3 +397,10 @@
 - Chọn: Chỉ đưa explain-hot-paths.test.mjs (hàm thuần) vào gate; EXPLAIN chạy tay mỗi mốc PLAN
 - Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi: không thêm job 8 phút chưa đo trên runner; (3) đơn giản, test được ngay; hồi quy index vẫn bị bắt ở mốc PLAN (pha harden audit mỗi mốc). DB-PERF-001 giữ [ ] vì yêu cầu test tự động trong CI
 - Đường lùi: Thêm job schedule/release khi có staging (T-060) hoặc khi runner đo được thời gian
+
+### D-057 · 2026-10-26T15:48:44+00:00 · pr-commits đỏ trên PR #20: 15 commit đã đẩy có subject > 72 ký tự (viết trước khi T-111 thêm check)
+
+- Phương án: (1) Viết lại lịch sử + force-push nhánh · (2) Giữ lịch sử; commit mới tuân thủ ≤ 72; chủ dự án squash-merge PR (tiêu đề PR đạt chuẩn) hoặc tự quyết rewrite · (3) Nới check-commits (miễn commit cũ)
+- Chọn: Giữ lịch sử; commit mới tuân thủ ≤ 72; chủ dự án squash-merge PR (tiêu đề PR đạt chuẩn) hoặc tự quyết rewrite
+- Lý do (tiêu chí chất lượng cuối): (1) AGENTS.md §4 cấm force-push, guard chặn; (3) không nới cổng (LOOP-CI-001); phương án 2 giữ đường lùi và lịch sử nhánh trên master là squash một commit hợp lệ
+- Đường lùi: Chủ dự án có thể rewrite tay rồi force-push nếu muốn giữ từng commit
