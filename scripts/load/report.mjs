@@ -1,4 +1,5 @@
 /** Dựng báo cáo markdown của `pnpm load:smoke` (docs/ops/perf/load-smoke-latest.md). Hàm thuần — có test. */
+import { execFileSync } from "node:child_process";
 import { renderPhaseTable, THRESHOLDS } from "./lib.mjs";
 
 const num = (v) => (v === null || v === undefined ? "—" : Math.round(v));
@@ -10,11 +11,26 @@ export function renderOpTable(byOp) {
   return lines.join("\n");
 }
 
+/** SHA commit hiện tại (HEAD) của repo; không có VCS/lỗi → "" (báo cáo ghi "không xác định"). */
+export function currentCommit(cwd) {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : "";
+  } catch {
+    return "";
+  }
+}
+
 const sec = (ms) => (ms === undefined ? "—" : `${(ms / 1000).toFixed(1)} s`);
 
 /**
  * @param {object} d
  * @param {string} d.date ISO UTC
+ * @param {string} [d.commit] SHA commit đầy đủ của mã được đo (QA-PERF-006); thiếu → "không xác định"
  * @param {object} d.config LOAD (đã dùng)
  * @param {object} d.machine { cpus, cpuModel, memGiB, node, pg, loadavg }
  * @param {object} d.timings thời gian từng bước dựng môi trường (ms)
@@ -28,7 +44,7 @@ export function renderReport(d) {
   const L = [];
   L.push("# Kiểm tải smoke — kết quả mới nhất (T-036)", "");
   L.push(
-    `Kết quả: **${d.ok ? "ĐẠT" : "KHÔNG ĐẠT"}** · ${d.date} · \`pnpm load:smoke\``,
+    `Kết quả: **${d.ok ? "ĐẠT" : "KHÔNG ĐẠT"}** · ${d.date} · \`pnpm load:smoke\` · commit \`${d.commit || "không xác định"}\``,
     "",
     "> Máy dev dùng chung, một tiến trình Node vừa phát tải vừa chạy cạnh backend + PostgreSQL + Redis: đây là **cổng hồi quy ở tỷ lệ thu nhỏ**, không phải năng lực production và không thay thế chạy đầy đủ §10.3 trên staging (xem `README.md` và `load-dataset.md`).",
     "",

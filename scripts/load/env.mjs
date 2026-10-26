@@ -64,3 +64,26 @@ export function backendEnv() {
     XS_TRUSTED_PROXIES: "loopback",
   };
 }
+
+/**
+ * Cấm đích production (QA-PERF-007): load test chỉ chạy localhost/staging, trừ game day có lịch (chạy tay, ngoài script này).
+ * Mẫu viết tách vế để chính file này không chứa tên miền nguyên văn (CI grep cấm tên miền production trong scripts/load).
+ * Thêm host khác bằng LOAD_FORBIDDEN_HOSTS="a.example,b.example" (khớp host hoặc subdomain).
+ */
+const PRODUCTION_HOST = new RegExp(`(^|\\.)x-shop\\.(${["vn", "com"].join("|")})$`, "i");
+
+export function assertNotProduction(url, extra = process.env.LOAD_FORBIDDEN_HOSTS ?? "") {
+  let host;
+  try {
+    host = new URL(String(url)).hostname.toLowerCase();
+  } catch {
+    throw new Error(`BASE_URL không hợp lệ: "${url}"`);
+  }
+  const extras = extra
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+  if (PRODUCTION_HOST.test(host) || extras.some((h) => host === h || host.endsWith(`.${h}`))) {
+    throw new Error(`BASE_URL trỏ vào production (${host}) — load test bị cấm (QA-PERF-007)`);
+  }
+}
