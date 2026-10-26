@@ -1,0 +1,52 @@
+system,table,column,category,purpose,legal_basis,retention
+x-shop/backend/audit,audit_log,actor_id,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
+x-shop/backend/audit,audit_log,reason,basic,"lý do thao tác quản trị (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",legitimate_interests,audit-1y
+x-shop/backend/audit,audit_log,ip_hash,basic,IP của người thao tác ở dạng băm — truy vết và chống gian lận,legitimate_interests,audit-1y
+x-shop/backend/catalog-import,catalog_import_job,previewed_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
+x-shop/backend/catalog-import,catalog_import_job,committed_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
+x-shop/backend/checkout,checkout_quote,address,basic,báo giá phí vận chuyển theo địa chỉ giao (AddressSnapshot),contract,transient-90d
+x-shop/backend/fashion,fashion_model_measurement,height_cm,basic,"chiều cao người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật",contract,model-release
+x-shop/backend/fashion,fashion_model_measurement,chest_cm,basic,"số đo ngực người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật",contract,model-release
+x-shop/backend/fashion,fashion_model_measurement,waist_cm,basic,"số đo eo người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật",contract,model-release
+x-shop/backend/fashion,fashion_model_measurement,hip_cm,basic,"số đo mông người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật",contract,model-release
+x-shop/backend/fashion,fashion_model_measurement,size_worn,basic,"cỡ người mẫu mặc, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật",contract,model-release
+x-shop/backend/fashion,fashion_product_attributes,image_exception_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
+x-shop/backend/audit,inventory_adjustment,actor_id,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
+x-shop/backend/audit,inventory_adjustment,note,basic,"ghi chú điều chỉnh tồn (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",legitimate_interests,audit-1y
+x-shop/backend/audit,inventory_adjustment,reason,basic,"lý do điều chỉnh tồn (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",legitimate_interests,audit-1y
+x-shop/backend/checkout,ops_exception,owner,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/checkout,ops_exception,detail,basic,"chi tiết ngoại lệ vận hành (mã đơn, nguyên nhân) (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",contract,order-record
+x-shop/backend/checkout,order_finance,contact,basic,"giao kết và thực hiện đơn hàng: họ tên, SĐT, email? (JSON {name, phone, email?}); liên hệ giao hàng; gửi thông báo giao dịch; xác minh tra cứu đơn",contract,contact-anonymize
+x-shop/backend/checkout,order_finance,address,basic,giao hàng: tỉnh/phường và địa chỉ chi tiết (JSON),contract,contact-anonymize
+x-shop/backend/notify,outbound_message,recipient_masked,basic,ghi nhận đã gửi thông báo cho ai (SĐT/email đã che một phần); chống gửi lặp,contract,transient-90d
+x-shop/backend/checkout,outbox_event,payload,basic,"hàng đợi sự kiện: mã đơn, display_ref, và với order.lookup_link là token liên kết tra cứu một lần 15 phút (cho phép xem đơn của khách)",contract,transient-90d
+x-shop/backend/checkout,payment_attempt,payment_url,basic,URL thanh toán đã ký; chứa vnp_IpAddr = IP khách ở dạng thô (xem DPIA §1) và mã đơn,contract,payment-evidence
+x-shop/backend/checkout,rate_limit_counter,bucket,basic,"khoá giới hạn tần suất theo IP/SĐT/mã đơn, chỉ lưu bản băm (giả danh hoá) — chống dò và lạm dụng",legitimate_interests,rate-limit-2d
+x-shop/backend/shipping,shipment,created_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
+x-shop/backend/shipping,shipment,label_url,basic,liên kết nhãn vận đơn do GHN cấp (nhãn in có tên/SĐT/địa chỉ người nhận),contract,order-record
+x-shop/backend/rbac,user_role,user_id,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,staff-account
+x-shop/backend/rbac,user_role,granted_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,staff-account
+x-shop/backend/checkout,webhook_inbox,payload,basic,"bằng chứng thông báo thanh toán của VNPAY (mã giao dịch, số tiền, ngân hàng, thời điểm) gắn với đơn của cá nhân",legal_obligation,payment-evidence
+x-shop/backend/returns,x_order_cancel,actor_id,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_order_cancel,reason,basic,"lý do huỷ đơn bởi nhân viên (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",contract,order-record
+x-shop/backend/returns,x_refund,note,basic,"ghi chú hoàn tiền (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",contract,order-record
+x-shop/backend/returns,x_refund,reject_reason,basic,"lý do từ chối hoàn tiền (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",contract,order-record
+x-shop/backend/returns,x_refund,cancel_reason,basic,"lý do huỷ yêu cầu hoàn tiền (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",contract,order-record
+x-shop/backend/returns,x_refund,requested_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_refund,approved_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_refund,rejected_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_refund,executed_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_refund,cancelled_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_return,note,basic,"ghi chú của khách khi yêu cầu đổi trả (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",contract,order-record
+x-shop/backend/returns,x_return,decision_note,basic,"ghi chú quyết định đổi trả (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",contract,order-record
+x-shop/backend/returns,x_return,requested_by,basic,định danh người tạo yêu cầu đổi trả (nhân viên thay khách hoặc khách đã đăng nhập) để truy vết,legitimate_interests,order-record
+x-shop/backend/returns,x_return,decided_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_return,received_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_return,inspected_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,order-record
+x-shop/backend/returns,x_return_line,inspection_note,basic,"ghi chú kiểm định hàng trả (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",contract,order-record
+x-shop/backend/settlement,x_settlement_batch,imported_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,payment-evidence
+x-shop/backend/settlement,x_settlement_discrepancy,owner,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,payment-evidence
+x-shop/backend/settlement,x_settlement_discrepancy,resolved_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,payment-evidence
+x-shop/backend/settlement,x_settlement_discrepancy,resolution_note,basic,"ghi chú xử lý chênh lệch đối soát (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",legal_obligation,payment-evidence
+x-shop/backend/settlement,x_settlement_discrepancy_event,actor_id,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,payment-evidence
+x-shop/backend/settlement,x_settlement_discrepancy_event,note,basic,"ghi chú sự kiện chênh lệch đối soát (ghi chú tự do của nhân viên/khách, có thể chứa PII; khi trả ra đi qua maskFreeText)",legal_obligation,payment-evidence
