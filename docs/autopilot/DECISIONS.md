@@ -256,3 +256,10 @@
 - Chọn: Che lúc trả ra ở route Admin/Store bằng maskFreeText dùng chung; audit che lúc ghi; địa chỉ nhận theo cụm báo hiệu (heuristic)
 - Lý do (tiêu chí chất lượng cuối): Không phá dữ liệu gốc (có thể cần cho tranh chấp), mọi đường trả ra và audit đều che; heuristic có thể sót địa chỉ không có cụm — ghi nhận
 - Đường lùi: Bỏ gọi maskFreeText ở các hàm present*
+
+### D-037 · 2026-10-26T01:36:55+00:00 · T-055: phạm vi và chi tiết rate limit cửa sổ trượt
+
+- Phương án: (1) Chỉ bộ đếm Postgres; login/MFA giữ cửa sổ TTL cũ; Retry-After trần 1 cửa sổ · (2) Áp cả bộ đếm Redis login/MFA (khóa theo chỉ số cửa sổ, MULTI); Retry-After tính đúng (có thể tới 2 cửa sổ); deniedIp chặn khi hiệu dụng+1 > N; gộp audit deny giữ đếm thô
+- Chọn: Áp cả bộ đếm Redis login/MFA (khóa theo chỉ số cửa sổ, MULTI); Retry-After tính đúng (có thể tới 2 cửa sổ); deniedIp chặn khi hiệu dụng+1 > N; gộp audit deny giữ đếm thô
+- Lý do (tiêu chí chất lượng cuối): Không để sót đường 2× ở đăng nhập/MFA (đích dò mật khẩu); Retry-After đúng tránh khách thử lại bị đếm thêm
+- Đường lùi: Trả hàm quyết định về cửa sổ cố định trong lib/security/sliding-window.ts
