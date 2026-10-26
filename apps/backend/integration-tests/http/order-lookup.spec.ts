@@ -40,7 +40,7 @@ class ScriptedGateway implements VnpayGateway {
   }
 }
 
-type J = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+type J = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- thân JSON phản hồi không có kiểu; kiểm bằng expect từng trường
 let ipSeq = 0;
 /** Mỗi ca một IP giả (x-forwarded-for, Express `trust proxy` = 1) → bộ đếm theo IP không lẫn giữa các ca. */
 const newIp = () => `10.21.${Math.floor(++ipSeq / 250)}.${(ipSeq % 250) + 1}`;

@@ -24,7 +24,7 @@ vi.mock("../lib/checkout/actions", () => ({
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: m.push }) }));
 vi.mock("next/image", () => ({
-  // eslint-disable-next-line @next/next/no-img-element
+  // eslint-disable-next-line @next/next/no-img-element -- mock next/image trong test, cần thẻ img thuần
   default: ({ src, alt }: { src: string; alt: string }) => <img src={src} alt={alt} />,
 }));
 
@@ -83,7 +83,7 @@ describe("analytics: PDP", () => {
 });
 
 /* Thẻ giả cho bộ ủy quyền click: cần `<a>` thuần (không điều hướng thật trong jsdom). */
-/* eslint-disable @next/next/no-html-link-for-pages */
+/* eslint-disable @next/next/no-html-link-for-pages -- liên kết giả trong test phân tích sự kiện, không điều hướng thật */
 describe("analytics: danh sách", () => {
   it("view_item_list một lần; click thẻ → select_item đúng handle/vị trí; gỡ listener khi unmount", () => {
     const { unmount } = render(
@@ -127,7 +127,7 @@ describe("analytics: danh sách", () => {
   });
 });
 
-/* eslint-enable @next/next/no-html-link-for-pages */
+/* eslint-enable @next/next/no-html-link-for-pages -- hết phạm vi liên kết giả */
 describe("analytics: checkout", () => {
   const lines = [
     {

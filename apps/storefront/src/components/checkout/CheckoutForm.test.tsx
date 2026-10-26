@@ -18,7 +18,7 @@ vi.mock("../../lib/checkout/actions", () => ({
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: m.push }) }));
 vi.mock("next/image", () => ({
-  // eslint-disable-next-line @next/next/no-img-element
+  // eslint-disable-next-line @next/next/no-img-element -- mock next/image trong test, cần thẻ img thuần
   default: ({ src, alt }: { src: string; alt: string }) => <img src={src} alt={alt} />,
 }));
 

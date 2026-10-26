@@ -118,7 +118,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
   useEffect(() => {
     track({ event: "begin_checkout", value: subtotal, items: trackItems });
     // Một lần mỗi lần mở trang thanh toán.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chỉ chạy lại theo khoá ổn định đã liệt kê; thêm phụ thuộc còn lại gây lặp/gửi trùng sự kiện
   }, []);
   const shippingSent = useRef(false);
   useEffect(() => {
