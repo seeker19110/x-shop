@@ -185,6 +185,18 @@ const schema = z
     // (docs/db/connections.md). statement_timeout của phiên ứng dụng; chạy migration dài → nâng tạm cho lệnh migrate.
     DB_POOL_MAX: intInRange(10, 1, 100, "kết nối"),
     DB_STATEMENT_TIMEOUT_MS: intInRange(30_000, 1_000, 3_600_000, "mili giây"),
+    // Tắt êm (T-094, BE-REL-004): giữ readiness 503 trong DRAIN_DELAY rồi mới đóng listener; toàn bộ quá trình tắt có
+    // trần TIMEOUT, phải < grace period của nền tảng (Kubernetes mặc định 30 s). Vắng DRAIN_DELAY → 5 s ở production,
+    // 0 ở dev/test (Ctrl-C không phải chờ).
+    SHUTDOWN_DRAIN_DELAY_MS: optionalText.pipe(
+      z
+        .string()
+        .regex(/^\d+$/, { message: "phải là số nguyên mili giây trong [0, 60000]" })
+        .transform(Number)
+        .refine((n) => n <= 60_000, { message: "phải là số nguyên mili giây trong [0, 60000]" })
+        .optional(),
+    ),
+    SHUTDOWN_TIMEOUT_MS: intInRange(25_000, 1_000, 300_000, "mili giây"),
     MEDUSA_WORKER_MODE: z.preprocess(
       (v) => (v === undefined || v === "" ? "shared" : v),
       z.enum(WORKER_MODES, { message: `phải là một trong ${WORKER_MODES.join("|")}` }),
@@ -235,6 +247,13 @@ const schema = z
     ),
   })
   .superRefine((env, ctx) => {
+    if (env.SHUTDOWN_DRAIN_DELAY_MS !== undefined && env.SHUTDOWN_DRAIN_DELAY_MS >= env.SHUTDOWN_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["SHUTDOWN_DRAIN_DELAY_MS"],
+        message: "phải nhỏ hơn SHUTDOWN_TIMEOUT_MS",
+      });
+    }
     if (env.VNPAY_HASH_SECRET_PREVIOUS !== undefined) {
       if (env.VNPAY_HASH_SECRET === undefined) {
         ctx.addIssue({
@@ -333,6 +352,13 @@ const schema = z
         baseUrl: env.GHN_BASE_URL ?? "",
         token: env.GHN_TOKEN ?? "",
         shopId: env.GHN_SHOP_ID ?? "",
+      },
+      shutdown: {
+        drainDelayMs: Math.min(
+          env.SHUTDOWN_DRAIN_DELAY_MS ?? (env.NODE_ENV === "production" ? 5_000 : 0),
+          env.SHUTDOWN_TIMEOUT_MS - 1,
+        ),
+        timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
       },
       orderLookupSecret:
         env.ORDER_LOOKUP_SECRET ?? (env.NODE_ENV === "production" ? "" : ORDER_LOOKUP_DEV_SECRET),

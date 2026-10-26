@@ -44,6 +44,11 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # MEDUSA_BACKEND_URL=http://localhost:9000
 # MEDUSA_WORKER_MODE=shared   # shared | server | worker (production tách server và worker)
 # DISABLE_MEDUSA_ADMIN=false
+# Tắt êm (T-094): SIGTERM → /x/readyz 503 trong DRAIN_DELAY (vẫn phục vụ) → đóng listener, chờ request/job dở, đóng pool
+# Postgres/Redis → thoát 0. Quá TIMEOUT (tính từ SIGTERM) → thoát mã 1. TIMEOUT phải < grace period của nền tảng
+# (Kubernetes terminationGracePeriodSeconds mặc định 30 s); DRAIN_DELAY < TIMEOUT.
+# SHUTDOWN_DRAIN_DELAY_MS=5000   # vắng: 5000 ở production, 0 ở dev/test; [0, 60000]
+# SHUTDOWN_TIMEOUT_MS=25000      # [1000, 300000]
 
 # VNPAY (SPEC-payment). Bật mặc định (VNPAY_ENABLED=true). Production + bật → BẮT BUỘC đủ 5 biến dưới, URL phải https,
 # không được dùng khoá giả của dev. Dev/test vắng biến → dùng giá trị GIẢ trong env.ts (VNPAY_DEV_DEFAULTS) — chỉ ký/kiểm
