@@ -35,6 +35,13 @@ export interface DirtyClaim {
   product_id: string;
   /** Mốc đánh dấu dạng text của Postgres (độ chính xác micro giây). */
   marked_at: string;
+  /** Số lần đồng bộ trước đã bỏ qua sản phẩm này (lệch giá) — 0 với dấu mới. */
+  attempts: number;
+}
+
+/** Hẹn thử lại một dấu bẩn: `attempts` mới và số giây chờ tới lần lấy kế. */
+export interface DirtyDefer extends DirtyClaim {
+  delay_seconds: number;
 }
 
 export interface PageItem {
@@ -140,16 +147,18 @@ export default class CatalogIndexModuleService {
     await this.db.raw(
       `INSERT INTO catalog_index_dirty (product_id, marked_at)
        SELECT x, clock_timestamp() FROM (SELECT jsonb_array_elements_text(?::jsonb) AS x) s
-       ON CONFLICT (product_id) DO UPDATE SET marked_at = EXCLUDED.marked_at`,
+       ON CONFLICT (product_id) DO UPDATE SET marked_at = EXCLUDED.marked_at, attempts = 0, next_attempt_at = NULL`,
       w.bindings as Knex.ValueDict[],
     );
   }
 
-  /** Lấy một lô sản phẩm bẩn (không xoá) — xoá sau khi đồng bộ xong bằng `clearDirty` với đúng mốc đã lấy. */
+  /** Lấy một lô sản phẩm bẩn ĐẾN HẠN (không xoá) — xoá sau khi đồng bộ xong bằng `clearDirty` với đúng mốc đã lấy. */
   async claimDirty(limit: number): Promise<DirtyClaim[]> {
     // marked_at dạng text: giữ đủ micro giây (Date của JS chỉ tới mili giây → so sánh `<=` sai).
     const res = await this.db.raw(
-      `SELECT product_id, marked_at::text AS marked_at FROM catalog_index_dirty ORDER BY marked_at ASC LIMIT ?`,
+      `SELECT product_id, marked_at::text AS marked_at, attempts FROM catalog_index_dirty
+       WHERE next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()
+       ORDER BY marked_at ASC LIMIT ?`,
       [limit],
     );
     return res.rows as DirtyClaim[];
@@ -167,6 +176,24 @@ export default class CatalogIndexModuleService {
     );
   }
 
+  /**
+   * Hẹn thử lại các dấu (sản phẩm bị bỏ qua): đặt `attempts` và lùi `next_attempt_at`. Dấu đã được đặt lại sau khi lấy
+   * (marked_at mới hơn; markDirty cũng reset attempts) thì giữ nguyên để lấy ngay lượt sau.
+   */
+  async deferDirty(items: DirtyDefer[]): Promise<void> {
+    if (items.length === 0) return;
+    await this.db.raw(
+      `UPDATE catalog_index_dirty d
+          SET attempts = c.attempts, next_attempt_at = clock_timestamp() + c.delay_seconds * interval '1 second'
+         FROM (
+           SELECT x->>'product_id' AS product_id, (x->>'marked_at')::timestamptz AS marked_at,
+                  (x->>'attempts')::int AS attempts, (x->>'delay_seconds')::int AS delay_seconds
+             FROM jsonb_array_elements(?::jsonb) x
+         ) c WHERE d.product_id = c.product_id AND d.marked_at <= c.marked_at`,
+      [JSON.stringify(items)],
+    );
+  }
+
   /** Số dòng read model (toàn bảng, hoặc chỉ của các sản phẩm) — kiểm cuối sau rebuild/sync. */
   async countRows(productIds?: string[]): Promise<number> {
     if (productIds && productIds.length === 0) return 0;
@@ -178,8 +205,13 @@ export default class CatalogIndexModuleService {
     return (res.rows[0] as { n: number }).n;
   }
 
-  async dirtyCount(): Promise<number> {
-    const res = await this.db.raw(`SELECT count(*)::int AS n FROM catalog_index_dirty`);
+  /** Số dấu bẩn; `dueOnly` chỉ đếm dấu đã đến hạn lấy (không tính dấu đang chờ backoff). */
+  async dirtyCount(dueOnly = false): Promise<number> {
+    const res = await this.db.raw(
+      `SELECT count(*)::int AS n FROM catalog_index_dirty${
+        dueOnly ? " WHERE next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()" : ""
+      }`,
+    );
     return (res.rows[0] as { n: number }).n;
   }
 

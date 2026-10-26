@@ -6,7 +6,7 @@ import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import type CatalogIndexModuleService from "../../modules/catalog-index/service";
-import type { CatalogIndexRow } from "../../modules/catalog-index/service";
+import type { CatalogIndexRow, DirtyClaim, DirtyDefer } from "../../modules/catalog-index/service";
 import { acquireOrdered, isLockUnavailable, releaseOwnedQuietly, withOwnedLock } from "../checkout/locks";
 import { colorOf, loadDictionary, sizeOf, type Dictionary } from "./dictionary";
 import { loadProductSources, PRODUCT_SOURCE_BATCH, toVnd, type ProductSource } from "./product-source";
@@ -279,10 +279,15 @@ async function openMismatchException(
  * phẩm còn lại trong lô vẫn ghi bình thường (lỗi cô lập theo sản phẩm, không kéo cả lô). Có sản phẩm bị bỏ → log ERROR
  * + mở ngoại lệ (cùng kind với rebuild).
  */
-async function syncUnlocked(container: MedusaContainer, ids: string[], ctx: IndexContext): Promise<number> {
+async function syncUnlocked(
+  container: MedusaContainer,
+  ids: string[],
+  ctx: IndexContext,
+): Promise<{ rows: number; skipped: Set<string> }> {
   const index = indexService(container);
   const report = emptyReport();
   const written = new Set<string>();
+  const skipped = new Set<string>();
   let writtenRows = 0;
   for (let i = 0; i < ids.length; i += SOURCE_CHUNK) {
     const chunk = ids.slice(i, i + SOURCE_CHUNK);
@@ -293,6 +298,7 @@ async function syncUnlocked(container: MedusaContainer, ids: string[], ctx: Inde
     );
     const skip = new Set(built.report.productsWithMissing);
     const okIds = chunk.filter((id) => !skip.has(id));
+    for (const id of skip) skipped.add(id);
     const okRows = built.rows.filter((r) => !skip.has(r.product_id));
     await index.replaceProducts(okIds, okRows);
     for (const id of okIds) written.add(id);
@@ -303,7 +309,7 @@ async function syncUnlocked(container: MedusaContainer, ids: string[], ctx: Inde
   const stored = written.size > 0 ? await index.countRows([...written]) : 0;
   reportBuild(container, "sync", { ...report, rows: writtenRows }, stored);
   if (report.missing.length > 0) await openMismatchException(container, "sync", report);
-  return writtenRows;
+  return { rows: writtenRows, skipped };
 }
 
 export interface RebuildResult {
@@ -382,9 +388,10 @@ async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResul
 export async function syncCatalogProducts(container: MedusaContainer, productIds: string[]): Promise<number> {
   const ids = [...new Set(productIds.filter(Boolean))];
   if (ids.length === 0) return 0;
-  return withIndexLock(container, async () =>
-    syncUnlocked(container, ids, await loadIndexContext(container)),
-  );
+  return withIndexLock(container, async () => {
+    const { rows } = await syncUnlocked(container, ids, await loadIndexContext(container));
+    return rows;
+  });
 }
 
 /** Rebuild toàn phần: tính mọi dòng rồi thay cả bảng trong MỘT giao dịch (người đọc thấy bảng cũ tới khi commit). */
@@ -395,6 +402,10 @@ export async function rebuildCatalogIndex(container: MedusaContainer): Promise<R
 /** Ký hiệu "cần rebuild toàn phần" trong hàng đợi sản phẩm bẩn. */
 export const REBUILD_MARK = "*";
 const DRAIN_BATCH = 500;
+/** Backoff (giây) trước lần thử lại thứ n của sản phẩm bị bỏ qua vì lệch giá: 1 → 5 → 15 → 15 phút. */
+export const SKIP_RETRY_DELAYS_SECONDS = [60, 300, 900, 900] as const;
+/** Số lần bị bỏ qua tối đa; lần thứ N này thì xoá dấu (ngoại lệ catalog_index_mismatch đã mở lo tiếp). */
+export const SKIP_MAX_ATTEMPTS = SKIP_RETRY_DELAYS_SECONDS.length + 1;
 // Lease ngắn + gia hạn mỗi 1/3 lease khi còn xả: tiến trình chết giữa chừng thì khoá tự hết sau ≤ 30 giây (lease
 // dài 600 giây cũ làm index đứng 10 phút và chặn rebuild — chờ tối đa LOCK_TIMEOUT_SECONDS — tới khi hết hạn).
 export const DRAIN_LOCK_EXPIRE_SECONDS = 30;
@@ -445,12 +456,35 @@ export async function drainCatalogIndex(container: MedusaContainer): Promise<num
           await index.clearDirty(claims);
         } else {
           ctx ??= await loadIndexContext(container);
-          await syncUnlocked(
+          const { skipped } = await syncUnlocked(
             container,
             claims.map((c) => c.product_id),
             ctx,
           );
-          await index.clearDirty(claims);
+          // Sản phẩm bị bỏ qua (lệch giá) KHÔNG xoá dấu: lùi giờ thử lại; hết lượt thì xoá, ngoại lệ lo tiếp.
+          const defers: DirtyDefer[] = [];
+          const giveUp: DirtyClaim[] = [];
+          const done: DirtyClaim[] = [];
+          for (const c of claims) {
+            if (!skipped.has(c.product_id)) done.push(c);
+            else if (c.attempts + 1 >= SKIP_MAX_ATTEMPTS) giveUp.push(c);
+            else
+              defers.push({
+                ...c,
+                attempts: c.attempts + 1,
+                delay_seconds: SKIP_RETRY_DELAYS_SECONDS[c.attempts] ?? SKIP_RETRY_DELAYS_SECONDS.at(-1)!,
+              });
+          }
+          if (giveUp.length > 0) {
+            container
+              .resolve(ContainerRegistrationKeys.LOGGER)
+              .error(
+                `[catalog-index] Bỏ thử lại sau ${SKIP_MAX_ATTEMPTS} lần: ${giveUp.length} sản phẩm vẫn lệch giá, ` +
+                  `xoá dấu (xử lý theo ngoại lệ ${CATALOG_INDEX_MISMATCH_KIND}): ${sample(giveUp.map((c) => c.product_id))}`,
+              );
+          }
+          await index.clearDirty([...done, ...giveUp]);
+          await index.deferDirty(defers);
         }
         processed += claims.length;
       }
@@ -462,7 +496,7 @@ export async function drainCatalogIndex(container: MedusaContainer): Promise<num
           .warn(`[catalog-index] Nhả khoá xả lỗi/quá hạn (lease tự hết): ${(err as Error).message}`);
       }
     }
-    if ((await index.dirtyCount()) === 0) break;
+    if ((await index.dirtyCount(true)) === 0) break;
   }
   return processed;
 }

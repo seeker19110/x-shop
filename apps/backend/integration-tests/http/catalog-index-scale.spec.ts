@@ -2,7 +2,8 @@ import type { Logger, MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
-import { rebuildCatalogIndex, syncCatalogProducts } from "../../src/lib/catalog/indexer";
+import { drainCatalogIndex, rebuildCatalogIndex, syncCatalogProducts } from "../../src/lib/catalog/indexer";
+import { Migration20261026120000 } from "../../src/modules/catalog-index/migrations/Migration20261026120000";
 import { Migration20261026030000 } from "../../src/modules/checkout/migrations/Migration20261026030000";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
@@ -302,6 +303,87 @@ medusaIntegrationTestRunner({
       expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
       expect(await count("product_id = ?", [good])).toBe(SKUS_PER_PRODUCT);
       expect(await exceptions("open")).toBe(1);
+    });
+
+    it("T-061: drain giữ dấu sản phẩm lệch giá, thử lại khi đến hạn (backoff), ghi được khi giá sửa xong; sản phẩm tốt ghi ngay", async () => {
+      await rebuildCatalogIndex(container);
+      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+      await markSentinel("prod_SCALE0000%");
+      const bad = "prod_SCALE00001";
+      const good = "prod_SCALE00002";
+      const dirty = async (id: string) =>
+        (
+          await db.raw(
+            `SELECT attempts, next_attempt_at > clock_timestamp() AS waiting FROM catalog_index_dirty WHERE product_id = ?`,
+            [id],
+          )
+        ).rows[0] as { attempts: number; waiting: boolean } | undefined;
+      const makeDue = () =>
+        db.raw(
+          `UPDATE catalog_index_dirty SET next_attempt_at = clock_timestamp() - interval '1 second' WHERE product_id = ?`,
+          [bad],
+        );
+
+      await index().markDirty([bad, good]);
+      const stub = breakPricing();
+      await drainCatalogIndex(container);
+      // Sản phẩm tốt ghi ngay (sentinel biến mất, dấu xoá); sản phẩm lệch giữ dòng cũ + dấu hẹn lại.
+      expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
+      expect(await dirty(good)).toBeUndefined();
+      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+      expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
+
+      // Chưa đến hạn: drain không đọc nguồn (không lặp nóng).
+      const graph = jest.spyOn(container.resolve(ContainerRegistrationKeys.QUERY), "graph");
+      const before = graph.mock.calls.length;
+      await drainCatalogIndex(container);
+      expect(graph.mock.calls.length).toBe(before);
+      expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
+
+      // Đến hạn mà giá vẫn hỏng: thử lại, attempts tăng, hẹn lùi tiếp.
+      await makeDue();
+      await drainCatalogIndex(container);
+      expect(await dirty(bad)).toEqual({ attempts: 2, waiting: true });
+      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+
+      // Giá sửa xong + đến hạn: ghi được, dấu xoá, ngoại lệ đã mở vẫn còn (không tự đóng).
+      stub.mockRestore();
+      await makeDue();
+      await drainCatalogIndex(container);
+      expect(await dirty(bad)).toBeUndefined();
+      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(0);
+      expect(await count("product_id = ?", [bad])).toBe(SKUS_PER_PRODUCT);
+      expect(await exceptions("open")).toBe(1);
+    });
+
+    it("T-061: markDirty mới trên dấu đang chờ backoff đặt lại attempts và đến hạn ngay; migration down/up khứ hồi", async () => {
+      const bad = "prod_SCALE00003";
+      await index().markDirty([bad]);
+      await db.raw(
+        `UPDATE catalog_index_dirty SET attempts = 3, next_attempt_at = clock_timestamp() + interval '1 hour' WHERE product_id = ?`,
+        [bad],
+      );
+      expect((await index().claimDirty(1000)).map((c) => c.product_id)).not.toContain(bad);
+      await index().markDirty([bad]);
+      const claims = await index().claimDirty(1000);
+      expect(claims.find((c) => c.product_id === bad)?.attempts).toBe(0);
+      await index().clearDirty(claims);
+
+      const run = async (direction: "up" | "down") => {
+        const m = new Migration20261026120000({} as never, {} as never);
+        await m[direction]();
+        for (const q of m.getQueries()) await db.raw(String(q));
+      };
+      const cols = async () =>
+        (
+          await db.raw(
+            `SELECT column_name FROM information_schema.columns WHERE table_name = 'catalog_index_dirty' AND column_name IN ('attempts','next_attempt_at')`,
+          )
+        ).rows.length;
+      await run("down");
+      expect(await cols()).toBe(0);
+      await run("up");
+      expect(await cols()).toBe(2);
     });
 
     it("sync/rebuild với dữ liệu rỗng: không lỗi, không mở ngoại lệ", async () => {
