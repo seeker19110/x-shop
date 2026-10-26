@@ -432,3 +432,24 @@
 - Chọn: Một mã cấp đơn; snapshot lưu loại + giá trị + điều kiện tại lúc đặt
 - Lý do (tiêu chí chất lượng cuối): (1) đúng hành vi hiện có và đặc tả; snapshot đầy đủ giúp đối soát/đổi trả đúng khi mã đổi sau đó (cách chặt hơn); (3) không thêm tính năng chồng mã chưa yêu cầu
 - Đường lùi: Thêm stackable khi chủ sản phẩm yêu cầu
+
+### D-062 · 2026-10-26T18:00:47+00:00 · Unit test chạy hai lần trong CI (test + test:coverage)
+
+- Phương án: (1) Giữ, tốn ~3 phút CI · (2) Đổi test trong xt.yaml sang test:coverage (chạm cấu hình cổng, cần người)
+- Chọn: Giữ, tốn ~3 phút CI
+- Lý do (tiêu chí chất lượng cuối): (2) không chạm xt.yaml (D-052: agent không tự sửa hàng rào); (3) đơn giản; 3 phút CI chấp nhận được
+- Đường lùi: Chủ dự án đổi xt.yaml test → test:coverage rồi bỏ bước trùng
+
+### D-063 · 2026-10-26T18:00:47+00:00 · Gate T-060 (tối ưu PDP p95 ≤ 300 ms) và gốc so sánh
+
+- Phương án: (1) Gate mẫu PERF-LOG §2: build + bật backend cả hai cây, perf compare ≥10 mẫu; gốc = SHA lúc mở task · (2) Chỉ load:smoke 30+3/s
+- Chọn: Gate mẫu PERF-LOG §2: build + bật backend cả hai cây, perf compare ≥10 mẫu; gốc = SHA lúc mở task
+- Lý do (tiêu chí chất lượng cuối): (1) đúng LOOP-OPT-003 (so có thống kê, khoá bộ đo); gốc SHA cố định lúc mở task để so lặp lại được
+- Đường lùi: Đổi gốc sang origin/master nếu task kéo dài qua nhiều merge
+
+### D-064 · 2026-10-26T18:00:48+00:00 · Coverage test tích hợp backend (QA-COV-001)
+
+- Phương án: (1) Thêm test:integration:coverage, đo thời gian trước khi nối CI (task mới T-135) · (2) Miễn kèm lý do
+- Chọn: Thêm test:integration:coverage, đo thời gian trước khi nối CI (task mới T-135)
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt: backend phần lớn logic chỉ được phủ bởi test tích hợp (unit lines 28,8%); (3) đo trước để không vượt timeout CI
+- Đường lùi: Miễn có lý do nếu đo thấy CI vượt 20 phút
