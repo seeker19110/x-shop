@@ -362,3 +362,10 @@
 - Chọn: Coi là dữ liệu cá nhân (định danh giả danh của nhân viên), khai trong data-map
 - Lý do (tiêu chí chất lượng cuối): Cách hiểu chặt hơn theo NĐ 13/2023 (chưa xác minh điều khoản); không tốn thêm chi phí
 - Đường lùi: Đổi phân loại trong docs/privacy/data-map.yaml
+
+### D-052 · 2026-10-26T10:54:18+00:00 · T-128: cổng commit chạm cấu hình cổng vượt timeout hook 600 s (song song 4 luồng = 711 s)
+
+- Phương án: (1) Phiên agent tự nâng timeout PreToolUse trong .claude/settings.json · (2) Hạ cổng: commit chạm cấu hình chỉ chạy unit · (3) Commit script phân mảnh; dòng xt.yaml + mọi thay đổi xt.yaml/settings gom thành patch để chủ dự án áp (hoặc nâng timeout hook) — agent không sửa hàng rào của chính mình
+- Chọn: Commit script phân mảnh; dòng xt.yaml + mọi thay đổi xt.yaml/settings gom thành patch để chủ dự án áp (hoặc nâng timeout hook) — agent không sửa hàng rào của chính mình
+- Lý do (tiêu chí chất lượng cuối): Không hạ cổng, không tự nới hàng rào harness; settings.json cũng là cấu hình cổng nên agent không commit được; chủ dự án quyết
+- Đường lùi: Áp patch khi chủ dự án đồng ý
