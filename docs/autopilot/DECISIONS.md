@@ -313,3 +313,10 @@
 - Chọn: Giữ '(chưa xác minh)' tới khi pháp chế đối chiếu văn bản gốc; DPIA là việc chờ người ký
 - Lý do (tiêu chí chất lượng cuối): Trích sai điều luật nguy hiểm hơn để trống có đánh dấu; DPIA cần pháp chế ký dù sao
 - Đường lùi: Cập nhật DPIA §pháp lý khi có xác minh
+
+### D-045 · 2026-10-26T09:03:40+00:00 · Duyệt PLAN-2 (đợt 2: 68 task đóng MUST blueprint; quyết định Q-01…Q-25)
+
+- Phương án: (1) Chờ chủ dự án duyệt từng quyết định Q · (2) Phiên chính tự duyệt theo khuyến nghị bảng Q (tiêu chí AGENTS §5), thêm T-128 mở khoá commit xt.yaml và T-129 áp patch T-048; việc cần người tách riêng
+- Chọn: Phiên chính tự duyệt theo khuyến nghị bảng Q (tiêu chí AGENTS §5), thêm T-128 mở khoá commit xt.yaml và T-129 áp patch T-048; việc cần người tách riêng
+- Lý do (tiêu chí chất lượng cuối): Mọi khuyến nghị chọn phương án đúng/an toàn hơn và có đường lùi; việc thuộc quyền chủ dự án (giấy phép, ruleset, pháp chế, khoá thật, hạ tầng) không tự làm
+- Đường lùi: Sửa task/quyết định trong docs/autopilot/PLAN-2.md trước khi task tương ứng chạy
