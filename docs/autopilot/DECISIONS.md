@@ -474,3 +474,10 @@
 - Chọn: Phiên chính thêm bước CI ngay khi merge T-101 (Postgres service đã có trong job gate)
 - Lý do (tiêu chí chất lượng cuối): (1) yêu cầu MUST cần CI chặn; job gate đã có Postgres service; (3) một bước, đã có test script
 - Đường lùi: Gỡ bước nếu CI vượt timeout
+
+### D-068 · 2026-10-26T21:17:12+00:00 · Review bù T-099/T-100/T-092/T-088 tìm 1 🟠 (dò tài khoản qua register) + tick BE-FILE-005 sai + rủi ro statement_timeout chưa đo
+
+- Phương án: (1) Hạ tick BE-AUTH-003, BE-FILE-005; thêm T-138…T-141 làm ngay theo thứ tự rủi ro · (2) Giữ tick, ghi nợ kỹ thuật
+- Chọn: Hạ tick BE-AUTH-003, BE-FILE-005; thêm T-138…T-141 làm ngay theo thứ tự rủi ro
+- Lý do (tiêu chí chất lượng cuối): (1) đúng và an toàn: tick phải phản ánh thật (P1 bằng chứng); dò tài khoản admin là rủi ro bảo mật MUST
+- Đường lùi: Tick lại khi T-138/T-141 xanh
