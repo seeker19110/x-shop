@@ -242,3 +242,10 @@
 - Chọn: Kiểm hai cửa sổ liền kề có trọng số (xấp xỉ cửa sổ trượt) trong hitRateCounter/peekRateCounter cho mọi chính sách
 - Lý do (tiêu chí chất lượng cuối): Chống dò mã tra cứu/đoán mã đúng ngưỡng công bố (an toàn trước); không cần hạ tầng mới
 - Đường lùi: Trả về một cửa sổ trong modules/checkout/service.ts
+
+### D-035 · 2026-10-26T00:35:48+00:00 · T-053: cách giành khóa có hạn cho sync/rebuild/seed catalog
+
+- Phương án: (1) Giữ locking.execute + Promise.race hạn giành khóa (không phân biệt khóa bận với Redis câm) · (2) acquireOrdered/withOwnedLock dùng chung locks.ts: khóa bận chờ tới 300 s, mỗi lời gọi Redis hạn 3 s → LOCK_UNAVAILABLE; drain bỏ lượt khi bận/câm
+- Chọn: acquireOrdered/withOwnedLock dùng chung locks.ts: khóa bận chờ tới 300 s, mỗi lời gọi Redis hạn 3 s → LOCK_UNAVAILABLE; drain bỏ lượt khi bận/câm
+- Lý do (tiêu chí chất lượng cuối): Tách được khóa bận (chờ hợp lệ) khỏi Redis câm (fail nhanh); một cơ chế cho cả hệ thống
+- Đường lùi: Trở lại locking.execute trong indexer.ts/seed-catalog.ts
