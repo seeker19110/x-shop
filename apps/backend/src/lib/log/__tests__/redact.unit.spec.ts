@@ -1,4 +1,90 @@
-import { isSensitiveKey, REDACTED, redactLog, redactText } from "../redact";
+import { inspect } from "node:util";
+import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText } from "../redact";
+
+/**
+ * ReDoS (review T-090): đầu vào đối nghịch 32K ký tự cho TỪNG mẫu phải xong nhanh. Trần 50 ms/lần (máy CI chậm vẫn dư —
+ * bản regex mở cũ mất 300–450 ms với 16K ký tự cho riêng mẫu email).
+ */
+describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
+  const N = 32_000;
+  const cases: [string, string][] = [
+    ["email: chữ không @", "a".repeat(N)],
+    ["email: nhiều @ không tên miền", "a@".repeat(N / 2)],
+    ["email: tên miền dài không TLD", `a@${"b".repeat(N)}`],
+    ["email: chấm lặp", `${"a.".repeat(N / 2)}@`],
+    ["URL: scheme dài không ://", "a".repeat(N) + ":"],
+    ["URL: :// không @", `http://${":".repeat(N)}`],
+    ["Bearer lặp", "Bearer ".repeat(N / 7)],
+    ["JWT: eyJ lặp", "eyJ".repeat(N / 3)],
+    ["key=value: khoảng trắng dài", `token${" ".repeat(N)}x`],
+    ["key=value: nháy không đóng", `password="${"a".repeat(N)}`],
+    ["số dài (thẻ/CCCD/SĐT)", "1".repeat(N)],
+    ["số tách nhóm", "0 ".repeat(N / 2)],
+    ["địa chỉ: số + khoảng trắng", `1${" ".repeat(N)}x`],
+    ["địa chỉ: 1/1/1…", `${"1/".repeat(N / 2)} đường`],
+    ["địa chỉ: phẩy lặp", "Phường A,".repeat(N / 9)],
+    ["SQL: nháy lặp", `insert into x values (${"'',".repeat(N / 3)}`],
+    ["SQL: select dài", `select ${"a ".repeat(N / 2)}`],
+    ["OTP: chữ lặp", "otp ".repeat(N / 4)],
+    ["Key ()=( lặp", "Key (".repeat(N / 5)],
+  ];
+  it.each(cases)("%s → < 50 ms", (_name, input) => {
+    redactText(input.slice(0, 100)); // làm nóng regex
+    const t0 = performance.now();
+    redactText(input);
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+});
+
+describe("địa chỉ/họ tên trong nháy, SQL, JSON, util.inspect (review T-090)", () => {
+  it("lỗi knex có câu INSERT kèm giá trị → mọi literal trong nháy bị che", () => {
+    const msg =
+      'insert into "customer_address" ("first_name", "last_name", "address_1", "city") values (\'An\', \'Nguyễn\', \'25/3 hẻm 12 Lê Văn Sỹ\', \'Phường 13, Quận 3\') - duplicate key value';
+    const out = redactText(msg);
+    expect(out).not.toMatch(/An'|Nguyễn|Lê Văn Sỹ|Phường 13/);
+    expect(out).toContain(`values ('${REDACTED}', '${REDACTED}', '${REDACTED}', '${REDACTED}')`);
+    expect(out).toContain("duplicate key value");
+  });
+
+  it("chi tiết ràng buộc Postgres `Key (...)=(...)`", () => {
+    expect(redactText("Key (phone, name)=(0912345678, Trần B) already exists.")).toBe(
+      `Key (phone, name)=(${REDACTED}) already exists.`,
+    );
+  });
+
+  it("JSON.stringify / util.inspect của object địa chỉ (khoá lạ) → địa chỉ bị che", () => {
+    const addr = { line: "12 Nguyễn Trãi", ward: "Phường Bến Thành", district: "Quận 1" };
+    for (const text of [JSON.stringify(addr), inspect(addr)]) {
+      const out = redactText(`lỗi giao hàng: ${text}`);
+      expect(out).not.toMatch(/Nguyễn Trãi|Bến Thành/);
+    }
+    expect(redactText(`addr='12 Nguyễn Trãi, Phường Bến Thành'`)).not.toMatch(/Nguyễn Trãi|Bến Thành/);
+    expect(redactText(`"25/3 hẻm 12 Lê Văn Sỹ"`)).not.toContain("Lê Văn Sỹ");
+  });
+
+  it("câu SELECT có literal; thông điệp thường có nháy không bị che nhầm", () => {
+    expect(redactText("select * from \"order\" where \"email\" = 'x' and name = 'Lan'")).not.toContain("Lan");
+    expect(redactText("không tìm thấy sản phẩm 'ao-thun'")).toBe("không tìm thấy sản phẩm 'ao-thun'");
+  });
+});
+
+describe("khoá API tiền tố và mã OTP/MFA (review T-090)", () => {
+  it.each([
+    ["key sk_live_51HxYzAbCdEfGh123456", `key ${REDACTED}`],
+    ["pk_test_abcdefgh12", REDACTED],
+    ["whsec_abcdefghijk", REDACTED],
+    ["otp 123456", `otp ${REDACTED}`],
+    ["mfa code=654321", `mfa code=${REDACTED}`],
+    ["Mã OTP: 112233", `Mã OTP: ${REDACTED}`],
+    ["recovery_code 12345678", `recovery_code ${REDACTED}`],
+  ])("%j → %j", (input, expected) => {
+    expect(redactText(input)).toBe(expected);
+  });
+
+  it("không che mã HTTP / mã lỗi thường", () => {
+    expect(redactText("status 404 code 500")).toBe("status 404 code 500");
+  });
+});
 
 /**
  * T-090 — bộ che log (BASE-ERR-007, SEC-SECRET-007, CMP-PRIV-008/010): theo tên trường + theo nội dung, bộ mẫu PII tiếng
@@ -214,6 +300,12 @@ describe("cấu trúc", () => {
     });
     expect(out.fn).toBeUndefined();
     expect(out.sym).toBeUndefined();
+  });
+
+  it("chuỗi quá MAX_TEXT bị cắt, ghi số ký tự bỏ", () => {
+    const out = redactText("a".repeat(MAX_TEXT + 10));
+    expect(out.length).toBeLessThan(MAX_TEXT + 40);
+    expect(out).toContain("[cắt 10 ký tự]");
   });
 
   it("chuỗi rỗng và Unicode tổ hợp không lỗi", () => {

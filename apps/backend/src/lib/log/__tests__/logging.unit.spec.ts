@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { parseEnv } from "../../env";
 import { appLoggerFromEnv, SERVICE_NAME, serviceVersion } from "../app-logger";
-import { installRequestLogHook, pathOf, requestLogContext } from "../http";
+import { MAX_PATH, pathOf, requestLogContext } from "../http";
 import {
   AppLogger,
   createLogger,
@@ -370,53 +370,13 @@ describe("middleware requestLogContext", () => {
     expect(ctx!.trace_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it("installRequestLogHook: bọc handler có sẵn, ghi lại x-request-id xấu, middleware không ghi trùng; cài lần 2 → false", async () => {
-    const { logger, records } = capture();
-    const prevCalls: unknown[] = [];
-    const target: {
-      traceRequestHandler?: (h: () => Promise<void>, req: unknown, res: unknown) => Promise<void>;
-    } = {
-      traceRequestHandler: async (h, req) => {
-        prevCalls.push(req);
-        await h();
-      },
-    };
-    expect(installRequestLogHook(logger, target)).toBe(true);
-    expect(installRequestLogHook(logger, target)).toBe(false);
-    const res = Object.assign(new EventEmitter(), { statusCode: 400, writableFinished: true });
-    const req = {
-      method: "GET",
-      originalUrl: "/store/x/products?q=0912345678",
-      headers: { "x-request-id": "bad\nid" },
-    };
-    let ctx: ReturnType<typeof currentLogContext>;
-    await target.traceRequestHandler!(
-      async () => {
-        ctx = currentLogContext();
-        // Middleware dự phòng thấy request đã được hook xử lý → chỉ next().
-        const next = jest.fn();
-        call({ ...req, requestId: "khac" } as never, res, next);
-        expect(next).toHaveBeenCalled();
-      },
-      req,
-      res,
-    );
-    expect(prevCalls).toEqual([req]);
-    expect(req.headers["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
-    expect(ctx!.trace_id).toBe(req.headers["x-request-id"]);
-    res.emit("finish");
-    expect(records()).toHaveLength(1);
-    expect(records()[0]).toMatchObject({
-      "url.path": "/store/x/products",
-      "http.response.status_code": 400,
-      trace_id: req.headers["x-request-id"],
-    });
-  });
-
   it("pathOf", () => {
     expect(pathOf({ originalUrl: "/a/b?x=1" })).toBe("/a/b");
     expect(pathOf({ url: "/c" })).toBe("/c");
     expect(pathOf({})).toBe("/");
+    // Đường dẫn dài (đối nghịch) bị cắt trước khi vào log/bộ che.
+    const long = pathOf({ originalUrl: `/${"a".repeat(50_000)}?q=1` });
+    expect(long.length).toBeLessThan(MAX_PATH + 20);
   });
 });
 

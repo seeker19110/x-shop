@@ -336,7 +336,7 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
     }
     const access = records.filter((r) => r.message === "http.server.request");
     expect(access.map((r) => r["url.path"])).toEqual(
-      expect.arrayContaining(["/store/x/products", "/auth/user/emailpass", "/x/khong-co-route"]),
+      expect.arrayContaining(["/auth/user/emailpass", "/x/khong-co-route"]),
     );
     for (const r of access) {
       expect(typeof r.trace_id).toBe("string");
@@ -345,6 +345,37 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
     const out = be.stdout();
     for (const secret of ["0912345678", "bi-mat-query", email, "mat-khau-sai-0123", "0987654321"])
       expect(out).not.toContain(secret);
+  });
+
+  it("hồi quy T-090: URL mã hoá hỏng / dạng tuyệt đối → 4xx, tiến trình KHÔNG chết (không unhandledRejection)", async () => {
+    const be = await startBackend({ SHUTDOWN_DRAIN_DELAY_MS: "0", SHUTDOWN_TIMEOUT_MS: "15000" });
+    /** Gửi request thô (đường dẫn nguyên văn, không qua chuẩn hoá của client). */
+    const raw = (target: string) =>
+      new Promise<number>((resolve, reject) => {
+        const sock = net.connect(be.port, "127.0.0.1", () => {
+          sock.write(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`);
+        });
+        let data = "";
+        sock.on("data", (c: Buffer) => (data += c.toString("latin1")));
+        sock.on("end", () => resolve(Number(/^HTTP\/1\.1 (\d{3})/.exec(data)?.[1] ?? 0)));
+        sock.on("error", reject);
+      });
+    for (const target of [
+      "/auth/user/%FF",
+      "/store/products/%E0%A4%A",
+      "/x/webhooks/%",
+      "http://xn--a.com/",
+      "http://127.0.0.1/x/health",
+    ]) {
+      const status = await raw(target);
+      expect({ target, ok: status >= 200 && status < 500 }).toEqual({ target, ok: true });
+      await sleep(200);
+      expect({ target, alive: be.child.exitCode === null }).toEqual({ target, alive: true });
+    }
+    expect((await request(be.port, "GET", "/x/readyz")).status).toBe(200);
+    expect(be.output()).not.toMatch(/unhandledRejection|uncaughtException/);
+    be.child.kill("SIGTERM");
+    expect((await be.exited).code).toBe(0);
   });
 
   it("request treo quá trần → thoát mã 1 trong khoảng trần (không chờ SIGKILL của nền tảng)", async () => {

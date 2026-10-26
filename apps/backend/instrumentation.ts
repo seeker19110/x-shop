@@ -2,7 +2,6 @@ import { loadEnvOrExit } from "./src/lib/env";
 import { installProcessErrorHandlers } from "./src/lib/errors/process";
 import { installGracefulShutdown } from "./src/lib/lifecycle/shutdown";
 import { appLoggerFromEnv } from "./src/lib/log/app-logger";
-import { installRequestLogHook } from "./src/lib/log/http";
 
 /**
  * Medusa gọi `register()` của file này khi `medusa start` (server và worker), trước khi dựng ứng dụng và TRƯỚC khi gắn
@@ -20,6 +19,4 @@ export function register(): void {
   installGracefulShutdown(env.shutdown, {
     emitLog: (level, message, fields) => logger.emit(level, message, fields),
   });
-  // Ngữ cảnh log + log truy cập cho MỌI request (T-090): bọc `traceRequestHandler` của Medusa — src/lib/log/http.ts.
-  installRequestLogHook(logger);
 }

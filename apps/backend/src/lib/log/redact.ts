@@ -123,14 +123,31 @@ function luhn(digits: string): boolean {
   return sum % 10 === 0;
 }
 
-/** Thứ tự quan trọng: bí mật có cấu trúc trước, số thẻ/CCCD trước SĐT (SĐT là chuỗi số ngắn hơn). */
+/**
+ * Thứ tự quan trọng: bí mật có cấu trúc trước, số thẻ/CCCD trước SĐT (SĐT là chuỗi số ngắn hơn).
+ * MỌI lượng từ đều có trần (không `+`/`*` mở) → thời gian tuyến tính theo độ dài, không ReDoS trên đầu vào đối nghịch
+ * (đường dẫn, thông điệp lỗi do client điều khiển) — test hiệu năng trong redact.unit.spec.ts.
+ */
 const RULES: Rule[] = [
-  { re: /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, to: (_m, scheme) => `${scheme} ${REDACTED}` },
-  { re: /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g, to: REDACTED },
-  { re: /\b([a-z][a-z0-9+.-]*:\/\/)[^\s:@/]*:[^\s@/]+@/gi, to: (_m, scheme) => `${scheme}${REDACTED}@` },
+  {
+    re: /\b(Bearer|Basic|Token)\s{1,8}[A-Za-z0-9._~+/=-]{6,4096}/gi,
+    to: (_m, scheme) => `${scheme} ${REDACTED}`,
+  },
+  { re: /\beyJ[A-Za-z0-9_-]{5,4096}\.[A-Za-z0-9_-]{5,4096}\.[A-Za-z0-9_-]{5,4096}/g, to: REDACTED },
+  // Khoá API dạng tiền tố (Stripe-like `sk_live_…`, `pk_test_…`, `rk_…`, `whsec_…`).
+  { re: /\b(?:(?:sk|pk|rk)_(?:live|test)|whsec)_[A-Za-z0-9]{8,256}/g, to: REDACTED },
+  {
+    re: /\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s:@/]{0,256}:[^\s@/]{1,256}@/gi,
+    to: (_m, scheme) => `${scheme}${REDACTED}@`,
+  },
+  // Mã OTP/MFA/khôi phục kèm số: "otp 123456", "mfa code=654321", "mã OTP: 112233".
+  {
+    re: /\b((?:mã\s{1,3})?(?:otp|totp|mfa(?:[ _-]?code)?|2fa|recovery[ _-]?code))(\s{0,3}[:=]?\s{0,3})\d{4,10}\b/giu,
+    to: (_m, key, sep) => `${key}${sep}${REDACTED}`,
+  },
   {
     re: new RegExp(
-      `(["']?)\\b(${SECRET_PARAM})\\1(\\s*[:=]\\s*)((?:(?:Bearer|Basic|Token)\\s+)?(?:"[^"]*"|'[^']*'|[^&\\s,;"'}]+))`,
+      `(["']?)\\b(${SECRET_PARAM})\\1(\\s{0,8}[:=]\\s{0,8})((?:(?:Bearer|Basic|Token)\\s{1,8})?(?:"[^"]{0,4096}"|'[^']{0,4096}'|[^&\\s,;"'}]{1,4096}))`,
       "gi",
     ),
     to: (_m, q, key, sep, value) => {
@@ -138,7 +155,9 @@ const RULES: Rule[] = [
       return `${q}${key}${q}${sep}${quote}${REDACTED}${quote}`;
     },
   },
-  { re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, to: "[EMAIL]" },
+  // Chi tiết lỗi ràng buộc Postgres: `Key (email)=(a@b.vn) already exists.`
+  { re: /\bKey \(([^()]{1,256})\)=\([^()]{0,1024}\)/g, to: (_m, cols) => `Key (${cols})=(${REDACTED})` },
+  { re: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}/g, to: "[EMAIL]" },
   {
     re: /(?<![\p{L}\p{N}])[2-6]\d(?:[ -]?\d){11,17}(?![\p{L}\p{N}])/gu,
     to: (m) => (luhn(m.replace(/\D/g, "")) ? "[CARD]" : m),
@@ -146,6 +165,17 @@ const RULES: Rule[] = [
   { re: /(?<![\p{L}\p{N}])0\d{2}(?:[ .-]?\d{3}){3}(?![\p{L}\p{N}])/gu, to: "[CCCD]" },
   { re: /(?<![\p{L}\p{N}+.])(?:\+84|84|0)(?![.])(?:[ .-]?\d){9,10}(?![\p{N}])/gu, to: "[PHONE]" },
 ];
+
+/**
+ * Thông điệp chứa câu SQL (lỗi knex/MikroORM chép câu lệnh kèm giá trị vào `err.message`): mọi chuỗi trong nháy đơn có
+ * thể là họ tên/địa chỉ không nhận ra bằng mẫu → che hết.
+ */
+const SQL_HINT =
+  /\b(?:insert\s{1,4}into|update\s{1,4}\S{1,128}\s{1,4}set|select\s[\s\S]{0,2048}?\bfrom|delete\s{1,4}from|values\s{0,4}\()/i;
+const SQL_LITERAL = /'(?:[^']|''){0,4096}'/g;
+
+/** Trần độ dài chuỗi đưa vào bộ che/log (đủ cho stack nhiều tầng cause); phần thừa bị cắt và ghi số ký tự bỏ. */
+export const MAX_TEXT = 32_768;
 
 /** Chữ cái đầu hoa hoặc thường: `cap("phường")` → `[Pp]hường`. */
 const cap = (w: string) => `[${w[0]!.toUpperCase()}${w[0]!}]${w.slice(1)}`;
@@ -173,21 +203,25 @@ const ADMIN_WORDS = [
   "tổ dân phố",
 ];
 const STREET_WORDS = "đường|duong|phố|pho|ngõ|ngo|ngách|ngach|hẻm|hem|kiệt|kiet|thôn|thon|ấp|xóm|xom|tổ";
-const B = "(?:^|[\\s,(])";
+// Biên trái gồm cả nháy/`=`/`:`/`[` — địa chỉ trong chuỗi SQL, JSON.stringify, util.inspect.
+const B = "(?:^|[\\s,('\"=:\\[])";
 /** Cấp hành chính có tên/số theo sau: `Phường Bến Thành`, `quận 1`, `P. Bến Thành`, `Q.1`, `TP.HCM`, `TP Hồ Chí Minh`. */
 const ADMIN_STRICT = new RegExp(
-  `${B}(?:(?:${ADMIN_WORDS.map(cap).join("|")})\\s+(?:\\p{Lu}|\\d)|(?:P|Q|H|TX|TP|Tp)\\.\\s?(?:\\p{Lu}|\\d)|TP\\s?(?:HCM|\\p{Lu}))`,
+  `${B}(?:(?:${ADMIN_WORDS.map(cap).join("|")})\\s{1,4}(?:\\p{Lu}|\\d)|(?:P|Q|H|TX|TP|Tp)\\.\\s?(?:\\p{Lu}|\\d)|TP\\s?(?:HCM|\\p{Lu}))`,
   "u",
 );
 /** Trong một cụm địa chỉ đã mở: từ khoá hành chính ở bất kỳ dạng nào (kể cả viết thường không dấu). */
 const ADMIN_LOOSE = new RegExp(`${B}(?:${ADMIN_WORDS.join("|")}|tp)(?=[\\s\\d.,)]|$)`, "iu");
 /** Số nhà + đường/ngõ/hẻm/thôn…: đủ để coi là địa chỉ. */
 const STREET_STRONG = new RegExp(
-  `${B}(?:(?:số|so|Số|So)\\s*)?\\d+[a-zA-Z]?(?:\\/\\d+[a-zA-Z]?)*\\s+(?:${STREET_WORDS})(?![\\p{L}\\p{N}])`,
+  `${B}(?:(?:số|so|Số|So)\\s{0,3})?\\d{1,6}[a-zA-Z]?(?:\\/\\d{1,6}[a-zA-Z]?){0,4}\\s{1,4}(?:${STREET_WORDS})(?![\\p{L}\\p{N}])`,
   "iu",
 );
 /** Số nhà + tên viết hoa (`12 Nguyễn Trãi`): chỉ tính khi đứng cạnh một đoạn địa chỉ khác. */
-const HOUSE_WEAK = /(?:^|[\s,(])(?:(?:số|Số)\s*)?\d+[a-zA-Z]?(?:\/\d+[a-zA-Z]?)*\s+\p{Lu}\p{Ll}/u;
+const HOUSE_WEAK = new RegExp(
+  `${B}(?:(?:số|Số)\\s{0,3})?\\d{1,6}[a-zA-Z]?(?:\\/\\d{1,6}[a-zA-Z]?){0,4}\\s{1,4}\\p{Lu}\\p{Ll}`,
+  "u",
+);
 
 /**
  * Địa chỉ VN trong văn bản tự do: tách theo `,`/`;`/xuống dòng. Cụm mở bằng đoạn "chặt" (số nhà + đường, cấp hành chính có
@@ -200,7 +234,7 @@ function addressStart(seg: string): number {
   for (const re of [STREET_STRONG, ADMIN_STRICT, HOUSE_WEAK]) {
     const m = re.exec(seg);
     if (m !== null) {
-      const lead = /^[\s,(]/.test(m[0]) ? 1 : 0;
+      const lead = /^[\s,('"=:[]/.test(m[0]) ? 1 : 0;
       best = Math.min(best, m.index + lead);
     }
   }
@@ -210,7 +244,7 @@ function addressStart(seg: string): number {
 function redactAddress(s: string): string {
   const strict = (p: string) => STREET_STRONG.test(p) || ADMIN_STRICT.test(p) || HOUSE_WEAK.test(p);
   if (!strict(s)) return s;
-  const parts = s.split(/([,;\n])/);
+  const parts = s.split(/([,;\n]{1,16})/);
   const out: string[] = [];
   let i = 0;
   while (i < parts.length) {
@@ -239,7 +273,9 @@ function redactAddress(s: string): string {
 
 /** Che bí mật/PII trong một chuỗi. */
 export function redactText(input: string): string {
-  let s = input;
+  let s =
+    input.length > MAX_TEXT ? `${input.slice(0, MAX_TEXT)}…[cắt ${input.length - MAX_TEXT} ký tự]` : input;
+  if (SQL_HINT.test(s)) s = s.replace(SQL_LITERAL, `'${REDACTED}'`);
   for (const { re, to } of RULES) {
     s = s.replace(re, to as (m: string, ...g: string[]) => string);
   }
