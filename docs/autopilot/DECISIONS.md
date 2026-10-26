@@ -341,3 +341,24 @@
 - Chọn: Phiên chính duyệt SPEC-platform (approved_by D-048) và đổi trạng thái Approved
 - Lý do (tiêu chí chất lượng cuối): Giữ đúng một quy trình spec cho mọi tính năng
 - Đường lùi: Đổi lại Draft
+
+### D-049 · 2026-10-26T10:18:27+00:00 · payment_attempt.payment_url lưu vnp_IpAddr (IP thô khách)
+
+- Phương án: (1) Giữ, áp lớp lưu payment-evidence · (2) Không lưu IP thô: lưu URL đã bỏ/che vnp_IpAddr (URL gửi VNPAY vẫn đủ), migration mới che dữ liệu cũ
+- Chọn: Không lưu IP thô: lưu URL đã bỏ/che vnp_IpAddr (URL gửi VNPAY vẫn đủ), migration mới che dữ liệu cũ
+- Lý do (tiêu chí chất lượng cuối): Tối thiểu hoá dữ liệu cá nhân; IP không cần cho đối soát (có txn_ref)
+- Đường lùi: Lưu lại URL đầy đủ
+
+### D-050 · 2026-10-26T10:18:28+00:00 · Phiên bản build cho smoke sau deploy (WF-REL-007)
+
+- Phương án: (1) Thêm phiên bản vào /x/health công khai · (2) Route phiên bản riêng có xác thực (admin) hoặc header nội bộ sau LB
+- Chọn: Route phiên bản riêng có xác thực (admin) hoặc header nội bộ sau LB
+- Lý do (tiêu chí chất lượng cuối): Không lộ phiên bản cho kẻ tấn công dò lỗ hổng theo phiên bản
+- Đường lùi: Đưa phiên bản vào /x/health
+
+### D-051 · 2026-10-26T10:18:28+00:00 · Định danh nhân viên (actor_id, *_by) trong sổ dữ liệu
+
+- Phương án: (1) Không coi là PII · (2) Coi là dữ liệu cá nhân (định danh giả danh của nhân viên), khai trong data-map
+- Chọn: Coi là dữ liệu cá nhân (định danh giả danh của nhân viên), khai trong data-map
+- Lý do (tiêu chí chất lượng cuối): Cách hiểu chặt hơn theo NĐ 13/2023 (chưa xác minh điều khoản); không tốn thêm chi phí
+- Đường lùi: Đổi phân loại trong docs/privacy/data-map.yaml
