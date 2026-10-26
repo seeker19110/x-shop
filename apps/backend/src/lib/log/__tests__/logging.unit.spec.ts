@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { parseEnv } from "../../env";
 import { appLoggerFromEnv, SERVICE_NAME, serviceVersion } from "../app-logger";
-import { MAX_PATH, pathOf, requestLogContext } from "../http";
+import { installAccessLogServerHook, MAX_PATH, pathOf, requestLogContext, trackRawRequest } from "../http";
 import {
   AppLogger,
   createLogger,
@@ -368,6 +368,52 @@ describe("middleware requestLogContext", () => {
     let ctx: ReturnType<typeof currentLogContext>;
     call(req, res, () => (ctx = currentLogContext()));
     expect(ctx!.trace_id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("hook server (installAccessLogServerHook): request bị chặn trước middleware vẫn được ghi đúng 1 lần; middleware không ghi trùng, cùng span", () => {
+    const { logger, records } = capture();
+    const mod = { createServer: (() => new EventEmitter()) as (...a: never[]) => unknown };
+    expect(installAccessLogServerHook(logger, mod)).toBe(true);
+    expect(installAccessLogServerHook(logger, mod)).toBe(false);
+    const server = mod.createServer() as EventEmitter;
+    // (1) 401 admin: Medusa chặn trước middleware dự án — chỉ hook server thấy request.
+    const a = fakeReqRes("/admin/products", logger, "req-401");
+    delete (a.req as { originalUrl?: string }).originalUrl;
+    Object.assign(a.req, { url: "/admin/products" });
+    server.emit("request", a.req, a.res);
+    a.res.statusCode = 401;
+    a.res.emit("finish");
+    // (2) route thường: hook + middleware → vẫn 1 bản ghi, middleware dùng span của hook.
+    const b = fakeReqRes("/store/x/products", logger, "req-ok");
+    server.emit("request", b.req, b.res);
+    let ctx: ReturnType<typeof currentLogContext>;
+    call(b.req, b.res, () => (ctx = currentLogContext()));
+    b.res.emit("finish");
+    b.res.emit("close");
+    const rs = records();
+    expect(rs).toHaveLength(2);
+    expect(rs[0]).toMatchObject({
+      "url.path": "/admin/products",
+      "http.response.status_code": 401,
+      trace_id: "req-401",
+    });
+    expect(rs[1]).toMatchObject({
+      "url.path": "/store/x/products",
+      trace_id: "req-ok",
+      span_id: ctx!.span_id,
+    });
+  });
+
+  it("hook server không bao giờ ném: server không có prependListener; req/res lạ", () => {
+    const { logger } = capture();
+    const mod = { createServer: (() => ({})) as (...a: never[]) => unknown };
+    installAccessLogServerHook(logger, mod);
+    expect(() => mod.createServer()).not.toThrow();
+    const mod2 = { createServer: (() => new EventEmitter()) as (...a: never[]) => unknown };
+    installAccessLogServerHook(logger, mod2);
+    const server = mod2.createServer() as EventEmitter;
+    expect(() => server.emit("request", null, null)).not.toThrow();
+    expect(() => trackRawRequest(Object.freeze({}), {}, logger)).not.toThrow();
   });
 
   it("pathOf", () => {

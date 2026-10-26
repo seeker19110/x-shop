@@ -14,7 +14,22 @@
  * trong văn bản tự do không phát hiện được bằng mẫu → không đưa họ tên vào thông điệp log.
  */
 
+import { createHmac } from "node:crypto";
+
 export const REDACTED = "[REDACTED]";
+
+let hashKey = "x-shop-dev-log-hash";
+/**
+ * Khoá HMAC cho giá trị "băm ngắn" (literal SQL, chi tiết `Key (...)=(...)`): còn đối chiếu được (tính HMAC của id đã
+ * biết rồi so) mà không lộ giá trị. Logger ứng dụng đặt từ cấu hình (lib/log/app-logger.ts).
+ */
+export function setLogHashKey(key: string): void {
+  if (key.length > 0) hashKey = key;
+}
+/** `[h:xxxxxxxx]` — 8 hex đầu của HMAC-SHA256. */
+export function shortHash(value: string): string {
+  return `[h:${createHmac("sha256", hashKey).update(value).digest("hex").slice(0, 8)}]`;
+}
 const MAX_DEPTH = 10;
 
 const norm = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -136,13 +151,15 @@ const RULES: Rule[] = [
   { re: /\beyJ[A-Za-z0-9_-]{5,4096}\.[A-Za-z0-9_-]{5,4096}\.[A-Za-z0-9_-]{5,4096}/g, to: REDACTED },
   // Khoá API dạng tiền tố (Stripe-like `sk_live_…`, `pk_test_…`, `rk_…`, `whsec_…`).
   { re: /\b(?:(?:sk|pk|rk)_(?:live|test)|whsec)_[A-Za-z0-9]{8,256}/g, to: REDACTED },
+  // Khoá API của Medusa: `sk_` + 64 hex (secret), `pk_` + hex (publishable) — che cả token.
+  { re: /\b(?:sk|pk)_[0-9a-f]{32,128}\b/g, to: REDACTED },
   {
     re: /\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s:@/]{0,256}:[^\s@/]{1,256}@/gi,
     to: (_m, scheme) => `${scheme}${REDACTED}@`,
   },
   // Mã OTP/MFA/khôi phục kèm số: "otp 123456", "mfa code=654321", "mã OTP: 112233".
   {
-    re: /\b((?:mã\s{1,3})?(?:otp|totp|mfa(?:[ _-]?code)?|2fa|recovery[ _-]?code))(\s{0,3}[:=]?\s{0,3})\d{4,10}\b/giu,
+    re: /\b((?:mã\s{1,3})?(?:otp|totp|mfa(?:[ _-]?code)?|recovery[ _-]?code))(\s{0,3}[:=]?\s{0,3})\d{4,10}(?![\d-])/giu,
     to: (_m, key, sep) => `${key}${sep}${REDACTED}`,
   },
   {
@@ -155,11 +172,27 @@ const RULES: Rule[] = [
       return `${q}${key}${q}${sep}${quote}${REDACTED}${quote}`;
     },
   },
+  // Trường PII dạng `address=…` / `"address":"…"` trong văn bản (JSON, query, util.inspect).
+  {
+    re: /(["']?)\b(address(?:_?[12])?|addr|dia_?chi|street|full_?name|first_?name|last_?name|ho_?ten|phone(?:_?number)?|sdt|email|cccd|cmnd)\1(\s{0,8}[:=]\s{0,8})("[^"]{0,4096}"|'[^']{0,4096}'|[^&,;"'}\n]{1,256})/gi,
+    to: (_m, q, key, sep, value) => {
+      const quote = value.startsWith('"') ? '"' : value.startsWith("'") ? "'" : "";
+      return `${q}${key}${q}${sep}${quote}${REDACTED}${quote}`;
+    },
+  },
   // Chi tiết lỗi ràng buộc Postgres: `Key (email)=(a@b.vn) already exists.`
-  { re: /\bKey \(([^()]{1,256})\)=\([^()]{0,1024}\)/g, to: (_m, cols) => `Key (${cols})=(${REDACTED})` },
+  {
+    re: /\bKey \(([^()]{1,256})\)=\(([^()]{0,1024})\)/g,
+    to: (_m, cols, vals) =>
+      `Key (${cols})=(${vals
+        .split(/,\s{0,4}/)
+        .map(shortHash)
+        .join(", ")})`,
+  },
   { re: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}/g, to: "[EMAIL]" },
   {
-    re: /(?<![\p{L}\p{N}])[2-6]\d(?:[ -]?\d){11,17}(?![\p{L}\p{N}])/gu,
+    // Đầu số thẻ (IIN): Visa 4, Mastercard 51–55/22–27, Amex 34/37, JCB 35, Discover 60/65 — tránh dấu thời gian 2026….
+    re: /(?<![\p{L}\p{N}])(?:4\d|5[1-5]|2[2-7]|3[457]|6[05])(?:[ -]?\d){11,17}(?![\p{L}\p{N}])/gu,
     to: (m) => (luhn(m.replace(/\D/g, "")) ? "[CARD]" : m),
   },
   { re: /(?<![\p{L}\p{N}])0\d{2}(?:[ .-]?\d{3}){3}(?![\p{L}\p{N}])/gu, to: "[CCCD]" },
@@ -170,9 +203,18 @@ const RULES: Rule[] = [
  * Thông điệp chứa câu SQL (lỗi knex/MikroORM chép câu lệnh kèm giá trị vào `err.message`): mọi chuỗi trong nháy đơn có
  * thể là họ tên/địa chỉ không nhận ra bằng mẫu → che hết.
  */
-const SQL_HINT =
-  /\b(?:insert\s{1,4}into|update\s{1,4}\S{1,128}\s{1,4}set|select\s[\s\S]{0,2048}?\bfrom|delete\s{1,4}from|values\s{0,4}\()/i;
-const SQL_LITERAL = /'(?:[^']|''){0,4096}'/g;
+const SQL_QUOTED =
+  /\b(?:insert\s{1,4}into\s{1,4}"|update\s{1,4}"[^"\n]{1,128}"\s{1,4}set\s|delete\s{1,4}from\s{1,4}")/i;
+/** SQL viết hoa không nháy định danh (`INSERT INTO t`, `UPDATE t SET c =`, `SELECT … FROM t`) — phân biệt hoa thường. */
+const SQL_UPPER = /\b(?:INSERT INTO \w{1,128}|UPDATE \w{1,128} SET \w{1,128}\s{0,4}=|DELETE FROM \w{1,128})/;
+/** SELECT: kiểm hai mẫu độc lập (tuyến tính) thay vì `select…from` một mẫu (bậc hai khi `select` lặp). */
+function looksLikeSelect(s: string): boolean {
+  return (
+    (/\bselect\s/i.test(s) && /\sfrom\s{1,4}"/i.test(s)) || (/\bSELECT\s/.test(s) && /\sFROM \w/.test(s))
+  );
+}
+/** Tuyến tính (hai nhánh khác ký tự đầu), không trần — chạy SAU khi chuỗi đã bị cắt `MAX_TEXT` nên cặp nháy không lệch. */
+const SQL_LITERAL = /'(?:[^']|'')*'/g;
 
 /** Trần độ dài chuỗi đưa vào bộ che/log (đủ cho stack nhiều tầng cause); phần thừa bị cắt và ghi số ký tự bỏ. */
 export const MAX_TEXT = 32_768;
@@ -204,7 +246,7 @@ const ADMIN_WORDS = [
 ];
 const STREET_WORDS = "đường|duong|phố|pho|ngõ|ngo|ngách|ngach|hẻm|hem|kiệt|kiet|thôn|thon|ấp|xóm|xom|tổ";
 // Biên trái gồm cả nháy/`=`/`:`/`[` — địa chỉ trong chuỗi SQL, JSON.stringify, util.inspect.
-const B = "(?:^|[\\s,('\"=:\\[])";
+const B = "(?:^|[\\s,('\"\\[])";
 /** Cấp hành chính có tên/số theo sau: `Phường Bến Thành`, `quận 1`, `P. Bến Thành`, `Q.1`, `TP.HCM`, `TP Hồ Chí Minh`. */
 const ADMIN_STRICT = new RegExp(
   `${B}(?:(?:${ADMIN_WORDS.map(cap).join("|")})\\s{1,4}(?:\\p{Lu}|\\d)|(?:P|Q|H|TX|TP|Tp)\\.\\s?(?:\\p{Lu}|\\d)|TP\\s?(?:HCM|\\p{Lu}))`,
@@ -234,7 +276,7 @@ function addressStart(seg: string): number {
   for (const re of [STREET_STRONG, ADMIN_STRICT, HOUSE_WEAK]) {
     const m = re.exec(seg);
     if (m !== null) {
-      const lead = /^[\s,('"=:[]/.test(m[0]) ? 1 : 0;
+      const lead = /^[\s,('"[]/.test(m[0]) ? 1 : 0;
       best = Math.min(best, m.index + lead);
     }
   }
@@ -253,17 +295,25 @@ function redactAddress(s: string): string {
       let j = i + 2;
       let hits = 1;
       let street = STREET_STRONG.test(seg);
+      let admin = ADMIN_STRICT.test(seg);
       while (j < parts.length && (strict(parts[j]!) || ADMIN_LOOSE.test(parts[j]!))) {
         street ||= STREET_STRONG.test(parts[j]!);
+        admin ||= ADMIN_STRICT.test(parts[j]!) || ADMIN_LOOSE.test(parts[j]!);
         hits += 1;
         j += 2;
       }
-      if (hits >= 2 || street) {
+      // Hai đoạn "số + Tên" liền nhau ("2 Áo Thun, 1 Quần Jean") chưa đủ — cần thêm cấp hành chính hoặc số nhà + đường.
+      if (street || (hits >= 2 && admin)) {
         // Giữ phần chữ đứng trước địa chỉ trong đoạn đầu ("giao: 25/3 hẻm…" → "giao: [ADDRESS]").
         out.push(`${seg.slice(0, addressStart(seg))}[ADDRESS]`);
         i = j - 1; // dấu phân cách ngay sau cụm (nếu có) giữ nguyên
         continue;
       }
+      // Cụm không đạt → mọi cụm con bắt đầu muộn hơn cũng không đạt (street/admin/hits chỉ giảm): giữ nguyên cả cụm,
+      // nhảy qua — tránh quét lại bậc hai.
+      out.push(...parts.slice(i, j - 1));
+      i = j - 1;
+      continue;
     }
     out.push(seg);
     i += 1;
@@ -275,7 +325,17 @@ function redactAddress(s: string): string {
 export function redactText(input: string): string {
   let s =
     input.length > MAX_TEXT ? `${input.slice(0, MAX_TEXT)}…[cắt ${input.length - MAX_TEXT} ký tự]` : input;
-  if (SQL_HINT.test(s)) s = s.replace(SQL_LITERAL, `'${REDACTED}'`);
+  if (SQL_QUOTED.test(s) || SQL_UPPER.test(s) || looksLikeSelect(s)) {
+    const memo = new Map<string, string>(); // literal lặp chỉ băm một lần
+    s = s.replace(SQL_LITERAL, (lit) => {
+      let h = memo.get(lit);
+      if (h === undefined) {
+        h = `'${shortHash(lit.slice(1, -1).replace(/''/g, "'"))}'`;
+        memo.set(lit, h);
+      }
+      return h;
+    });
+  }
   for (const { re, to } of RULES) {
     s = s.replace(re, to as (m: string, ...g: string[]) => string);
   }

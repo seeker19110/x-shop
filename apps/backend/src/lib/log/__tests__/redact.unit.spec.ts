@@ -1,5 +1,5 @@
 import { inspect } from "node:util";
-import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText } from "../redact";
+import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText, shortHash } from "../redact";
 
 /**
  * ReDoS (review T-090): đầu vào đối nghịch 32K ký tự cho TỪNG mẫu phải xong nhanh. Trần 50 ms/lần (máy CI chậm vẫn dư —
@@ -27,6 +27,11 @@ describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
     ["SQL: select dài", `select ${"a ".repeat(N / 2)}`],
     ["OTP: chữ lặp", "otp ".repeat(N / 4)],
     ["Key ()=( lặp", "Key (".repeat(N / 5)],
+    ["SQL: literal dài + nháy", `insert into "t" values (${"'a".repeat(N / 2)}`],
+    ["SQL: chỉ nháy", `insert into "t" ${"'".repeat(N)}`],
+    ["SELECT viết hoa lặp", "SELECT ".repeat(N / 7)],
+    ["cụm số + Tên", ", 1 Ab".repeat(N / 6)],
+    ["address= lặp", "address=".repeat(N / 8)],
   ];
   it.each(cases)("%s → < 50 ms", (_name, input) => {
     redactText(input.slice(0, 100)); // làm nóng regex
@@ -42,14 +47,51 @@ describe("địa chỉ/họ tên trong nháy, SQL, JSON, util.inspect (review T-
       'insert into "customer_address" ("first_name", "last_name", "address_1", "city") values (\'An\', \'Nguyễn\', \'25/3 hẻm 12 Lê Văn Sỹ\', \'Phường 13, Quận 3\') - duplicate key value';
     const out = redactText(msg);
     expect(out).not.toMatch(/An'|Nguyễn|Lê Văn Sỹ|Phường 13/);
-    expect(out).toContain(`values ('${REDACTED}', '${REDACTED}', '${REDACTED}', '${REDACTED}')`);
+    expect(out).toContain(
+      `values ('${shortHash("An")}', '${shortHash("Nguyễn")}', '${shortHash("25/3 hẻm 12 Lê Văn Sỹ")}', '${shortHash("Phường 13, Quận 3")}')`,
+    );
+    expect(shortHash("An")).toMatch(/^\[h:[0-9a-f]{8}\]$/);
     expect(out).toContain("duplicate key value");
   });
 
-  it("chi tiết ràng buộc Postgres `Key (...)=(...)`", () => {
+  it("chi tiết ràng buộc Postgres `Key (...)=(...)` → băm ngắn từng giá trị (còn đối chiếu được)", () => {
     expect(redactText("Key (phone, name)=(0912345678, Trần B) already exists.")).toBe(
-      `Key (phone, name)=(${REDACTED}) already exists.`,
+      `Key (phone, name)=(${shortHash("0912345678")}, ${shortHash("Trần B")}) already exists.`,
     );
+    expect(redactText("Key (idempotency_key)=(idem_01JABCDEF) already exists.")).toBe(
+      `Key (idempotency_key)=(${shortHash("idem_01JABCDEF")}) already exists.`,
+    );
+  });
+
+  it("literal SQL dài hơn 4096 ký tự không làm lệch cặp nháy (không lộ họ tên phía sau)", () => {
+    const out = redactText(`insert into "a" ("x", "y", "z") values ('${"x".repeat(5000)}', 'An', 'Nguyễn')`);
+    expect(out).not.toMatch(/'An'|Nguyễn|xxxx/);
+  });
+
+  it('địa chỉ sau khoá address= / "address":"…" vẫn bị che', () => {
+    expect(redactText(`{"address":"12 Nguyễn Trãi","city":"HCM"}`)).toBe(
+      `{"address":"${REDACTED}","city":"HCM"}`,
+    );
+    expect(redactText("address=12 Lê Lợi&x=1")).toBe(`address=${REDACTED}&x=1`);
+    expect(redactText("first_name: 'Lan'")).toBe(`first_name: '${REDACTED}'`);
+  });
+
+  it.each([
+    "size=38 Đỏ, còn:12 Áo Thun",
+    "giao lúc 10:30 Chiều, kho 3 Hà Nội",
+    "[checkout] giữ hàng: variant=variant_01J qty=2 Áo, warehouse=Kho 1 Hà Nội",
+    "Đơn XS-1001: 2 Áo Thun, 1 Quần Jean",
+    "Allowed values ('draft', 'published') for status",
+    "update cart set: 'promo' applied",
+    "Please select a size from the list: 'M'",
+    "status changed: 'pending' -> 'captured' (amount 1250000)",
+    "Bật 2fa 2026-10-26 cho user_01J",
+    "otp_window=1 totp period=30",
+    "vnp_TxnRef=PA_01JABC vnp_Amount=125000000 vnp_ResponseCode=00 vnp_PayDate=20261026103000",
+    'GHN order_code=GYH7XKPQ status=delivering to_ward_code="21012" fee=30000',
+    "Không tìm thấy biến thể 'AO-THUN-38-DO' trong kho 'WH-HN'",
+  ])("không che nhầm (review): %j", (input) => {
+    expect(redactText(input)).toBe(input);
   });
 
   it("JSON.stringify / util.inspect của object địa chỉ (khoá lạ) → địa chỉ bị che", () => {
@@ -73,6 +115,8 @@ describe("khoá API tiền tố và mã OTP/MFA (review T-090)", () => {
     ["key sk_live_51HxYzAbCdEfGh123456", `key ${REDACTED}`],
     ["pk_test_abcdefgh12", REDACTED],
     ["whsec_abcdefghijk", REDACTED],
+    [`key sk_${"0a".repeat(32)}`, `key ${REDACTED}`],
+    [`pk_${"f1".repeat(16)}`, REDACTED],
     ["otp 123456", `otp ${REDACTED}`],
     ["mfa code=654321", `mfa code=${REDACTED}`],
     ["Mã OTP: 112233", `Mã OTP: ${REDACTED}`],

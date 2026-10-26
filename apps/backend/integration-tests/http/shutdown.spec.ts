@@ -309,6 +309,12 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
     await request(be.port, "GET", "/store/x/products?q=0912345678&token=bi-mat-query");
     await request(be.port, "POST", "/auth/user/emailpass", { email, password: "mat-khau-sai-0123" });
     await request(be.port, "GET", "/x/khong-co-route?sdt=0987654321");
+    // Bị middleware lõi Medusa từ chối TRƯỚC middleware dự án: vẫn phải có đúng 1 bản ghi truy cập (SEC-LOG-001).
+    const base = `http://127.0.0.1:${be.port}`;
+    expect((await fetch(`${base}/admin/users/me`)).status).toBe(401);
+    const bad = await fetch(`${base}/admin/products`, { headers: { authorization: "Bearer rac-token-xyz" } });
+    expect(bad.status).toBe(401);
+    expect((await request(be.port, "GET", "/auth/user/%FF")).status).toBeLessThan(500);
     be.child.kill("SIGTERM");
     expect((await be.exited).code).toBe(0);
 
@@ -335,9 +341,20 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
       expect(typeof r.message).toBe("string");
     }
     const access = records.filter((r) => r.message === "http.server.request");
-    expect(access.map((r) => r["url.path"])).toEqual(
-      expect.arrayContaining(["/auth/user/emailpass", "/x/khong-co-route"]),
-    );
+    const count = (path: string) => access.filter((r) => r["url.path"] === path).length;
+    // Mỗi request đúng một bản ghi (không thiếu cho request bị chặn sớm, không trùng cho route thường).
+    for (const path of [
+      "/store/x/products",
+      "/auth/user/emailpass",
+      "/x/khong-co-route",
+      "/admin/users/me",
+      "/admin/products",
+      "/auth/user/%FF",
+    ])
+      expect({ path, n: count(path) }).toEqual({ path, n: 1 });
+    expect(access.find((r) => r["url.path"] === "/admin/products")).toMatchObject({
+      "http.response.status_code": 401,
+    });
     for (const r of access) {
       expect(typeof r.trace_id).toBe("string");
       expect(String(r.span_id)).toMatch(/^[0-9a-f]{16}$/);
