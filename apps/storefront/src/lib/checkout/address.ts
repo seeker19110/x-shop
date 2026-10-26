@@ -1,3 +1,4 @@
+import { ADDRESS_REVALIDATE_S } from "../cache-policy";
 import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
 
 /**
@@ -15,8 +16,6 @@ export interface Ward {
   name: string;
 }
 
-const REVALIDATE_S = 24 * 60 * 60;
-
 async function backendJson<T>(path: string): Promise<T | null> {
   try {
     const res = await fetch(`${getServerEnv().MEDUSA_BACKEND_URL}${path}`, {
@@ -25,7 +24,7 @@ async function backendJson<T>(path: string): Promise<T | null> {
         "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
       },
       signal: AbortSignal.timeout(5000),
-      next: { revalidate: REVALIDATE_S },
+      next: { revalidate: ADDRESS_REVALIDATE_S },
     });
     return res.ok ? ((await res.json()) as T) : null;
   } catch {

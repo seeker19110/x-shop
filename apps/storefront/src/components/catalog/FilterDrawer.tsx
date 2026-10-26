@@ -9,6 +9,7 @@ import { Drawer } from "../ui/Drawer";
 import { FilterFields } from "./FilterFields";
 import { hrefFor, serializeQuery, withoutConditions } from "./filter-url";
 import styles from "./Filters.module.css";
+import { fetchWithRetry } from "../../lib/http/retry";
 import { isNonEmpty } from "../../lib/presence";
 
 export interface FilterDrawerProps {
@@ -46,7 +47,7 @@ export function FilterDrawer({ basePath, applied, facets, total, activeCount, ca
       try {
         const qs = new URLSearchParams(draftKey);
         if (isNonEmpty(category)) qs.set("category", category);
-        const res = await fetch(`/api/catalog/count?${qs.toString()}`, { signal: ctrl.signal });
+        const res = await fetchWithRetry(`/api/catalog/count?${qs.toString()}`, { signal: ctrl.signal });
         if (!res.ok) return;
         const body = (await res.json()) as { total?: unknown };
         if (typeof body.total === "number") setCounted({ key: draftKey, total: body.total });

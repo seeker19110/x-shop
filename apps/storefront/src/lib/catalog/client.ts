@@ -3,6 +3,7 @@ import { cache } from "react";
 import { categoryName, NAV_CATEGORIES } from "../content/navigation";
 import { mapCategories, mapList, mapProduct, mapSearch, type CategoryEntry } from "./backend-map";
 import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
+import { CATALOG_REVALIDATE_S } from "../cache-policy";
 import { clientIpHeader } from "../security/client-ip";
 import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
@@ -10,7 +11,7 @@ import { isNonEmpty } from "../presence";
 
 /**
  * Client catalog phía server (không import vào client component): chọn nguồn bằng `XS_DATA_SOURCE`.
- * Backend: `fetch` server-side, dữ liệu công khai cache 60 giây (`next.revalidate`).
+ * Backend: `fetch` server-side, dữ liệu công khai cache `CATALOG_REVALIDATE_S` giây (`next.revalidate`, docs/ops/CACHE.md).
  */
 
 /** Số sản phẩm mỗi trang ở storefront (backend cho phép tới 48). */
@@ -40,7 +41,7 @@ async function backendGet<T>(
         ...extraHeaders,
       },
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: 60 } }),
+      ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: CATALOG_REVALIDATE_S } }),
     });
   } catch {
     throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");

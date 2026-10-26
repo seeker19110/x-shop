@@ -1,4 +1,5 @@
 import { parseFilter } from "@x-shop/domain";
+import { CATALOG_API_CACHE_CONTROL } from "../../../../lib/cache-policy";
 import { getCategoryName, listProducts } from "../../../../lib/catalog/client";
 
 /**
@@ -14,10 +15,7 @@ export async function GET(request: Request): Promise<Response> {
   }
   try {
     const r = await listProducts({ ...filter, page: 1 }, { category, pageSize: 1 });
-    return Response.json(
-      { total: r.total },
-      { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
-    );
+    return Response.json({ total: r.total }, { headers: { "Cache-Control": CATALOG_API_CACHE_CONTROL } });
   } catch {
     return Response.json({ total: null }, { status: 503 });
   }

@@ -23,6 +23,7 @@ import styles from "./Checkout.module.css";
 import { Field } from "./Field";
 import { OrderLines, type CheckoutLine } from "./OrderLines";
 import { PAYMENT_LABEL, Totals } from "./Totals";
+import { fetchWithRetry } from "../../lib/http/retry";
 import { isNonEmpty } from "../../lib/presence";
 
 export interface CheckoutFormProps {
@@ -140,7 +141,8 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
 
   /* ---------------------------------------------------------------- tỉnh → phường/xã */
   const loadWards = useCallback((code: string, signal?: AbortSignal) => {
-    fetch(`/api/address/wards?province=${encodeURIComponent(code)}`, { signal })
+    // Lỗi tạm thời (mạng/5xx/429) tự thử lại có backoff; 404 (mã sai) trả ngay (FE-STATE-005).
+    fetchWithRetry(`/api/address/wards?province=${encodeURIComponent(code)}`, { signal })
       .then((r) => (r.ok ? (r.json() as Promise<{ wards?: { code: string; name: string }[] }>) : null))
       .then((j) => {
         if (signal?.aborted === true) return;

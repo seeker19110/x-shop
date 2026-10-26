@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { fetchWithRetry } from "../../lib/http/retry";
 import { Button } from "../ui/Button";
 import styles from "./CatalogView.module.css";
 import {
@@ -61,7 +62,11 @@ export function SearchCombobox({ defaultValue, maxLength }: SearchComboboxProps)
       const ctrl = new AbortController();
       abort.current = ctrl;
       try {
-        const res = await fetch(`/api/catalog/suggest?q=${encodeURIComponent(q)}`, { signal: ctrl.signal });
+        const res = await fetchWithRetry(
+          `/api/catalog/suggest?q=${encodeURIComponent(q)}`,
+          { signal: ctrl.signal },
+          { maxRetries: 1 },
+        );
         if (!res.ok || ctrl.signal.aborted) return;
         const list = sanitizeSuggestions(await res.json());
         if (ctrl.signal.aborted) return;
