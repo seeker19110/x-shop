@@ -236,6 +236,26 @@ describe("backend (XS_DATA_SOURCE=backend)", () => {
     expect(await getCategoryName("khong-co")).toBeNull();
   });
 
+  it("danh mục > 200: đọc theo offset tới count (trang 200) — danh mục thứ 201+ vẫn tra được tên", async () => {
+    const total = 250;
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = new URL(url);
+      const limit = Number(u.searchParams.get("limit"));
+      const offset = Number(u.searchParams.get("offset"));
+      const categories = Array.from({ length: Math.max(0, Math.min(limit, total - offset)) }, (_, i) => ({
+        handle: `dm-${offset + i}`,
+        name: `Danh mục ${offset + i}`,
+        parent_handle: null,
+        product_count: 1,
+      }));
+      return ok({ categories, count: total, limit, offset });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await getCategoryName("dm-249")).toBe("Danh mục 249");
+    const urls = (fetchMock.mock.calls as unknown as [string][]).map(([x]) => new URL(x).search);
+    expect(urls).toEqual(["?limit=200&offset=0", "?limit=200&offset=200"]);
+  });
+
   it("phản hồi thật của danh sách/chi tiết/tìm kiếm đi qua lớp ánh xạ", async () => {
     vi.stubGlobal("fetch", async () => ok(real("list")));
     const l = await listProducts(EMPTY_FILTER);

@@ -7,11 +7,12 @@
  *   node scripts/ops/check-schema.mjs --keep           # như trên nhưng giữ DB (in tên) để soi tay
  *   SCHEMA_DATABASE_URL=postgres://… node scripts/ops/check-schema.mjs   # chỉ đọc catalog của DB đã migrate sẵn
  *
- * Cách dựng DB (mặc định): giống `scripts/ops/perf-dataset.mjs` — DB `xshop_schema_<pid>` (tên riêng theo tiến trình,
- * hai lần chạy song song không đụng nhau; tên bắt buộc khớp ^xshop_schema[a-z0-9_]*$ để không bao giờ xoá nhầm DB khác)
- * trên máy chủ `SCHEMA_PG_BASE_URL` (mặc định postgres://xshop:xshop@localhost:5432 — dịch vụ cục bộ của
- * scripts/dev-services.sh, trùng job CI; không phải bí mật), rồi `medusa db:migrate --skip-links` với REDIS_URL rỗng
- * (module hạ tầng in-memory — không đụng Redis). DB luôn được xoá ở cuối, kể cả khi lỗi (trừ `--keep`).
+ * Cách dựng DB (mặc định): DB mới `xshop_schema_<hex ngẫu nhiên>` (hai lần chạy song song không đụng nhau; tên — kể cả
+ * `SCHEMA_DB_NAME` tự đặt — bắt buộc khớp ^xshop_schema[a-z0-9_]*$, kiểm trước mọi lệnh tới máy chủ) trên máy chủ
+ * `SCHEMA_PG_BASE_URL` (mặc định postgres://xshop:xshop@localhost:5432 — dịch vụ cục bộ của scripts/dev-services.sh,
+ * trùng job CI; không phải bí mật), rồi `medusa db:migrate --skip-links` với REDIS_URL rỗng (module hạ tầng in-memory —
+ * không đụng Redis). Chỉ xoá DB do chính lần chạy này tạo (CREATE thành công), ở cuối kể cả khi lỗi (trừ `--keep`);
+ * không bao giờ DROP trước CREATE.
  *
  * Luật (mỗi vi phạm một dòng; ngoại lệ chỉ qua allowlist bên dưới, mỗi mục kèm lý do ≥ 20 ký tự; mục thừa cũng là lỗi):
  *  - FK_ON_DELETE  khóa ngoại phải khai `ON DELETE` tường minh (RESTRICT/CASCADE/SET NULL/SET DEFAULT); `NO ACTION` là
@@ -32,6 +33,7 @@
  * Exit: 0 đạt · 1 có vi phạm · 2 lỗi cấu hình/kết nối/migrate.
  */
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -133,8 +135,6 @@ export const NULLABLE_ALLOW = {
   "x_settlement_discrepancy.target_id": NO_TARGET,
   "x_settlement_discrepancy.order_id": NO_TARGET,
   "x_settlement_discrepancy.expected_amount": "chênh lệch loại unexpected: không có số kỳ vọng ở hệ thống",
-  "x_settlement_discrepancy.actual_amount":
-    "chênh lệch loại missing: hãng không báo dòng nào (không có số thực nhận)",
   "x_settlement_discrepancy.difference": "missing/unexpected: thiếu một vế nên không có hiệu số",
   "x_settlement_discrepancy.line_id": "chênh lệch loại missing không có dòng chứng từ tương ứng",
   "x_settlement_discrepancy.owner": "chưa giao người xử lý",
@@ -434,14 +434,20 @@ export async function readCatalog(db, names) {
   return out;
 }
 
-export const SCHEMA_DB = {
-  pgBase: process.env.SCHEMA_PG_BASE_URL ?? "postgres://xshop:xshop@localhost:5432",
-  dbName: process.env.SCHEMA_DB_NAME ?? `xshop_schema_${process.pid}`,
-};
+const PG_BASE = process.env.SCHEMA_PG_BASE_URL ?? "postgres://xshop:xshop@localhost:5432";
+const SAFE_DB_NAME = /^xshop_schema[a-z0-9_]*$/;
 
 export function assertSafeDbName(name) {
-  if (!/^xshop_schema[a-z0-9_]*$/.test(name))
+  if (typeof name !== "string" || !SAFE_DB_NAME.test(name))
     throw new Error(`SCHEMA_DB_NAME phải khớp ^xshop_schema[a-z0-9_]*$ (nhận "${name}")`);
+}
+
+/**
+ * Tên DB dùng một lần: `SCHEMA_DB_NAME` nếu đặt, không thì `xshop_schema_<hex ngẫu nhiên>` (crypto — hai lần chạy song
+ * song, kể cả khác máy/container cùng pid, không trùng tên → không cần DROP trước CREATE).
+ */
+export function schemaDbName(env = process.env) {
+  return env.SCHEMA_DB_NAME ?? `xshop_schema_${randomBytes(6).toString("hex")}`;
 }
 
 async function connect(url) {
@@ -469,7 +475,7 @@ function run(cmd, args, opts = {}) {
 }
 
 async function adminQuery(sql) {
-  const admin = await connect(`${SCHEMA_DB.pgBase}/postgres`);
+  const admin = await connect(`${PG_BASE}/postgres`);
   try {
     await admin.query(sql);
   } finally {
@@ -477,37 +483,51 @@ async function adminQuery(sql) {
   }
 }
 
-/** Tạo DB rỗng, migrate bằng Medusa (như production) → URL. */
-async function provision() {
-  assertSafeDbName(SCHEMA_DB.dbName);
-  const url = `${SCHEMA_DB.pgBase}/${SCHEMA_DB.dbName}`;
-  await adminQuery(`DROP DATABASE IF EXISTS "${SCHEMA_DB.dbName}" WITH (FORCE)`);
-  await adminQuery(`CREATE DATABASE "${SCHEMA_DB.dbName}"`);
-  log(`DB ${SCHEMA_DB.dbName}: build domain + medusa db:migrate…`);
-  await run("pnpm", ["--filter", "@x-shop/domain", "build"]);
-  await run("pnpm", ["exec", "medusa", "db:migrate", "--skip-links"], {
+/** Migrate DB rỗng vừa tạo bằng Medusa (như production). */
+async function migrate(url, runFn) {
+  await runFn("pnpm", ["--filter", "@x-shop/domain", "build"]);
+  await runFn("pnpm", ["exec", "medusa", "db:migrate", "--skip-links"], {
     cwd: backendDir,
     env: { NODE_ENV: "development", DATABASE_URL: url, REDIS_URL: "", DISABLE_MEDUSA_ADMIN: "true" },
   });
-  return url;
 }
 
-async function main(argv) {
+/**
+ * Luồng chính. `deps` chỉ để test thay I/O (adminQuery/run/connect/env/log).
+ * An toàn xoá: tên DB được kiểm TRƯỚC mọi lệnh tới máy chủ; chỉ DROP khi chính lần chạy này đã CREATE thành công, và
+ * kiểm tên lần nữa ngay trước DROP. Không bao giờ DROP trước CREATE (DB trùng tên đã có → CREATE lỗi → exit 2).
+ */
+export async function main(argv, deps = {}) {
+  const env = deps.env ?? process.env;
+  const admin = deps.adminQuery ?? adminQuery;
+  const runFn = deps.run ?? run;
+  const connectFn = deps.connect ?? connect;
+  const pgBase = env.SCHEMA_PG_BASE_URL ?? PG_BASE;
   const keep = argv.includes("--keep");
-  const external = process.env.SCHEMA_DATABASE_URL;
+  const external = env.SCHEMA_DATABASE_URL;
   const { tables, migrations } = scanModules();
   if (tables.size === 0) {
     console.error("[schema] không tìm thấy bảng nào trong migration của module — regex/đường dẫn lệch?");
     return 2;
   }
+  const dbName = external ? null : schemaDbName(env);
+  try {
+    if (dbName !== null) assertSafeDbName(dbName);
+  } catch (e) {
+    console.error(`[schema] LỖI: ${e.message}`);
+    return 2;
+  }
   let url = external;
   let created = false;
   try {
-    if (!url) {
-      created = true; // đặt trước: migrate lỗi giữa chừng vẫn dọn DB ở finally
-      url = await provision();
+    if (dbName !== null) {
+      await admin(`CREATE DATABASE "${dbName}"`);
+      created = true;
+      url = `${pgBase}/${dbName}`;
+      log(`DB ${dbName}: build domain + medusa db:migrate…`);
+      await migrate(url, runFn);
     }
-    const db = await connect(url);
+    const db = await connectFn(url);
     let catalog;
     try {
       catalog = await readCatalog(db, [...tables.keys()]);
@@ -535,11 +555,12 @@ async function main(argv) {
   } finally {
     if (created && !keep) {
       try {
-        await adminQuery(`DROP DATABASE IF EXISTS "${SCHEMA_DB.dbName}" WITH (FORCE)`);
+        assertSafeDbName(dbName);
+        await admin(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
       } catch (e) {
-        console.error(`[schema] không xoá được DB ${SCHEMA_DB.dbName} (xoá tay): ${e.message}`);
+        console.error(`[schema] không xoá được DB ${dbName} (xoá tay): ${e.message}`);
       }
-    } else if (created) log(`giữ DB: ${SCHEMA_DB.pgBase}/${SCHEMA_DB.dbName}`);
+    } else if (created) log(`giữ DB: ${pgBase}/${dbName}`);
   }
 }
 

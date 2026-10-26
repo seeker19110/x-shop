@@ -15,7 +15,8 @@ import {
   NUMERIC_ALLOW,
   projectTables,
   scanModules,
-  SCHEMA_DB,
+  main,
+  schemaDbName,
   snapshotColumns,
 } from "./check-schema.mjs";
 
@@ -222,9 +223,80 @@ test("repo thật: bảng dự án gồm cả bảng SQL tay và DML, không có
   assert.equal(new Set(names).size, names.length, "tên migration phải duy nhất giữa các module");
 });
 
-test("tên DB dùng một lần: mặc định theo pid (hai lần chạy song song không đụng nhau), chặn tên ngoài tiền tố", () => {
-  assert.equal(SCHEMA_DB.dbName, `xshop_schema_${process.pid}`);
+test("tên DB dùng một lần: mặc định hậu tố ngẫu nhiên (crypto), SCHEMA_DB_NAME nếu đặt; chặn tên ngoài tiền tố", () => {
+  const a = schemaDbName({});
+  const b = schemaDbName({});
+  assert.match(a, /^xshop_schema_[0-9a-f]{12}$/);
+  assert.notEqual(a, b);
+  assert.equal(schemaDbName({ SCHEMA_DB_NAME: "xshop_schema_x" }), "xshop_schema_x");
   assert.doesNotThrow(() => assertSafeDbName("xshop_schema_123"));
-  for (const bad of ["xshop", "xshop_perf", "xshop_schema-1", 'xshop_schema"; drop', "postgres"])
+  for (const bad of [
+    "xshop",
+    "xshop_perf",
+    "xshop_schema-1",
+    'xshop_schema"; drop',
+    "postgres",
+    "",
+    undefined,
+  ])
     assert.throws(() => assertSafeDbName(bad), /SCHEMA_DB_NAME/);
+});
+
+/** I/O giả cho `main`: ghi lại mọi lệnh gửi máy chủ, không chạm Postgres/pnpm thật. */
+function fakeIo({ createFails = false, migrateFails = false } = {}) {
+  const sql = [];
+  return {
+    sql,
+    deps: {
+      adminQuery: async (q) => {
+        sql.push(q);
+        if (createFails && q.startsWith("CREATE")) throw new Error("database already exists");
+      },
+      run: async () => {
+        if (migrateFails) throw new Error("migrate lỗi");
+      },
+      connect: async () => ({ query: async () => ({ rows: [] }), end: async () => {} }),
+    },
+  };
+}
+
+test("main: tên DB xấu → exit 2 và KHÔNG phát lệnh CREATE/DROP nào", async () => {
+  for (const name of ["xshop", "postgres", "xshop_perf", 'xshop_schema"; drop database xshop; --']) {
+    const io = fakeIo();
+    const code = await main([], { ...io.deps, env: { SCHEMA_DB_NAME: name } });
+    assert.equal(code, 2, name);
+    assert.deepEqual(io.sql, [], name);
+  }
+});
+
+test("main: CREATE lỗi (DB trùng tên đã có) → exit 2, không DROP (không xoá DB của người khác)", async () => {
+  const io = fakeIo({ createFails: true });
+  const code = await main([], { ...io.deps, env: { SCHEMA_DB_NAME: "xshop_schema_co_san" } });
+  assert.equal(code, 2);
+  assert.deepEqual(io.sql, ['CREATE DATABASE "xshop_schema_co_san"']);
+});
+
+test("main: chỉ DROP đúng DB vừa CREATE (kể cả khi migrate lỗi); --keep thì giữ; không DROP trước CREATE", async () => {
+  const fail = fakeIo({ migrateFails: true });
+  assert.equal(await main([], { ...fail.deps, env: { SCHEMA_DB_NAME: "xshop_schema_t" } }), 2);
+  assert.deepEqual(fail.sql, [
+    'CREATE DATABASE "xshop_schema_t"',
+    'DROP DATABASE IF EXISTS "xshop_schema_t" WITH (FORCE)',
+  ]);
+  const ok = fakeIo();
+  const code = await main([], { ...ok.deps, env: {} });
+  assert.equal(code, 1); // catalog giả rỗng → MISSING_TABLE
+  assert.equal(ok.sql.length, 2);
+  const name = /^CREATE DATABASE "(xshop_schema_[0-9a-f]{12})"$/.exec(ok.sql[0])?.[1];
+  assert.ok(name, ok.sql[0]);
+  assert.equal(ok.sql[1], `DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+  const keep = fakeIo();
+  await main(["--keep"], { ...keep.deps, env: { SCHEMA_DB_NAME: "xshop_schema_k" } });
+  assert.deepEqual(keep.sql, ['CREATE DATABASE "xshop_schema_k"']);
+});
+
+test("main: SCHEMA_DATABASE_URL (DB có sẵn) → không CREATE/DROP gì, kể cả khi SCHEMA_DB_NAME xấu", async () => {
+  const io = fakeIo();
+  await main([], { ...io.deps, env: { SCHEMA_DATABASE_URL: "postgres://x/y", SCHEMA_DB_NAME: "xshop" } });
+  assert.deepEqual(io.sql, []);
 });

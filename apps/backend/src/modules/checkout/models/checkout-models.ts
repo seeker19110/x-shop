@@ -197,7 +197,7 @@ export const WebhookInbox = model
     id: model.id({ prefix: "whin" }).primaryKey(),
     provider: model.text(),
     event_key: model.text(),
-    /** `ipn` | `return` | `query` — nguồn của thông báo. */
+    /** `ipn` | `query` — nguồn của thông báo (CHECK `webhook_inbox_source_check`, T-101). */
     source: model.text().default("ipn"),
     /** Payload đã lọc PII. */
     payload: model.json(),

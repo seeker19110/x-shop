@@ -428,6 +428,16 @@ medusaIntegrationTestRunner({
             ),
           ),
         ).toBe(CHECK);
+        // Migration20261026220000: actual_amount NOT NULL (mọi đường ghi đều có số; `missing` ghi 0).
+        expect(
+          await pgError(
+            db().raw(
+              `INSERT INTO x_settlement_discrepancy (id, kind, source, reference, actual_amount, amount, batch_id, dedupe_key)
+               VALUES (?, 'unexpected', 'ghn_cod', 'R1', NULL, 1, 'xstb_none', ?)`,
+              [uid("xstd"), uid("dk")],
+            ),
+          ),
+        ).toBe("23502");
       });
 
       // DB-MODEL-005: mỗi module tùy biến ≥ 1 ca dữ liệu xấu chèn thẳng SQL (không qua ORM) bị DB từ chối. checkout,

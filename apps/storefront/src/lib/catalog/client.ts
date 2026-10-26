@@ -129,6 +129,27 @@ export async function getProductFresh(handle: string): Promise<ProductDetail | n
   }
 }
 
+/**
+ * GET /store/x/categories phân trang (T-121): mỗi trang tối đa 200 (backend kẹp), tổng tối đa 1000 (CATEGORY_FETCH_MAX của
+ * backend). Đọc lần lượt theo `offset` tới `count` — danh mục thứ 201 trở đi vẫn có trong menu/sitemap/trang danh mục.
+ */
+export const CATEGORY_PAGE_SIZE = 200;
+const CATEGORY_TOTAL_MAX = 1000;
+
+async function fetchAllCategories(): Promise<CategoryEntry[]> {
+  const all: CategoryEntry[] = [];
+  for (let offset = 0; offset < CATEGORY_TOTAL_MAX; offset += CATEGORY_PAGE_SIZE) {
+    const params = new URLSearchParams({ limit: String(CATEGORY_PAGE_SIZE), offset: String(offset) });
+    const raw = await backendGet<unknown>("/store/x/categories", params);
+    const page = mapCategories(raw);
+    all.push(...page);
+    const count = (raw as { count?: unknown } | null)?.count;
+    const total = typeof count === "number" ? count : all.length;
+    if (page.length < CATEGORY_PAGE_SIZE || all.length >= total) break;
+  }
+  return all;
+}
+
 export interface MenuCategory {
   handle: string;
   name: string;
@@ -141,7 +162,7 @@ export interface MenuCategory {
 export const getCategories = cache(async (): Promise<CategoryEntry[]> => {
   if (resolveDataSource() === "backend") {
     try {
-      return mapCategories(await backendGet<unknown>("/store/x/categories"));
+      return await fetchAllCategories();
     } catch {
       return [];
     }

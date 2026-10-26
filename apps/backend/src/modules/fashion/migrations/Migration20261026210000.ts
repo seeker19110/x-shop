@@ -13,7 +13,7 @@ import { Migration } from "@medusajs/framework/mikro-orm/migrations";
  *    API chặn chặt hơn: 20–250 cm, chiều cao 50–250 cm).
  *
  * Chạy được trên dữ liệu có sẵn: mỗi CHECK được kiểm trước (đếm dòng vi phạm → dừng migrate kèm số dòng, KHÔNG tự sửa
- * dữ liệu), rồi thêm `NOT VALID` + `VALIDATE` (khóa nhẹ khi kiểm). `down()` gỡ ràng buộc/index và trả FK về như cũ —
+ * dữ liệu), rồi thêm `NOT VALID` + `VALIDATE` (migration MikroORM chạy trong giao dịch nên VALIDATE vẫn giữ khóa ACCESS EXCLUSIVE của ADD CONSTRAINT tới commit — bảng nhỏ khi chưa ra mắt). `down()` gỡ ràng buộc/index và trả FK về như cũ —
  * dữ liệu không đổi.
  */
 const CHECKS = [
