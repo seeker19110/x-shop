@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { isNonEmpty } from "../presence";
 
 /**
  * Cookie id giỏ: HttpOnly (JS không đọc được), SameSite=Lax, Secure ở production, 30 ngày. KHÔNG lưu giỏ/PII ở
@@ -22,7 +23,7 @@ export function cartCookieOptions(production: boolean) {
 
 export async function readCartId(): Promise<string | null> {
   const v = (await cookies()).get(CART_COOKIE)?.value;
-  return v && CART_ID_RE.test(v) ? v : null;
+  return isNonEmpty(v) && CART_ID_RE.test(v) ? v : null;
 }
 
 export async function writeCartId(id: string): Promise<void> {

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import styles from "./Breadcrumb.module.css";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface BreadcrumbItem {
   label: string;
@@ -21,7 +22,7 @@ export function Breadcrumb({
       <ol className={styles.list}>
         {items.map((item, i) => (
           <li key={`${i}-${item.label}`} className={styles.item}>
-            {i === last || !item.href ? (
+            {i === last || !isNonEmpty(item.href) ? (
               <span aria-current={i === last ? "page" : undefined}>{item.label}</span>
             ) : (
               <Link href={item.href} className={styles.link}>

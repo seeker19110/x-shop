@@ -23,6 +23,7 @@ import styles from "./Checkout.module.css";
 import { Field } from "./Field";
 import { OrderLines, type CheckoutLine } from "./OrderLines";
 import { PAYMENT_LABEL, Totals } from "./Totals";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface CheckoutFormProps {
   lines: readonly CheckoutLine[];
@@ -49,7 +50,7 @@ const REAL_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Chỉ chuyển hướng tới http(s) — URL thanh toán do server cấp nhưng vẫn không tin tuyệt đối. */
 export function safePaymentUrl(url: string | null): string | null {
-  if (!url) return null;
+  if (!isNonEmpty(url)) return null;
   try {
     const u = new URL(url);
     return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
@@ -110,7 +111,10 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
         : { code: provinceCode, status: "loading", list: [] };
   const itemCount = lines.reduce((s, l) => s + l.quantity, 0);
   const trackItems = useMemo(
-    () => lines.flatMap((l) => (l.itemId ? [{ item_id: l.itemId, quantity: l.quantity }] : [])).slice(0, 50),
+    () =>
+      lines
+        .flatMap((l) => (isNonEmpty(l.itemId) ? [{ item_id: l.itemId, quantity: l.quantity }] : []))
+        .slice(0, 50),
     [lines],
   );
 
@@ -139,7 +143,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
     fetch(`/api/address/wards?province=${encodeURIComponent(code)}`, { signal })
       .then((r) => (r.ok ? (r.json() as Promise<{ wards?: { code: string; name: string }[] }>) : null))
       .then((j) => {
-        if (signal?.aborted) return;
+        if (signal?.aborted === true) return;
         setWards(
           j && Array.isArray(j.wards)
             ? { code, status: "ready", list: j.wards }
@@ -147,7 +151,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
         );
       })
       .catch(() => {
-        if (!signal?.aborted) setWards({ code, status: "error", list: [] });
+        if (signal?.aborted !== true) setWards({ code, status: "error", list: [] });
       });
   }, []);
 
@@ -225,7 +229,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
   const setEl = (f: FieldName) => (el: HTMLElement | null) => {
     fieldEls.current[f] = el;
   };
-  const clearError = (f: FieldName) => setErrors((e) => (e[f] ? { ...e, [f]: undefined } : e));
+  const clearError = (f: FieldName) => setErrors((e) => (isNonEmpty(e[f]) ? { ...e, [f]: undefined } : e));
 
   const deps: FlowDeps = useMemo(
     () => ({ submit: submitCheckout, poll: pollCheckout, sleep: REAL_SLEEP }),
@@ -241,7 +245,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
       // không chặn chuyển trang nếu xóa cookie lỗi
     }
     const url = payment === "vnpay" ? safePaymentUrl(o.paymentUrl) : null;
-    if (url) window.location.assign(url);
+    if (isNonEmpty(url)) window.location.assign(url);
     else router.push(`/don-hang/${encodeURIComponent(o.ref)}`);
   };
 
@@ -281,7 +285,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
           setAppliedCode(null);
           return;
         }
-        if (out.field) {
+        if (isNonEmpty(out.field)) {
           const f = out.field as FieldName;
           setErrors((e) => ({ ...e, [f]: out.message }));
           focusField(f);
@@ -709,7 +713,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
               </div>
             )}
           </Field>
-          {appliedCode ? (
+          {isNonEmpty(appliedCode) ? (
             <p className={styles.hint}>
               {`Đang áp dụng mã ${appliedCode}. `}
               <button

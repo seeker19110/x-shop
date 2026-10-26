@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { InlineError } from "../ui/InlineError";
 import styles from "./Checkout.module.css";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface FieldControlProps {
   id: string;
@@ -21,8 +22,8 @@ export interface FieldProps {
 /** Nhãn thật + gợi ý + lỗi gắn trường qua `aria-describedby` (CHK05, S-504). */
 export function Field({ name, label, required = false, hint, error, children }: FieldProps) {
   const id = `f-${name}`;
-  const hintId = hint ? `${id}-goi-y` : null;
-  const errId = error ? `${id}-loi` : null;
+  const hintId = isNonEmpty(hint) ? `${id}-goi-y` : null;
+  const errId = isNonEmpty(error) ? `${id}-loi` : null;
   const describedBy = [hintId, errId].filter(Boolean).join(" ") || undefined;
   return (
     <div className={styles.field}>
@@ -30,13 +31,17 @@ export function Field({ name, label, required = false, hint, error, children }: 
         {label}
         {required ? null : <span className={styles.optional}> (không bắt buộc)</span>}
       </label>
-      {hint ? (
+      {isNonEmpty(hint) ? (
         <p id={hintId ?? undefined} className={styles.hint}>
           {hint}
         </p>
       ) : null}
-      {children({ id, "aria-describedby": describedBy, "aria-invalid": error ? true : undefined })}
-      {error ? <InlineError id={errId ?? undefined}>{error}</InlineError> : null}
+      {children({
+        id,
+        "aria-describedby": describedBy,
+        "aria-invalid": isNonEmpty(error) ? true : undefined,
+      })}
+      {isNonEmpty(error) ? <InlineError id={errId ?? undefined}>{error}</InlineError> : null}
     </div>
   );
 }

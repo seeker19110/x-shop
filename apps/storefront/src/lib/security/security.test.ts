@@ -221,4 +221,12 @@ describe("IP khách chuyển tiếp cho backend", () => {
     expect(forwardedClientIp(h({ "x-forwarded-for": " , " }), true)).toBeNull();
     expect(forwardedClientIp(h({}), true)).toBeNull();
   });
+
+  it("x-real-ip rỗng/toàn khoảng trắng coi như thiếu → lấy mục cuối XFF (BASE-DATA-003)", () => {
+    expect(forwardedClientIp(h({ "x-real-ip": "", "x-forwarded-for": "1.1.1.1, 2.2.2.2" }), true)).toBe(
+      "2.2.2.2",
+    );
+    expect(forwardedClientIp(h({ "x-real-ip": "  ", "x-forwarded-for": "2.2.2.2" }), true)).toBe("2.2.2.2");
+    expect(forwardedClientIp(h({ "x-real-ip": "" }), true)).toBeNull();
+  });
 });

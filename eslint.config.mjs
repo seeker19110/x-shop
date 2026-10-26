@@ -175,6 +175,11 @@ export default tseslint.config(
       files: ["apps/backend/src/**/*.{ts,tsx}"],
       project: ["apps/backend/tsconfig.typecheck.json", "apps/backend/src/admin/tsconfig.json"],
     },
+    {
+      // tsconfig.eslint.json = tsconfig.json + điều kiện @x-shop/source: lint không cần build domain trước.
+      files: ["apps/storefront/src/**/*.{ts,tsx}"],
+      project: ["apps/storefront/tsconfig.eslint.json"],
+    },
   ]),
   {
     rules: {

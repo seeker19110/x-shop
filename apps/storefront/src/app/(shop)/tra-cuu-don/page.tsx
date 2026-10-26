@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import styles from "../../../components/orders/Order.module.css";
 import { LookupForm } from "../../../components/orders/LookupForm";
 import { ORDER_REF_RE } from "../../../lib/orders/map";
+import { isNonEmpty } from "../../../lib/presence";
 
 export const metadata: Metadata = {
   title: "Tra cứu đơn hàng",
@@ -31,7 +32,7 @@ export default async function LookupPage({
       <h1 id="tra-cuu-tieu-de" className={styles.title}>
         Tra cứu đơn hàng
       </h1>
-      {notice ? <p className={styles.section}>{notice}</p> : null}
+      {isNonEmpty(notice) ? <p className={styles.section}>{notice}</p> : null}
       <p>
         Vì lý do bảo mật, mã đơn và số điện thoại không đủ để hiển thị đơn. Chúng tôi sẽ gửi liên kết xem đơn
         (hiệu lực 15 phút, dùng một lần) tới số điện thoại/email đã dùng khi đặt hàng.

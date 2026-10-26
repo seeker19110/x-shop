@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import styles from "./EmptyState.module.css";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface EmptyStateProps {
   title: string;
@@ -15,8 +16,8 @@ export function EmptyState({ title, description, action, headingLevel = 2 }: Emp
   return (
     <section className={styles.empty}>
       <Heading className={styles.title}>{title}</Heading>
-      {description ? <p className={styles.description}>{description}</p> : null}
-      {action ? <div className={styles.action}>{action}</div> : null}
+      {isNonEmpty(description) ? <p className={styles.description}>{description}</p> : null}
+      {action !== undefined && action !== null ? <div className={styles.action}>{action}</div> : null}
     </section>
   );
 }

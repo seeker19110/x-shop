@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isNonEmpty } from "./presence";
 
 /**
  * Cấu hình môi trường, validate bằng zod, tách server / client.
@@ -91,11 +92,12 @@ export function parseServerEnv(source: Source, opts: { useDefaults: boolean }): 
  */
 export function resolveDataSource(source: Source = process.env): DataSource {
   const explicit = source.XS_DATA_SOURCE?.trim();
-  if (explicit) {
+  // Biến rỗng/toàn khoảng trắng = không đặt.
+  if (isNonEmpty(explicit)) {
     if ((DATA_SOURCES as readonly string[]).includes(explicit)) return explicit as DataSource;
     throw new Error(`XS_DATA_SOURCE phải là ${DATA_SOURCES.join(" | ")}, nhận "${explicit}"`);
   }
-  return source.MEDUSA_BACKEND_URL?.trim() ? "backend" : "fixtures";
+  return isNonEmpty(source.MEDUSA_BACKEND_URL?.trim()) ? "backend" : "fixtures";
 }
 
 /** Mặc định chỉ khi không phải production runtime. */

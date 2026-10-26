@@ -1,3 +1,4 @@
+import { isNonEmpty } from "../presence";
 /**
  * Chống CSRF cho request ghi tới storefront (SEC01): Server Action (POST kèm cookie giỏ/đơn) và route handler ghi
  * (`/api/analytics`). Next đã kiểm Origin cho Server Action; lớp này áp chung cho MỌI request ghi ở proxy:
@@ -34,7 +35,8 @@ export function checkCsrf(input: CsrfInput): CsrfVerdict {
   if (!UNSAFE.has(input.method.toUpperCase())) return { ok: true };
   const site = input.secFetchSite?.trim().toLowerCase();
   const origin = input.origin?.trim();
-  if (origin) {
+  // Origin rỗng coi như không gửi → xét Sec-Fetch-Site (giữ hành vi cũ).
+  if (isNonEmpty(origin)) {
     if (origin.toLowerCase() === "null") return { ok: false, reason: "origin_null" };
     const host = hostOf(origin);
     return host !== null && input.allowedHosts.includes(host)
@@ -50,11 +52,11 @@ export function allowedHostsOf(headers: Headers, siteUrl: string | undefined): s
   const out = new Set<string>();
   const forwarded = headers.get("x-forwarded-host")?.split(",")[0]?.trim().toLowerCase();
   const host = headers.get("host")?.trim().toLowerCase();
-  if (forwarded) out.add(forwarded);
-  if (host) out.add(host);
-  if (siteUrl) {
+  if (isNonEmpty(forwarded)) out.add(forwarded);
+  if (isNonEmpty(host)) out.add(host);
+  if (isNonEmpty(siteUrl)) {
     const h = hostOf(siteUrl);
-    if (h) out.add(h);
+    if (isNonEmpty(h)) out.add(h);
   }
   return [...out];
 }

@@ -30,7 +30,7 @@ export function hrefFor(basePath: string, filter: CatalogFilter): string {
 /** "Xóa tất cả": bỏ mọi điều kiện, giữ thứ tự sắp xếp (không phải điều kiện lọc). */
 export function withoutConditions(filter: CatalogFilter, opts: { keepQuery?: boolean } = {}): CatalogFilter {
   return {
-    q: opts.keepQuery ? filter.q : null,
+    q: opts.keepQuery === true ? filter.q : null,
     colors: [],
     sizes: [],
     materials: [],

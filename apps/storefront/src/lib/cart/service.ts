@@ -12,6 +12,7 @@ import {
   type CartView,
 } from "./types";
 import { buildCartView, CART_FIELDS, type ProductLookup, type RawCart, type RawCartLine } from "./view";
+import { isNonEmpty } from "../presence";
 
 /**
  * Nghiệp vụ giỏ ở server: id giỏ ở cookie HttpOnly, thao tác qua Medusa Store API native (`/store/carts`,
@@ -51,7 +52,7 @@ export async function fetchRawCart(cartId: string): Promise<RawCart | null> {
       `/store/carts/${encodeURIComponent(cartId)}?fields=${CART_FIELDS}`,
     );
     const cart = data.cart ?? null;
-    return cart && !cart.completed_at ? cart : null;
+    return cart && !isNonEmpty(cart.completed_at) ? cart : null;
   } catch (e) {
     if (e instanceof StoreApiError && (e.status === 404 || e.status === 400)) return null;
     throw e;
@@ -60,7 +61,9 @@ export async function fetchRawCart(cartId: string): Promise<RawCart | null> {
 
 async function lookupProducts(raw: RawCart): Promise<ProductLookup> {
   const handles = [
-    ...new Set((raw.items ?? []).flatMap((i) => (i?.product_handle ? [i.product_handle] : []))),
+    ...new Set(
+      (raw.items ?? []).flatMap((i) => (i && isNonEmpty(i.product_handle) ? [i.product_handle] : [])),
+    ),
   ];
   const entries = await Promise.all(
     handles.map(async (h): Promise<[string, ProductDetail | null | undefined]> => {
@@ -78,7 +81,7 @@ async function lookupProducts(raw: RawCart): Promise<ProductLookup> {
 export async function loadCartView(): Promise<CartView> {
   if (!cartEnabled()) return EMPTY_CART_VIEW;
   const id = await readCartId();
-  if (!id) return EMPTY_CART_VIEW;
+  if (!isNonEmpty(id)) return EMPTY_CART_VIEW;
   const raw = await fetchRawCart(id);
   if (!raw) return EMPTY_CART_VIEW;
   return buildCartView(raw, await lookupProducts(raw), getServerEnv().MEDUSA_BACKEND_URL);
@@ -89,7 +92,7 @@ export async function loadCartCount(): Promise<number> {
   if (!cartEnabled()) return 0;
   try {
     const id = await readCartId();
-    if (!id) return 0;
+    if (!isNonEmpty(id)) return 0;
     const raw = await fetchRawCart(id);
     return countOf(raw);
   } catch {
@@ -114,7 +117,7 @@ async function createCart(): Promise<RawCart> {
 
 async function loadOrCreateCart(): Promise<RawCart> {
   const id = await readCartId();
-  const existing = id ? await fetchRawCart(id) : null;
+  const existing = isNonEmpty(id) ? await fetchRawCart(id) : null;
   return existing ?? (await createCart());
 }
 
@@ -227,7 +230,7 @@ async function withLine(
   if (!cartEnabled()) return DISABLED;
   try {
     const id = await readCartId();
-    const cart = id ? await fetchRawCart(id) : null;
+    const cart = isNonEmpty(id) ? await fetchRawCart(id) : null;
     const line = cart ? findLine(cart, lineId) : undefined;
     if (!cart || !line) return fail("NOT_FOUND", "Không tìm thấy dòng trong giỏ. Hãy tải lại trang.");
     return await fn(cart.id, line, cart);
@@ -263,7 +266,7 @@ export function changeVariant(lineId: string, variantId: string): Promise<CartAc
     return Promise.resolve(fail("INVALID_INPUT", "Lựa chọn không hợp lệ. Vui lòng chọn lại màu và size."));
   }
   return withLine(lineId, async (cartId, line, cart) => {
-    if (!line.product_handle) return fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.");
+    if (!isNonEmpty(line.product_handle)) return fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.");
     if (line.variant_id === variantId) return ok(cartId, "Giữ nguyên lựa chọn.");
     const checked = await checkVariant(line.product_handle, variantId);
     if (!checked.ok) return checked.result;
@@ -284,7 +287,7 @@ export function changeVariant(lineId: string, variantId: string): Promise<CartAc
 /** Cập nhật giá dòng về giá hiện hành: gỡ rồi thêm lại cùng biến thể/số lượng (sau khi kiểm biến thể còn bán). */
 export function refreshLinePrice(lineId: string): Promise<CartActionResult> {
   return withLine(lineId, async (cartId, line) => {
-    if (!line.product_handle || !line.variant_id)
+    if (!isNonEmpty(line.product_handle) || !isNonEmpty(line.variant_id))
       return fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.");
     const checked = await checkVariant(line.product_handle, line.variant_id);
     if (!checked.ok) return checked.result;

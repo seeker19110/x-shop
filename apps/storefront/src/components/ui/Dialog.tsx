@@ -87,7 +87,7 @@ export function Overlay({
       document.removeEventListener("focusin", onFocusIn);
       unlockScroll();
       const target = returnRef.current?.current ?? opener;
-      if (target?.isConnected) target.focus();
+      if (target?.isConnected === true) target.focus();
     };
   }, [active]);
 

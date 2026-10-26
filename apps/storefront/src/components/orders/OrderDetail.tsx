@@ -8,6 +8,7 @@ import { OrderActions } from "./OrderActions";
 import { PurchaseAnalytics } from "./PurchaseAnalytics";
 import { purchaseEventOf } from "./purchase-event";
 import styles from "./Order.module.css";
+import { isNonEmpty } from "../../lib/presence";
 
 function Block({ block, id }: { block: StatusBlock; id: string }) {
   return (
@@ -21,7 +22,7 @@ function Block({ block, id }: { block: StatusBlock; id: string }) {
     >
       <h2 id={id}>{block.title}</h2>
       <p className={styles.status}>{block.status}</p>
-      {block.detail ? <p>{block.detail}</p> : null}
+      {isNonEmpty(block.detail) ? <p>{block.detail}</p> : null}
     </li>
   );
 }
@@ -89,7 +90,7 @@ export function OrderDetail({ order, now = new Date() }: { order: OrderDetails; 
             <li key={i} className={styles.line}>
               <span>
                 {l.title}
-                {l.variantTitle ? ` — ${l.variantTitle}` : ""} × {l.quantity}
+                {isNonEmpty(l.variantTitle) ? ` — ${l.variantTitle}` : ""} × {l.quantity}
               </span>
               <span>{formatVnd(l.total)}</span>
             </li>

@@ -11,7 +11,8 @@ export function registerServiceWorker(
     ? undefined
     : navigator,
 ): Promise<unknown> {
-  if (!nav || !("serviceWorker" in nav) || !nav.serviceWorker) return Promise.resolve(null);
+  // Kiểu nói luôn có, nhưng trình duyệt (ngữ cảnh không an toàn, chế độ riêng tư) có thể để undefined.
+  if (!nav || !("serviceWorker" in nav) || nav.serviceWorker == null) return Promise.resolve(null);
   return nav.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" }).catch(() => null);
 }
 

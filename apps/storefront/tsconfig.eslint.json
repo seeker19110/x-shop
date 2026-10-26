@@ -1,0 +1,7 @@
+{
+  "//": "Chỉ cho lint có kiểu (T-082): đọc @x-shop/domain từ src qua điều kiện @x-shop/source, để `pnpm lint` không cần build domain trước (CI chạy lint song song với build). typecheck/build vẫn dùng tsconfig.json.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "customConditions": ["@x-shop/source"]
+  }
+}

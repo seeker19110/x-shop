@@ -99,7 +99,7 @@ function build(spec: Spec, index: number): ProductDetail {
         size: s,
         price: o.price ?? spec.price,
         compare_at: o.compare_at !== undefined ? o.compare_at : (spec.compareAt ?? null),
-        in_stock: spec.soldOut ? false : (o.in_stock ?? true),
+        in_stock: spec.soldOut === true ? false : (o.in_stock ?? true),
       });
     }
   }

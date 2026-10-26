@@ -1,6 +1,7 @@
 import type { PaymentMethod, QuoteView } from "../../lib/checkout/types";
 import { formatVnd } from "../../lib/format-vnd";
 import styles from "./Checkout.module.css";
+import { isNonEmpty } from "../../lib/presence";
 
 export const PAYMENT_LABEL: Record<PaymentMethod, string> = {
   cod: "Thanh toán khi nhận hàng (COD)",
@@ -29,7 +30,7 @@ export function Totals({ cartSubtotal, quote, quoting, method }: TotalsProps) {
       </div>
       {quote && quote.discountTotal > 0 ? (
         <div>
-          <dt>{quote.discountCode ? `Giảm giá (mã ${quote.discountCode})` : "Giảm giá"}</dt>
+          <dt>{isNonEmpty(quote.discountCode) ? `Giảm giá (mã ${quote.discountCode})` : "Giảm giá"}</dt>
           <dd>{`− ${formatVnd(quote.discountTotal)}`}</dd>
         </div>
       ) : null}

@@ -29,6 +29,7 @@ import {
   type Selection,
 } from "./selection";
 import { formatVnd } from "../../lib/format-vnd";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface ProductExperienceProps {
   product: ProductDetail;
@@ -44,7 +45,8 @@ function trackItem(product: ProductDetail, variant: ProductVariant | null, quant
     {
       item_id: product.handle,
       ...(variant ? { sku: variant.sku, price: variant.price } : {}),
-      ...(quantity ? { quantity } : {}),
+      // Không gửi số lượng khi thiếu hoặc 0 (giữ hành vi cũ); caller chỉ truyền 1.
+      ...(quantity !== undefined && quantity > 0 ? { quantity } : {}),
     },
   ];
 }
@@ -191,7 +193,7 @@ export function ProductExperience({ product, initial, children }: ProductExperie
           >
             {cta.label}
           </Button>
-          {cartError ? <InlineError alert>{cartError}</InlineError> : null}
+          {isNonEmpty(cartError) ? <InlineError alert>{cartError}</InlineError> : null}
           {added ? (
             <p className={styles.notice}>
               <Link href="/gio-hang" prefetch={false}>

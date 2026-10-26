@@ -12,8 +12,11 @@ export interface Selection {
 
 type Params = Record<string, string | string[] | undefined>;
 
-const first = (v: string | string[] | undefined): string | null =>
-  (Array.isArray(v) ? v[0] : v)?.trim().toLowerCase() || null;
+const first = (v: string | string[] | undefined): string | null => {
+  const s = (Array.isArray(v) ? v[0] : v)?.trim().toLowerCase();
+  // Tham số rỗng/toàn khoảng trắng = không chọn (như thiếu).
+  return s === undefined || s === "" ? null : s;
+};
 
 export function colorLabel(p: ProductDetail, value: string): string {
   return p.options.color.find((c) => c.value === value)?.label ?? value;
@@ -62,7 +65,7 @@ export function selectColor(
 ): { selection: Selection; notice: string | null } {
   if (sel.size === null) return { selection: { color, size: null }, notice: null };
   const v = p.variants.find((x) => x.color === color && x.size === sel.size);
-  if (v?.in_stock) return { selection: { color, size: sel.size }, notice: null };
+  if (v?.in_stock === true) return { selection: { color, size: sel.size }, notice: null };
   const c = colorLabel(p, color);
   const s = sizeLabel(p, sel.size);
   return {
