@@ -119,7 +119,7 @@
 - [x] `T-035` Ngân sách hiệu năng: script đo JS/CSS/font gzip trên build + Lighthouse lab hồ sơ §10.1 (sau: T-022; files: scripts/perf/) — Gate: `pnpm perf:budget`
 - [x] `T-036` Bộ dữ liệu 10.000 sản phẩm/50.000 SKU + kịch bản tải k6 (read/write mix §10.3) + báo cáo (AT27) (sau: T-014, T-012; files: scripts/load/, docs/ops/perf/) — Gate: `pnpm load:smoke`
 - [x] `T-037` Backup/restore Postgres + diễn tập mất Redis + đối chiếu giao dịch dở + RUNBOOK (AT28) (sau: T-012; files: scripts/ops/, docs/ops/RUNBOOK.md) — Gate: `bash scripts/ops/restore-drill.sh`
-- [ ] `T-038` THREAT-MODEL, DPIA, API-CONTRACT (OpenAPI), tick blueprint; `release-check` + GO-NO-GO (sau: T-034, T-037; files: docs/ops/, GO-NO-GO.md, BLUEPRINT.md) — Gate: `python3 .xtemplates/scripts/xt.py blueprint-status BLUEPRINT.md`
+- [x] `T-038` THREAT-MODEL, DPIA, API-CONTRACT (OpenAPI), tick blueprint; `release-check` + GO-NO-GO (sau: T-034, T-037; files: docs/ops/, GO-NO-GO.md, BLUEPRINT.md) — Gate: `python3 .xtemplates/scripts/xt.py blueprint-status BLUEPRINT.md`
 
 ## Phụ thuộc ngoài
 | Việc | Bên ngoài | Kế hoạch B |

@@ -306,3 +306,10 @@
 - Chọn: Hoãn tới khi có staging nhiều instance; đo bằng k6 kịch bản §10.3 rồi tối ưu theo số đo thật
 - Lý do (tiêu chí chất lượng cuối): Listing/search đã đạt 20+2/s; số đo máy dev không đại diện production (một tiến trình Node, CPU dùng chung), tối ưu mù dễ thêm phức tạp vô ích
 - Đường lùi: Bỏ defer T-060
+
+### D-044 · 2026-10-26T08:50:05+00:00 · T-038: DPIA dẫn chiếu Luật BVDLCN 91/2025, NĐ 356/2025, NĐ 13/2023
+
+- Phương án: (1) Phiên chính tra nguồn sống rồi điền ngày hiệu lực/điều khoản · (2) Giữ '(chưa xác minh)' tới khi pháp chế đối chiếu văn bản gốc; DPIA là việc chờ người ký
+- Chọn: Giữ '(chưa xác minh)' tới khi pháp chế đối chiếu văn bản gốc; DPIA là việc chờ người ký
+- Lý do (tiêu chí chất lượng cuối): Trích sai điều luật nguy hiểm hơn để trống có đánh dấu; DPIA cần pháp chế ký dù sao
+- Đường lùi: Cập nhật DPIA §pháp lý khi có xác minh
