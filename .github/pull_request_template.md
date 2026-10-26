@@ -51,6 +51,13 @@ Backup trước migrate: <!-- DB-MIG-011: link backup/snapshot mới (hoặc PIT
 ## Phụ thuộc mới
 <!-- Mỗi gói một dòng: `tên · phiên bản ghim · giấy phép · lý do · phương án thay thế đã xét`; không có thì ghi "không có".
 Mẫu cố ý không điền sẵn: CI so lockfile có thể đỏ khi mục trống mà có gói mới (BASE-DEP-006). -->
+Mỗi gói mới tick đủ (BASE-DEP-006); không thêm gói thì ghi "không có" và bỏ qua các ô:
+- [ ] Repo không archive; có phát hành/bảo trì trong 12 tháng gần nhất
+- [ ] Giấy phép nằm trong allowlist (không rõ/copyleft/không OSI: có quyết định ghi lại)
+- [ ] Không bật telemetry gửi dữ liệu mặc định (hoặc đã tắt, nêu cách tắt)
+- [ ] Đã xét stdlib/gói sẵn có thay thế — ghi phương án ở trên
+- [ ] Phiên bản ghim chính xác; lockfile cập nhật cùng PR
+- [ ] Nâng MAJOR một phụ thuộc có sẵn: dùng mẫu `major-upgrade` (`?template=major-upgrade.md`), PR riêng
 
 ## Hỗ trợ AI
 <!-- WF-REVIEW-019: phần nào do AI sinh, phần nào người đã tự kiểm và kiểm thế nào, phần nào chỉ máy/AI kiểm. Không ghi tên model/phiên. -->
