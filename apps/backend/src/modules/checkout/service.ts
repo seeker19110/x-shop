@@ -28,6 +28,7 @@ import {
   RateLimitCounter,
   WebhookInbox,
 } from "./models/checkout-models";
+import { sampleAt, windowStartMs, type WindowSample } from "../../lib/security/sliding-window";
 
 /** Phần tối thiểu của repository Medusa (MikroOrmBaseRepository) dùng cho câu lệnh nguyên tử. */
 interface BaseRepositoryLike {
@@ -831,28 +832,49 @@ class CheckoutModuleService extends MedusaService({
   /* ------------------------------------------------------------ đơn sau mua (T-021) */
 
   /**
-   * Tăng bộ đếm của `bucket` trong cửa sổ cố định chứa `now` và trả số đếm SAU khi tăng — một câu UPSERT nên nhiều
-   * instance/request đồng thời vẫn đếm đúng (AT20).
+   * Tăng bộ đếm của `bucket` trong cửa sổ cố định chứa `now` và trả số đếm SAU khi tăng cùng số đếm của cửa sổ liền
+   * trước — một câu (UPSERT … RETURNING trong CTE + đọc cửa sổ trước trên cùng snapshot) nên nhiều instance/request đồng
+   * thời vẫn đếm đúng (AT20) và hai số đọc nhất quán. Quyết định chặn theo xấp xỉ cửa sổ trượt
+   * (lib/security/sliding-window.ts, T-055) do bên gọi làm; `now` do bên gọi tiêm (test tất định) và đi kèm mẫu qua
+   * `elapsedMs` — quyết định không đọc lại đồng hồ.
    */
-  async hitRateCounter(bucket: string, windowMs: number, now: Date): Promise<number> {
-    const windowStart = new Date(Math.floor(now.getTime() / windowMs) * windowMs);
+  async hitRateCounter(bucket: string, windowMs: number, now: Date): Promise<WindowSample> {
+    const start = windowStartMs(windowMs, now.getTime());
     const rows = await this.exec(
-      `INSERT INTO rate_limit_counter (id, bucket, window_start, count) VALUES (?, ?, ?, 1)
-       ON CONFLICT (bucket, window_start) DO UPDATE SET count = rate_limit_counter.count + 1, updated_at = now()
-       RETURNING count`,
-      [generateEntityId(undefined, "rlc"), bucket, windowStart],
+      `WITH hit AS (
+         INSERT INTO rate_limit_counter (id, bucket, window_start, count) VALUES (?, ?, ?, 1)
+         ON CONFLICT (bucket, window_start) DO UPDATE SET count = rate_limit_counter.count + 1, updated_at = now()
+         RETURNING count
+       )
+       SELECT hit.count AS current,
+              COALESCE((SELECT p.count FROM rate_limit_counter p WHERE p.bucket = ? AND p.window_start = ?), 0)
+                AS previous
+       FROM hit`,
+      [generateEntityId(undefined, "rlc"), bucket, new Date(start), bucket, new Date(start - windowMs)],
     );
-    return Number(rows[0]?.count ?? 0);
+    return sampleAt(
+      { current: Number(rows[0]?.current ?? 0), previous: Number(rows[0]?.previous ?? 0) },
+      windowMs,
+      now,
+    );
   }
 
-  /** Đọc số đếm hiện tại (không tăng) — dùng cho giới hạn chỉ đếm lần thất bại. */
-  async peekRateCounter(bucket: string, windowMs: number, now: Date): Promise<number> {
-    const windowStart = new Date(Math.floor(now.getTime() / windowMs) * windowMs);
+  /** Đọc (không tăng) số đếm cửa sổ hiện tại + cửa sổ trước trong một câu — dùng cho giới hạn chỉ đếm lần thất bại. */
+  async peekRateCounter(bucket: string, windowMs: number, now: Date): Promise<WindowSample> {
+    const start = windowStartMs(windowMs, now.getTime());
+    const cur = new Date(start);
+    const prev = new Date(start - windowMs);
     const rows = await this.exec(
-      `SELECT count FROM rate_limit_counter WHERE bucket = ? AND window_start = ?`,
-      [bucket, windowStart],
+      `SELECT COALESCE(SUM(count) FILTER (WHERE window_start = ?), 0) AS current,
+              COALESCE(SUM(count) FILTER (WHERE window_start = ?), 0) AS previous
+       FROM rate_limit_counter WHERE bucket = ? AND window_start IN (?, ?)`,
+      [cur, prev, bucket, cur, prev],
     );
-    return Number(rows[0]?.count ?? 0);
+    return sampleAt(
+      { current: Number(rows[0]?.current ?? 0), previous: Number(rows[0]?.previous ?? 0) },
+      windowMs,
+      now,
+    );
   }
 
   /** Đánh dấu token tra cứu đã đổi thành phiên. false = token đã được dùng (UNIQUE token_hash). */

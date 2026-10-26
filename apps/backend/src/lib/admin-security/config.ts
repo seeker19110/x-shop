@@ -42,7 +42,7 @@ export const SENSITIVE_PERMISSIONS: readonly Permission[] = [
 export const isSensitive = (perm: Permission): boolean => SENSITIVE_PERMISSIONS.includes(perm);
 
 /**
- * Rate limit đăng nhập/MFA theo NHIỀU tín hiệu (SEC03): chỉ đếm lần THẤT BẠI trong cửa sổ trượt cố định.
+ * Rate limit đăng nhập/MFA theo NHIỀU tín hiệu (SEC03): chỉ đếm lần THẤT BẠI, xấp xỉ cửa sổ trượt `windowSeconds` (T-055).
  *  - (định danh + IP): chặn đoán mật khẩu/mã từ một nơi — ngưỡng thấp;
  *  - định danh (mọi IP): chặn đoán phân tán vào một tài khoản — ngưỡng vừa;
  *  - IP (mọi định danh): chỉ chặn quét hàng loạt — ngưỡng CAO để không khoá cả mạng dùng chung (NAT công ty/quán cà phê).

@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 import { AUTH_RATE_LIMITS } from "./config";
+import {
+  exceedsLimit,
+  NEXT_HIT,
+  sampleAt,
+  slidingRetryAfterSeconds,
+  windowStartMs,
+} from "../security/sliding-window";
 import type { SecurityStore } from "./store";
 
 /**
@@ -8,6 +15,9 @@ import type { SecurityStore } from "./store";
  * "Giữ chỗ trước, hoàn lại khi thành công": mỗi lần thử TĂNG mọi bộ đếm (INCR nguyên tử) TRƯỚC khi kiểm mật khẩu/mã;
  * vượt ngưỡng ở bất kỳ tín hiệu nào → 429 ngay. Nhờ vậy loạt request song song không lọt qua ngưỡng (kiểm-rồi-ghi sẽ
  * để N request cùng thấy "chưa đủ ngưỡng"). Thành công → xoá bộ đếm (định danh + IP) và hoàn 1 cho hai bộ đếm còn lại.
+ *
+ * Bộ đếm lưu theo cửa sổ cố định theo đồng hồ (khoá `…:w<chỉ số cửa sổ>`), quyết định theo xấp xỉ cửa sổ trượt (cửa sổ
+ * hiện tại + cửa sổ trước × phần còn lại, lib/security/sliding-window.ts, T-055) — không còn 2× ngưỡng qua ranh giới.
  */
 export type LimitScope = "login" | "mfa";
 
@@ -30,42 +40,67 @@ function buckets(scope: LimitScope, identity: string | null, ip: string): Bucket
   return out;
 }
 
-/** Ghi nhận một lần thử; `allowed=false` khi đã vượt ngưỡng (request không được xử lý tiếp). */
+const windowMs = () => AUTH_RATE_LIMITS.windowSeconds * 1000;
+/** Khoá Redis của bucket trong cửa sổ cố định số `index` (bội của cửa sổ từ epoch). */
+const windowKey = (b: Bucket, index: number) => `${b.key}:w${index}`;
+const windowIndex = (now: Date) => windowStartMs(windowMs(), now.getTime()) / windowMs();
+/** Giữ cửa sổ đủ lâu để còn đọc được khi nó là "cửa sổ trước" (+ biên lệch đồng hồ giữa instance). */
+const keyTtlSeconds = () => 2 * AUTH_RATE_LIMITS.windowSeconds + 60;
+
+/**
+ * Ghi nhận một lần thử tại `now` (tiêm được — test tất định); `allowed=false` khi số hiệu dụng cửa sổ trượt
+ * (sliding-window.ts, T-055) của bất kỳ tín hiệu nào vượt ngưỡng (request không được xử lý tiếp). Mọi tín hiệu đều được
+ * đếm (giữ chỗ) kể cả khi đã bị chặn; `retryAfterSeconds` = mốc muộn nhất mà mọi tín hiệu bị chặn cho lượt kế tiếp qua.
+ * Truyền CÙNG `now` cho `registerSuccess`/`registerRefund` của lần thử này để hoàn đúng cửa sổ đã giữ chỗ.
+ */
 export async function registerAttempt(
   store: SecurityStore,
   scope: LimitScope,
   identity: string | null,
   ip: string,
+  now: Date = new Date(),
 ): Promise<{ allowed: true } | { allowed: false; retryAfterSeconds: number }> {
-  let blocked: Bucket | null = null;
+  const idx = windowIndex(now);
+  let retryAfterSeconds = 0;
   for (const b of buckets(scope, identity, ip)) {
-    const n = await store.incr(b.key, AUTH_RATE_LIMITS.windowSeconds);
-    if (n > b.limit && !blocked) blocked = b;
+    const counts = await store.incrPeek(windowKey(b, idx), keyTtlSeconds(), windowKey(b, idx - 1));
+    const sample = sampleAt(counts, windowMs(), now);
+    if (exceedsLimit(sample, b.limit, windowMs())) {
+      retryAfterSeconds = Math.max(
+        retryAfterSeconds,
+        slidingRetryAfterSeconds(sample, b.limit, windowMs(), NEXT_HIT),
+      );
+    }
   }
-  if (!blocked) return { allowed: true };
-  const ttl = await store.ttl(blocked.key);
-  return { allowed: false, retryAfterSeconds: ttl > 0 ? ttl : AUTH_RATE_LIMITS.windowSeconds };
+  return retryAfterSeconds > 0 ? { allowed: false, retryAfterSeconds } : { allowed: true };
 }
 
-/** Lần thử thành công: không tính là thất bại. */
+/** Lần thử thành công (`now` = mốc của `registerAttempt`): không tính là thất bại. */
 export async function registerSuccess(
   store: SecurityStore,
   scope: LimitScope,
   identity: string | null,
   ip: string,
+  now: Date = new Date(),
 ): Promise<void> {
+  const idx = windowIndex(now);
   for (const b of buckets(scope, identity, ip)) {
-    if (b.kind === "idip") await store.del(b.key);
-    else await store.decr(b.key);
+    if (b.kind === "idip") {
+      // Đăng nhập đúng từ (định danh, IP) này xoá sạch thất bại của nó — cả phần còn tính từ cửa sổ trước.
+      await store.del(windowKey(b, idx));
+      await store.del(windowKey(b, idx - 1));
+    } else await store.decr(windowKey(b, idx));
   }
 }
 
-/** Lỗi hệ thống (5xx): hoàn lại lần thử, không xoá bộ đếm thất bại trước đó. */
+/** Lỗi hệ thống (5xx, `now` = mốc của `registerAttempt`): hoàn lại lần thử, không xoá bộ đếm thất bại trước đó. */
 export async function registerRefund(
   store: SecurityStore,
   scope: LimitScope,
   identity: string | null,
   ip: string,
+  now: Date = new Date(),
 ): Promise<void> {
-  for (const b of buckets(scope, identity, ip)) await store.decr(b.key);
+  const idx = windowIndex(now);
+  for (const b of buckets(scope, identity, ip)) await store.decr(windowKey(b, idx));
 }

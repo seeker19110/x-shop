@@ -8,20 +8,31 @@ import { CheckoutError, sendProblem } from "../checkout/errors";
 import { sanitizeQuery } from "../catalog/listing";
 import { ipRateKey } from "./client-ip";
 import { clientIpOf } from "./config";
+import {
+  exceedsLimit,
+  NEXT_HIT,
+  slidingRetryAfterSeconds,
+  type NextRequestRule,
+  type WindowSample,
+} from "./sliding-window";
+
+export * from "./sliding-window";
 
 /**
  * Rate limit route công khai của Store API (SEC03): tìm kiếm, mã giảm giá (quote), đặt hàng (submit). Tra cứu đơn
  * (`/store/x/orders/*`) đã có giới hạn riêng trong route (lib/orders/rate-limit.ts, AT20).
  *
  * Nhiều tín hiệu, tránh khoá cả mạng dùng chung: theo IP (ngưỡng rộng) VÀ theo khoá nghiệp vụ (giỏ — ngưỡng hẹp).
- * Bộ đếm cửa sổ cố định ở Postgres (`rate_limit_counter`, UPSERT nguyên tử, chung mọi instance, có job dọn); khoá được băm
- * — bảng đếm không chứa IP/mã/giỏ thô.
+ * Bộ đếm ở Postgres (`rate_limit_counter`, UPSERT nguyên tử, chung mọi instance, có job dọn) lưu theo cửa sổ cố định,
+ * quyết định theo XẤP XỈ CỬA SỔ TRƯỢT (sliding-window.ts, T-055): số hiệu dụng = cửa sổ hiện tại + cửa sổ trước × phần
+ * còn lại — không còn 2× hạn mức quanh ranh giới. Khoá được băm — bảng đếm không chứa IP/mã/giỏ thô.
  *
  * "Tăng rồi so" (không "đọc rồi tăng"): N request song song nhận N giá trị đếm khác nhau → đúng `limit` request lọt.
  *
  * Mã giảm giá / Idempotency-Key đếm theo SỐ GIÁ TRỊ KHÁC NHAU trong cửa sổ: báo giá lại với cùng mã (đổi địa chỉ, đổi
  * phương thức) hay gửi lại cùng khoá (thử lại mạng, BUSY_RETRY) không tốn lượt; dò mã / đổi khoá liên tục thì tốn. Khi bộ
- * đếm đã vượt ngưỡng, mọi request của khoá đó bị chặn tới hết cửa sổ (kể cả giá trị đã thấy).
+ * đếm đã vượt ngưỡng, mọi request của khoá đó bị chặn tới khi số hiệu dụng hạ xuống (kể cả giá trị đã thấy). "Đã thấy"
+ * xét trong cửa sổ hiện tại: cùng giá trị dùng lại sau ranh giới tốn thêm một lượt (chặt hơn, không bao giờ lỏng hơn).
  */
 export interface RateWindow {
   limit: number;
@@ -45,10 +56,13 @@ export const STORE_RATE_LIMITS = {
 
 export type StoreRateLimit = keyof typeof STORE_RATE_LIMITS;
 
-/** Bộ đếm cửa sổ cố định: `hit` tăng rồi trả số đếm sau khi tăng; `peek` chỉ đọc. */
+/**
+ * Bộ đếm theo cửa sổ cố định: `hit` tăng rồi trả mẫu (cửa sổ hiện tại sau khi tăng + cửa sổ trước, đọc nguyên tử, kèm
+ * `elapsedMs` của `now`); `peek` chỉ đọc. `now` tiêm ở đây là mốc duy nhất của quyết định.
+ */
 export interface RateCounter {
-  hit(bucket: string, windowMs: number, now: Date): Promise<number>;
-  peek(bucket: string, windowMs: number, now: Date): Promise<number>;
+  hit(bucket: string, windowMs: number, now: Date): Promise<WindowSample>;
+  peek(bucket: string, windowMs: number, now: Date): Promise<WindowSample>;
 }
 
 export type RateDecision =
@@ -57,17 +71,26 @@ export type RateDecision =
 const digest = (s: string) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 40);
 const bucketOf = (name: StoreRateLimit, key: string) => `sec.${name}:${digest(key)}`;
 
-/** Giây tới hết cửa sổ cố định chứa `now` (≥ 1) — giá trị `Retry-After`. */
-export function retryAfterSeconds(windowMs: number, now: Date): number {
-  const end = (Math.floor(now.getTime() / windowMs) + 1) * windowMs;
-  return Math.max(1, Math.ceil((end - now.getTime()) / 1000));
+/** `Retry-After` (giây, ≥ 1) của chính sách `name`: lúc request kế tiếp (theo `rule`) được cho qua. */
+export function retryAfterSeconds(
+  name: StoreRateLimit,
+  sample: WindowSample,
+  rule: NextRequestRule = NEXT_HIT,
+): number {
+  const { limit, windowMs } = STORE_RATE_LIMITS[name];
+  return slidingRetryAfterSeconds(sample, limit, windowMs, rule);
 }
 
-const blocked = (name: StoreRateLimit, now: Date): RateDecision => ({
-  allowed: false,
-  policy: name,
-  retryAfterSeconds: retryAfterSeconds(STORE_RATE_LIMITS[name].windowMs, now),
-});
+/**
+ * Chặn khi số hiệu dụng (đã gồm lượt này nếu có đếm) > hạn mức. `Retry-After` tính cho lượt kế tiếp ĐƯỢC ĐẾM (giá trị mới)
+ * — mốc muộn nhất trong hai trường hợp, nên khách làm theo không bị chặn lại bất kể gửi giá trị nào.
+ */
+function decide(name: StoreRateLimit, sample: WindowSample): RateDecision {
+  const { limit, windowMs } = STORE_RATE_LIMITS[name];
+  return exceedsLimit(sample, limit, windowMs)
+    ? { allowed: false, policy: name, retryAfterSeconds: retryAfterSeconds(name, sample, NEXT_HIT) }
+    : { allowed: true };
+}
 
 /** Đếm một lượt cho `key`. */
 export async function consume(
@@ -76,9 +99,8 @@ export async function consume(
   key: string,
   now: Date,
 ): Promise<RateDecision> {
-  const { limit, windowMs } = STORE_RATE_LIMITS[name];
-  const n = await counter.hit(bucketOf(name, key), windowMs, now);
-  return n > limit ? blocked(name, now) : { allowed: true };
+  const sample = await counter.hit(bucketOf(name, key), STORE_RATE_LIMITS[name].windowMs, now);
+  return decide(name, sample);
 }
 
 /** Đếm số giá trị `value` KHÁC NHAU của `key` trong cửa sổ (giá trị đã thấy không tốn lượt). */
@@ -89,11 +111,13 @@ export async function consumeDistinct(
   value: string,
   now: Date,
 ): Promise<RateDecision> {
-  const { limit, windowMs } = STORE_RATE_LIMITS[name];
+  const { windowMs } = STORE_RATE_LIMITS[name];
   const seen = await counter.hit(bucketOf(name, `seen\u0000${key}\u0000${value}`), windowMs, now);
   const bucket = bucketOf(name, key);
-  const n = seen === 1 ? await counter.hit(bucket, windowMs, now) : await counter.peek(bucket, windowMs, now);
-  return n > limit ? blocked(name, now) : { allowed: true };
+  // Giá trị mới trong cửa sổ hiện tại → tốn một lượt (đếm rồi so); đã thấy → chỉ đọc, chặn khi hiệu dụng > hạn mức.
+  return seen.current === 1
+    ? decide(name, await counter.hit(bucket, windowMs, now))
+    : decide(name, await counter.peek(bucket, windowMs, now));
 }
 
 /** Một bước kiểm; `null` = không áp (thiếu khoá). Chạy tuần tự, dừng ở bước đầu tiên bị chặn. */

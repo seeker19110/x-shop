@@ -9,14 +9,9 @@ import {
 } from "../client-ip";
 import { checkCsrf, type CsrfInput } from "../csrf";
 import { apiSecurityHeaders, HSTS_VALUE } from "../headers";
-import {
-  consume,
-  consumeDistinct,
-  retryAfterSeconds,
-  STORE_RATE_LIMITS,
-  type RateCounter,
-} from "../rate-limit";
+import { consume, consumeDistinct, retryAfterSeconds, STORE_RATE_LIMITS } from "../rate-limit";
 import { checkUploadedFile, sniffImageType, UPLOAD_LIMITS } from "../upload";
+import { MemoryCounter } from "./memory-counter";
 
 const trusted = (raw: string): TrustedProxies => {
   const r = parseTrustedProxies(raw);
@@ -227,34 +222,17 @@ describe("apiSecurityHeaders", () => {
   });
 });
 
-/** Bộ đếm trong bộ nhớ, cùng ngữ nghĩa cửa sổ cố định với `hitRateCounter` (UPSERT nguyên tử). */
-class MemoryCounter implements RateCounter {
-  readonly data = new Map<string, number>();
-  private key(bucket: string, windowMs: number, now: Date) {
-    return `${bucket}@${Math.floor(now.getTime() / windowMs)}`;
-  }
-  async hit(bucket: string, windowMs: number, now: Date) {
-    await Promise.resolve();
-    const k = this.key(bucket, windowMs, now);
-    const n = (this.data.get(k) ?? 0) + 1;
-    this.data.set(k, n);
-    return n;
-  }
-  async peek(bucket: string, windowMs: number, now: Date) {
-    return this.data.get(this.key(bucket, windowMs, now)) ?? 0;
-  }
-}
-
 describe("rate limit", () => {
   const T0 = new Date("2026-10-25T03:00:00.000Z");
 
-  it("retryAfterSeconds: tới hết cửa sổ, tối thiểu 1", () => {
-    expect(retryAfterSeconds(60_000, T0)).toBe(60);
-    expect(retryAfterSeconds(60_000, new Date(T0.getTime() + 59_999))).toBe(1);
-    expect(retryAfterSeconds(60_000, new Date(T0.getTime() + 30_500))).toBe(30);
+  it("retryAfterSeconds: tới lúc lượt kế tiếp được cho qua theo cửa sổ trượt, tối thiểu 1", () => {
+    // 61/60 ở đầu cửa sổ, cửa sổ trước rỗng: lượt kế tiếp qua khi 1 + 61·(còn lại) ≤ 60 ở cửa sổ sau (≈ 2 s sau ranh giới).
+    expect(retryAfterSeconds("searchIp", { current: 61, previous: 0, elapsedMs: 0 })).toBe(62);
+    // Vừa chạm ngưỡng nhưng cửa sổ trước sắp trôi hết → ≥ 1.
+    expect(retryAfterSeconds("searchIp", { current: 0, previous: 60, elapsedMs: 59_999 })).toBe(1);
   });
 
-  it("consume: song song → đúng limit lượt lọt; cửa sổ mới đếm lại", async () => {
+  it("consume: song song → đúng limit lượt lọt; ngay sau ranh giới vẫn chặn, hết hai cửa sổ thì đếm lại", async () => {
     const c = new MemoryCounter();
     const { limit, windowMs } = STORE_RATE_LIMITS.searchIp;
     const results = await Promise.all(
@@ -262,12 +240,16 @@ describe("rate limit", () => {
     );
     expect(results.filter((r) => r.allowed)).toHaveLength(limit);
     const denied = results.find((r) => !r.allowed);
-    expect(denied).toEqual({ allowed: false, policy: "searchIp", retryAfterSeconds: 60 });
-    expect((await consume(c, "searchIp", "1.2.3.4", new Date(T0.getTime() + windowMs))).allowed).toBe(true);
+    expect(denied).toEqual({ allowed: false, policy: "searchIp", retryAfterSeconds: 62 });
+    // Cửa sổ cố định cũ cho qua ở đây (đếm về 0) — cửa sổ trượt vẫn tính 67 lượt của cửa sổ trước.
+    expect((await consume(c, "searchIp", "1.2.3.4", new Date(T0.getTime() + windowMs))).allowed).toBe(false);
+    expect((await consume(c, "searchIp", "1.2.3.4", new Date(T0.getTime() + 2 * windowMs))).allowed).toBe(
+      true,
+    );
     expect((await consume(c, "searchIp", "5.6.7.8", T0)).allowed).toBe(true);
   });
 
-  it("consumeDistinct: giá trị lặp không tốn lượt; vượt → chặn cả giá trị đã thấy tới hết cửa sổ", async () => {
+  it("consumeDistinct: giá trị lặp không tốn lượt; vượt → chặn cả giá trị đã thấy tới khi hiệu dụng hạ", async () => {
     const c = new MemoryCounter();
     const { limit, windowMs } = STORE_RATE_LIMITS.couponCart;
     for (let i = 0; i < 20; i++)
@@ -278,7 +260,9 @@ describe("rate limit", () => {
     expect((await consumeDistinct(c, "couponCart", "cart_1", "MOI", T0)).allowed).toBe(false);
     expect((await consumeDistinct(c, "couponCart", "cart_1", "A", T0)).allowed).toBe(false);
     expect((await consumeDistinct(c, "couponCart", "cart_2", "A", T0)).allowed).toBe(true);
-    const later = new Date(T0.getTime() + windowMs);
+    const boundary = new Date(T0.getTime() + windowMs);
+    expect((await consumeDistinct(c, "couponCart", "cart_1", "A", boundary)).allowed).toBe(false);
+    const later = new Date(T0.getTime() + 2 * windowMs);
     expect((await consumeDistinct(c, "couponCart", "cart_1", "A", later)).allowed).toBe(true);
   });
 
