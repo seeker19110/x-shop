@@ -283,7 +283,7 @@ xuất: 12 tháng cho khoá ký, và NGAY khi nghi lộ (§10). Hiệu ứng khi
 
 last_drilled: chưa diễn tập. Sự cố bảo mật = SEV1: bảo toàn bằng chứng (chép log liên quan sang nơi chỉ-đọc TRƯỚC khi xoay), thu hồi/xoay,
 rà log trong khoảng lộ, ghi sự cố, đánh giá nghĩa vụ thông báo (Luật 91/2025/QH15 — chưa xác minh văn bản gốc; quy trình đầy đủ ở
-`docs/ops/runbooks/data-breach.md` khi T-075 xong). Xoá commit KHÔNG đủ: coi mọi khoá từng nằm trong lịch sử git là đã lộ.
+`docs/ops/runbooks/data-breach.md`). Xoá commit KHÔNG đủ: coi mọi khoá từng nằm trong lịch sử git là đã lộ.
 
 | Khoá | Thu hồi / xoay ngay | Rà log trong khoảng lộ |
 |---|---|---|
@@ -295,7 +295,7 @@ rà log trong khoảng lộ, ghi sự cố, đánh giá nghĩa vụ thông báo 
 | `DATABASE_URL` / `REDIS_URL` | đổi mật khẩu, đóng cổng ra ngoài, restart | log truy cập DB của nhà cung cấp hạ tầng; `audit_log` |
 | Khoá email/SMS provider | thu hồi ở nhà cung cấp, tạo khoá mới | lịch sử gửi ở nhà cung cấp so với `outbound_message` |
 
-Sau xử lý: ghi post-mortem vào `docs/ops/incidents/` (khi T-075 tạo) — nguyên nhân gốc, khoảng lộ, khoá đã xoay, dữ liệu bị chạm, hàng rào mới
+Sau xử lý: ghi post-mortem vào `docs/ops/incidents/` (sổ sự cố; quy trình ở `docs/ops/INCIDENT-RESPONSE.md`) — nguyên nhân gốc, khoảng lộ, khoá đã xoay, dữ liệu bị chạm, hàng rào mới
 (vd quét bí mật bổ sung). Đầu mối pháp lý: [chủ dự án điền].
 
 ## 11. Dữ liệu staging / preview

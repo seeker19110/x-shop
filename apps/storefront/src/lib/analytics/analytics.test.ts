@@ -41,7 +41,7 @@ describe("analytics: track() mặc định đẩy vào dataLayer", () => {
   });
 
   it("bỏ khi payload chứa email / SĐT / địa chỉ", () => {
-    expect(track({ event: "view_item", items: [{ item_id: "a@b.vn" }] })).toBe(false);
+    expect(track({ event: "view_item", items: [{ item_id: "a@example.test" }] })).toBe(false);
     expect(track({ event: "view_item", items: [{ item_id: "x", sku: "0912345678" }] })).toBe(false);
     expect(track({ event: "view_item", list_id: "12 Phố Điện Biên Phủ" } as never)).toBe(false);
     expect(layer()).toHaveLength(0);
@@ -144,7 +144,7 @@ describe("analytics: bộ quét PII", () => {
   );
 
   it("quét sâu cả khóa và mảng lồng", () => {
-    expect(findPii({ a: [{ b: "x@y.vn" }] })).toBe("$.a[0].b");
+    expect(findPii({ a: [{ b: "x@example.test" }] })).toBe("$.a[0].b");
     expect(findPii({ "0912345678": 1 })).toBe("$.0912345678");
     expect(findPii({ a: { b: ["ok"] } })).toBeNull();
   });

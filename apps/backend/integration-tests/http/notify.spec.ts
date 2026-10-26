@@ -180,7 +180,7 @@ medusaIntegrationTestRunner({
               state: "sent",
               live: false,
               adapter: "log",
-              recipient_masked: "a***@example.vn",
+              recipient_masked: "a***@example.test",
             });
             templates.push(m!.template);
           }

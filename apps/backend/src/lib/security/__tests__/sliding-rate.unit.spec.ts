@@ -251,22 +251,25 @@ describe("đăng nhập/MFA (kho Redis/bộ nhớ) — cửa sổ trượt với
   it("thành công xoá thất bại (định danh + IP) của CẢ cửa sổ trước; hoàn lại 5xx vào đúng cửa sổ đã giữ chỗ", async () => {
     const L = AUTH_RATE_LIMITS.login.perIdentityIp;
     const store = new MemoryStore();
-    for (let i = 0; i < L - 1; i++) await registerAttempt(store, "login", "a@x.vn", "7.7.7.7", at(-1));
-    expect((await registerAttempt(store, "login", "a@x.vn", "7.7.7.7", at(0))).allowed).toBe(true);
-    await registerSuccess(store, "login", "a@x.vn", "7.7.7.7", at(0));
+    for (let i = 0; i < L - 1; i++)
+      await registerAttempt(store, "login", "a@example.test", "7.7.7.7", at(-1));
+    expect((await registerAttempt(store, "login", "a@example.test", "7.7.7.7", at(0))).allowed).toBe(true);
+    await registerSuccess(store, "login", "a@example.test", "7.7.7.7", at(0));
     for (let i = 0; i < L; i++) {
-      expect((await registerAttempt(store, "login", "a@x.vn", "7.7.7.7", at(10 + i))).allowed).toBe(true);
+      expect((await registerAttempt(store, "login", "a@example.test", "7.7.7.7", at(10 + i))).allowed).toBe(
+        true,
+      );
     }
-    expect((await registerAttempt(store, "login", "a@x.vn", "7.7.7.7", at(100))).allowed).toBe(false);
+    expect((await registerAttempt(store, "login", "a@example.test", "7.7.7.7", at(100))).allowed).toBe(false);
 
     // Giữ chỗ ở cửa sổ trước, phản hồi 5xx xong SAU ranh giới: hoàn lại theo mốc giữ chỗ.
     const s2 = new MemoryStore();
     for (let i = 0; i < L; i++) {
-      await registerAttempt(s2, "login", "b@x.vn", "8.8.8.8", at(-1));
-      await registerRefund(s2, "login", "b@x.vn", "8.8.8.8", at(-1));
+      await registerAttempt(s2, "login", "b@example.test", "8.8.8.8", at(-1));
+      await registerRefund(s2, "login", "b@example.test", "8.8.8.8", at(-1));
     }
     for (let i = 0; i < L; i++) {
-      expect((await registerAttempt(s2, "login", "b@x.vn", "8.8.8.8", at(i))).allowed).toBe(true);
+      expect((await registerAttempt(s2, "login", "b@example.test", "8.8.8.8", at(i))).allowed).toBe(true);
     }
   });
 });
