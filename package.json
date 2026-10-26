@@ -25,7 +25,11 @@
     "check:adr": "node scripts/check-adr.mjs",
     "check:adr:test": "node --test scripts/check-adr.test.mjs",
     "check:routes": "node scripts/check-routes.mjs",
-    "check:routes:test": "node --test scripts/check-routes.test.mjs"
+    "check:routes:test": "node --test scripts/check-routes.test.mjs",
+    "check:sql-safety": "node scripts/check-sql-safety.mjs",
+    "check:sql-safety:test": "node --test scripts/check-sql-safety.test.mjs",
+    "depcruise": "depcruise apps/backend/src apps/backend/integration-tests apps/storefront/src packages/domain/src --config .dependency-cruiser.cjs",
+    "depcruise:test": "node --test scripts/depcruise-rules.test.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
@@ -36,6 +40,7 @@
     "@playwright/test": "1.63.0",
     "@stoplight/spectral-cli": "6.17.0",
     "@types/node": "^22.20.5",
+    "dependency-cruiser": "18.7.0",
     "eslint": "^9.39.5",
     "eslint-plugin-jest": "29.17.0",
     "eslint-plugin-react-hooks": "7.1.1",
