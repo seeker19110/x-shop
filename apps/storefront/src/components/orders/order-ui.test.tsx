@@ -90,7 +90,7 @@ describe("OrderDetail (CHK06): 3 khối riêng, đang xác nhận thanh toán", 
   it("Hủy đơn: hộp thoại xác nhận; 'Giữ đơn' không gọi; xác nhận → action + làm mới; PAYMENT_PENDING → thông báo", async () => {
     render(<OrderDetail order={order()} now={NOW} />);
     fireEvent.click(screen.getByRole("button", { name: "Hủy đơn" }));
-    const dialog = await screen.findByRole("dialog", { name: "Hủy đơn hàng?" });
+    const dialog = await screen.findByRole("dialog", { name: "Hủy đơn XS-ABC123?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Giữ đơn" }));
     expect(m.cancel).not.toHaveBeenCalled();
 

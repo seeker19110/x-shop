@@ -129,16 +129,24 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
       <Dialog
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
-        title="Hủy đơn hàng?"
+        title={`Hủy đơn ${orderRef}?`}
         returnFocusRef={cancelBtn}
       >
+        <p>
+          Bạn sắp hủy đơn <strong>{orderRef}</strong>. Thao tác này không thể hoàn tác.
+        </p>
         <p>
           {paid
             ? "Đơn đã được thanh toán. Sau khi hủy, chúng tôi sẽ hoàn tiền theo chính sách hoàn tiền."
             : "Sau khi hủy, hàng giữ cho đơn sẽ được trả lại kho và không thể khôi phục đơn này."}
         </p>
         <div className={styles.actions}>
-          <Button variant="secondary" onClick={() => setConfirmOpen(false)} disabled={busy === "cancel"}>
+          <Button
+            variant="secondary"
+            data-autofocus
+            onClick={() => setConfirmOpen(false)}
+            disabled={busy === "cancel"}
+          >
             Giữ đơn
           </Button>
           <Button onClick={cancel} loading={busy === "cancel"} loadingLabel="Đang hủy">

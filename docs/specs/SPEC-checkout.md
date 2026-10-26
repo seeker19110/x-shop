@@ -90,3 +90,10 @@ lần, để không bị thu thêm ngầm và không mất hàng đã giữ.
   - Phí ship theo bậc khối lượng (`apps/backend/src/lib/checkout/shipping.ts`): số bậc làm tròn LÊN (ceil); khối lượng một dòng không số nguyên gram làm tròn lên.
   - Thuế/hóa đơn: hiện chưa tính thuế (đặc tả gốc §7.4: cấu hình theo mô hình kinh doanh, không hardcode). Khi thêm, phải ghi mode làm tròn (HALF_UP hay HALF_EVEN theo nghiệp vụ) vào spec này và ADR trước khi code.
   - Kiểm: `pnpm --filter @x-shop/domain exec vitest run src/money` (ca `percentOfVnd` làm tròn xuống, biên 0 và 10.000 bp, thuộc tính tổng phân bổ).
+
+## 5. Câu hỏi mở — khuyến mãi (IND-ECOM-004, T-122)
+Hành vi ĐANG CÓ (đã có test): tối đa MỘT mã cấp đơn (% có trần / tiền cố định, điều kiện đơn tối thiểu) + tối đa MỘT ưu đãi ship, cộng được; giảm đơn tính trên subtotal rồi kẹp ≤ subtotal; tổng ≥ 0; quota TỔNG lượt dùng mã (S-008). Kiểm: `pnpm --filter @x-shop/domain test -- quote coupon`. Chưa có trong đặc tả/code — chưa tự thêm, cần phiên chính quyết (`loop decide`):
+- **Q-PROMO-1 Giới hạn lượt dùng/người.** Khách vãng lai không có định danh. (a) Khoá theo số điện thoại chuẩn hóa đã xác minh + email: đơn giản nhưng dễ né bằng số khác; (b) bỏ giới hạn/người, chỉ giữ quota tổng + giới hạn tốc độ: rẻ, chấp nhận rủi ro lạm dụng; (c) chỉ áp giới hạn/người cho mã dành cho tài khoản (cần tài khoản — ngoài phạm vi "mua không cần tài khoản").
+- **Q-PROMO-2 Ngân sách khuyến mãi (tổng tiền giảm tối đa/mã hoặc chiến dịch).** (a) Cộng dồn `orderDiscountTotal` các đơn đã tính ở bảng sử dụng mã, chặn khi chạm trần (cần khóa như quota, hoàn khi huỷ); (b) dùng ngân sách của Medusa Campaign nếu bản đang dùng hỗ trợ (chưa xác minh); (c) không có ngân sách, chỉ quota lượt.
+- **Q-PROMO-3 Chồng nhiều mã cấp đơn / thứ tự áp nhiều quy tắc.** (a) Giữ "một mã cấp đơn" (chặt nhất, đã đúng với PRICE02); (b) cho chồng có thứ tự cố định (tiền trước, % sau, hoặc ngược lại) kèm cờ `stackable` và trần tổng giảm — cần chốt thứ tự vì kết quả khác nhau.
+- **Q-PROMO-4 Snapshot khuyến mãi trong đơn.** Hiện chỉ lưu mã + số giảm. (a) Giữ như vậy; (b) lưu thêm điều kiện/loại/giá trị mã tại thời điểm đặt (đủ tra cứu khi mã bị sửa/xoá).
