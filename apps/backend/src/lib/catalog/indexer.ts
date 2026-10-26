@@ -3,6 +3,8 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { searchKey } from "@x-shop/domain";
 import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
+import { CHECKOUT_MODULE } from "../../modules/checkout";
+import type CheckoutModuleService from "../../modules/checkout/service";
 import type CatalogIndexModuleService from "../../modules/catalog-index/service";
 import type { CatalogIndexRow } from "../../modules/catalog-index/service";
 import { acquireOrdered, isLockUnavailable, releaseOwnedQuietly, withOwnedLock } from "../checkout/locks";
@@ -79,6 +81,8 @@ export interface IndexBuildReport {
   rows: number;
   /** SKU có giá niêm yết nhưng KHÔNG ra giá bán (calculated_price) — bất thường, phải bằng 0. */
   missing: string[];
+  /** Sản phẩm có ít nhất một SKU trong `missing` (không được ghi vào bảng). */
+  productsWithMissing: string[];
   /** SKU thật sự không có giá bán (không giá niêm yết, không price list áp được) — loại khỏi index, có log. */
   unpriced: string[];
   /** Sản phẩm published có kênh bán nhưng không SKU nào vào index. */
@@ -89,6 +93,7 @@ const emptyReport = (): IndexBuildReport => ({
   expected: 0,
   rows: 0,
   missing: [],
+  productsWithMissing: [],
   unpriced: [],
   productsWithoutRows: [],
 });
@@ -97,6 +102,7 @@ function mergeReport(into: IndexBuildReport, r: IndexBuildReport): void {
   into.expected += r.expected;
   into.rows += r.rows;
   into.missing.push(...r.missing);
+  into.productsWithMissing.push(...r.productsWithMissing);
   into.unpriced.push(...r.unpriced);
   into.productsWithoutRows.push(...r.productsWithoutRows);
 }
@@ -119,14 +125,18 @@ export async function buildIndexRowsWithReport(
   const report = emptyReport();
   for (const p of published) {
     let productRows = 0;
+    let productMissing = false;
     for (const v of p.variants) {
       if (v.sku === "") continue;
       const listed = v.basePrice !== null && toVnd(v.basePrice) !== null;
       if (listed) report.expected += p.salesChannelIds.length;
       if (prices.has(v.id)) productRows += p.salesChannelIds.length;
-      else if (listed) report.missing.push(v.id);
-      else report.unpriced.push(v.id);
+      else if (listed) {
+        report.missing.push(v.id);
+        productMissing = true;
+      } else report.unpriced.push(v.id);
     }
+    if (productMissing) report.productsWithMissing.push(p.id);
     if (productRows === 0) report.productsWithoutRows.push(p.id);
   }
   const rows: CatalogIndexRow[] = [];
@@ -230,9 +240,50 @@ function reportBuild(
   return ok;
 }
 
+/** Kind ngoại lệ vận hành khi read model dựng lệch (SKU có giá niêm yết mà không ra giá bán) — D-040. */
+export const CATALOG_INDEX_MISMATCH_KIND = "catalog_index_mismatch";
+
+/**
+ * Mở ngoại lệ `catalog_index_mismatch` nếu CHƯA có cái đang mở/đang xử lý cùng kind (nhiều lượt lỗi liên tiếp chỉ
+ * một ngoại lệ; xử lý xong mà lỗi tái diễn thì mở lại). Gọi dưới khoá ghi index nên không tranh nhau.
+ */
+async function openMismatchException(
+  container: MedusaContainer,
+  op: "rebuild" | "sync",
+  report: IndexBuildReport,
+): Promise<void> {
+  const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+  try {
+    await container.resolve<CheckoutModuleService>(CHECKOUT_MODULE).openOpsExceptionIfNoneActive({
+      kind: CATALOG_INDEX_MISMATCH_KIND,
+      dedupe_key: `${CATALOG_INDEX_MISMATCH_KIND}:${randomUUID()}`,
+      priority: "high",
+      detail: {
+        op,
+        expected: report.expected,
+        built: report.rows,
+        missing: report.missing.length,
+        missing_sample: report.missing.slice(0, LOG_SAMPLE),
+        products_with_missing: report.productsWithMissing.length,
+      },
+    });
+  } catch (e) {
+    logger.error(
+      `[catalog-index] Không mở được ngoại lệ ${CATALOG_INDEX_MISMATCH_KIND}: ${(e as Error).message}`,
+    );
+  }
+}
+
+/**
+ * Sync theo lô: sản phẩm có SKU thiếu giá bán KHÔNG được ghi (giữ dòng cũ của nó — hơn là xoá khỏi listing); các sản
+ * phẩm còn lại trong lô vẫn ghi bình thường (lỗi cô lập theo sản phẩm, không kéo cả lô). Có sản phẩm bị bỏ → log ERROR
+ * + mở ngoại lệ (cùng kind với rebuild).
+ */
 async function syncUnlocked(container: MedusaContainer, ids: string[], ctx: IndexContext): Promise<number> {
   const index = indexService(container);
   const report = emptyReport();
+  const written = new Set<string>();
+  let writtenRows = 0;
   for (let i = 0; i < ids.length; i += SOURCE_CHUNK) {
     const chunk = ids.slice(i, i + SOURCE_CHUNK);
     const built = await buildIndexRowsWithReport(
@@ -240,16 +291,24 @@ async function syncUnlocked(container: MedusaContainer, ids: string[], ctx: Inde
       await loadProductSources(container, { id: chunk }),
       ctx,
     );
-    await index.replaceProducts(chunk, built.rows);
+    const skip = new Set(built.report.productsWithMissing);
+    const okIds = chunk.filter((id) => !skip.has(id));
+    const okRows = built.rows.filter((r) => !skip.has(r.product_id));
+    await index.replaceProducts(okIds, okRows);
+    for (const id of okIds) written.add(id);
+    writtenRows += okRows.length;
     mergeReport(report, built.report);
   }
   // Đang giữ khoá ghi → không ai khác ghi các sản phẩm này giữa lúc ghi và lúc đếm.
-  reportBuild(container, "sync", report, await index.countRows(ids));
-  return report.rows;
+  const stored = written.size > 0 ? await index.countRows([...written]) : 0;
+  reportBuild(container, "sync", { ...report, rows: writtenRows }, stored);
+  if (report.missing.length > 0) await openMismatchException(container, "sync", report);
+  return writtenRows;
 }
 
 export interface RebuildResult {
   products: number;
+  /** Số dòng đã ghi vào bảng (0 khi rebuild bị hủy vì `missing > 0` — bảng cũ được giữ). */
   rows: number;
   /** Số dòng kỳ vọng theo giá niêm yết (xem `IndexBuildReport.expected`). */
   expected: number;
@@ -280,6 +339,24 @@ async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResul
     );
     for (const r of built.rows) rows.push(r);
     mergeReport(report, built.report);
+  }
+  if (report.missing.length > 0) {
+    // Dấu hiệu lỗi hệ thống (đọc giá hỏng): KHÔNG thay bảng — giữ bảng cũ (còn đúng hơn bảng thiếu dòng), báo ngay.
+    reportBuild(container, "rebuild", report, await index.countRows());
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .error(
+        `[catalog-index] Rebuild BỊ HỦY, giữ bảng cũ: ${report.missing.length} SKU có giá niêm yết nhưng không ra ` +
+          `giá bán (kỳ vọng ${report.expected} dòng, dựng ${report.rows}).`,
+      );
+    await openMismatchException(container, "rebuild", report);
+    return {
+      products: ids.length,
+      rows: 0,
+      expected: report.expected,
+      missing: report.missing.length,
+      unpriced: report.unpriced.length,
+    };
   }
   await index.replaceAll(rows);
   reportBuild(container, "rebuild", report, await index.countRows());

@@ -473,6 +473,33 @@ class CheckoutModuleService extends MedusaService({
     return rows.length === 1;
   }
 
+  /**
+   * Mở ngoại lệ chỉ khi CHƯA có ngoại lệ đang hoạt động (open/in_progress) cùng `kind`. Khác `openOpsException`
+   * (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại. Người gọi tự tuần tự hoá (khoá riêng).
+   */
+  async openOpsExceptionIfNoneActive(input: OpsExceptionInput, em?: SqlEntityManager): Promise<boolean> {
+    const rows = await this.exec(
+      `INSERT INTO ops_exception (id, kind, dedupe_key, order_id, amount, priority, due_at, detail)
+       SELECT ?, ?::text, ?, ?, ?, ?, ?, ?::jsonb
+        WHERE NOT EXISTS (
+          SELECT 1 FROM ops_exception WHERE kind = ?::text AND state IN ('open', 'in_progress') AND deleted_at IS NULL)
+       ON CONFLICT DO NOTHING RETURNING id`,
+      [
+        generateEntityId(undefined, "opx"),
+        input.kind,
+        input.dedupe_key,
+        input.order_id ?? null,
+        input.amount ?? null,
+        input.priority ?? "normal",
+        input.due_at ?? null,
+        json(input.detail ?? null),
+        input.kind,
+      ],
+      em,
+    );
+    return rows.length === 1;
+  }
+
   /** Attempt còn mở (created/pending/unknown) → `to` (failed|unknown) theo máy trạng thái thanh toán. */
   async movePaymentAttempt(
     id: string,

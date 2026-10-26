@@ -249,6 +249,27 @@ medusaIntegrationTestRunner({
         ).toBe(201);
         const after = await get("/admin/x/reports/exceptions?source=cod");
         expect(after.data.items).toEqual([]);
+
+        // D-040: kind mới của read model catalog hiện trên dashboard, owner mặc định "owner", lọc theo kind được.
+        expect(
+          await checkout().openOpsExceptionIfNoneActive({
+            kind: "catalog_index_mismatch",
+            dedupe_key: "catalog_index_mismatch:test",
+            priority: "high",
+            detail: { op: "rebuild", missing: 3 },
+          }),
+        ).toBe(true);
+        const mismatch = await get("/admin/x/reports/exceptions?kind=catalog_index_mismatch");
+        expect(mismatch.status).toBe(200);
+        expect(mismatch.data.items).toEqual([
+          expect.objectContaining({
+            source: "ops",
+            kind: "catalog_index_mismatch",
+            priority: "high",
+            state: "open",
+            owner_role: "owner",
+          }),
+        ]);
       });
     });
 
