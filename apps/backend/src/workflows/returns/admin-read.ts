@@ -7,6 +7,7 @@ import { ReturnsError } from "./errors";
 import { checkoutOf, loadOrderContext, returnsOf } from "./order-context";
 import { presentRefund } from "./refunds";
 import { carrierReturnKey, isCarrierReturn, presentReturn } from "./returns";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Truy vấn CHỈ ĐỌC cho Admin (T-049): danh sách/chi tiết yêu cầu đổi/trả và hàng đợi hoàn tiền theo trạng thái. Không
@@ -57,7 +58,7 @@ async function displayRefsOf(container: Scope, orderIds: readonly string[]): Pro
   return new Map(fins.map((f) => [f.order_id, f.display_ref]));
 }
 
-const iso = (d: Date | string | null): string | null => (d ? new Date(d).toISOString() : null);
+const iso = (d: Date | string | null): string | null => (isNonEmpty(d) ? new Date(d).toISOString() : null);
 const sourceOf = (ret: Pick<ReturnWithLines, "idempotency_key">): ReturnSource =>
   isCarrierReturn(ret) ? "carrier" : "request";
 

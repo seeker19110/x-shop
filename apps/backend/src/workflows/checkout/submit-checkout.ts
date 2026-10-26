@@ -25,6 +25,7 @@ import {
   type SubmitCheckoutInput,
   type VerifiedOrder,
 } from "./steps";
+import { isNonEmpty } from "@x-shop/domain";
 
 export const SUBMIT_CHECKOUT_WORKFLOW_ID = "x-submit-checkout";
 
@@ -50,7 +51,7 @@ function toOrderInput(input: SubmitCheckoutInput, prepared: PreparedCheckout): C
     currency_code: prepared.cart.currency_code,
     // Chỉ gắn khách đã xác thực; KHÔNG truyền email (findOrCreateCustomer sẽ gộp đơn khách vãng lai vào tài khoản
     // trùng email — CHK02 cấm). Email liên hệ nằm ở snapshot order_finance + metadata.
-    ...(input.customer_id && { customer_id: input.customer_id }),
+    ...(isNonEmpty(input.customer_id) && { customer_id: input.customer_id }),
     status: "pending",
     no_notification: true,
     shipping_address: {

@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
 import type CatalogIndexModuleService from "../../modules/catalog-index/service";
 import { CATALOG_PRODUCTS_CHANGED } from "./constants";
+import { isNonEmpty } from "@x-shop/domain";
 
 /** Sự kiện làm read model đổi (workflow native + sự kiện nội bộ của catalog). */
 export const CATALOG_INDEX_EVENTS = [
@@ -48,7 +49,7 @@ async function productsOfVariants(container: MedusaContainer, variantIds: string
     filters: { id: variantIds },
   });
   const fromSource = (data as unknown as { product_id?: string | null }[]).flatMap((v) =>
-    v.product_id ? [v.product_id] : [],
+    isNonEmpty(v.product_id) ? [v.product_id] : [],
   );
   // Biến thể đã xoá không còn trong nguồn → lấy product từ chính read model.
   const index: CatalogIndexModuleService = container.resolve(CATALOG_INDEX_MODULE);
@@ -65,7 +66,7 @@ async function variantsOfInventoryItems(container: MedusaContainer, itemIds: str
     filters: { inventory_item_id: itemIds },
   });
   return (data as unknown as { variant_id?: string | null }[]).flatMap((l) =>
-    l.variant_id ? [l.variant_id] : [],
+    isNonEmpty(l.variant_id) ? [l.variant_id] : [],
   );
 }
 
@@ -78,7 +79,7 @@ async function variantsOfPriceSets(container: MedusaContainer, priceSetIds: stri
     filters: { price_set_id: priceSetIds },
   });
   return (data as unknown as { variant_id?: string | null }[]).flatMap((l) =>
-    l.variant_id ? [l.variant_id] : [],
+    isNonEmpty(l.variant_id) ? [l.variant_id] : [],
   );
 }
 

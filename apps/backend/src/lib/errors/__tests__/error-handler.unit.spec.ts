@@ -5,6 +5,7 @@ import { CheckoutError, sendProblem as sendCheckoutProblem } from "../../checkou
 import { sendProblem } from "../../http/problem";
 import { INTERNAL_LEAK, logServerError, toHttpProblem, xErrorHandler } from "../error-handler";
 import { REQUEST_ID_PATTERN, traceIdOf } from "../trace";
+import { isNonEmpty } from "@x-shop/domain";
 
 /** Regex kiểm của BASE-ERR-003 (blueprint) — phản hồi lỗi không được khớp. */
 const BLUEPRINT_LEAK = /(Traceback|at .*\.(js|py|java)|SELECT |\/home\/|\/var\/)/;
@@ -67,7 +68,7 @@ function run(err: unknown, requestId?: unknown, resOpts: { headersSent?: boolean
     res as unknown as MedusaResponse,
     next as unknown as MedusaNextFunction,
   );
-  const body = captured.body ? (JSON.parse(captured.body) as Record<string, unknown>) : undefined;
+  const body = isNonEmpty(captured.body) ? (JSON.parse(captured.body) as Record<string, unknown>) : undefined;
   return { captured, body, logs, next, req };
 }
 

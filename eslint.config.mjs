@@ -170,6 +170,11 @@ export default tseslint.config(
   // chạy trên mã TS thuộc một tsconfig; bật dần theo gói (T-082).
   ...typedNullishRules([
     { files: ["packages/domain/src/**/*.ts"], project: ["packages/domain/tsconfig.json"] },
+    {
+      // tsconfig.typecheck.json phủ cả __tests__ và đọc domain từ src (không cần build trước); Admin có tsconfig riêng.
+      files: ["apps/backend/src/**/*.{ts,tsx}"],
+      project: ["apps/backend/tsconfig.typecheck.json", "apps/backend/src/admin/tsconfig.json"],
+    },
   ]),
   {
     rules: {

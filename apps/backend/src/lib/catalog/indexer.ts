@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
-import { searchKey } from "@x-shop/domain";
+import { searchKey, isNonEmpty } from "@x-shop/domain";
 import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
@@ -63,7 +63,7 @@ export function searchTextOf(p: ProductSource, sku: string): string {
 
 function thumbnailFor(p: ProductSource, color: string | null): string | null {
   return (
-    (color ? p.images.find((i) => i.color === color)?.url : undefined) ??
+    (isNonEmpty(color) ? p.images.find((i) => i.color === color)?.url : undefined) ??
     p.thumbnail ??
     p.images[0]?.url ??
     null
@@ -160,8 +160,8 @@ export async function buildIndexRowsWithReport(
       for (const v of p.variants) {
         const price = prices.get(v.id);
         if (!price || v.sku === "") continue;
-        const color = v.color ? colorOf(ctx.dict, v.color) : null;
-        const size = v.size ? sizeOf(ctx.dict, v.size) : null;
+        const color = isNonEmpty(v.color) ? colorOf(ctx.dict, v.color) : null;
+        const size = isNonEmpty(v.size) ? sizeOf(ctx.dict, v.size) : null;
         rows.push({
           variant_id: v.id,
           sales_channel_id: channelId,
@@ -490,7 +490,8 @@ export async function drainCatalogIndex(container: MedusaContainer): Promise<num
       }
     } finally {
       const err = await releaseOwnedQuietly(locking, ownerId, [CATALOG_INDEX_LOCK]);
-      if (err) {
+      // releaseOwnedQuietly trả đúng `null` khi nhả xong; mọi giá trị khác (kể cả lỗi "falsy") là lỗi.
+      if (err !== null) {
         container
           .resolve(ContainerRegistrationKeys.LOGGER)
           .warn(`[catalog-index] Nhả khoá xả lỗi/quá hạn (lease tự hết): ${(err as Error).message}`);

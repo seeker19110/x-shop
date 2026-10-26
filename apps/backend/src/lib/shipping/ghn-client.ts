@@ -1,4 +1,4 @@
-import { ghn } from "@x-shop/domain";
+import { ghn, isNonEmpty } from "@x-shop/domain";
 import { quoteShipping } from "../checkout/shipping";
 import { getGhnConfig, SHIPPING_CONFIG, type GhnRuntimeConfig } from "./config";
 
@@ -62,7 +62,7 @@ const intOrNull = (v: unknown): number | null =>
 function toDetail(data: Record<string, unknown>): GhnDetail | null {
   const orderCode = typeof data.order_code === "string" ? data.order_code : null;
   const status = typeof data.status === "string" ? data.status : null;
-  if (!orderCode || !status) return null;
+  if (!isNonEmpty(orderCode) || !isNonEmpty(status)) return null;
   return {
     orderCode,
     clientOrderCode: typeof data.client_order_code === "string" ? data.client_order_code : null,
@@ -225,7 +225,7 @@ export class MockModeGhnClient implements GhnClient {
   async cancel(orderCode: string): Promise<void> {
     const found = await this.detail(orderCode);
     if (!found) throw new GhnError("rejected", "GHN mock: không có vận đơn");
-    if (found.clientOrderCode) this.mock.setStatus(found.clientOrderCode, "cancel");
+    if (isNonEmpty(found.clientOrderCode)) this.mock.setStatus(found.clientOrderCode, "cancel");
   }
 
   /** Giả lập hãng đổi trạng thái (theo mã vận đơn của hãng). */

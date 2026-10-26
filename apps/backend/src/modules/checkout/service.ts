@@ -439,7 +439,8 @@ class CheckoutModuleService extends MedusaService({
     return {
       id: String(row.id),
       inserted: false,
-      result: row.processed_at ? ((row.result as Record<string, unknown> | null) ?? null) : null,
+      // processed_at là timestamp (Date | null) từ pg — chỉ có/không, không có "rỗng".
+      result: row.processed_at != null ? ((row.result as Record<string, unknown> | null) ?? null) : null,
     };
   }
 
@@ -1047,7 +1048,7 @@ class CheckoutModuleService extends MedusaService({
 export function isUniqueViolation(e: unknown): boolean {
   const seen = new Set<unknown>();
   let cur: unknown = e;
-  while (cur && typeof cur === "object" && !seen.has(cur)) {
+  while (typeof cur === "object" && cur !== null && !seen.has(cur)) {
     seen.add(cur);
     const o = cur as Record<string, unknown>;
     if (o.code === "23505" || /UniqueConstraintViolation/.test(String(o.name))) return true;

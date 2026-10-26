@@ -1,6 +1,6 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { MedusaError } from "@medusajs/framework/utils";
-import { checkPublishReadiness, type PublishCandidate, type PublishIssue } from "@x-shop/domain";
+import { checkPublishReadiness, type PublishCandidate, type PublishIssue, isNonEmpty } from "@x-shop/domain";
 import { loadProductSources, type ProductSource } from "./product-source";
 
 export interface ReadinessIssue {
@@ -29,7 +29,7 @@ export function readinessOf(p: ProductSource): ReadinessIssue[] {
 }
 
 export function describeIssues(issues: ReadinessIssue[]): string {
-  return issues.map((i) => (i.detail ? `${i.issue} (${i.detail})` : i.issue)).join(", ");
+  return issues.map((i) => (isNonEmpty(i.detail) ? `${i.issue} (${i.detail})` : i.issue)).join(", ");
 }
 
 /** Mã lỗi ổn định ở đầu thông điệp để client nhận diện (đặc tả §9.1). */

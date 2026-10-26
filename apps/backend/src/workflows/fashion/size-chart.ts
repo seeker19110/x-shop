@@ -14,6 +14,7 @@ import { FASHION_MODULE } from "../../modules/fashion";
 import type FashionModuleService from "../../modules/fashion/service";
 import type { SizeChartContent } from "../../modules/fashion/validators";
 import { relinkSizeChart } from "./set-product-fashion";
+import { isNonEmpty } from "@x-shop/domain";
 
 type SizeChartRecord = { id: string; code: string; version: number; superseded_at?: Date | string | null };
 
@@ -31,7 +32,7 @@ const createChartStep = createStep(
     return new StepResponse(chart as unknown as SizeChartRecord, (chart as unknown as SizeChartRecord).id);
   },
   async (id, { container }) => {
-    if (!id) return;
+    if (!isNonEmpty(id)) return;
     const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
     await fashion.deleteSizeCharts(id);
   },

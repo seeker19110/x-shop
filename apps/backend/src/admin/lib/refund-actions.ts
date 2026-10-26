@@ -1,3 +1,4 @@
+import { isNonEmpty } from "./presence";
 /**
  * Nút thao tác của một yêu cầu hoàn tiền trên trang Admin — thuần, server vẫn là nơi quyết (máy trạng thái, quyền,
  * tự duyệt, lượt thử). UI chỉ ẩn/khoá nút chắc chắn bị từ chối để người dùng không bấm vô ích.
@@ -62,14 +63,14 @@ export function refundActions(r: RefundLike, ctx: RefundActionContext = {}): Ref
   const recreate =
     r.state === "cancelled" &&
     r.reason === "return" &&
-    !!r.return_id &&
+    isNonEmpty(r.return_id) &&
     !(ctx.siblings ?? []).some(
       (s) => s.id !== r.id && s.return_id === r.return_id && s.state !== "cancelled",
     );
   return {
     approve: requested,
     reject: requested,
-    selfCreated: requested && !!ctx.myId && r.requested_by === ctx.myId,
+    selfCreated: requested && isNonEmpty(ctx.myId) && r.requested_by === ctx.myId,
     execute,
     executeLabel: !execute ? null : r.state === "approved" ? "Thực hiện" : "Thử lại / hỏi lại cổng",
     exhausted,
@@ -86,7 +87,7 @@ export function recreateRefundBody(
   method: RefundMethodChoice,
   note: string,
 ): { order_id: string; reason: "return"; return_id: string; method: RefundMethodChoice; note?: string } {
-  if (!r.return_id) throw new Error("Yêu cầu hoàn không gắn yêu cầu trả");
+  if (!isNonEmpty(r.return_id)) throw new Error("Yêu cầu hoàn không gắn yêu cầu trả");
   const n = note.trim().slice(0, 500);
   return { order_id: r.order_id, reason: "return", return_id: r.return_id, method, ...(n && { note: n }) };
 }

@@ -4,7 +4,7 @@ import {
   createOrderPaymentCollectionWorkflow,
   markPaymentCollectionAsPaid,
 } from "@medusajs/medusa/core-flows";
-import { payloadHash, vnpay } from "@x-shop/domain";
+import { payloadHash, vnpay, isNonEmpty } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import { verifyNotificationWithRotation } from "../payment/vnpay-secrets";
@@ -206,7 +206,7 @@ export async function syncNativePayment(
   ).flatMap((c) => (c && c.status !== "canceled" ? [c] : []));
   if (collections.some((c) => c.status !== "not_paid")) return "noop";
   let collectionId = collections[0]?.id;
-  if (!collectionId) {
+  if (!isNonEmpty(collectionId)) {
     const { result } = await createOrderPaymentCollectionWorkflow(container).run({
       input: { order_id: orderId, amount: fin.total },
     });

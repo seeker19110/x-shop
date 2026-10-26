@@ -32,6 +32,7 @@ import {
   type RefundMethodChoice,
 } from "../../../lib/refund-actions";
 import { useApi } from "../../../lib/use-api";
+import { isNonEmpty } from "../../../lib/presence";
 
 interface Refund {
   id: string;
@@ -137,7 +138,7 @@ const RefundsPage = (): ReactNode => {
   };
 
   const act = async (refund: Refund, action: "approve" | PendingKind) => {
-    if (busy) return;
+    if (isNonEmpty(busy)) return;
     setBusy(refund.id);
     setError(null);
     try {
@@ -411,12 +412,12 @@ const RefundsPage = (): ReactNode => {
                     {mode === "queue" && <Table.Cell>{r.order_display_ref ?? r.order_id}</Table.Cell>}
                     <Table.Cell>
                       {refundReasonLabel(r.reason)}
-                      {r.return_id && (
+                      {isNonEmpty(r.return_id) && (
                         <Text size="xsmall" className="text-ui-fg-subtle">
                           Yêu cầu trả {r.return_id}
                         </Text>
                       )}
-                      {r.note && (
+                      {isNonEmpty(r.note) && (
                         <Text size="xsmall" className="text-ui-fg-subtle">
                           {r.note}
                         </Text>
@@ -438,9 +439,9 @@ const RefundsPage = (): ReactNode => {
                           Đã gửi {r.attempts}/{REFUND_MAX_ATTEMPTS} lần
                         </Text>
                       )}
-                      {r.reject_reason && <Text size="xsmall">{r.reject_reason}</Text>}
-                      {r.cancel_reason && <Text size="xsmall">Lý do hủy: {r.cancel_reason}</Text>}
-                      {r.last_error && r.state !== "cancelled" && (
+                      {isNonEmpty(r.reject_reason) && <Text size="xsmall">{r.reject_reason}</Text>}
+                      {isNonEmpty(r.cancel_reason) && <Text size="xsmall">Lý do hủy: {r.cancel_reason}</Text>}
+                      {isNonEmpty(r.last_error) && r.state !== "cancelled" && (
                         <Text size="xsmall" className="text-ui-fg-error">
                           {r.last_error}
                         </Text>
@@ -449,7 +450,7 @@ const RefundsPage = (): ReactNode => {
                     <Table.Cell>
                       <Text size="xsmall">Tạo: {r.requested_by ?? "hệ thống"}</Text>
                       <Text size="xsmall">Duyệt: {r.approved_by ?? "—"}</Text>
-                      {r.cancelled_by && <Text size="xsmall">Hủy: {r.cancelled_by}</Text>}
+                      {isNonEmpty(r.cancelled_by) && <Text size="xsmall">Hủy: {r.cancelled_by}</Text>}
                     </Table.Cell>
                     <Table.Cell>
                       <div className="flex flex-col gap-1">

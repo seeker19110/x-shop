@@ -1,6 +1,6 @@
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { can, type Permission, type Role } from "@x-shop/domain";
+import { can, type Permission, type Role, isNonEmpty } from "@x-shop/domain";
 import { RBAC_MODULE } from "../../modules/rbac";
 import type RbacModuleService from "../../modules/rbac/service";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
@@ -128,7 +128,7 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
   if (rule.kind === "public") return next();
 
   const ctx = (req as AuthedRequest).auth_context;
-  if (!ctx?.actor_id) return deny(res, 401, "UNAUTHORIZED");
+  if (!ctx || !isNonEmpty(ctx.actor_id)) return deny(res, 401, "UNAUTHORIZED");
   if (ctx.actor_type !== "user") {
     await auditDenied(req, method, path, rule, { reason: "actor_type", actor_type: ctx.actor_type ?? null });
     return deny(res, 403, "FORBIDDEN");
@@ -191,7 +191,7 @@ export function rejectWithoutRecentMfa(req: MedusaRequest, res: MedusaResponse):
  */
 export async function adminRefreshGuard(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
   const ctx = (req as AuthedRequest).auth_context;
-  if (!ctx || ctx.actor_type !== "user" || !ctx.actor_id) return next();
+  if (!ctx || ctx.actor_type !== "user" || !isNonEmpty(ctx.actor_id)) return next();
   if (mfaCompletedAtMs(ctx) === null) return deny(res, 401, "SESSION_EXPIRED", { action: "login" });
   const session = await checkAndTouchSession(storeOf(req), ctx, getAdminSessionPolicy());
   if (!session.ok) return deny(res, 401, session.code);
@@ -241,5 +241,7 @@ export const loginIdentity = (req: MedusaRequest): string | null => {
   return typeof email === "string" ? email.slice(0, 320) : null;
 };
 
-export const mfaIdentity = (req: MedusaRequest): string | null =>
-  (req as AuthedRequest).auth_context?.auth_identity_id || null;
+export const mfaIdentity = (req: MedusaRequest): string | null => {
+  const id = (req as AuthedRequest).auth_context?.auth_identity_id;
+  return isNonEmpty(id) ? id : null;
+};

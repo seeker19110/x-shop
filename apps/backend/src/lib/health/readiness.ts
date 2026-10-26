@@ -51,7 +51,7 @@ export async function checkReadiness(
 ): Promise<ReadinessResult> {
   const names = Object.keys(probes);
   const results = await Promise.all(names.map((n) => runProbe(probes[n]!, timeoutMs)));
-  const failed = names.filter((_, i) => !results[i]);
+  const failed = names.filter((_, i) => results[i] !== true);
   return { ready: failed.length === 0, failed };
 }
 

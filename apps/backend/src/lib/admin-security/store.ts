@@ -1,5 +1,6 @@
 import Redis from "ioredis";
 import { redisRequestOptions } from "../infra/timeouts";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Kho khóa–giá trị có TTL cho trạng thái bảo mật dùng chung giữa các instance (nhàn rỗi phiên, bộ đếm rate limit).
@@ -30,7 +31,7 @@ export interface SecurityStore {
  * riêng mỗi lần chạy để bộ đếm rate limit (cửa sổ 15 phút) của lần/suite trước không rò sang lần sau.
  */
 const NAMESPACE = process.env.XS_SECURITY_KEY_NAMESPACE?.trim();
-export const KEY_PREFIX = NAMESPACE ? `xs:sec:${NAMESPACE}:` : "xs:sec:";
+export const KEY_PREFIX = isNonEmpty(NAMESPACE) ? `xs:sec:${NAMESPACE}:` : "xs:sec:";
 
 class RedisStore implements SecurityStore {
   constructor(private readonly redis: Redis) {}
@@ -128,7 +129,7 @@ export class MemoryStore implements SecurityStore {
  * biến toàn cục: kết nối mồ côi giữ cả đồ thị module sống (rò bộ nhớ khi chạy nhiều ứng dụng trong một tiến trình test).
  */
 export function createSecurityStore(redisUrl = process.env.REDIS_URL?.trim()): SecurityStore {
-  return redisUrl
+  return isNonEmpty(redisUrl)
     ? new RedisStore(
         new Redis(redisUrl, {
           maxRetriesPerRequest: 2,

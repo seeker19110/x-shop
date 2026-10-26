@@ -18,6 +18,7 @@ import { PAGE_SIZE, pageInfo } from "../../../lib/pagination";
 import { AdminApiError } from "../../../lib/problem";
 import { checkReceive, initialReceiveDrafts } from "../../../lib/receive";
 import { useApi } from "../../../lib/use-api";
+import { isNonEmpty } from "../../../lib/presence";
 
 interface ReturnSummary {
   id: string;
@@ -73,7 +74,7 @@ const num = (v: number | null): string => (v === null ? "—" : String(v));
 const stateOptions = Object.entries(RETURN_STATE_LABELS).map(([value, label]) => ({ value, label }));
 const sourceOptions = Object.entries(RETURN_SOURCE_LABELS).map(([value, label]) => ({ value, label }));
 const lineName = (l: ReturnLine) =>
-  l.title ? `${l.title}${l.variant_title ? ` — ${l.variant_title}` : ""}` : l.line_id;
+  isNonEmpty(l.title) ? `${l.title}${isNonEmpty(l.variant_title) ? ` — ${l.variant_title}` : ""}` : l.line_id;
 
 const ReturnsPage = (): ReactNode => {
   const [state, setState] = useState("received");
@@ -86,10 +87,10 @@ const ReturnsPage = (): ReactNode => {
 
   const [selected, setSelected] = useState<string | null>(null);
   const detail = useApi<{ return: ReturnDetail }>(
-    selected ? () => adminFetch(`/admin/x/returns/${encodeURIComponent(selected)}`) : null,
+    isNonEmpty(selected) ? () => adminFetch(`/admin/x/returns/${encodeURIComponent(selected)}`) : null,
     selected ?? "",
   );
-  const ret = selected && detail.data?.return.id === selected ? detail.data.return : null;
+  const ret = isNonEmpty(selected) && detail.data?.return.id === selected ? detail.data.return : null;
 
   const [receiveDrafts, setReceiveDrafts] = useState<Record<string, string>>({});
   const [drafts, setDrafts] = useState<Record<string, InspectDraft>>({});
@@ -304,7 +305,7 @@ const ReturnsPage = (): ReactNode => {
         </Container>
       )}
 
-      {selected && <ProblemAlert error={detail.error} />}
+      {isNonEmpty(selected) && <ProblemAlert error={detail.error} />}
       <ProblemAlert error={error} />
 
       {ret && (
@@ -324,7 +325,7 @@ const ReturnsPage = (): ReactNode => {
               Lý do: {returnReasonLabel(ret.reason)}
             </Text>
           </div>
-          {ret.note && (
+          {isNonEmpty(ret.note) && (
             <Text size="small" className="text-ui-fg-subtle">
               Ghi chú: {ret.note}
             </Text>
@@ -345,17 +346,17 @@ const ReturnsPage = (): ReactNode => {
               {ret.lines.map((l) => {
                 const d = draftOf(l.line_id);
                 const received = l.received_quantity ?? 0;
-                const rejected = inspectPreview?.ok ? inspectPreview.rejected[l.line_id] : undefined;
+                const rejected = inspectPreview?.ok === true ? inspectPreview.rejected[l.line_id] : undefined;
                 return (
                   <Table.Row key={l.line_id}>
                     <Table.Cell>
                       {lineName(l)}
-                      {l.inspection_note && (
+                      {isNonEmpty(l.inspection_note) && (
                         <Text size="xsmall" className="text-ui-fg-subtle">
                           Kiểm định: {l.inspection_note}
                         </Text>
                       )}
-                      {lineErrors[l.line_id] && (
+                      {isNonEmpty(lineErrors[l.line_id]) && (
                         <Text size="xsmall" className="text-ui-fg-error">
                           {lineErrors[l.line_id]}
                         </Text>
@@ -431,13 +432,13 @@ const ReturnsPage = (): ReactNode => {
               })}
             </Table.Body>
           </Table>
-          {lineErrors["*"] && <Text className="text-ui-fg-error">{lineErrors["*"]}</Text>}
+          {isNonEmpty(lineErrors["*"]) && <Text className="text-ui-fg-error">{lineErrors["*"]}</Text>}
           {ret.state === "approved" && (
             <div className="flex flex-wrap items-center gap-3">
               <Button isLoading={busy} onClick={receive}>
                 Ghi nhận hàng đã nhận
               </Button>
-              {receivePreview?.ok && !receivePreview.full && (
+              {receivePreview?.ok === true && !receivePreview.full && (
                 <Text size="small" className="text-ui-fg-subtle">
                   Nhận thiếu: {receivePreview.total} sản phẩm. Chỉ ghi nhận được một lần — kiểm kỹ số lượng.
                 </Text>

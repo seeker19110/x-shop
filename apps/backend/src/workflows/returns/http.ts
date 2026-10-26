@@ -1,5 +1,5 @@
 import type { MedusaRequest } from "@medusajs/framework/http";
-import { isValidIdempotencyKey, type Permission } from "@x-shop/domain";
+import { isValidIdempotencyKey, type Permission, isNonEmpty } from "@x-shop/domain";
 import { z } from "zod";
 import { requirePermission } from "../../lib/access/require-permission";
 import { adminAccessOf } from "../../lib/admin-security/guard";
@@ -111,7 +111,7 @@ export const RefundCreateBody = z
   .superRefine((b, ctx) => {
     if (b.reason === "return") {
       // Số tiền hoàn theo trả hàng do kiểm định chốt (AT15) — server tính, client không gửi.
-      if (!b.return_id)
+      if (!isNonEmpty(b.return_id))
         ctx.addIssue({ code: "custom", path: ["return_id"], message: "bắt buộc với lý do này" });
       if (b.amount !== undefined) {
         ctx.addIssue({ code: "custom", path: ["amount"], message: "không gửi — lấy theo kết quả kiểm định" });
@@ -124,7 +124,7 @@ export const RefundCreateBody = z
     if (b.reason !== "cancellation" && b.amount === undefined) {
       ctx.addIssue({ code: "custom", path: ["amount"], message: "bắt buộc với lý do này" });
     }
-    if ((b.reason === "other" || b.reason === "overpayment") && !b.note) {
+    if ((b.reason === "other" || b.reason === "overpayment") && !isNonEmpty(b.note)) {
       ctx.addIssue({ code: "custom", path: ["note"], message: "cần ghi chú lý do" });
     }
   });

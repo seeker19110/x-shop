@@ -1,5 +1,5 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
-import { normalizeVnPhone, validateAddress, type AddressSnapshot } from "@x-shop/domain";
+import { normalizeVnPhone, validateAddress, type AddressSnapshot, isNonEmpty } from "@x-shop/domain";
 import { z } from "zod";
 import { PAYMENT_METHODS } from "../../modules/checkout/models/constants";
 import type { CartAccessContext } from "./cart";
@@ -92,7 +92,8 @@ export function normalizeContact(contact: z.output<typeof submitBodySchema>["con
   return {
     name: contact.name.normalize("NFC").replace(/\s+/g, " "),
     phone: phone.value,
-    email: contact.email ? contact.email.toLowerCase() : null,
+    // Email rỗng = không cung cấp (null), giữ hành vi cũ.
+    email: isNonEmpty(contact.email) ? contact.email.toLowerCase() : null,
   };
 }
 

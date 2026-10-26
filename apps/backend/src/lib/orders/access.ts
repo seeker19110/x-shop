@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { signLookupToken, verifyLookupToken } from "@x-shop/domain";
+import { signLookupToken, verifyLookupToken, isNonEmpty } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CheckoutError } from "../checkout/errors";
@@ -33,8 +33,8 @@ export function setOrderLookupSecretForTest(secret: string | null): void {
 }
 
 function rootSecret(): string {
-  if (secretOverride) return secretOverride;
-  if (cachedSecret) return cachedSecret;
+  if (isNonEmpty(secretOverride)) return secretOverride;
+  if (isNonEmpty(cachedSecret)) return cachedSecret;
   const parsed = parseEnv(process.env);
   if (!parsed.ok || parsed.env.orderLookupSecret === "") {
     throw new Error("[orders] ORDER_LOOKUP_SECRET chưa cấu hình (đã báo khi khởi động)");
@@ -106,7 +106,7 @@ export async function authorizedOrder(
   now: Date = new Date(),
 ) {
   const ref = normalizeDisplayRef(displayRef);
-  const claim = ref ? readOrderToken("access", token, now) : null;
+  const claim = isNonEmpty(ref) ? readOrderToken("access", token, now) : null;
   if (!claim) return null;
   const [fin] = await service(container).listOrderFinances({ order_id: claim.orderId });
   if (!fin || fin.display_ref !== ref) return null;

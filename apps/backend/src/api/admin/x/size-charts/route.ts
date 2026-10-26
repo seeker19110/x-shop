@@ -1,5 +1,5 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
-import { slugify } from "@x-shop/domain";
+import { slugify, isNonEmpty } from "@x-shop/domain";
 import { sendProblem, zodErrors } from "../../../../lib/http/problem";
 import { FASHION_MODULE } from "../../../../modules/fashion";
 import type FashionModuleService from "../../../../modules/fashion/service";
@@ -10,7 +10,8 @@ import { createSizeChartWorkflow } from "../../../../workflows/fashion/size-char
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const fashion: FashionModuleService = req.scope.resolve(FASHION_MODULE);
   const code = typeof req.query.code === "string" ? slugify(req.query.code) : null;
-  const charts = code
+  // slug rỗng (code toàn ký tự lạ) coi như không lọc — giữ hành vi cũ.
+  const charts = isNonEmpty(code)
     ? await fashion.listSizeCharts({ code }, { order: { version: "DESC" } })
     : await fashion.listSizeCharts({ superseded_at: null }, { order: { code: "ASC" } });
   res.setHeader("Cache-Control", "no-store");

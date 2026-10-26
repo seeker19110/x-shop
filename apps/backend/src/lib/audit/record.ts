@@ -7,12 +7,13 @@ import type AuditModuleService from "../../modules/audit/service";
 import { clientIpOf } from "../security/config";
 import { REQUEST_ID_PATTERN } from "../errors/trace";
 import type { AuditEntry, AuditEntryInput } from "../../modules/audit/service";
+import { isNonEmpty } from "@x-shop/domain";
 
 type Scope = Pick<MedusaContainer, "resolve">;
 
 /** Băm IP bằng HMAC-SHA256 với bí mật phía server (cookieSecret) — không lưu IP thô, không dò ngược được bằng vét 2^32. */
 export function hashIp(scope: Scope, ip: string | undefined | null): string | null {
-  if (!ip) return null;
+  if (!isNonEmpty(ip)) return null;
   const config = scope.resolve(ContainerRegistrationKeys.CONFIG_MODULE);
   const key = String(
     config.projectConfig.http.cookieSecret ?? config.projectConfig.http.jwtSecret ?? "x-shop",
@@ -29,10 +30,13 @@ export function auditContextOf(
   const header = req.headers["x-request-id"];
   const rid =
     (req as MedusaRequest & { requestId?: string }).requestId ?? (typeof header === "string" ? header : null);
+  // actor rỗng ("") coi như không có actor — giữ hành vi cũ.
+  const actorType = ctx?.actor_type;
+  const actorId = ctx?.actor_id;
   return {
-    actor_type: ctx?.actor_type || "anonymous",
-    actor_id: ctx?.actor_id || null,
-    request_id: rid && REQUEST_ID_PATTERN.test(rid) ? rid : null,
+    actor_type: isNonEmpty(actorType) ? actorType : "anonymous",
+    actor_id: isNonEmpty(actorId) ? actorId : null,
+    request_id: isNonEmpty(rid) && REQUEST_ID_PATTERN.test(rid) ? rid : null,
     ip_hash: hashIp(req.scope, clientIpOf(req).ip),
   };
 }

@@ -1,5 +1,5 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
-import { normalizeVnPhone } from "@x-shop/domain";
+import { normalizeVnPhone, isNonEmpty } from "@x-shop/domain";
 import { z } from "zod";
 import { CheckoutError } from "../../../../../lib/checkout/errors";
 import { clientIp, handleRouteError, parseBody } from "../../../../../lib/checkout/http";
@@ -29,7 +29,8 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
   try {
     const body = parseBody(bodySchema, req.body);
     const ref = normalizeDisplayRef(body.display_ref);
-    if (!ref) throw new CheckoutError("VALIDATION", "Mã đơn hàng không hợp lệ", { field: "display_ref" });
+    if (!isNonEmpty(ref))
+      throw new CheckoutError("VALIDATION", "Mã đơn hàng không hợp lệ", { field: "display_ref" });
     const phone = normalizeVnPhone(body.phone);
     if (!phone.ok) throw new CheckoutError("VALIDATION", phone.message, { field: "phone" });
 

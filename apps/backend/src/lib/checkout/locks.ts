@@ -239,7 +239,7 @@ export async function withOwnedLock<T>(
   });
   try {
     const result = await fn();
-    if (opts.failOnLeaseLoss && leases.get(ownerId)?.lost) {
+    if (opts.failOnLeaseLoss === true && leases.get(ownerId)?.lost === true) {
       throw new CheckoutError("LOCK_UNAVAILABLE", undefined, {
         detail: { lock_scope: opts.scope, lease_lost: true },
         cause: new Error(`lease lost for ${held.join(", ")} while the job was running`),
@@ -249,7 +249,7 @@ export async function withOwnedLock<T>(
   } finally {
     // Đã mất lease → khóa không còn của mình; release theo ownerId vẫn an toàn (Lua chỉ xoá khi đúng chủ).
     const err = await releaseOwnedQuietly(locking, ownerId, held, opts.callTimeoutMs);
-    if (err) opts.onReleaseError?.(err);
+    if (err !== null) opts.onReleaseError?.(err);
   }
 }
 
@@ -287,7 +287,7 @@ export async function releaseOwnedOrWarn(
   label: string,
 ): Promise<void> {
   const err = await releaseOwnedQuietly(locking, ownerId, null);
-  if (err) {
+  if (err !== null) {
     const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : String(err);
     logger.warn(`[${label}] Nhả khóa lỗi/quá hạn (khóa tự hết theo TTL): ${cause}`);
   }
@@ -295,7 +295,8 @@ export async function releaseOwnedOrWarn(
 
 /**
  * Như `releaseOwned` nhưng không bao giờ ném — cho đường bù trừ và bước nhả sau khi đơn đã chốt: lỗi nhả khóa không được
- * kéo đổ một giao dịch đã đúng (khóa tự hết hạn theo TTL). Trả lỗi (nếu có) để caller ghi log.
+ * kéo đổ một giao dịch đã đúng (khóa tự hết hạn theo TTL). Trả lỗi (nếu có) để caller ghi log; nhả xong → đúng `null`
+ * (caller so `!== null`, không dựa vào truthy: giá trị ném "falsy" vẫn là lỗi).
  */
 export async function releaseOwnedQuietly(
   locking: LockingLike,

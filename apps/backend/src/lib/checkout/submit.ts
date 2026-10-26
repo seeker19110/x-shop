@@ -1,6 +1,6 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
-import { decideIdempotency, payloadHash, type AddressSnapshot } from "@x-shop/domain";
+import { decideIdempotency, payloadHash, type AddressSnapshot, isNonEmpty } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type { PaymentMethod } from "../../modules/checkout/models/constants";
 import type CheckoutModuleService from "../../modules/checkout/service";
@@ -73,7 +73,7 @@ export function submitPayloadHash(r: SubmitRequest): string {
   });
 }
 
-const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
+const iso = (d: Date | string | null | undefined) => (isNonEmpty(d) ? new Date(d).toISOString() : null);
 
 export async function presentAttempt(
   container: MedusaContainer,
@@ -84,7 +84,7 @@ export async function presentAttempt(
   if (!a) return null;
   let order: AttemptView["order"] = null;
   let paymentUrl: string | null = null;
-  if (a.order_id) {
+  if (isNonEmpty(a.order_id)) {
     const [fin] = await s.listOrderFinances({ order_id: a.order_id });
     if (fin) {
       order = {
@@ -109,7 +109,7 @@ export async function presentAttempt(
     payment_method: a.payment_method,
     order,
     payment_url: paymentUrl,
-    error: a.error_code ? { code: a.error_code, message: detail?.message ?? "" } : null,
+    error: isNonEmpty(a.error_code) ? { code: a.error_code, message: detail?.message ?? "" } : null,
   };
 }
 
@@ -185,7 +185,8 @@ async function runAttempt(
     },
     throwOnError: false,
   });
-  if (!errors || errors.length === 0) return outcomeOf(container, attemptId);
+  // Kiểu nói `errors` luôn là mảng; giữ phòng thủ khi thiếu (như `!errors` cũ).
+  if ((errors ?? []).length === 0) return outcomeOf(container, attemptId);
   // Lưới an toàn: bù trừ dừng giữa chừng thì bước nhả khóa có thể không chạy → ngừng gia hạn khóa của attempt (khóa tự
   // hết hạn theo TTL nếu Redis đang mất) để job đối chiếu/retry không bị chặn bởi một khóa được gia hạn mãi.
   await releaseOwnedQuietly(container.resolve(Modules.LOCKING), attemptId, null);
@@ -249,7 +250,7 @@ export async function submitCheckout(container: MedusaContainer, r: SubmitReques
 
     // DATA02: phiên bản giỏ đã có checkout hoạt động (tab khác, key khác) → trả attempt đó, không tạo đơn thứ hai.
     const activeId = await s.findActiveAttemptId(r.cart_id, r.cart_version);
-    if (activeId) return outcomeOf(container, activeId);
+    if (isNonEmpty(activeId)) return outcomeOf(container, activeId);
 
     const insertedId = await s.insertAttemptIfAbsent({
       cart_id: r.cart_id,
@@ -261,7 +262,7 @@ export async function submitCheckout(container: MedusaContainer, r: SubmitReques
       payment_method: r.payment_method,
       lease_until: leaseUntil(),
     });
-    if (insertedId) return runAttempt(container, insertedId, r);
+    if (isNonEmpty(insertedId)) return runAttempt(container, insertedId, r);
   }
   return { kind: "error", error: new CheckoutError("BUSY_RETRY"), attemptId: null };
 }
