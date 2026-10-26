@@ -7,7 +7,7 @@ import type CatalogIndexModuleService from "../../modules/catalog-index/service"
 import type { CatalogIndexRow } from "../../modules/catalog-index/service";
 import { acquireOrdered, isLockUnavailable, releaseOwnedQuietly, withOwnedLock } from "../checkout/locks";
 import { colorOf, loadDictionary, sizeOf, type Dictionary } from "./dictionary";
-import { loadProductSources, type ProductSource } from "./product-source";
+import { loadProductSources, PRODUCT_SOURCE_BATCH, toVnd, type ProductSource } from "./product-source";
 import {
   loadInStock,
   loadVariantPrices,
@@ -39,7 +39,10 @@ const withIndexLock = <T>(container: MedusaContainer, fn: () => Promise<T>): Pro
     },
     fn,
   );
-const SOURCE_CHUNK = 100;
+/** Số sản phẩm mỗi lô đồng bộ/rebuild (đọc nguồn + giá + tồn cho lô rồi mới sang lô kế). */
+const SOURCE_CHUNK = PRODUCT_SOURCE_BATCH;
+/** Số SKU nêu ví dụ trong log lệch/thiếu giá. */
+const LOG_SAMPLE = 10;
 
 export interface IndexContext {
   dict: Dictionary;
@@ -66,25 +69,76 @@ function thumbnailFor(p: ProductSource, color: string | null): string | null {
 }
 
 /**
- * Dòng read model cho các sản phẩm: chỉ sản phẩm `published`, một dòng mỗi SKU có giá VND × mỗi kênh bán của sản
- * phẩm. SKU không có giá bán hiện hành không vào index (không bán được).
+ * Đối chiếu một lượt dựng read model: SKU bán được theo nguồn độc lập (giá niêm yết VND đọc cùng ảnh chụp sản phẩm,
+ * không qua calculated_price) so với dòng đã dựng — để lỗi đọc giá hàng loạt không còn làm mất sản phẩm im lặng.
  */
-export async function buildIndexRows(
+export interface IndexBuildReport {
+  /** Số dòng (SKU × kênh) kỳ vọng: sản phẩm published có kênh bán, SKU khác rỗng, có giá niêm yết VND hợp lệ. */
+  expected: number;
+  /** Số dòng đã dựng. */
+  rows: number;
+  /** SKU có giá niêm yết nhưng KHÔNG ra giá bán (calculated_price) — bất thường, phải bằng 0. */
+  missing: string[];
+  /** SKU thật sự không có giá bán (không giá niêm yết, không price list áp được) — loại khỏi index, có log. */
+  unpriced: string[];
+  /** Sản phẩm published có kênh bán nhưng không SKU nào vào index. */
+  productsWithoutRows: string[];
+}
+
+const emptyReport = (): IndexBuildReport => ({
+  expected: 0,
+  rows: 0,
+  missing: [],
+  unpriced: [],
+  productsWithoutRows: [],
+});
+
+function mergeReport(into: IndexBuildReport, r: IndexBuildReport): void {
+  into.expected += r.expected;
+  into.rows += r.rows;
+  into.missing.push(...r.missing);
+  into.unpriced.push(...r.unpriced);
+  into.productsWithoutRows.push(...r.productsWithoutRows);
+}
+
+/**
+ * Dòng read model cho các sản phẩm: chỉ sản phẩm `published`, một dòng mỗi SKU có giá VND × mỗi kênh bán của sản
+ * phẩm. SKU không có giá bán hiện hành không vào index (không bán được). Kèm báo cáo đối chiếu (`IndexBuildReport`).
+ */
+export async function buildIndexRowsWithReport(
   container: MedusaContainer,
   products: ProductSource[],
   ctx: IndexContext,
-): Promise<CatalogIndexRow[]> {
+): Promise<{ rows: CatalogIndexRow[]; report: IndexBuildReport }> {
   const published = products.filter((p) => p.status === "published" && p.salesChannelIds.length > 0);
   const prices: Map<string, VariantPrice> = await loadVariantPrices(
     container,
     published.flatMap((p) => p.variants.map((v) => v.id)),
     ctx.pricing,
   );
+  const report = emptyReport();
+  for (const p of published) {
+    let productRows = 0;
+    for (const v of p.variants) {
+      if (v.sku === "") continue;
+      const listed = v.basePrice !== null && toVnd(v.basePrice) !== null;
+      if (listed) report.expected += p.salesChannelIds.length;
+      if (prices.has(v.id)) productRows += p.salesChannelIds.length;
+      else if (listed) report.missing.push(v.id);
+      else report.unpriced.push(v.id);
+    }
+    if (productRows === 0) report.productsWithoutRows.push(p.id);
+  }
   const rows: CatalogIndexRow[] = [];
-  // Còn hàng tính theo kênh: gom biến thể của mọi sản phẩm theo kênh rồi hỏi một lần mỗi kênh.
+  // Còn hàng tính theo kênh: gom biến thể của mọi sản phẩm theo kênh rồi hỏi theo lô mỗi kênh.
   const byChannel = new Map<string, ProductSource[]>();
-  for (const p of published)
-    for (const ch of p.salesChannelIds) byChannel.set(ch, [...(byChannel.get(ch) ?? []), p]);
+  for (const p of published) {
+    for (const ch of p.salesChannelIds) {
+      const list = byChannel.get(ch);
+      if (list) list.push(p);
+      else byChannel.set(ch, [p]);
+    }
+  }
   for (const [channelId, ps] of byChannel) {
     const stock = await loadInStock(
       container,
@@ -128,44 +182,120 @@ export async function buildIndexRows(
       }
     }
   }
-  return rows;
+  report.rows = rows.length;
+  return { rows, report };
+}
+
+/** Như `buildIndexRowsWithReport`, chỉ trả dòng. */
+export async function buildIndexRows(
+  container: MedusaContainer,
+  products: ProductSource[],
+  ctx: IndexContext,
+): Promise<CatalogIndexRow[]> {
+  return (await buildIndexRowsWithReport(container, products, ctx)).rows;
 }
 
 function indexService(container: MedusaContainer): CatalogIndexModuleService {
   return container.resolve(CATALOG_INDEX_MODULE);
 }
 
-async function sourcesInChunks(container: MedusaContainer, ids: string[]): Promise<ProductSource[]> {
-  const out: ProductSource[] = [];
-  for (let i = 0; i < ids.length; i += SOURCE_CHUNK) {
-    out.push(...(await loadProductSources(container, { id: ids.slice(i, i + SOURCE_CHUNK) })));
+const sample = (ids: string[]): string =>
+  ids.slice(0, LOG_SAMPLE).join(", ") + (ids.length > LOG_SAMPLE ? `, … (+${ids.length - LOG_SAMPLE})` : "");
+
+/**
+ * Kiểm cuối sau khi ghi: (1) SKU có giá niêm yết mà không ra giá bán, (2) số dòng trong bảng khác số dòng vừa ghi →
+ * log ERROR kèm số liệu (không im lặng). SKU thật sự không có giá → log WARN (loại có chủ đích). Trả true nếu khớp.
+ */
+function reportBuild(
+  container: MedusaContainer,
+  op: "rebuild" | "sync",
+  report: IndexBuildReport,
+  stored: number,
+): boolean {
+  const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+  if (report.unpriced.length > 0) {
+    logger.warn(
+      `[catalog-index] ${op}: ${report.unpriced.length} SKU không có giá bán hiện hành — không vào index ` +
+        `(${report.productsWithoutRows.length} sản phẩm không còn dòng nào). SKU: ${sample(report.unpriced)}`,
+    );
   }
-  return out;
+  const ok = report.missing.length === 0 && stored === report.rows;
+  if (!ok) {
+    logger.error(
+      `[catalog-index] LỆCH read model sau ${op}: kỳ vọng ${report.expected} dòng bán được (SKU có giá niêm yết × ` +
+        `kênh), dựng ${report.rows}, trong bảng ${stored}; ${report.missing.length} SKU có giá niêm yết nhưng ` +
+        `không ra giá bán${report.missing.length ? `: ${sample(report.missing)}` : ""}.`,
+    );
+  }
+  return ok;
 }
 
 async function syncUnlocked(container: MedusaContainer, ids: string[], ctx: IndexContext): Promise<number> {
-  let written = 0;
+  const index = indexService(container);
+  const report = emptyReport();
   for (let i = 0; i < ids.length; i += SOURCE_CHUNK) {
     const chunk = ids.slice(i, i + SOURCE_CHUNK);
-    const rows = await buildIndexRows(container, await sourcesInChunks(container, chunk), ctx);
-    await indexService(container).replaceProducts(chunk, rows);
-    written += rows.length;
+    const built = await buildIndexRowsWithReport(
+      container,
+      await loadProductSources(container, { id: chunk }),
+      ctx,
+    );
+    await index.replaceProducts(chunk, built.rows);
+    mergeReport(report, built.report);
   }
-  return written;
+  // Đang giữ khoá ghi → không ai khác ghi các sản phẩm này giữa lúc ghi và lúc đếm.
+  reportBuild(container, "sync", report, await index.countRows(ids));
+  return report.rows;
 }
 
-async function rebuildUnlocked(container: MedusaContainer): Promise<{ products: number; rows: number }> {
+export interface RebuildResult {
+  products: number;
+  rows: number;
+  /** Số dòng kỳ vọng theo giá niêm yết (xem `IndexBuildReport.expected`). */
+  expected: number;
+  /** SKU có giá niêm yết mà không ra giá bán — khác 0 là lỗi (đã log ERROR). */
+  missing: number;
+  /** SKU thật sự không có giá bán (đã loại, log WARN). */
+  unpriced: number;
+}
+
+/**
+ * Rebuild theo lô `SOURCE_CHUNK` sản phẩm (như sync) nhưng gom mọi dòng rồi thay cả bảng trong MỘT giao dịch cuối —
+ * người đọc thấy bảng cũ tới khi commit.
+ */
+async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResult> {
   const ctx = await loadIndexContext(container);
+  const index = indexService(container);
   const products = await container
     .resolve(Modules.PRODUCT)
-    .listProducts({ status: "published" }, { select: ["id"], take: null });
+    .listProducts({ status: "published" }, { select: ["id"], take: null, order: { id: "ASC" } });
   const ids = products.map((p) => p.id);
-  const rows = await buildIndexRows(container, await sourcesInChunks(container, ids), ctx);
-  await indexService(container).replaceAll(rows);
+  const rows: CatalogIndexRow[] = [];
+  const report = emptyReport();
+  for (let i = 0; i < ids.length; i += SOURCE_CHUNK) {
+    const built = await buildIndexRowsWithReport(
+      container,
+      await loadProductSources(container, { id: ids.slice(i, i + SOURCE_CHUNK) }),
+      ctx,
+    );
+    for (const r of built.rows) rows.push(r);
+    mergeReport(report, built.report);
+  }
+  await index.replaceAll(rows);
+  reportBuild(container, "rebuild", report, await index.countRows());
   container
     .resolve(ContainerRegistrationKeys.LOGGER)
-    .info(`[catalog-index] Rebuild: ${ids.length} sản phẩm, ${rows.length} dòng.`);
-  return { products: ids.length, rows: rows.length };
+    .info(
+      `[catalog-index] Rebuild: ${ids.length} sản phẩm, ${rows.length} dòng (kỳ vọng ${report.expected}, ` +
+        `thiếu giá bán ${report.missing.length}, không giá ${report.unpriced.length}).`,
+    );
+  return {
+    products: ids.length,
+    rows: rows.length,
+    expected: report.expected,
+    missing: report.missing.length,
+    unpriced: report.unpriced.length,
+  };
 }
 
 /**
@@ -181,9 +311,7 @@ export async function syncCatalogProducts(container: MedusaContainer, productIds
 }
 
 /** Rebuild toàn phần: tính mọi dòng rồi thay cả bảng trong MỘT giao dịch (người đọc thấy bảng cũ tới khi commit). */
-export async function rebuildCatalogIndex(
-  container: MedusaContainer,
-): Promise<{ products: number; rows: number }> {
+export async function rebuildCatalogIndex(container: MedusaContainer): Promise<RebuildResult> {
   return withIndexLock(container, () => rebuildUnlocked(container));
 }
 
