@@ -141,7 +141,7 @@ medusaIntegrationTestRunner({
         resource_type: "customer",
         resource_id: "cus_1",
         changes: {
-          email: "nguyen.van.a@example.vn",
+          email: "nguyen.van.a@example.test",
           phone: "0912345678",
           shipping_address: { address_1: "12 Lý Thái Tổ" },
           password: "bi-mat",
@@ -151,7 +151,7 @@ medusaIntegrationTestRunner({
       const res = await get("/admin/x/audit?action=test.pii", owner);
       const changes = (res.data.audit_logs as Row[])[0]?.changes as Row;
       expect(changes).toEqual({
-        email: "n***@example.vn",
+        email: "n***@example.test",
         phone: "091****678",
         shipping_address: "[PII]",
         password: "[REDACTED]",

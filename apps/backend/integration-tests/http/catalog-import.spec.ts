@@ -249,7 +249,7 @@ medusaIntegrationTestRunner({
           HEADER,
           "ao-loi,Áo lỗi 0912345678,apparel,khong-co,Cotton,Mô tả,AL-DEN-S,den,s,100000,1",
         ].join("\n");
-        form.append("file", new Blob([csv], { type: "text/csv" }), "khach-an@example.vn.csv");
+        form.append("file", new Blob([csv], { type: "text/csv" }), "khach-an@example.test.csv");
         const res = (await api.post("/admin/x/imports/preview", form, {
           headers: { ...admin, "x-request-id": "req-import-1" },
         })) as Res;
@@ -272,7 +272,7 @@ medusaIntegrationTestRunner({
         expect(String(row?.changes.file_sha256).replace(/:/g, "")).toBe(res.data.file_hash);
         expect(row?.ip_hash).toMatch(/^[0-9a-f]{32}$/);
         const raw = JSON.stringify(row);
-        for (const leak of ["khach-an", "@example.vn", "0912345678", "Áo lỗi", "khong-co"]) {
+        for (const leak of ["khach-an", "@example.test", "0912345678", "Áo lỗi", "khong-co"]) {
           expect(raw).not.toContain(leak);
         }
       });

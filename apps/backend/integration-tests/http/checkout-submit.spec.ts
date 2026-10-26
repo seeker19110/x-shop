@@ -75,7 +75,7 @@ interface Api {
 }
 
 const newKey = () => `k-${randomUUID()}`;
-const CONTACT = { name: "Nguyễn Văn An", phone: "0912 345 678", email: "an@example.vn" };
+const CONTACT = { name: "Nguyễn Văn An", phone: "0912 345 678", email: "an@example.test" };
 
 /** Giỏ mà test runner nhắm tới (cart_id) — handler hook làm lỗi bước cuối để kiểm bù trừ. */
 const failBeforeFinalize = new Set<string>();
@@ -590,8 +590,8 @@ medusaIntegrationTestRunner({
       }
 
       it("giỏ của người khác → 404 (vãng lai, khách khác, kênh bán khác); chủ giỏ → được phép", async () => {
-        const tokenA = await registerCustomer(`a-${randomUUID()}@example.vn`);
-        const tokenB = await registerCustomer(`b-${randomUUID()}@example.vn`);
+        const tokenA = await registerCustomer(`a-${randomUUID()}@example.test`);
+        const tokenB = await registerCustomer(`b-${randomUUID()}@example.test`);
         const cartA = await createCart([["Đen/S", 1]], tokenA);
 
         const anon = await quote(cartA);

@@ -109,7 +109,7 @@ Kiểm tra văn bản sửa đổi: trước mỗi mốc G7 và mỗi 6 tháng, 
   trong test. Không đưa PII thật (họ tên, SĐT, email, địa chỉ của người thật) vào fixture/seed.
 - Tái hiện lỗi từ production: dựng ca bằng dữ liệu tổng hợp cùng hình dạng, không nhập dữ liệu thật. Vi phạm = sự cố bảo mật (SEV1, `docs/ops/RUNBOOK.md` §10–§11).
 - Cưỡng chế một phần: `node scripts/check-data-map.mjs` quét repo, đỏ khi có file `.sql/.csv/.json/.dump` > 1 MB hoặc CSV có tên cột PII ở dòng đầu;
-  quét `gitleaks` (secret-scan). Quét nội dung PII trong fixture/seed (email miền test): chưa có (PLAN-2 T-078).
+  quét `gitleaks` (secret-scan). Quét nội dung PII trong fixture/seed/test (email miền dành riêng, SĐT mẫu, CCCD): `node scripts/check-fixtures.mjs`, chính sách và số mẫu ở `docs/compliance/test-data-policy.md`; chưa nối CI.
 
 ## 7. Stack (chi tiết + phiên bản: ADR-0001)
 Next.js App Router + TypeScript (storefront) · Medusa v2 (commerce + Admin) · PostgreSQL · Redis · S3-compatible + CDN.

@@ -160,38 +160,39 @@ describe("rate limit nhiều tín hiệu", () => {
   it("(email+IP) chặn sau ngưỡng; email đó từ IP khác và email khác cùng IP vẫn được thử", async () => {
     const store = new MemoryStore();
     for (let i = 0; i < L.perIdentityIp; i++) {
-      expect((await registerAttempt(store, "login", "a@x.vn", "1.1.1.1")).allowed).toBe(true);
+      expect((await registerAttempt(store, "login", "a@example.test", "1.1.1.1")).allowed).toBe(true);
     }
-    const blocked = await registerAttempt(store, "login", "A@x.vn ", "1.1.1.1");
+    const blocked = await registerAttempt(store, "login", "A@example.test ", "1.1.1.1");
     expect(blocked).toMatchObject({ allowed: false });
     expect((blocked as { retryAfterSeconds: number }).retryAfterSeconds).toBeGreaterThan(0);
-    expect((await registerAttempt(store, "login", "a@x.vn", "2.2.2.2")).allowed).toBe(true);
-    expect((await registerAttempt(store, "login", "b@x.vn", "1.1.1.1")).allowed).toBe(true);
+    expect((await registerAttempt(store, "login", "a@example.test", "2.2.2.2")).allowed).toBe(true);
+    expect((await registerAttempt(store, "login", "b@example.test", "1.1.1.1")).allowed).toBe(true);
   });
 
   it("đoán phân tán vào một email từ nhiều IP → chặn theo email", async () => {
     const store = new MemoryStore();
-    for (let i = 0; i < L.perIdentity; i++) await registerAttempt(store, "login", "v@x.vn", `10.0.0.${i}`);
-    expect((await registerAttempt(store, "login", "v@x.vn", "10.0.1.1")).allowed).toBe(false);
+    for (let i = 0; i < L.perIdentity; i++)
+      await registerAttempt(store, "login", "v@example.test", `10.0.0.${i}`);
+    expect((await registerAttempt(store, "login", "v@example.test", "10.0.1.1")).allowed).toBe(false);
   });
 
   it("không khoá cả mạng: một IP dùng chung với nhiều tài khoản chỉ bị chặn ở ngưỡng IP cao", async () => {
     const store = new MemoryStore();
     for (let i = 0; i < L.perIp; i++) {
-      expect((await registerAttempt(store, "login", `u${i}@x.vn`, "9.9.9.9")).allowed).toBe(true);
+      expect((await registerAttempt(store, "login", `u${i}@example.test`, "9.9.9.9")).allowed).toBe(true);
     }
-    expect((await registerAttempt(store, "login", "moi@x.vn", "9.9.9.9")).allowed).toBe(false);
+    expect((await registerAttempt(store, "login", "moi@example.test", "9.9.9.9")).allowed).toBe(false);
   });
 
   it("thành công không tính thất bại; lỗi 5xx được hoàn lại", async () => {
     const store = new MemoryStore();
     for (let i = 0; i < L.perIdentityIp * 3; i++) {
-      expect((await registerAttempt(store, "login", "ok@x.vn", "3.3.3.3")).allowed).toBe(true);
-      await registerSuccess(store, "login", "ok@x.vn", "3.3.3.3");
+      expect((await registerAttempt(store, "login", "ok@example.test", "3.3.3.3")).allowed).toBe(true);
+      await registerSuccess(store, "login", "ok@example.test", "3.3.3.3");
     }
     for (let i = 0; i < L.perIdentityIp * 3; i++) {
-      expect((await registerAttempt(store, "login", "err@x.vn", "4.4.4.4")).allowed).toBe(true);
-      await registerRefund(store, "login", "err@x.vn", "4.4.4.4");
+      expect((await registerAttempt(store, "login", "err@example.test", "4.4.4.4")).allowed).toBe(true);
+      await registerRefund(store, "login", "err@example.test", "4.4.4.4");
     }
   });
 
