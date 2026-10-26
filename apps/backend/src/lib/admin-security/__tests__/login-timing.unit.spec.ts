@@ -93,7 +93,10 @@ async function compare(a: () => Promise<unknown>, b: () => Promise<unknown>, sam
       ta.push(await timeIt(a));
     }
   }
-  return { a: median(ta), b: median(tb) };
+  // Tỷ lệ theo cặp đo liền kề (cùng cửa sổ tải máy): trung vị log-tỷ lệ bền với tải dao động theo đợt
+  // hơn so sánh hai trung vị riêng (mỗi trung vị có thể rơi vào cửa sổ tải khác nhau). Ngưỡng không đổi.
+  const logRatios = ta.map((x, i) => Math.log(x / Math.max(tb[i] ?? x, 0.01)));
+  return { a: median(ta), b: median(tb), pairRatio: Math.exp(Math.abs(median(logRatios))) };
 }
 
 jest.setTimeout(60_000);
@@ -147,6 +150,7 @@ describe("đăng nhập emailpass: thời gian phản hồi không phân biệt 
       9,
     );
     expect(t.a / Math.max(t.b, 0.01)).toBeGreaterThanOrEqual(5);
+    expect(t.pairRatio).toBeGreaterThanOrEqual(5); // ước lượng theo cặp cũng bắt được lộ thời gian
   });
 
   it("bản bọc: email không có ≈ email có sai mật khẩu (trung vị chênh ≤ 1.5×)", async () => {
@@ -154,8 +158,7 @@ describe("đăng nhập emailpass: thời gian phản hồi không phân biệt 
       () => safe.authenticate(body(EMAIL, "sai-mat-khau"), store.svc),
       () => safe.authenticate(body(`khong-co-${Math.random()}@x-shop.test`, "sai-mat-khau"), store.svc),
     );
-    const ratio = Math.max(t.a, t.b) / Math.min(t.a, t.b);
-    expect(ratio).toBeLessThanOrEqual(1.5);
+    expect(t.pairRatio).toBeLessThanOrEqual(1.5);
   });
 
   it("bản bọc: identity không có hash mật khẩu ≈ sai mật khẩu (≤ 1.5×)", async () => {
@@ -163,7 +166,7 @@ describe("đăng nhập emailpass: thời gian phản hồi không phân biệt 
       () => safe.authenticate(body(EMAIL, "sai-mat-khau"), store.svc),
       () => safe.authenticate(body("no-hash@x-shop.test", "sai-mat-khau"), store.svc),
     );
-    expect(Math.max(t.a, t.b) / Math.min(t.a, t.b)).toBeLessThanOrEqual(1.5);
+    expect(t.pairRatio).toBeLessThanOrEqual(1.5);
   });
 
   it("đồng thời: 10 lần dò email không có song song → đều thất bại cùng thân lỗi, không ghi kho identity", async () => {

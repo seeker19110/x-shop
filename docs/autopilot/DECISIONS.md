@@ -488,3 +488,24 @@
 - Chọn: Dẫn xuất từ COOKIE_SECRET với nhãn riêng
 - Lý do (tiêu chí chất lượng cuối): (3) không thêm bí mật phải quản lý; COOKIE_SECRET đã bắt buộc ≥32 ký tự ở production; dẫn xuất có nhãn tách mục đích; reviewer xác nhận
 - Đường lùi: Thêm LOG_HASH_KEY nếu cần xoay cookie secret mà vẫn đối chiếu log cũ
+
+### D-070 · 2026-10-26T21:46:26+00:00 · BE-CACHE-007: vô hiệu hoá cache catalog theo sự kiện hay giữ SWR 60 s
+
+- Phương án: (1) Webhook backend → storefront revalidateTag khi sửa sản phẩm/giá (task T-142, có xác thực HMAC + test cập nhật rồi đọc ngay) · (2) Giữ SWR, bỏ vế không nhận bản cũ quá ngưỡng
+- Chọn: Webhook backend → storefront revalidateTag khi sửa sản phẩm/giá (task T-142, có xác thực HMAC + test cập nhật rồi đọc ngay)
+- Lý do (tiêu chí chất lượng cuối): (1) giá hiển thị cũ hàng giờ ở trang ít người xem là sai trải nghiệm/khiếu nại giá; không nới yêu cầu MUST; (3) revalidateTag là cơ chế chuẩn của Next
+- Đường lùi: Tắt webhook, quay về SWR TTL
+
+### D-071 · 2026-10-26T21:46:44+00:00 · CHECK payment_ledger.state: chỉ 'succeeded' hay toàn bộ REFUND_STATES
+
+- Phương án: (1) Chỉ 'succeeded' (mọi đường ghi hiện tại) · (2) Toàn bộ REFUND_STATES theo kiểu TS
+- Chọn: Chỉ 'succeeded' (mọi đường ghi hiện tại)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt hơn: ledger là sổ tiền đã xảy ra; reviewer xác nhận chỉ 2 đường ghi đều 'succeeded'; (2) nới sau bằng migration mới dễ hơn siết
+- Đường lùi: Migration mới nới CHECK khi có đường ghi trạng thái khác
+
+### D-072 · 2026-10-26T21:46:44+00:00 · Danh sách con theo một đơn (refunds?order_id, orders/{ref}/returns) và exports/products.csv chưa có trần
+
+- Phương án: (1) Giữ: bị chặn bởi đơn cha / export theo thiết kế, ghi lý do trong bảng phân loại list-bounds · (2) Thêm trần cứng + cờ truncated
+- Chọn: Giữ: bị chặn bởi đơn cha / export theo thiết kế, ghi lý do trong bảng phân loại list-bounds
+- Lý do (tiêu chí chất lượng cuối): (1) phần tính tiền không được cắt dòng — trần có thể làm sai số hoàn/đổi trả; số con theo một đơn tự nhiên nhỏ; (3) đơn giản
+- Đường lùi: Thêm trần + truncated cho phần hiển thị nếu đo thấy đơn có quá nhiều dòng con
