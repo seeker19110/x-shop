@@ -453,3 +453,17 @@
 - Chọn: Thêm test:integration:coverage, đo thời gian trước khi nối CI (task mới T-135)
 - Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt: backend phần lớn logic chỉ được phủ bởi test tích hợp (unit lines 28,8%); (3) đo trước để không vượt timeout CI
 - Đường lùi: Miễn có lý do nếu đo thấy CI vượt 20 phút
+
+### D-065 · 2026-10-26T20:12:54+00:00 · Mẫu nhận diện PII có hai bản (backend redact.ts, storefront analytics/schema.ts)
+
+- Phương án: (1) Gom vào packages/domain · (2) Giữ hai bản + test chung bộ mẫu (fixture dùng chung, test cả hai phải che giống nhau)
+- Chọn: Giữ hai bản + test chung bộ mẫu (fixture dùng chung, test cả hai phải che giống nhau)
+- Lý do (tiêu chí chất lượng cuối): (1) bundle client không được kéo domain (node:fs/crypto — đã gặp ở T-082); (3) test khoá chống lệch, đơn giản
+- Đường lùi: Tách mẫu PII ra module domain không phụ thuộc node khi có subpath export riêng
+
+### D-066 · 2026-10-26T20:12:55+00:00 · CMND 9 số trong văn bản tự do (trùng số tiền VND 9 chữ số)
+
+- Phương án: (1) Giữ: chỉ che theo tên trường · (2) Che 9 số khi có từ khoá đi kèm (CMND/CMT/chứng minh)
+- Chọn: Che 9 số khi có từ khoá đi kèm (CMND/CMT/chứng minh)
+- Lý do (tiêu chí chất lượng cuối): (1) cách chặt hơn cho PII mà không che nhầm số tiền; test được bằng bảng ca
+- Đường lùi: Tắt luật từ khoá nếu che nhầm trong log thật
