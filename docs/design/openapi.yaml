@@ -67,8 +67,11 @@ paths:
         - { name: in_stock, in: query, schema: { type: string, enum: ["1"] } }
         - { name: sort, in: query, schema: { type: string, enum: [newest, price_asc, price_desc] } }
         - { name: category, in: query, schema: { type: string } }
-        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
-        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 48 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, maximum: 9999 } }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, default: 24 }
+          description: "Lớn hơn 48 bị kẹp về 48 (kể cả 10⁶); ≤ 0 hoặc không phải số nguyên → 422."
       responses:
         "200": { $ref: "#/components/responses/ProductListing" }
         "422": { $ref: "#/components/responses/Validation" }
@@ -96,8 +99,11 @@ paths:
       description: "Cùng tham số với danh sách; `q` dài hơn 100 ký tự bị cắt. Không có kết quả → gợi ý danh mục."
       parameters:
         - { name: q, in: query, schema: { type: string } }
-        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
-        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 48 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, maximum: 9999 } }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, default: 24 }
+          description: "Lớn hơn 48 bị kẹp về 48 (kể cả 10⁶); ≤ 0 hoặc không phải số nguyên → 422."
       responses:
         "200":
           description: "Kết quả như danh sách, thêm `query` và `suggestions`."
@@ -128,6 +134,13 @@ paths:
       tags: [Catalog]
       operationId: storeListCategories
       summary: "Danh mục đang có sản phẩm published trong kênh của publishable key"
+      description: "Phân trang `limit`/`offset`; `limit` lớn hơn 200 bị kẹp về 200 (quy ước Store như `page_size`); `limit` ≤ 0, `offset` âm hoặc không phải số nguyên → 422 `INVALID_QUERY`."
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, default: 200 }
+          description: "Số danh mục mỗi trang; lớn hơn 200 bị kẹp về 200."
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, maximum: 1000, default: 0 } }
       responses:
         "200":
           description: "Danh mục kèm số sản phẩm (đếm cả danh mục con), xếp theo rank rồi tên."
@@ -136,8 +149,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [categories]
+                required: [categories, count, limit, offset]
                 properties:
+                  count: { type: integer, minimum: 0, description: "Tổng số danh mục có hàng (mọi trang)." }
+                  limit: { type: integer, minimum: 1, maximum: 200 }
+                  offset: { type: integer, minimum: 0 }
                   categories:
                     type: array
                     items:
@@ -148,6 +164,7 @@ paths:
                         name: { type: string }
                         parent_handle: { type: [string, "null"] }
                         product_count: { type: integer, minimum: 1 }
+        "422": { $ref: "#/components/responses/Validation" }
   /store/x/addresses/provinces:
     get:
       tags: [Catalog]
@@ -496,18 +513,24 @@ paths:
         - adminBearer: []
       x-permission: catalog.read
       parameters:
-        - { name: code, in: query, schema: { type: string } }
+        - { name: code, in: query, schema: { type: string, maxLength: 200 } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
       responses:
         "200":
-          description: "Danh sách bảng size."
+          description: "Trang bảng size (`count` = tổng số theo bộ lọc)."
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   size_charts: { type: array, items: { $ref: "#/components/schemas/SizeChart" } }
+                  count: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
     post:
       tags: [Admin catalog]
       operationId: adminCreateSizeChart

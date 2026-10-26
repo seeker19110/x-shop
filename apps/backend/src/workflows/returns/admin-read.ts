@@ -1,6 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { z } from "zod";
 import { maskFreeText } from "../../lib/audit/sanitize";
+import { adminPageQuery } from "../../lib/http/pagination";
 import { REFUND_STATES, RETURN_STATES } from "../../modules/returns/constants";
 import type { ReturnWithLines } from "../../modules/returns/service";
 import { ReturnsError } from "./errors";
@@ -23,11 +24,8 @@ type Scope = Pick<MedusaContainer, "resolve">;
 export const RETURN_SOURCES = ["request", "carrier"] as const;
 export type ReturnSource = (typeof RETURN_SOURCES)[number];
 
-const page = {
-  /** Vượt khoảng → 422 (không kẹp ngầm) — cùng quy ước với các danh sách Admin khác (audit, đối soát). */
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).max(100_000).default(0),
-};
+/** Vượt khoảng → 422 (không kẹp ngầm) — cùng quy ước với các danh sách Admin khác (lib/http/pagination.ts). */
+const page = adminPageQuery;
 const id = z.string().trim().min(1).max(128);
 
 export const AdminReturnListQuery = z

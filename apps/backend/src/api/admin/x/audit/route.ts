@@ -1,13 +1,13 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { z } from "zod";
+import { adminPageQuery } from "../../../../lib/http/pagination";
 import { sendProblem, zodErrors } from "../../../../lib/http/problem";
 import { AUDIT_MODULE } from "../../../../modules/audit";
 import type AuditModuleService from "../../../../modules/audit/service";
 
 const Query = z
   .object({
-    limit: z.coerce.number().int().min(1).max(100).default(50),
-    offset: z.coerce.number().int().min(0).max(100_000).default(0),
+    ...adminPageQuery,
     action: z.string().max(128).optional(),
     actor_id: z.string().max(128).optional(),
     resource_type: z.string().max(64).optional(),

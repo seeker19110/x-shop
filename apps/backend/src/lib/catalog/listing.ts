@@ -1,4 +1,5 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
+import { Modules } from "@medusajs/framework/utils";
 import {
   PAGE_SIZE_MAX,
   parseFilter,
@@ -19,6 +20,33 @@ export const PAGE_SIZE_DEFAULT = 24;
 
 /** Header cache công khai ngắn cho dữ liệu catalog công khai (đặc tả §7.4) — CDN giữ 60 giây, phục vụ cũ tối đa 5 phút. */
 export const PUBLIC_CATALOG_CACHE = "public, s-maxage=60, stale-while-revalidate=300";
+
+/**
+ * Trần số danh mục đọc từ Product Module cho menu/gợi ý (XC-PERF-006): cây danh mục do nhân viên quản lý, thực tế vài chục;
+ * không bao giờ đọc "tất cả" (`take: null`). Chạm trần → ghi cảnh báo, phần ngoài trần (theo rank) không hiển thị.
+ */
+export const CATEGORY_FETCH_MAX = 1000;
+
+/** Trang của GET /store/x/categories: mặc định = trần 200 (menu/sitemap đọc một trang là đủ); lớn hơn bị kẹp. */
+export const CATEGORY_PAGE = { limitDefault: 200, limitMax: 200, offsetMax: CATEGORY_FETCH_MAX } as const;
+
+type CategoryField = "id" | "handle" | "name" | "parent_category_id" | "rank";
+
+/** Danh mục đang hoạt động, không nội bộ — tối đa CATEGORY_FETCH_MAX dòng theo rank; `onCap` khi có thể còn dòng ngoài trần. */
+export async function listStoreCategories(
+  scope: MedusaContainer,
+  select: CategoryField[],
+  onCap: (max: number) => void,
+) {
+  const rows = await scope
+    .resolve(Modules.PRODUCT)
+    .listProductCategories(
+      { is_active: true, is_internal: false },
+      { select, take: CATEGORY_FETCH_MAX + 1, order: { rank: "ASC", handle: "ASC" } },
+    );
+  if (rows.length > CATEGORY_FETCH_MAX) onCap(CATEGORY_FETCH_MAX);
+  return rows.slice(0, CATEGORY_FETCH_MAX);
+}
 
 export interface ListingRequest {
   filter: CatalogFilter;
@@ -46,7 +74,8 @@ export function parseListingQuery(raw: RawQuery): { request: ListingRequest; err
   let pageSize = PAGE_SIZE_DEFAULT;
   const ps = src.page_size?.[0];
   if (ps !== undefined) {
-    if (/^\d{1,6}$/.test(ps) && Number(ps) >= 1) pageSize = Math.min(Number(ps), PAGE_SIZE_MAX);
+    // Lớn hơn trần (kể cả 10⁶ hay 16 chữ số) → kẹp về PAGE_SIZE_MAX (quy ước Store, lib/http/pagination.ts).
+    if (/^\d{1,16}$/.test(ps) && Number(ps) >= 1) pageSize = Math.min(Number(ps), PAGE_SIZE_MAX);
     else errors.push({ param: "page_size", reason: "phải là số nguyên dương" });
   }
   const catRaw = src.category?.[0];

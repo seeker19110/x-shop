@@ -73,9 +73,13 @@ const BAD_BODY_EXCEPTIONS: Record<
   },
 };
 
-/** Dấu hiệu validate bằng schema runtime trong file route (helper dùng zod hoặc parser giao thức có kiểm). */
+/**
+ * Dấu hiệu validate bằng schema runtime trong file route (helper dùng zod hoặc parser giao thức có kiểm).
+ * `parseStorePage` (lib/http/pagination.ts, T-121): allowlist `limit`/`offset`, chỉ nhận chuỗi số thập phân (mảng/object/
+ * số mũ/âm → lỗi), trả danh sách lỗi cho 422 — cùng loại với `parseListingQuery`; có unit test riêng.
+ */
 const VALIDATOR =
-  /\b(parseBody|parseInput|safeParse|readCsvBody|parseListingQuery|handleGhnCallback|handleVnpayIpn)\s*\(/;
+  /\b(parseBody|parseInput|safeParse|readCsvBody|parseListingQuery|parseStorePage|handleGhnCallback|handleVnpayIpn)\s*\(/;
 
 interface Inventory {
   code: string[];
