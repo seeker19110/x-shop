@@ -102,7 +102,7 @@ export async function loadVariantPrices(
   for (const batch of chunked([...priceListIds], QUERY_ID_BATCH)) {
     const lists = await container
       .resolve(Modules.PRICING)
-      .listPriceLists({ id: batch }, { select: ["id", "ends_at"], take: null });
+      .listPriceLists({ id: batch }, { select: ["id", "ends_at"], take: batch.length });
     for (const l of lists) endsAt.set(l.id, isNonEmpty(l.ends_at) ? new Date(l.ends_at) : null);
   }
   for (const p of pending) {

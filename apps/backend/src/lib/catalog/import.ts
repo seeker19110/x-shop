@@ -109,18 +109,20 @@ export async function previewImport(container: MedusaContainer, text: string): P
   const productService = container.resolve(Modules.PRODUCT);
   const handles = [...new Set(rows.map((r) => r.handle))];
   const skus = [...new Set(rows.map((r) => r.sku))];
+  const categoryHandles = [...new Set(rows.map((r) => r.category))];
+  // handle danh mục/sản phẩm và SKU là duy nhất → mỗi giá trị tra tối đa một dòng: `take` = số giá trị (không `take: null`).
   const [categories, products, variants, dict] = await Promise.all([
-    rows.length
-      ? productService.listProductCategories(
-          { handle: [...new Set(rows.map((r) => r.category))] },
-          { take: null },
-        )
+    categoryHandles.length
+      ? productService.listProductCategories({ handle: categoryHandles }, { take: categoryHandles.length })
       : Promise.resolve([]),
     handles.length
-      ? productService.listProducts({ handle: handles }, { select: ["id", "handle"], take: null })
+      ? productService.listProducts({ handle: handles }, { select: ["id", "handle"], take: handles.length })
       : Promise.resolve([]),
     skus.length
-      ? productService.listProductVariants({ sku: skus }, { select: ["id", "sku", "product_id"], take: null })
+      ? productService.listProductVariants(
+          { sku: skus },
+          { select: ["id", "sku", "product_id"], take: skus.length },
+        )
       : Promise.resolve([]),
     loadDictionary(container),
   ]);

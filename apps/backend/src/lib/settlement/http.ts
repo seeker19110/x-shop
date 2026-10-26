@@ -4,6 +4,7 @@ import { z } from "zod";
 import { recordAudit } from "../audit/record";
 import { logServerError } from "../errors/error-handler";
 import { maskFreeText } from "../audit/sanitize";
+import { adminPageQuery } from "../http/pagination";
 import { readCsvBody } from "../http/read-body";
 import { sendProblem, zodErrors } from "../http/problem";
 import { SETTLEMENT_MODULE } from "../../modules/settlement";
@@ -101,10 +102,7 @@ const code = z
   .string()
   .trim()
   .regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/, "1–64 ký tự [A-Za-z0-9_.:-], bắt đầu bằng chữ hoặc số");
-const page = {
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).max(100_000).default(0),
-};
+const page = adminPageQuery;
 
 export const ImportQuery = z
   .object({
