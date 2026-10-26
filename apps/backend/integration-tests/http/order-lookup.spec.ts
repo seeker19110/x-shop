@@ -274,7 +274,8 @@ medusaIntegrationTestRunner({
         const [pa] = await service().listPaymentAttempts({ order_id: a.orderId });
         expect(pa?.payment_url).toBe(a.paymentUrl);
         expect(a.paymentUrl).not.toContain(a.access);
-        expect(decodeURIComponent(a.paymentUrl)).not.toMatch(/0912|an@example/);
+        // SĐT đầy đủ/che/không số 0 đầu — không dò "0912" trần: vnp_ExpireDate (yyyyMMddHHmmss) có thể chứa nó theo giờ chạy.
+        expect(decodeURIComponent(a.paymentUrl)).not.toMatch(/0?912345678|0912\*+678|an@example/);
       });
 
       it("AT08/AT24: tham số return 'thành công' trên URL không đổi trạng thái; recheck hỏi cổng cùng giao dịch", async () => {

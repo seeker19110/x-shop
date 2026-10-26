@@ -263,3 +263,10 @@
 - Chọn: Áp cả bộ đếm Redis login/MFA (khóa theo chỉ số cửa sổ, MULTI); Retry-After tính đúng (có thể tới 2 cửa sổ); deniedIp chặn khi hiệu dụng+1 > N; gộp audit deny giữ đếm thô
 - Lý do (tiêu chí chất lượng cuối): Không để sót đường 2× ở đăng nhập/MFA (đích dò mật khẩu); Retry-After đúng tránh khách thử lại bị đếm thêm
 - Đường lùi: Trả hàm quyết định về cửa sổ cố định trong lib/security/sliding-window.ts
+
+### D-038 · 2026-10-26T02:16:54+00:00 · T-056: lỗi nhả khóa sau vùng găng, mất lease, recheck khi Redis hỏng
+
+- Phương án: (1) Nhả lỗi → ném 503; mất lease → bỏ qua; recheck Redis hỏng → 429 · (2) Nhả lỗi → cảnh báo, khóa tự hết theo TTL; mất lease ở import/seed/bảng size → LOCK_UNAVAILABLE như native; recheck Redis hỏng → 503 (bận vẫn 429)
+- Chọn: Nhả lỗi → cảnh báo, khóa tự hết theo TTL; mất lease ở import/seed/bảng size → LOCK_UNAVAILABLE như native; recheck Redis hỏng → 503 (bận vẫn 429)
+- Lý do (tiêu chí chất lượng cuối): Không báo lỗi sai cho việc đã ghi và không che lỗi gốc; mất lease là tín hiệu không an toàn nên dừng; 503 đúng ngữ nghĩa hạ tầng
+- Đường lùi: Đổi releaseOwnedOrWarn/failOnLeaseLoss trong lib/checkout/locks.ts
