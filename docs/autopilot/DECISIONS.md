@@ -481,3 +481,10 @@
 - Chọn: Hạ tick BE-AUTH-003, BE-FILE-005; thêm T-138…T-141 làm ngay theo thứ tự rủi ro
 - Lý do (tiêu chí chất lượng cuối): (1) đúng và an toàn: tick phải phản ánh thật (P1 bằng chứng); dò tài khoản admin là rủi ro bảo mật MUST
 - Đường lùi: Tick lại khi T-138/T-141 xanh
+
+### D-069 · 2026-10-26T21:32:26+00:00 · Nguồn khoá HMAC cho băm ngắn literal SQL trong log
+
+- Phương án: (1) Dẫn xuất từ COOKIE_SECRET với nhãn riêng · (2) Biến riêng LOG_HASH_KEY
+- Chọn: Dẫn xuất từ COOKIE_SECRET với nhãn riêng
+- Lý do (tiêu chí chất lượng cuối): (3) không thêm bí mật phải quản lý; COOKIE_SECRET đã bắt buộc ≥32 ký tự ở production; dẫn xuất có nhãn tách mục đích; reviewer xác nhận
+- Đường lùi: Thêm LOG_HASH_KEY nếu cần xoay cookie secret mà vẫn đối chiếu log cũ
