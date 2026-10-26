@@ -126,6 +126,30 @@ jobs:
           TOTAL: ${{ strategy.job-total }}
         run: bash .xtemplates/scripts/dev-task.sh e2e "$SHARD" "$TOTAL"
 
+  # readme-smoke (BASE-DOC-005, XC-DX-001): chạy ĐÚNG khối bash đầu tiên của README.md (mục "Bắt đầu nhanh") trên
+  # clone sạch, để tài liệu không lệch mã; đo thời gian vào step summary. Job ngắn, độc lập, nằm trong `quality.needs`
+  # (không thêm required check). Lệnh trong README không cần Postgres/Redis hay bí mật.
+  readme-smoke:
+    name: readme-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Chạy đúng các lệnh ở khối bash đầu tiên của README.md
+        run: |
+          set -euo pipefail
+          awk '/^```bash$/{f=1;next} /^```$/{if(f)exit} f' README.md > "$RUNNER_TEMP/readme-smoke.sh"
+          [ -s "$RUNNER_TEMP/readme-smoke.sh" ] || { echo "::error::README.md không có khối bash"; exit 1; }
+          cat "$RUNNER_TEMP/readme-smoke.sh"
+          start=$(date +%s)
+          bash -euxo pipefail "$RUNNER_TEMP/readme-smoke.sh"
+          echo "readme-smoke: $(( $(date +%s) - start )) giây" | tee -a "$GITHUB_STEP_SUMMARY"
+
   # Required check `quality` (ruleset `.github/rulesets/main.json`): TỔNG HỢP mọi job con (WF-CI-001). `always()` — không
   # phải `!cancelled()`: run bị huỷ thì `quality` vẫn chạy và ĐỎ (job con `cancelled`/`skipped` ≠ `success`). Với
   # `!cancelled()`, run bị huỷ làm `quality` thành `skipped`, mà required check `skipped` được GitHub tính là ĐẠT →
@@ -136,7 +160,7 @@ jobs:
   # `rules/branches` chỉ cần quyền đọc metadata mà GITHUB_TOKEN luôn có — `contents: read` của workflow là đủ.
   quality:
     name: quality
-    needs: [gate, e2e]
+    needs: [gate, e2e, readme-smoke]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
