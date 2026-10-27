@@ -354,9 +354,11 @@ last_drilled: chưa diễn tập (chỉ chạy trong test tích hợp `catalog-m
 Mô hình thật (`apps/backend/src/workflows/fashion/set-product-fashion.ts`, D-095/D-101): lưu dữ liệu thời trang của một sản phẩm
 (`POST /admin/x/products/:id/fashion` — thuộc tính, bảng size, số đo người mẫu) lỗi ở bước sau thì workflow hoàn tác các bước trước.
 Hoàn tác cũng lỗi → sản phẩm có thể đang mang **một phần** dữ liệu mới (thuộc tính đã đổi, bảng size đã gỡ, số đo thiếu/thừa so với
-trước). Hệ thống ghi log ERROR và mở `ops_exception` loại này, ưu tiên `high`, owner mặc định `owner`; mỗi sản phẩm tối đa một ngoại
-lệ đang mở (lỗi lặp lại không tạo trùng; sản phẩm khác có ngoại lệ riêng). `detail` chỉ có id + mã lỗi — không có giá trị thuộc tính
-hay số đo (số đo người mẫu là PII).
+trước). Hệ thống ghi log ERROR và mở `ops_exception` loại này, ưu tiên `high`, owner mặc định `owner`; bình thường mỗi sản phẩm có
+tối đa một ngoại lệ đang mở (lỗi lặp lại ở cùng sản phẩm không mở thêm; sản phẩm khác có ngoại lệ riêng). **Có thể trùng khi DB nghẽn**
+(D-105): chờ khoá mở ngoại lệ quá 5 s thì hệ thống vẫn ghi, không khoá (thà trùng còn hơn mất dấu) — nhận biết qua log WARN
+`[ops-exception] Chờ khoá mở ngoại lệ quá 5000ms — ghi dự phòng không khoá: kind=catalog_compensation_failed scope=[product_id]
+code=55P03`; bản trùng đóng theo bước 5. `detail` chỉ có id + mã lỗi — không có giá trị thuộc tính hay số đo (số đo người mẫu là PII).
 
 1. Tìm sản phẩm: dashboard ngoại lệ (Admin → Ngoại lệ, lọc "Hoàn tác dữ liệu sản phẩm lỗi") — cột tham chiếu là id sản phẩm; hoặc
 
@@ -384,6 +386,15 @@ hay số đo (số đo người mẫu là PII).
    ```sql
    UPDATE ops_exception SET state = 'resolved', updated_at = now()
     WHERE id = '<id>' AND kind = 'catalog_compensation_failed' AND state IN ('open', 'in_progress');
+   ```
+
+   Nhiều dòng đang mở cùng `product_id` (bản trùng do ghi dự phòng D-105, xem log WARN ở trên): xử lý sản phẩm **một lần** (bước 2–4),
+   giữ dòng sớm nhất để ghi chú, đóng các bản trùng còn lại:
+
+   ```sql
+   UPDATE ops_exception SET state = 'resolved', updated_at = now()
+    WHERE kind = 'catalog_compensation_failed' AND state IN ('open', 'in_progress') AND deleted_at IS NULL
+      AND detail->>'product_id' = '<product_id>' AND id <> '<id dòng giữ lại>';
    ```
 
    Sản phẩm đó lỗi lại sau khi đóng → ngoại lệ mới được mở; cùng sản phẩm lặp lại nhiều lần → leo thang cho kỹ thuật (§0).

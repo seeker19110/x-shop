@@ -1445,7 +1445,7 @@ medusaIntegrationTestRunner({
                 ]);
               });
 
-              it("hàng rào D-105: kind chưa khai hoặc active_scope khác dạng đã khai → ném lỗi, không ghi dòng", async () => {
+              it("hàng rào D-107: kind chưa khai hoặc active_scope khác dạng đã khai → ném lỗi, không ghi dòng", async () => {
                 const calls: [string, Record<string, unknown>][] = [
                   ["có phạm vi nhưng không truyền", { kind: KIND, detail: { product_id: "p" } }],
                   [
@@ -1528,7 +1528,7 @@ medusaIntegrationTestRunner({
                 expect((await activeOf(KIND)).map((x) => x.id)).toEqual(rows.map((x) => x.id));
               });
 
-              it("dự phòng sau lock_timeout cũng lỗi → ném lỗi 55P03 gốc, không ghi dòng", async () => {
+              it("dự phòng sau lock_timeout cũng lỗi → warn mã lỗi của lần dự phòng (chỉ mã), ném lỗi 55P03 gốc, không ghi dòng", async () => {
                 const repo = (
                   svc() as unknown as { repo_: { transaction: (...a: unknown[]) => Promise<unknown> } }
                 ).repo_;
@@ -1536,21 +1536,76 @@ medusaIntegrationTestRunner({
                 let txCalls = 0;
                 repo.transaction = function (this: unknown, ...args: unknown[]) {
                   txCalls++;
-                  if (txCalls === 2) return Promise.reject(new Error("dự phòng lỗi giả lập"));
+                  if (txCalls === 2) {
+                    return Promise.reject(
+                      Object.assign(new Error(`insert into "ops_exception" values ('prod_leak') - boom`), {
+                        code: "53300",
+                      }),
+                    );
+                  }
                   return origTx.apply(this, args);
                 };
                 const held = await holdLock(MISMATCH, null);
-                let err: unknown;
+                let r: { value: unknown; warns: string[] };
                 try {
-                  err = await openKind("fallback-fails").catch((e: unknown) => e);
+                  r = await captureWarns(() => openKind("fallback-fails").catch((e: unknown) => e));
                 } finally {
                   await held.release();
                   repo.transaction = origTx;
                 }
                 expect(txCalls).toBe(2);
-                expect((err as { code?: string }).code).toBe("55P03");
+                expect((r.value as { code?: string }).code).toBe("55P03");
+                const failed = r.warns.filter((w) => w.includes("Ghi dự phòng không khoá cũng lỗi"));
+                expect(failed).toHaveLength(1);
+                expect(failed[0]).toContain(`kind=${MISMATCH}`);
+                expect(failed[0]).toContain("scope=[]");
+                expect(failed[0]).toContain("code=53300");
+                expect(r.warns.filter((w) => /prod_leak|insert into|boom|fallback-fails/.test(w))).toEqual(
+                  [],
+                );
                 expect(await activeOf(MISMATCH)).toEqual([]);
                 expect(await openKind("after")).toBe(true);
+              });
+
+              it("PROBE pool: timeout đặt cục bộ giao dịch — sau nhánh thường và nhánh 55P03, mọi kết nối pool về mặc định", async () => {
+                type Probe = { pid: number; lt: string; st: string };
+                /** Chiếm nhiều kết nối cùng lúc (pg_sleep) để đọc setting của từng kết nối trong pool dùng chung. */
+                const probe = async (): Promise<Probe[]> =>
+                  (
+                    await Promise.all(
+                      Array.from({ length: 10 }, () =>
+                        pgc().raw(
+                          `select pg_backend_pid() as pid, current_setting('lock_timeout') as lt,
+                                  current_setting('statement_timeout') as st, pg_sleep(0.3)`,
+                        ),
+                      ),
+                    )
+                  ).map((x: { rows: Probe[] }) => {
+                    const { pid, lt, st } = x.rows[0]!;
+                    return { pid, lt, st };
+                  });
+                const before = await probe();
+                const base = [...new Set(before.map((x) => `${x.lt}|${x.st}`))];
+                expect(base).toHaveLength(1);
+                // Mặc định khác giá trị helper đặt — nếu không, test không phân biệt được rò rỉ.
+                expect(base[0]).not.toMatch(/^5s\||\|10s$/);
+
+                // Nhánh thường: nhiều lời gọi song song (không phạm vi lẫn có phạm vi) trải qua nhiều kết nối.
+                await Promise.all([
+                  ...Array.from({ length: 10 }, (_, i) => openKind(`probe-${i}`)),
+                  ...Array.from({ length: 10 }, (_, i) => openScoped(`prod_probe_${i % 5}`, `probe-${i}`)),
+                ]);
+                // Nhánh 55P03 → ghi dự phòng.
+                const held = await holdLock(KIND, { product_id: "prod_probe_timeout" });
+                try {
+                  expect(await openScoped("prod_probe_timeout", "probe-timeout")).toBe(true);
+                } finally {
+                  await held.release();
+                }
+
+                const after = await probe();
+                expect(new Set(after.map((x) => x.pid)).size).toBeGreaterThan(1);
+                expect(after.filter((x) => `${x.lt}|${x.st}` !== base[0])).toEqual([]);
               });
 
               it("khoá phạm vi thiếu trong detail → ghi null vào detail, lần gọi sau dedupe được (🟢b review T-156)", async () => {

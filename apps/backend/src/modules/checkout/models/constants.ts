@@ -41,7 +41,7 @@ export const OPS_EXCEPTION_KINDS = [
 export type OpsExceptionKind = (typeof OPS_EXCEPTION_KINDS)[number];
 
 /**
- * Hàng rào T-158 (D-105): kind dùng `openOpsExceptionIfNoneActive` → dạng `active_scope` DUY NHẤT của nó (tập khoá trong
+ * Hàng rào T-158 (D-107): kind dùng `openOpsExceptionIfNoneActive` → dạng `active_scope` DUY NHẤT của nó (tập khoá trong
  * `detail`; `[]` = một ngoại lệ đang mở cho cả kind). Helper khoá theo kind + giá trị phạm vi — hai dạng khác nhau cho
  * cùng kind giao nhau về điều kiện nhưng khác khoá (tạo trùng được), nên helper ném lỗi khi kind chưa khai ở đây hoặc
  * người gọi truyền dạng khác.

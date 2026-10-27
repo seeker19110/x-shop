@@ -91,7 +91,7 @@ export type CaptureOutcome =
 const json = (value: unknown) => JSON.stringify(value ?? null);
 
 /**
- * Khoá advisory tuần tự hoá `openOpsExceptionIfNoneActive` (T-158, D-099): dạng HAI khoá int4
+ * Khoá advisory tuần tự hoá `openOpsExceptionIfNoneActive` (T-158, D-099; dạng khoá D-107): dạng HAI khoá int4
  * `(hashtext(OPS_EXCEPTION_LOCK_NS), hashtext(<khoá>))` — không gian riêng (`pg_locks.objsubid = 2`), không lẫn với khoá
  * một bigint `hashtext(...)` của module khác (vd. khoá theo đơn của returns mà trigger x_refund dò ở `objsubid = 1`).
  */
@@ -117,7 +117,7 @@ export function opsExceptionLockKey(kind: string, scope: Readonly<Record<string,
 }
 
 /**
- * Hàng rào D-105: `active_scope` phải đúng dạng đã khai cho kind ở `OPS_EXCEPTION_ACTIVE_SCOPES` (so như tập — thứ tự
+ * Hàng rào D-107: `active_scope` phải đúng dạng đã khai cho kind ở `OPS_EXCEPTION_ACTIVE_SCOPES` (so như tập — thứ tự
  * không quan trọng; trùng khoá là sai). Trả các khoá theo thứ tự đã khai.
  */
 function assertDeclaredScope(kind: OpsExceptionKind, activeScope: readonly string[]): readonly string[] {
@@ -564,7 +564,7 @@ class CheckoutModuleService extends MedusaService({
    * cùng giá trị các khoá đó trong `detail` (vd. `["product_id"]`: mỗi sản phẩm một ngoại lệ đang mở; `[]`/không truyền:
    * một ngoại lệ cho cả kind). Khác `openOpsException` (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại.
    *
-   * Dạng phạm vi mỗi kind khai MỘT lần ở `OPS_EXCEPTION_ACTIVE_SCOPES` (D-105): kind chưa khai hoặc `active_scope` khác
+   * Dạng phạm vi mỗi kind khai MỘT lần ở `OPS_EXCEPTION_ACTIVE_SCOPES` (D-107): kind chưa khai hoặc `active_scope` khác
    * dạng đã khai → ném lỗi trước khi chạm DB (hai dạng cho một kind giao nhau về điều kiện nhưng khác khoá).
    *
    * Tự tuần tự hoá (T-158, D-099) — người gọi KHÔNG cần khoá riêng: kiểm-rồi-tạo chạy trong MỘT giao dịch giữ
@@ -572,7 +572,8 @@ class CheckoutModuleService extends MedusaService({
    * nhau). INSERT … WHERE NOT EXISTS một mình không chặn hai lời gọi song song. Mọi câu trong giao dịch có trần
    * `OPS_EXCEPTION_STATEMENT_TIMEOUT_MS`; chờ khoá quá `OPS_EXCEPTION_LOCK_TIMEOUT_MS` (PG 55P03) → log warn (chỉ kind,
    * tên khoá phạm vi, mã lỗi — không giá trị) rồi ghi dự phòng MỘT lần không khoá trong giao dịch mới (D-105: thà có thể
-   * trùng còn hơn mất dấu); dự phòng cũng lỗi → ném lỗi 55P03 gốc.
+   * trùng còn hơn mất dấu); dự phòng cũng lỗi → warn mã lỗi của lần đó (chỉ mã) rồi ném lỗi 55P03 gốc. Timeout đặt bằng
+   * `set_config(..., true)` = cục bộ giao dịch: kết nối trả về pool dùng chung không mang theo (có test probe pool).
    *
    * Khoá phạm vi thiếu trong `detail` → ghi `null` cho khoá đó vào `detail` (🟢b review T-156): phạm vi so khớp `null`,
    * nên dòng đã ghi phải mang `null` (JSON bỏ khoá `undefined`) — nếu không, lần gọi sau không dedupe được.
@@ -637,7 +638,13 @@ class CheckoutModuleService extends MedusaService({
       );
       try {
         return await this.repo_.transaction(run(false));
-      } catch {
+      } catch (fallbackError) {
+        // Chỉ mã lỗi của lần dự phòng (không message — knex chép giá trị bind vào message); vẫn ném lỗi 55P03 gốc.
+        const code = (fallbackError as { code?: unknown } | null)?.code;
+        this.logger_?.warn(
+          `[ops-exception] Ghi dự phòng không khoá cũng lỗi: kind=${input.kind} scope=[${scopeKeys.join(",")}] ` +
+            `code=${typeof code === "string" && /^[A-Za-z0-9_]{1,32}$/.test(code) ? code : "unknown"}`,
+        );
         throw e;
       }
     }
