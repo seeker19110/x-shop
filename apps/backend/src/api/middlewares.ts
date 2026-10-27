@@ -17,6 +17,7 @@ import {
 } from "../lib/admin-security/guard";
 import { inviteAcceptGuard } from "../lib/admin-security/invite-guard";
 import { registerGate } from "../lib/admin-security/register-gate";
+import { resetPasswordGuard } from "../lib/admin-security/reset-password";
 import { securityAuditTrail } from "../lib/audit/http";
 import { xErrorHandler } from "../lib/errors/error-handler";
 import { requestLogContext } from "../lib/log/http";
@@ -126,6 +127,13 @@ export default defineMiddlewares({
       methods: ["POST"],
       matcher: "/auth/:actor_type/:auth_provider/register",
       middlewares: [authRateLimit("register", loginIdentity), registerGate],
+    },
+    {
+      // Yêu cầu đặt lại mật khẩu (T-143): rate limit theo (email + IP), email, IP rồi trả 201 ngay, workflow gốc chạy sau
+      // phản hồi — thời gian không lộ email tồn tại (lib/admin-security/reset-password.ts). Mọi provider (khoá theo email).
+      methods: ["POST"],
+      matcher: "/auth/:actor_type/:auth_provider/reset-password",
+      middlewares: [resetPasswordGuard],
     },
     {
       methods: ["POST"],

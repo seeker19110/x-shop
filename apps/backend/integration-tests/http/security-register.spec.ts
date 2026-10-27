@@ -1,10 +1,12 @@
 import { randomInt, randomUUID } from "node:crypto";
 import http from "node:http";
+import { performance } from "node:perf_hooks";
 import type { IAuthModuleService, MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
+import { RESET_RESPONSE_MS } from "../../src/lib/admin-security/reset-password";
 import { cleanupUnlinkedIdentityForInvite } from "../../src/lib/admin-security/invite-guard";
 import { createAdmin, createMfaAdmin, jwtPayload, type MfaAdmin } from "../helpers/auth";
 
@@ -27,6 +29,7 @@ interface RawRes {
   status: number;
   headers: http.IncomingHttpHeaders;
   json: Record<string, unknown>;
+  text: string;
 }
 
 let ipSeq = 0;
@@ -74,13 +77,14 @@ medusaIntegrationTestRunner({
             const chunks: Buffer[] = [];
             res.on("data", (c: Buffer) => chunks.push(c));
             res.on("end", () => {
+              const text = Buffer.concat(chunks).toString("utf8");
               let json: Record<string, unknown> = {};
               try {
-                json = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+                json = JSON.parse(text) as Record<string, unknown>;
               } catch {
                 // không phải JSON
               }
-              resolve({ status: res.statusCode ?? 0, headers: res.headers, json });
+              resolve({ status: res.statusCode ?? 0, headers: res.headers, json, text });
             });
           },
         );
@@ -627,6 +631,131 @@ medusaIntegrationTestRunner({
         expect(
           (await post("/auth/user/emailpass", { email: admin.email, password: admin.password }, h)).status,
         ).toBe(200);
+      });
+    });
+
+    describe("đặt lại mật khẩu (T-143): luôn 201 cùng thân, thời gian không lộ email tồn tại, rate limit", () => {
+      const RESET = "/auth/user/emailpass/reset-password";
+      const resetRows = async (email: string) =>
+        Number(
+          (
+            await container
+              .resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION)("auth_password_reset_token")
+              .where({ entity_id: email })
+              .count<{ count: string }[]>({ count: "*" })
+          )[0]?.count ?? 0,
+        );
+      /** Identity emailpass có thật (không cần user/admin — route chỉ tra provider identity). */
+      const existingEmail = async () => {
+        const email = `co-${randomUUID()}@x-shop.test`;
+        await container.resolve<IAuthModuleService>(Modules.AUTH).createAuthIdentities({
+          provider_identities: [
+            { provider: "emailpass", entity_id: email, provider_metadata: { password: "x" } },
+          ],
+        });
+        return email;
+      };
+      const view = (r: RawRes) => ({
+        status: r.status,
+        type: r.headers["content-type"],
+        length: r.headers["content-length"],
+        text: r.text,
+      });
+      const expect429 = (r: RawRes) => {
+        expect(r.status).toBe(429);
+        expect(r.json).toMatchObject({ code: "RATE_LIMITED" });
+        expect(Number(r.headers["retry-after"])).toBeGreaterThanOrEqual(1);
+      };
+
+      it("được phép: email có thật (admin) và email lạ → cùng 201 + thân; chỉ email có thật nhận token; đầu vào sai → 400 gốc", async () => {
+        const admin = await createAdmin(api as never, container);
+        const fresh = unknownEmail();
+        const a = await post(RESET, { identifier: admin.email });
+        const b = await post(RESET, { identifier: fresh });
+        expect(view(a)).toEqual({ ...view(b), status: 201 });
+        expect(a.text).toBe("Created");
+        expect(await eventually(async () => (await resetRows(admin.email)) === 1)).toBe(true);
+        expect(await resetRows(fresh)).toBe(0);
+        // Validator gốc của Medusa vẫn chạy trước (identifier phải là chuỗi).
+        expect((await post(RESET, { email: admin.email })).status).toBe(400);
+        expect((await post(RESET, { identifier: 42 })).status).toBe(400);
+      });
+
+      it("thời gian: email có thật vs email lạ, đo xen kẽ liền nhau → tỷ lệ theo cặp ≤ 1.1× (gốc Medusa ~1.37×)", async () => {
+        const pairs = 12;
+        const existing: string[] = [];
+        for (let i = 0; i < pairs + 1; i++) existing.push(await existingEmail());
+        const timed = async (identifier: string) => {
+          const t0 = performance.now();
+          const r = await post(RESET, { identifier });
+          expect(r.status).toBe(201);
+          return performance.now() - t0;
+        };
+        // Khởi động một cặp (kết nối, JIT) rồi đo; đảo thứ tự mỗi cặp — việc nền của request trước (nếu tràn ra ngoài
+        // phản hồi) sẽ làm chậm request ngay sau, nên đo LIỀN NHAU, không nghỉ.
+        await timed(existing[pairs]!);
+        await timed(unknownEmail());
+        const ta: number[] = [];
+        const tb: number[] = [];
+        for (let i = 0; i < pairs; i++) {
+          if (i % 2 === 0) {
+            ta.push(await timed(existing[i]!));
+            tb.push(await timed(unknownEmail()));
+          } else {
+            tb.push(await timed(unknownEmail()));
+            ta.push(await timed(existing[i]!));
+          }
+        }
+        const median = (xs: number[]) => {
+          const s = [...xs].sort((x, y) => x - y);
+          const m = Math.floor(s.length / 2);
+          return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
+        };
+        const pairRatio = Math.exp(Math.abs(median(ta.map((x, i) => Math.log(x / tb[i]!)))));
+        expect(pairRatio).toBeLessThanOrEqual(1.1);
+        expect(Math.min(...ta, ...tb)).toBeGreaterThanOrEqual(RESET_RESPONSE_MS - 5);
+      });
+
+      it("bị từ chối: (email + IP) → 429 sau `perIdentityIp`; song song chỉ đúng ngưỡng lọt; email khác cùng IP vẫn 201", async () => {
+        const email = await existingEmail();
+        const ip = newIp();
+        const n = AUTH_RATE_LIMITS.reset.perIdentityIp;
+        const results = await Promise.all(
+          Array.from({ length: n + 4 }, () => post(RESET, { identifier: email }, { "x-forwarded-for": ip })),
+        );
+        expect(results.filter((r) => r.status === 201)).toHaveLength(n);
+        expect(results.filter((r) => r.status !== 201).every((r) => r.status === 429)).toBe(true);
+        expect429(results.find((r) => r.status === 429)!);
+        expect((await post(RESET, { identifier: unknownEmail() }, { "x-forwarded-for": ip })).status).toBe(
+          201,
+        );
+      });
+
+      it("bị từ chối: theo email chuẩn hoá (mọi IP, mọi actor) và theo IP (mọi email); IPv6 xoay trong /64 vẫn chung IP", async () => {
+        const email = unknownEmail();
+        const variants = [email, email.toUpperCase(), ` ${email} `];
+        const paths = [
+          RESET,
+          "/auth/customer/emailpass/reset-password",
+          "/auth/%75ser/emailpass/reset-password",
+        ];
+        for (let i = 0; i < AUTH_RATE_LIMITS.reset.perIdentity; i++) {
+          const r = await post(paths[i % paths.length]!, { identifier: variants[i % variants.length] });
+          expect({ i, status: r.status }).toEqual({ i, status: 201 });
+        }
+        expect429(await post(RESET, { identifier: email }));
+
+        const net = newV6Net();
+        const n = AUTH_RATE_LIMITS.reset.perIp;
+        for (let i = 0; i < n; i++) {
+          const r = await post(RESET, { identifier: unknownEmail() }, { "x-forwarded-for": net(i) });
+          expect({ i, status: r.status }).toEqual({ i, status: 201 });
+        }
+        expect429(await post(RESET, { identifier: unknownEmail() }, { "x-forwarded-for": net(n) }));
+        // /64 khác không bị ảnh hưởng.
+        expect(
+          (await post(RESET, { identifier: unknownEmail() }, { "x-forwarded-for": newV6Net()(0) })).status,
+        ).toBe(201);
       });
     });
   },

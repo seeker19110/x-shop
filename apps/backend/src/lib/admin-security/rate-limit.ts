@@ -23,7 +23,7 @@ import type { SecurityStore } from "./store";
  * Tín hiệu IP (và cặp định danh + IP) dùng `ipRateKey` (T-148): IPv4 nguyên địa chỉ, IPv6 gộp theo /64 — một thuê bao
  * thường có cả /64, xoay địa chỉ trong dải không lách được giới hạn (như mọi limiter khác, lib/security/rate-limit.ts).
  */
-export type LimitScope = "login" | "mfa" | "register";
+export type LimitScope = "login" | "mfa" | "register" | "reset";
 
 const h = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 40);
 

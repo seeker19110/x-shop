@@ -18,7 +18,8 @@ import { checkAndTouchSession, evaluateMfa, mfaCompletedAtMs, type AdminAuthCont
 
 type AuthedRequest = MedusaRequest & { auth_context?: AdminAuthContext };
 
-const storeOf = (req: MedusaRequest) => req.scope.resolve<RbacModuleService>(RBAC_MODULE).securityStore();
+export const storeOf = (req: MedusaRequest) =>
+  req.scope.resolve<RbacModuleService>(RBAC_MODULE).securityStore();
 
 /** Thông tin RBAC đã kiểm, gắn vào request cho route dùng tiếp (vd. che PII theo vai trò). */
 export interface AdminAccess {
@@ -231,6 +232,12 @@ export async function adminRefreshGuard(req: MedusaRequest, res: MedusaResponse,
   return next();
 }
 
+/** 429 RATE_LIMITED + `Retry-After` — chung cho mọi rate limit /auth (đăng nhập, đăng ký, MFA, đặt lại mật khẩu). */
+export function sendRateLimited(res: MedusaResponse, retryAfterSeconds: number): void {
+  res.setHeader("Retry-After", String(retryAfterSeconds));
+  deny(res, 429, "RATE_LIMITED", { retry_after: retryAfterSeconds });
+}
+
 /**
  * Rate limit đăng nhập / xác minh MFA theo nhiều tín hiệu (SEC03). Lần thử được giữ chỗ trước khi handler chạy; kết
  * quả 2xx → hoàn lại (không tính thất bại), 4xx → giữ là thất bại, 5xx → hoàn lại (lỗi hệ thống không phạt người dùng).
@@ -243,10 +250,7 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
     // Một mốc cho cả lần thử: hoàn lại (thành công/5xx) vào đúng cửa sổ đã giữ chỗ dù phản hồi xong sau ranh giới.
     const at = new Date();
     const attempt = await registerAttempt(store, scope, identity, ip, at);
-    if (!attempt.allowed) {
-      res.setHeader("Retry-After", String(attempt.retryAfterSeconds));
-      return deny(res, 429, "RATE_LIMITED", { retry_after: attempt.retryAfterSeconds });
-    }
+    if (!attempt.allowed) return sendRateLimited(res, attempt.retryAfterSeconds);
     // Ghi sổ thành công/hoàn lại TRƯỚC khi phản hồi rời máy chủ: làm ở sự kiện `finish` (bất đồng bộ, sau khi khách đã
     // nhận phản hồi) thì một lần thành công có thể xoá bộ đếm SAU KHI các lần thử kế tiếp của cùng định danh đã được
     // đếm — mất đếm thất bại (race tái hiện ở test mfa khi máy tải nặng).
