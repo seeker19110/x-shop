@@ -832,3 +832,10 @@
 - Chọn: Quyền mới payment.override (chỉ owner, tuỳ chọn accountant) + route POST /admin/x/orders/:id/cancel-unverified; bắt buộc lý do + Idempotency-Key + mã đối chiếu merchant; audit order.cancelled_unverified; đóng payment_unknown
 - Lý do (tiêu chí chất lượng cuối): (1) an toàn: quyền tường minh, không gộp ngầm quyền cũ (loại C); tiền khách không mất vì IPN đến muộn đi đường AT09 late_payment → hoàn tiền; audit + mã đối chiếu cho truy vết; (3) khối lượng vừa, test được; (B) chặt hơn nhưng gấp đôi khối lượng cho thao tác hiếm, để chủ dự án nâng cấp nếu muốn
 - Đường lùi: Gỡ route + quyền; quay lại UPDATE tay theo RUNBOOK
+
+### D-119 · 2026-10-27T23:03:07+00:00 · T-135: nối coverage tích hợp backend vào CI?
+
+- Phương án: (1) Không nối: đo 36m39s > 20 phút (D-064); baseline integration ghi tay, --against vẫn chặn PR hạ baseline; mở lại khi chia shard test tích hợp · (2) Nối job riêng dù > 20 phút
+- Chọn: Không nối: đo 36m39s > 20 phút (D-064); baseline integration ghi tay, --against vẫn chặn PR hạ baseline; mở lại khi chia shard test tích hợp
+- Lý do (tiêu chí chất lượng cuối): (2) đường lùi D-064 'miễn kèm lý do'; job 36 phút làm PR chậm và vượt timeout 30 phút của runner; ratchet --against vẫn bảo vệ baseline
+- Đường lùi: Thêm job coverage-integration chia shard khi đo ≤ 20 phút
