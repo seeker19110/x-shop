@@ -350,7 +350,15 @@ medusaIntegrationTestRunner({
           }
           const ok = await get(fileUrl(privateKey), owner.headers);
           expect(ok.status).toBe(200);
-          const baseline = openFdsInto(dirReal);
+          // fd của lượt tải trên đóng bất đồng bộ SAU khi response kết thúc — lấy baseline khi số fd đã ổn định (hai lần đọc
+          // liền nhau bằng nhau), không thì baseline đếm thừa fd sắp đóng và "rò" ra số âm (đỏ chập chờn ở cổng).
+          let baseline = openFdsInto(dirReal);
+          for (let i = 0; i < 30; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            const now = openFdsInto(dirReal);
+            if (now === baseline) break;
+            baseline = now;
+          }
           const delays = [0, 1, 2, 3, 5, 8, 12, 20, 30, 50, 0, 1, 2, 3, 5, 8, 12, 20, 30, 50];
           for (const d of delays) {
             await new Promise<void>((done) => {
