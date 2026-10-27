@@ -115,6 +115,7 @@ export default tseslint.config(
       "**/.next/**",
       "**/.medusa/**",
       "**/coverage/**",
+      "**/coverage-integration/**",
       ".xtemplates/**",
       ".claude/**",
       "**/*.config.{js,mjs,cjs}",

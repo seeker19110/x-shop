@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json && tsc --noEmit -p src/admin/tsconfig.json",
     "test": "TEST_TYPE=unit NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit --passWithNoTests",
     "test:coverage": "TEST_TYPE=unit NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit --passWithNoTests --coverage",
-    "test:integration": "TEST_TYPE=integration:http NODE_OPTIONS=\"--experimental-vm-modules --max-old-space-size=3072\" jest --silent=false --maxWorkers=1 --forceExit"
+    "test:integration": "TEST_TYPE=integration:http NODE_OPTIONS=\"--experimental-vm-modules --max-old-space-size=3072\" jest --silent=false --maxWorkers=1 --forceExit",
+    "test:integration:coverage": "TEST_TYPE=integration:http NODE_OPTIONS=\"--experimental-vm-modules --max-old-space-size=3072\" jest --silent --maxWorkers=1 --forceExit --coverage --coverageDirectory=coverage-integration"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1156.0",

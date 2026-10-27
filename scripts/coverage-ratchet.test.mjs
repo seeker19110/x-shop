@@ -205,3 +205,105 @@ test("baselineAtRef: lỗi git khác 'không có file' được ném ra (không 
   };
   assert.equal(baselineAtRef(".", "HEAD", "coverage-baseline.json", absent), null);
 });
+
+// --- Nguồn integration (T-135) ---
+function integrationFixture(baseline, { unit, integ }) {
+  const root = mkdtempSync(join(tmpdir(), "cov-ratchet-int-"));
+  writeFileSync(join(root, "coverage-baseline.json"), JSON.stringify(baseline));
+  for (const [dirName, v] of [
+    ["coverage", unit],
+    ["coverage-integration", integ],
+  ]) {
+    if (!v) continue;
+    mkdirSync(join(root, "apps/x", dirName), { recursive: true });
+    writeFileSync(join(root, "apps/x", dirName, "coverage-summary.json"), summary(v.lines, v.branches));
+  }
+  return root;
+}
+const withInteg = {
+  packages: { "apps/x": { lines: 30, branches: 80 } },
+  integration: { packages: { "apps/x": { lines: 60, branches: 50 } } },
+};
+
+test("validateBaseline: mục integration tuỳ chọn nhưng nếu có phải đúng dạng", () => {
+  assert.doesNotThrow(() => validateBaseline(withInteg));
+  assert.throws(() => validateBaseline({ ...withInteg, integration: {} }), /integration\.packages/);
+  assert.throws(
+    () =>
+      validateBaseline({
+        ...withInteg,
+        integration: { packages: { "apps/x": { lines: 101, branches: 0 } } },
+      }),
+    /integration\.packages\["apps\/x"\]\.lines/,
+  );
+});
+
+test("main: mặc định chỉ so unit (không đòi summary integration); --suite integration so mục riêng", () => {
+  const root = integrationFixture(withInteg, {
+    unit: { lines: 30, branches: 80 },
+    integ: { lines: 60, branches: 50 },
+  });
+  try {
+    rmSync(join(root, "apps/x/coverage-integration"), { recursive: true });
+    assert.equal(main(["--root", root], quiet().log), 0, "unit xanh dù chưa chạy integration");
+
+    let q = quiet();
+    assert.equal(
+      main(["--root", root, "--suite", "integration"], q.log),
+      1,
+      "thiếu summary integration → đỏ",
+    );
+    assert.match(q.out.error.join("\n"), /coverage-integration.*test:integration:coverage/);
+
+    mkdirSync(join(root, "apps/x/coverage-integration"));
+    writeFileSync(join(root, "apps/x/coverage-integration/coverage-summary.json"), summary(60, 49.99));
+    q = quiet();
+    assert.equal(main(["--root", root, "--suite", "integration"], q.log), 1);
+    assert.match(q.out.error.join("\n"), /branches 49\.99 % < baseline 50 %/);
+
+    writeFileSync(join(root, "apps/x/coverage-integration/coverage-summary.json"), summary(60, 50));
+    assert.equal(main(["--root", root, "--suite", "integration"], quiet().log), 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("main --suite: nguồn lạ/thiếu mục integration → 2; --update integration chỉ tăng mục đó, giữ unit", () => {
+  const root = integrationFixture(withInteg, {
+    unit: { lines: 99, branches: 99 },
+    integ: { lines: 70, branches: 50 },
+  });
+  const file = join(root, "coverage-baseline.json");
+  try {
+    assert.equal(main(["--root", root, "--suite", "bogus"], quiet().log), 2);
+    assert.equal(main(["--root", root, "--suite"], quiet().log), 2);
+
+    assert.equal(main(["--root", root, "--suite", "integration", "--update"], quiet().log), 0);
+    const after = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(after.integration.packages, { "apps/x": { lines: 70, branches: 50 } });
+    assert.deepEqual(after.packages, withInteg.packages, "mục unit không đổi dù số đo unit cao hơn");
+
+    writeFileSync(file, JSON.stringify({ packages: withInteg.packages }));
+    const q = quiet();
+    assert.equal(main(["--root", root, "--suite", "integration"], q.log), 2);
+    assert.match(q.out.error.join("\n"), /chưa có mục "integration"/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("compareBaselines: hạ/xoá mục integration đã có ở bản cũ → lỗi; thêm mục mới → đạt", () => {
+  assert.deepEqual(compareBaselines(withInteg, withInteg), []);
+  assert.deepEqual(compareBaselines({ packages: withInteg.packages }, withInteg), []);
+  const lowered = { ...withInteg, integration: { packages: { "apps/x": { lines: 60, branches: 49 } } } };
+  assert.match(
+    compareBaselines(withInteg, lowered).join("\n"),
+    /integration apps\/x: baseline branches bị hạ 50 % → 49 %/,
+  );
+  assert.match(
+    compareBaselines(withInteg, { packages: withInteg.packages }).join("\n"),
+    /integration: mục bị xoá/,
+  );
+  const dropped = { ...withInteg, integration: { packages: { "apps/y": { lines: 1, branches: 1 } } } };
+  assert.match(compareBaselines(withInteg, dropped).join("\n"), /integration apps\/x: bị xoá/);
+});

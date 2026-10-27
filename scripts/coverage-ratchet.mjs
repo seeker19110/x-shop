@@ -4,7 +4,12 @@
 // summary của một gói có trong baseline → exit 1 (không đo được ≠ đạt). Baseline chỉ tăng: `--update` ghi giá trị
 // max(cũ, đo) — không bao giờ hạ; `--against <ref>` đỏ khi baseline trong cây làm việc thấp hơn bản ở `<ref>` (PR hạ
 // baseline bằng tay). Chạy sau `pnpm -r --if-present test:coverage`.
-// CLI: node scripts/coverage-ratchet.mjs [--update] [--against <git-ref>] [--baseline <file>] [--root <dir>]
+// Nguồn integration (QA-COV-001, T-135): baseline có thể thêm khoá "integration": {packages: {...}} cùng dạng; `--suite
+// integration` đọc `<gói>/coverage-integration/coverage-summary.json` (từ `test:integration:coverage`) và so/ghi CHỈ
+// mục đó. Mặc định (không `--suite`) chỉ so mục `packages` (unit) nên không đòi chạy test tích hợp. `--against` luôn
+// so cả hai mục (không được hạ hay xoá mục integration đã có ở ref).
+// CLI: node scripts/coverage-ratchet.mjs [--suite unit|integration] [--update] [--against <git-ref>]
+//      [--baseline <file>] [--root <dir>]
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -13,6 +18,15 @@ import { pathToFileURL } from "node:url";
 export const METRICS = ["lines", "branches"];
 export const BASELINE_FILE = "coverage-baseline.json";
 export const SUMMARY_PATH = join("coverage", "coverage-summary.json");
+/** Nguồn đo: `key` = khoá của mục trong baseline (null = `packages` ở gốc), `dir` = thư mục coverage của gói. */
+export const SUITES = {
+  unit: { key: null, dir: "coverage", script: "test:coverage" },
+  integration: { key: "integration", dir: "coverage-integration", script: "test:integration:coverage" },
+};
+const summaryPath = (suite) => join(SUITES[suite].dir, "coverage-summary.json");
+/** Mục `{packages}` của baseline theo nguồn; nguồn integration chưa có → null. */
+export const section = (baseline, suite = "unit") =>
+  SUITES[suite].key === null ? baseline : (baseline[SUITES[suite].key] ?? null);
 
 const isPct = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100;
 
@@ -36,15 +50,18 @@ export function parseSummary(text, label = "summary") {
 
 /** Kiểm cấu trúc baseline: {packages: {<dir>: {lines, branches}}} với ít nhất một gói. Sai → ném lỗi. */
 export function validateBaseline(baseline, label = BASELINE_FILE) {
-  const pkgs = baseline?.packages;
-  if (!pkgs || typeof pkgs !== "object" || Array.isArray(pkgs) || Object.keys(pkgs).length === 0) {
-    throw new Error(`${label}: cần "packages" là object không rỗng`);
-  }
-  for (const [dir, v] of Object.entries(pkgs)) {
-    for (const m of METRICS) {
-      if (!isPct(v?.[m])) throw new Error(`${label}: packages["${dir}"].${m} phải là số 0–100`);
+  const check = (pkgs, where) => {
+    if (!pkgs || typeof pkgs !== "object" || Array.isArray(pkgs) || Object.keys(pkgs).length === 0) {
+      throw new Error(`${label}: cần "${where}" là object không rỗng`);
     }
-  }
+    for (const [dir, v] of Object.entries(pkgs)) {
+      for (const m of METRICS) {
+        if (!isPct(v?.[m])) throw new Error(`${label}: ${where}["${dir}"].${m} phải là số 0–100`);
+      }
+    }
+  };
+  check(baseline?.packages, "packages");
+  if (baseline.integration !== undefined) check(baseline.integration?.packages, "integration.packages");
   return baseline;
 }
 
@@ -52,13 +69,15 @@ export function validateBaseline(baseline, label = BASELINE_FILE) {
  * So số đo với baseline. `actual`: {<dir>: {lines, branches} | null} (null = thiếu summary).
  * Trả {failures: [chuỗi], improved: [chuỗi]}; failures rỗng = đạt.
  */
-export function compare(baseline, actual) {
+export function compare(baseline, actual, suite = "unit") {
   const failures = [];
   const improved = [];
   for (const [dir, base] of Object.entries(baseline.packages)) {
     const got = actual[dir];
     if (!got) {
-      failures.push(`${dir}: thiếu ${SUMMARY_PATH} — chạy \`pnpm -r --if-present test:coverage\` trước`);
+      failures.push(
+        `${dir}: thiếu ${summaryPath(suite)} — chạy \`pnpm -r --if-present ${SUITES[suite].script}\` trước`,
+      );
       continue;
     }
     for (const m of METRICS) {
@@ -88,40 +107,48 @@ export function raise(baseline, actual) {
 /** Baseline ở cây làm việc so với bản cũ (`--against`): chỉ số thấp hơn hoặc gói bị xoá → lỗi. */
 export function compareBaselines(previous, current) {
   const failures = [];
-  for (const [dir, old] of Object.entries(previous.packages)) {
-    const now = current.packages[dir];
-    if (!now) {
-      failures.push(`${dir}: bị xoá khỏi baseline (bản cũ có)`);
+  const pairs = [["", previous, current]];
+  if (previous.integration) pairs.push(["integration ", previous.integration, current.integration ?? {}]);
+  for (const [prefix, prev, cur] of pairs) {
+    if (!cur.packages) {
+      failures.push(`${prefix.trim()}: mục bị xoá khỏi baseline (bản cũ có)`);
       continue;
     }
-    for (const m of METRICS) {
-      if (now[m] < old[m]) failures.push(`${dir}: baseline ${m} bị hạ ${old[m]} % → ${now[m]} %`);
+    for (const [dir, old] of Object.entries(prev.packages)) {
+      const now = cur.packages[dir];
+      if (!now) {
+        failures.push(`${prefix}${dir}: bị xoá khỏi baseline (bản cũ có)`);
+        continue;
+      }
+      for (const m of METRICS) {
+        if (now[m] < old[m]) failures.push(`${prefix}${dir}: baseline ${m} bị hạ ${old[m]} % → ${now[m]} %`);
+      }
     }
   }
   return failures;
 }
 
-function readActual(root, dirs) {
+function readActual(root, dirs, suite = "unit") {
   const actual = {};
   for (const dir of dirs) {
     let text;
     try {
-      text = readFileSync(join(root, dir, SUMMARY_PATH), "utf8");
+      text = readFileSync(join(root, dir, summaryPath(suite)), "utf8");
     } catch {
       actual[dir] = null;
       continue;
     }
-    actual[dir] = parseSummary(text, join(dir, SUMMARY_PATH));
+    actual[dir] = parseSummary(text, join(dir, summaryPath(suite)));
   }
   return actual;
 }
 
 function parseArgs(argv) {
-  const opts = { update: false, against: null, baseline: BASELINE_FILE, root: "." };
+  const opts = { update: false, against: null, baseline: BASELINE_FILE, root: ".", suite: "unit" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--update") opts.update = true;
-    else if (a === "--against" || a === "--baseline" || a === "--root") {
+    else if (a === "--against" || a === "--baseline" || a === "--root" || a === "--suite") {
       const v = argv[++i];
       if (!v || v.startsWith("--")) throw new Error(`${a} cần giá trị`);
       opts[a.slice(2)] = v;
@@ -154,6 +181,11 @@ export function main(argv = process.argv.slice(2), log = console) {
     const root = resolve(opts.root);
     const file = join(root, opts.baseline);
     const baseline = validateBaseline(JSON.parse(readFileSync(file, "utf8")), opts.baseline);
+    if (!Object.hasOwn(SUITES, opts.suite))
+      throw new Error(`--suite phải là ${Object.keys(SUITES).join("|")} (có: ${opts.suite})`);
+    const target = section(baseline, opts.suite);
+    if (!target)
+      throw new Error(`${opts.baseline}: chưa có mục "${SUITES[opts.suite].key}" cho --suite ${opts.suite}`);
     let rc = 0;
 
     if (opts.against) {
@@ -168,8 +200,8 @@ export function main(argv = process.argv.slice(2), log = console) {
       }
     }
 
-    const actual = readActual(root, Object.keys(baseline.packages));
-    const { failures, improved } = compare(baseline, actual);
+    const actual = readActual(root, Object.keys(target.packages), opts.suite);
+    const { failures, improved } = compare(target, actual, opts.suite);
     for (const f of failures) log.error(`✗ ${f}`);
     for (const i of improved) log.log(`↑ ${i}`);
 
@@ -178,7 +210,9 @@ export function main(argv = process.argv.slice(2), log = console) {
         log.error("coverage-ratchet: không cập nhật baseline khi còn chỉ số dưới baseline/thiếu summary");
         return 1;
       }
-      const next = raise(baseline, actual);
+      const raised = raise(target, actual);
+      const next =
+        SUITES[opts.suite].key === null ? raised : { ...baseline, [SUITES[opts.suite].key]: raised };
       writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
       log.log(`coverage-ratchet: đã ghi ${opts.baseline} (chỉ tăng)`);
       return rc;
@@ -190,7 +224,7 @@ export function main(argv = process.argv.slice(2), log = console) {
     if (improved.length)
       log.log("coverage-ratchet: tăng so với baseline — `--update` để nâng baseline (tuỳ chọn)");
     log.log(
-      `coverage-ratchet: ${rc ? "ĐỎ" : "xanh"} (${Object.keys(baseline.packages).length} gói, ${METRICS.join(", ")})`,
+      `coverage-ratchet: ${rc ? "ĐỎ" : "xanh"} (${opts.suite}: ${Object.keys(target.packages).length} gói, ${METRICS.join(", ")})`,
     );
     return rc;
   } catch (e) {

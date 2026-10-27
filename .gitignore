@@ -5,6 +5,7 @@ dist/
 .next/
 .medusa/
 coverage/
+coverage-integration/
 *.tsbuildinfo
 .env
 .env.*
