@@ -531,16 +531,73 @@ medusaIntegrationTestRunner({
         expect(rows.map((r) => [r.resource_type, r.resource_id])).toEqual([["customer", id]]);
       });
 
-      it("🟠1 client ngắt kết nối trước khi xuất xong → data.exported failure, changes.aborted", async () => {
+      it("🟠A client ngắt ngay sau khi gửi `POST /admin/customers/export` → workflow vẫn tạo file → audit success + aborted (status thật 202)", async () => {
         const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
-        await raw("GET", "/admin/x/exports/products.csv", owner.headers, undefined, { abort: true });
+        const filesBefore = new Set(exportFiles());
+        const body = JSON.stringify({});
+        await raw("POST", "/admin/customers/export", { ...owner.headers, ...jsonHeaders(body) }, body, {
+          abort: true,
+        });
         const rows = await waitRows({ action: SECURITY_EVENTS.DATA_EXPORTED, actor_id: owner.userId }, 1);
+        // Workflow xuất chạy tiếp dù client đã ngắt: file xuất thật sự được tạo.
+        const until = Date.now() + 15_000;
+        let created = exportFiles().filter((f) => !filesBefore.has(f));
+        while (created.length === 0 && Date.now() < until) {
+          await sleep(200);
+          created = exportFiles().filter((f) => !filesBefore.has(f));
+        }
+        expect(created.length).toBeGreaterThan(0);
         expect(rows).toHaveLength(1);
         expect(rows[0]).toMatchObject({
-          outcome: "failure",
-          resource_id: "products.csv",
-          changes: { aborted: true },
+          outcome: "success",
+          resource_id: "customers",
+          changes: { aborted: true, status: 202, format: "json", pii: true },
         });
+      });
+
+      it("🟠A xuất CSV catalog trên store ĐÃ seed, client ngắt sớm → success + aborted (status 200)", async () => {
+        const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+        // DB được dọn giữa các ca → seed lại; bảo đảm route trả 200 (không phải 500 của store chưa seed — review 🟢F).
+        await seedCatalog({ container });
+        expect((await call("GET", "/admin/x/exports/products.csv", owner.headers)).status).toBe(200);
+        await raw("GET", "/admin/x/exports/products.csv", owner.headers, undefined, { abort: true });
+        const rows = await waitRows({ action: SECURITY_EVENTS.DATA_EXPORTED, actor_id: owner.userId }, 2);
+        const aborted = rows.filter((r) => (r.changes as Row).aborted === true);
+        expect(aborted).toHaveLength(1);
+        expect(aborted[0]).toMatchObject({ outcome: "success", changes: { status: 200, format: "csv" } });
+      });
+
+      it("🟠B xoay địa chỉ IPv6 trong một /64 (X-Forwarded-For, proxy tin cậy loopback) → vẫn gộp: ≤ 2 dòng / 15 lần sai", async () => {
+        await resetAuditThrottle();
+        const rid = `r-t091-v6-${randomUUID().slice(0, 8)}`;
+        for (let i = 0; i < 15; i++) {
+          const res = await call(
+            "POST",
+            "/auth/user/emailpass",
+            { "x-forwarded-for": `2001:db8:77:1::${(i + 1).toString(16)}`, "x-request-id": `${rid}-${i}` },
+            { email: `v6-${randomUUID()}@x-shop.test`, password: "sai" },
+          );
+          expect(res.status).toBe(401);
+        }
+        await sleep(800);
+        const rows = (
+          await Promise.all(Array.from({ length: 15 }, (_v, i) => list({ request_id: `${rid}-${i}` })))
+        ).flat();
+        expect(
+          rows
+            .map((r) => ((r.changes as Row).throttle as Row).occurrence)
+            .sort((a, b) => Number(a) - Number(b)),
+        ).toEqual([1, 10]);
+        // Cột ip_hash vẫn là băm của địa chỉ đầy đủ (khác nhau giữa các địa chỉ trong /64).
+        expect(new Set(rows.map((r) => r.ip_hash)).size).toBe(2);
+      });
+
+      it("🟢E `//` trong đường dẫn (Express không khớp route → 404) → không ghi data.accessed", async () => {
+        const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+        const res = await raw("GET", "/admin//customers", owner.headers);
+        expect(res.status).not.toBe(200);
+        await sleep(600);
+        expect(await list({ action: SECURITY_EVENTS.DATA_ACCESSED, actor_id: owner.userId })).toHaveLength(0);
       });
     });
   },

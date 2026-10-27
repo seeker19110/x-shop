@@ -11,7 +11,7 @@
 | ---------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Bảng `audit_log` (DB)  | module `xAudit` — `apps/backend/src/modules/audit/`                                         | **Nguồn chính.** Chỉ ghi thêm: trigger `x_append_only_guard` chặn UPDATE/DELETE; không có route sửa/xoá (`/admin/x/audit` chỉ GET).            |
 | Dòng log `security.audit` | stdout JSON của logger dự án (`apps/backend/src/lib/log/`), phát bởi `recordAudit`        | Chỉ trường định danh/kết quả (không `changes`/`reason`/User-Agent) — để Collector đưa về kho tập trung (SEC-LOG-006, chưa có hạ tầng).        |
-| Ghi theo route         | `securityAuditTrail` — `apps/backend/src/lib/audit/http.ts`, đăng ký ở `src/api/middlewares.ts` cho `/auth` và `/admin` | Ghi **sau khi phản hồi xong** (`finish`): không thêm độ trễ, không đổi thời gian phản hồi đăng nhập (BE-AUTH-003); thất bại/405/429 cũng ghi; kết nối đóng trước khi xong (`close`, chưa `writableFinished`) → `failure` + `changes.aborted`. Khớp route **như router Express thấy** (§3.0). |
+| Ghi theo route         | `securityAuditTrail` — `apps/backend/src/lib/audit/http.ts`, đăng ký ở `src/api/middlewares.ts` cho `/auth` và `/admin` | Ghi **sau khi phản hồi xong** (`finish`): không thêm độ trễ, không đổi thời gian phản hồi đăng nhập (BE-AUTH-003); thất bại/405/429 cũng ghi; kết nối đóng trước khi xong (`close`, chưa `writableFinished`): handler vẫn chạy tiếp (workflow xuất vẫn tạo file) → chờ handler gọi `res.end` tối đa `ABORT_WAIT_MS` (15 s) rồi ghi kết quả theo status thật kèm `changes.aborted`; hết hạn chưa phản hồi → `failure`, `status: null`. Khớp route **như router Express thấy** (§3.0). |
 | Ghi trong mã nghiệp vụ | `recordAudit()` — `apps/backend/src/lib/audit/record.ts`                                    | Cổng RBAC (`lib/admin-security/guard.ts`), route vai trò, workflow đổi trả/hoàn tiền, đối soát, nhập catalog, điều chỉnh tồn.                    |
 
 ## 2. Trường của một sự kiện (SEC-LOG-002, CMP-AUDIT-002)
@@ -79,14 +79,15 @@ hợp) vẫn audit đúng route.
 
 | Sự kiện         | Route                                                                                                    | Đích                                    | `changes`                                |
 | --------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------- | ---------------------------------------- |
-| `data.exported` | `GET /admin/x/exports/products.csv`                                                                      | `export` / `products.csv`               | `dataset: products`, `pii: false`        |
-| `data.exported` | `POST /admin/orders/export`, `POST /admin/customers/export` (native, PII khách)                           | `export` / `orders` · `customers`       | `pii: true`                              |
-| `data.exported` | `POST /admin/products/export`, `POST /admin/inventory-items/export` (native)                             | `export` / `products` · `inventory_items` | `pii: false`                           |
+| `data.exported` | `GET /admin/x/exports/products.csv`                                                                      | `export` / `products.csv`               | `dataset: products`, `format: csv`, `pii: false` |
+| `data.exported` | `POST /admin/orders/export` (native, PII khách; workflow 2.22.1 xuất CSV)                                 | `export` / `orders`                     | `format: csv`, `pii: true`               |
+| `data.exported` | `POST /admin/customers/export` (native, PII khách)                                                        | `export` / `customers`                  | `format` = `format` của thân (`csv`/`json`), không có → `json` (mặc định của workflow); `pii: true` |
+| `data.exported` | `POST /admin/products/export`, `POST /admin/inventory-items/export` (native, CSV)                        | `export` / `products` · `inventory_items` | `format: csv`, `pii: false`            |
 | `data.accessed` | `GET /admin/x/settlements/batches/:id` (chi tiết đối soát từng dòng)                                      | `settlement_batch` / id                 | `dataset: settlement`                    |
 | `data.accessed` | `GET /admin/customers[/*]`, `GET /admin/orders[/*]` (native — tên, email, SĐT, địa chỉ khách)             | `customer` · `order` / id (danh sách: NULL) | `pii: true`                          |
-| `data.accessed` | `GET /admin/{customer-groups,draft-orders,returns,claims,exchanges,order-changes,order-edits,fulfillments}[/*]` (native, RBAC `order.read`) | loại tương ứng (`draft_order`, `return`…) / id | `pii: true`                |
+| `data.accessed` | `GET /admin/{customer-groups,draft-orders,returns,claims,exchanges}[/*]` (native, RBAC `order.read`; `order-changes`, `order-edits`, `fulfillments` không có GET trong Medusa 2.22.1) | loại tương ứng (`draft_order`, `return`…) / id | `pii: true`                |
 
-Kết quả: success · failure (4xx khác 401/403, 5xx). 401/403 ở `/admin` không ghi ở đây — 403 đã có `rbac.denied`.
+Kết quả: success · failure (4xx khác 401/403, 5xx). 401/403 ở `/admin` không ghi ở đây — 403 đã có `rbac.denied`. Đường dẫn có `//` ở giữa: Express không khớp route nào (404) → không ghi.
 
 ### 3.4 Hành động admin nghiệp vụ (đã có trước T-091, cùng bảng)
 
@@ -102,12 +103,14 @@ Gộp trong cửa sổ 60 giây, chỉ ghi lần 1, 10, 100, 1000… của nhóm
 
 | Sự kiện                                                                 | Nhóm gộp                                    |
 | ----------------------------------------------------------------------- | ------------------------------------------- |
-| Mọi thất bại **vô danh** ghi theo route (đăng nhập sai, thân rỗng, MFA vô danh…) | (`ip_hash`, sự kiện, kết quả)        |
-| `auth.lockout` (429)                                                    | (`ip_hash`, `auth.lockout`, `rate_limited`) |
-| `auth.password_reset_requested` (vô danh, không rate limit)             | (`ip_hash`, sự kiện, kết quả)               |
+| Mọi thất bại **vô danh** ghi theo route (đăng nhập sai, thân rỗng, MFA vô danh…) | (nguồn IP, sự kiện, kết quả)         |
+| `auth.lockout` (429)                                                    | (nguồn IP, `auth.lockout`, `rate_limited`) |
+| `auth.password_reset_requested` (vô danh, không rate limit)             | (nguồn IP, sự kiện, kết quả)                |
 | `rbac.denied`                                                           | (actor, lớp route, lý do) — actor đã xác thực |
 
-Nhóm **không** chứa định danh trong thân (email do client chọn): đổi email mỗi lần không lách được gộp (test
+"Nguồn IP" = `ipRateKey` (`lib/security/client-ip.ts`, cùng khoá với rate limit): IPv4 nguyên địa chỉ, IPv6 gộp cả /64 —
+xoay địa chỉ trong một /64 không lách được gộp; cột `ip_hash` của dòng vẫn là băm địa chỉ đầy đủ. Nhóm **không** chứa
+định danh trong thân (email do client chọn): đổi email mỗi lần không lách được gộp (test
 `audit-security-events.spec.ts`). Đích của dòng được ghi vẫn là bí danh email của lần đó. Thất bại có actor (đã xác thực,
 `auth_identity` sau bước mật khẩu) không gộp. Đánh đổi: cùng IP (NAT) nhiều tài khoản sai trong 60 s → chỉ lần 1, 10, 100…
 có dòng riêng; tổng số lần vẫn đọc được từ `occurrence`, chi tiết từng lần nằm ở log truy cập.

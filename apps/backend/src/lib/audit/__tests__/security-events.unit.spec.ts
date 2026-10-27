@@ -2,7 +2,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultOutcomeOf } from "../../../modules/audit/service";
 import { SECURITY_EVENT_NAMES, SECURITY_EVENTS } from "../events";
-import { AUDIT_ROUTES, matchAuditRoute, outcomeOfStatus, resolveActor, tokenClaims } from "../http";
+import {
+  AUDIT_ROUTES,
+  matchAuditRoute,
+  outcomeOfStatus,
+  resolveActor,
+  routerSegments,
+  tokenClaims,
+} from "../http";
 import { sanitizeUserAgent, USER_AGENT_MAX } from "../sanitize";
 import { SecurityAuditRecord, securityEventJsonSchema } from "../schema";
 
@@ -87,19 +94,29 @@ describe("bảng route audit (matchAuditRoute)", () => {
     expect(matchAuditRoute("GET", {})).toBeNull();
   });
 
-  it("route PII native theo order.read được ghi data.accessed", () => {
-    for (const p of [
-      "customer-groups",
-      "draft-orders",
-      "returns",
-      "claims",
-      "exchanges",
-      "order-changes",
-      "order-edits",
-      "fulfillments",
-    ]) {
+  it("`//` giữa đường dẫn: Express (path-to-regexp) không khớp route → không audit; một `/` cuối thì khớp (review 🟢E)", () => {
+    expect(routerSegments("/admin/customers/")).toEqual(["admin", "customers"]);
+    expect(routerSegments("/admin//customers")).toBeNull();
+    expect(routerSegments("/admin/customers//")).toBeNull();
+    expect(ev("GET", "/admin//customers")).toBeNull();
+    expect(ev("GET", "/admin/customers/")).toBe(SECURITY_EVENTS.DATA_ACCESSED);
+    expect(ev("POST", "/auth//user/emailpass")).toBeNull();
+  });
+
+  it("route PII native theo order.read có GET trong Medusa 2.22.1 được ghi data.accessed; route không có GET thì không liệt kê", () => {
+    for (const p of ["customer-groups", "draft-orders", "returns", "claims", "exchanges"]) {
       expect({ p, ev: ev("GET", `/admin/${p}/x_1`) }).toEqual({ p, ev: SECURITY_EVENTS.DATA_ACCESSED });
     }
+    for (const p of ["order-changes", "order-edits", "fulfillments"]) {
+      expect({ p, ev: ev("GET", `/admin/${p}/x_1`) }).toEqual({ p, ev: null });
+    }
+  });
+
+  it("định dạng xuất native theo thực tế: customers lấy `format` của thân (mặc định json); orders/products CSV", () => {
+    const customers = AUDIT_ROUTES.find((r) => r.pattern === "/admin/customers/export");
+    expect(customers?.bodyFormat).toEqual({ values: ["csv", "json"], fallback: "json" });
+    expect(customers?.details?.format).toBeUndefined();
+    expect(AUDIT_ROUTES.find((r) => r.pattern === "/admin/orders/export")?.details?.format).toBe("csv");
   });
 
   it("id trên đường dẫn giữ nguyên hoa/thường (khớp mẫu không phân biệt)", () => {

@@ -6,26 +6,31 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import type { AuditOutcome } from "../../modules/audit/service";
 import { normalizeMethod } from "../admin-security/route-match";
 import { rawRequestPath } from "../http/request-path";
+import { ipRateKey } from "../security/client-ip";
 import { clientIpOf } from "../security/config";
 import { decideDenyAudit, type WindowCounter } from "./deny-throttle";
 import { SECURITY_EVENTS, type SecurityEventName } from "./events";
-import { hashIdentifier, hashIp, recordAudit } from "./record";
+import { hashIdentifier, recordAudit } from "./record";
 
 /**
  * Audit sự kiện xác thực và xuất/truy cập dữ liệu nhạy cảm theo route (T-091, SEC-LOG-001/002, CMP-AUDIT-002).
  *
  * Một middleware toàn cục (`securityAuditTrail`, đăng ký cho `/auth` và `/admin` ở api/middlewares.ts) tra bảng
  * `AUDIT_ROUTES`; route khớp → ghi MỘT dòng audit SAU khi phản hồi xong (`finish` — không thêm độ trễ vào phản hồi, không
- * đổi thời gian phản hồi đăng nhập — BE-AUTH-003) hoặc khi kết nối đóng trước đó (`close` khi chưa `writableFinished` →
- * `failure` + `changes.aborted`: client ngắt giữa chừng khi xuất PII vẫn để lại dấu vết), kể cả khi thất bại/bị từ chối:
+ * đổi thời gian phản hồi đăng nhập — BE-AUTH-003) hoặc khi kết nối đóng trước đó (`close` khi chưa `writableFinished`:
+ * client ngắt giữa chừng — handler VẪN chạy tiếp, vd workflow xuất PII vẫn tạo file → chờ handler gọi `res.end` tối đa
+ * `ABORT_WAIT_MS` rồi lấy kết quả theo status thật, kèm `changes.aborted`; hết hạn chưa có phản hồi → `failure`,
+ * `status: null`), kể cả khi thất bại/bị từ chối:
  *   - khớp route NHƯ ROUTER EXPRESS THẤY (T-145, `matchAuditRoute`): pathname từ `rawRequestPath` (URL tuyệt đối, `\`,
  *     `#` như `parseurl`), đoạn tĩnh so với pathname CHƯA giải mã (không phân biệt hoa thường), đoạn tham số giải mã `%xx`
  *     — `/auth/%75ser/emailpass` là đăng nhập (actor `user`), `/admin/customers/cus%5F1` có id `cus_1`;
  *   - kết quả theo status (`outcomeOfStatus`): < 400 success · 403/429 denied · còn lại failure;
  *   - route có rate limit (đăng nhập, xác minh MFA): 429 → sự kiện `auth.lockout` (khoá tạm thời theo định danh/IP);
  *   - chống ngập (`deny-throttle.ts`, ghi lần 1, 10, 100… của nhóm trong cửa sổ): lockout, yêu cầu đặt lại mật khẩu và
- *     MỌI thất bại vô danh gộp theo (`ip_hash`, sự kiện, kết quả) — KHÔNG theo định danh trong thân (kẻ tấn công tự chọn,
- *     đổi email mỗi lần là lách được); riêng `/admin`: 401/403 không ghi ở đây (403 do cổng RBAC ghi `rbac.denied`).
+ *     MỌI thất bại vô danh gộp theo (nguồn `ipRateKey` — IPv4 nguyên địa chỉ, IPv6 cả /64 —, sự kiện, kết quả) — KHÔNG
+ *     theo định danh trong thân (kẻ tấn công tự chọn, đổi email mỗi lần là lách được) và không theo từng địa chỉ IPv6
+ *     (xoay địa chỉ trong /64 là lách được); cột `ip_hash` vẫn là băm của địa chỉ đầy đủ;
+ *   - riêng `/admin`: 401/403 không ghi ở đây (403 do cổng RBAC ghi `rbac.denied`).
  * Không PII thô: định danh đăng nhập (email) → bí danh HMAC `idh_…` (`hashIdentifier`); `actor_id` dạng email (token đặt
  * lại mật khẩu của Medusa mang email làm actor_id) cũng thành bí danh; IP → `ip_hash`; User-Agent cắt ngắn + che.
  * Token trong phản hồi chỉ được giải mã phần payload để lấy actor/auth identity — không lưu token.
@@ -48,8 +53,10 @@ export interface AuditRoute {
   rateLimited?: boolean;
   /** Mọi lần (kể cả thành công) đều gộp tần suất — route vô danh không có rate limit (yêu cầu đặt lại mật khẩu). */
   throttleAll?: boolean;
-  /** Thêm vào `changes` (vd `dataset`, `pii`). */
+  /** Thêm vào `changes` (vd `dataset`, `pii`, `format` cố định). */
   details?: Record<string, unknown>;
+  /** `changes.format` lấy từ thân (`format` ∈ values), không có → `fallback` (theo mặc định thật của route native). */
+  bodyFormat?: { values: readonly string[]; fallback: string };
   /** Đoạn tham số (đã giải mã, phân biệt hoa thường như Auth Module) phải thuộc tập — vd provider = `emailpass`. */
   segmentIn?: { index: number; values: readonly string[] };
   /** Không ghi (route tĩnh của Medusa trùng hình mẫu tham số phía sau, vd `/auth/verification/request`). */
@@ -203,7 +210,9 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
     event: SECURITY_EVENTS.DATA_EXPORTED,
     scope: "admin",
     target: fixed("export", "customers"),
-    details: { dataset: "customers", format: "csv", pii: true },
+    // exportCustomersWorkflow 2.22.1: `format` của thân (csv|json), không có → JSON (mimeType application/json).
+    details: { dataset: "customers", pii: true },
+    bodyFormat: { values: ["csv", "json"], fallback: "json" },
   },
   {
     method: "POST",
@@ -246,7 +255,8 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
     target: seg("order", 2),
     details: { dataset: "orders", pii: true },
   },
-  // Route native RBAC xếp vào `order.read` (native-permissions.ts) — trả tên/địa chỉ/liên hệ khách.
+  // Route native RBAC xếp vào `order.read` (native-permissions.ts) — trả tên/địa chỉ/liên hệ khách. Chỉ route có GET
+  // trong Medusa 2.22.1 (order-changes/order-edits/fulfillments không có GET → không liệt kê).
   ...(
     [
       ["customer-groups", "customer_group"],
@@ -254,9 +264,6 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
       ["returns", "return"],
       ["claims", "claim"],
       ["exchanges", "exchange"],
-      ["order-changes", "order_change"],
-      ["order-edits", "order_edit"],
-      ["fulfillments", "fulfillment"],
     ] as const
   ).map(([path, type]): AuditRoute => ({
     method: "GET",
@@ -317,6 +324,16 @@ function matchRoutePattern(pattern: string, rawSegments: readonly string[]): str
 }
 
 /**
+ * Đoạn của pathname như path-to-regexp (không strict) của Express thấy: bỏ `/` đầu và MỘT `/` cuối; đoạn rỗng ở giữa
+ * (`//`) → `null` (Express không khớp route nào → 404, không phải route được audit).
+ */
+export function routerSegments(pathname: string): string[] | null {
+  const parts = pathname.split("/").slice(1);
+  if (parts.length > 0 && parts[parts.length - 1] === "") parts.pop();
+  return parts.some((p) => p === "") ? null : parts;
+}
+
+/**
  * Route audit của request — theo pathname router thấy (`rawRequestPath`, T-145): request-target tuyệt đối, `\`, `#` được
  * parse như Express; `null` khi pathname không hợp lệ (nơi khác trả 400) hoặc không route nào khớp.
  */
@@ -328,7 +345,8 @@ export function matchAuditRoute(
   const pathname = rawRequestPath(req);
   if (pathname === null) return null;
   // `//` và `/` cuối gộp như normalizeAdminPath; GIỮ hoa/thường (id Medusa có chữ hoa).
-  const rawSegments = pathname.split("/").filter(Boolean);
+  const rawSegments = routerSegments(pathname);
+  if (rawSegments === null) return null;
   for (const route of AUDIT_ROUTES) {
     if (route.method !== method) continue;
     const segments = matchRoutePattern(route.pattern, rawSegments);
@@ -416,6 +434,12 @@ function bodyString(req: MedusaRequest, key: string): string | null {
   return typeof v === "string" ? v.slice(0, 320) : null;
 }
 
+/** Khoá nguồn cho nhóm gộp: `ipRateKey` (IPv6 gộp /64) — chỉ đi vào băm của bucket, không lưu. */
+function ipGroupOf(req: MedusaRequest): string | null {
+  const ip = clientIpOf(req).ip;
+  return isNonEmpty(ip) ? ipRateKey(ip) : null;
+}
+
 const counterOf =
   (req: MedusaRequest): WindowCounter =>
   async (bucket, windowMs, now) =>
@@ -428,11 +452,13 @@ async function recordFinished(
   body: unknown,
   m: MatchedRoute,
   aborted: boolean,
+  /** Status lúc handler gọi `res.end` (ca ngắt sớm); `null` = hết hạn chờ mà handler chưa phản hồi. */
+  endedStatus: number | null = res.statusCode,
 ) {
   const { route } = m;
-  const status = res.statusCode;
-  const outcome = aborted ? "failure" : outcomeOfStatus(status);
-  if (!aborted && route.scope === "admin" && (status === 401 || status === 403)) return;
+  const status = aborted ? endedStatus : res.statusCode;
+  const outcome: AuditOutcome = status === null ? "failure" : outcomeOfStatus(status);
+  if (route.scope === "admin" && (status === 401 || status === 403)) return;
 
   const ctx = (req as AuthedRequest).auth_context;
   const claims = tokenClaims(body);
@@ -452,7 +478,7 @@ async function recordFinished(
     target = (route.target ?? fixed("route", null))(m.segments, req);
     target = { type: target.type, id: safeId(target.id) };
   }
-  const lockout = !aborted && route.rateLimited === true && status === 429;
+  const lockout = route.rateLimited === true && status === 429;
   const event = lockout ? SECURITY_EVENTS.LOCKOUT : route.event;
   const changes: Record<string, unknown> = {
     route: `${m.method} ${route.pattern}`,
@@ -460,6 +486,10 @@ async function recordFinished(
     ...route.details,
   };
   if (aborted) changes.aborted = true;
+  if (route.bodyFormat !== undefined) {
+    const f = bodyString(req, "format");
+    changes.format = f !== null && route.bodyFormat.values.includes(f) ? f : route.bodyFormat.fallback;
+  }
   if (route.scope === "auth" && route.pattern.startsWith("/auth/:actor_type/:provider")) {
     changes.actor_type = known(m.segments[1], KNOWN_ACTOR_TYPES);
     changes.provider = known(m.segments[2], KNOWN_PROVIDERS);
@@ -487,7 +517,7 @@ async function recordFinished(
       counterOf(req),
       {
         actorType: "ip",
-        actorId: hashIp(req.scope, clientIpOf(req).ip),
+        actorId: ipGroupOf(req),
         method: m.method,
         routeClass: `audit:${event}`,
         reason: lockout ? "rate_limited" : outcome,
@@ -513,6 +543,9 @@ async function recordFinished(
     req,
   );
 }
+
+/** Chờ handler phản hồi sau khi client ngắt — đủ cho route xuất (native trả 202 ngay; CSV catalog dựng đồng bộ). */
+export const ABORT_WAIT_MS = 15_000;
 
 const MAX_PARSED_BODY = 64 * 1024;
 function parseJsonBody(b: unknown): unknown {
@@ -549,11 +582,22 @@ export function securityAuditTrail(req: MedusaRequest, res: MedusaResponse, next
     if (body === null) body = parseJsonBody(b);
     return originalSend(b);
   };
+  // Status lúc handler gọi `res.end` — kể cả khi socket đã đóng (Express vẫn gọi end, chỉ không gửi được).
+  let endedStatus: number | null = null;
+  let onEnded: (() => void) | null = null;
+  const originalEnd = res.end.bind(res) as (...a: unknown[]) => MedusaResponse;
+  (res as unknown as { end: (...a: unknown[]) => MedusaResponse }).end = (...args: unknown[]) => {
+    if (endedStatus === null) {
+      endedStatus = res.statusCode;
+      onEnded?.();
+    }
+    return originalEnd(...args);
+  };
   let recorded = false;
-  const fire = (aborted: boolean) => {
+  const fire = (aborted: boolean, status?: number | null) => {
     if (recorded) return;
     recorded = true;
-    recordFinished(req, res, body, m, aborted).catch((e: unknown) => {
+    recordFinished(req, res, body, m, aborted, status).catch((e: unknown) => {
       try {
         req.scope
           .resolve(ContainerRegistrationKeys.LOGGER)
@@ -564,9 +608,17 @@ export function securityAuditTrail(req: MedusaRequest, res: MedusaResponse, next
     });
   };
   res.once("finish", () => fire(false));
-  // Kết nối đóng trước khi phản hồi xong (client ngắt, timeout proxy) → vẫn ghi, đánh dấu aborted.
+  // Kết nối đóng trước khi phản hồi xong (client ngắt, timeout proxy): handler vẫn chạy tiếp → chờ nó gọi `res.end`
+  // (tối đa ABORT_WAIT_MS) để ghi kết quả thật, đánh dấu aborted.
   res.once("close", () => {
-    if (!res.writableFinished) fire(true);
+    if (res.writableFinished) return;
+    if (endedStatus !== null) return fire(true, endedStatus);
+    const timer = setTimeout(() => fire(true, null), ABORT_WAIT_MS);
+    timer.unref();
+    onEnded = () => {
+      clearTimeout(timer);
+      fire(true, endedStatus);
+    };
   });
   return next();
 }
