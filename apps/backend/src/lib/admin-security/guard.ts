@@ -8,9 +8,10 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import { decideDenyAudit, type WindowCounter } from "../audit/deny-throttle";
 import { recordAudit } from "../audit/record";
 import { sendProblem } from "../http/problem";
+import { decodePathSegments, INVALID_PATH, rawRequestPath } from "../http/request-path";
 import { clientIpOf } from "../security/config";
 import { getAdminSessionPolicy, isSensitive } from "./config";
-import { resolveAdminRule, type AdminRule } from "./policy";
+import { isAdminPath, resolveAdminRule, strictestRule, type AdminRule } from "./policy";
 import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
 import { normalizeAdminPath, normalizeMethod } from "./route-match";
 import { checkAndTouchSession, evaluateMfa, mfaCompletedAtMs, type AdminAuthContext } from "./session";
@@ -112,6 +113,32 @@ async function auditDenied(
   }
 }
 
+/** Quy tắc/nhãn audit cho path admin không hợp lệ (400 INVALID_PATH, D-080) — lớp route `deny:INVALID_PATH`. */
+const INVALID_PATH_RULE: AdminRule = { kind: "deny", reason: "INVALID_PATH" };
+export const INVALID_PATH_RESOURCE = "(đường dẫn không hợp lệ)";
+
+/**
+ * Quy tắc quyền cho request admin (T-145) — tra từ pathname ROUTER THẤY (`lib/http/request-path.ts`), không từ
+ * `originalUrl` thô (URL tuyệt đối, `\`+`#` từng rơi xuống mặc định `any_role` trong khi Express vẫn tới route nhạy cảm):
+ *  - `path`: đã giải mã `%xx` từng đoạn + chuẩn hoá như Express (hoa/thường, `//`, `/` cuối) — dùng cho quy tắc và audit;
+ *  - path chưa giải mã (đúng chuỗi Express khớp route) khác `path` → áp quy tắc CHẶT HƠN của hai (`strictestRule`).
+ * `null` = không hợp lệ (mã hoá hỏng, không parse được, hoặc không nằm dưới `/admin` dù cổng gắn ở `/admin` — lệch parse)
+ * → nơi gọi trả 400, đóng an toàn.
+ */
+export function adminRuleOf(
+  req: { originalUrl?: unknown; url?: unknown },
+  method: string,
+): { path: string; rule: AdminRule } | null {
+  const raw = rawRequestPath(req);
+  const decoded = raw === null ? null : decodePathSegments(raw);
+  if (raw === null || decoded === null) return null;
+  const path = normalizeAdminPath(decoded);
+  const routed = normalizeAdminPath(raw);
+  if (!isAdminPath(path) || !isAdminPath(routed)) return null;
+  const rule = resolveAdminRule(method, path);
+  return { path, rule: routed === path ? rule : strictestRule(rule, resolveAdminRule(method, routed)) };
+}
+
 /**
  * Cổng bảo mật cho MỌI request `/admin/*` (T-023 + T-024), chạy sau middleware xác thực native của Medusa:
  *  1. route công khai native (invite accept, feature flags) → cho qua;
@@ -123,8 +150,14 @@ async function auditDenied(
 export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
   const method = normalizeMethod(req.method);
   if (method === "OPTIONS") return next();
-  const path = normalizeAdminPath(req.originalUrl);
-  const rule = resolveAdminRule(method, path);
+  const resolved = adminRuleOf(req, method);
+  if (resolved === null) {
+    // D-080: ghi audit qua cùng bộ gộp từ chối (lần 1, 10, 100… theo actor + lớp route). Không ghi đường dẫn thô —
+    // có thể chứa PII/rác đối nghịch; chỉ method + nhãn cố định.
+    await auditDenied(req, method, INVALID_PATH_RESOURCE, INVALID_PATH_RULE, { reason: "invalid_path" });
+    return sendProblem(res, INVALID_PATH.status, INVALID_PATH.code, INVALID_PATH.title);
+  }
+  const { path, rule } = resolved;
   if (rule.kind === "public") return next();
 
   const ctx = (req as AuthedRequest).auth_context;
@@ -236,6 +269,34 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
   };
 }
 
+/**
+ * Chỉ chạy `mw` khi tham số `auth_provider` (Express đã giải mã `%xx`) đúng là `emailpass` — provider mật khẩu duy nhất.
+ * Dùng cho matcher tham số `/auth/:actor_type/:auth_provider`: matcher này cũng khớp route tĩnh `/auth/token/refresh`,
+ * `/auth/mfa/factors`… (không phải đăng nhập); provider khác `emailpass` (kể cả `EMAILPASS`) Auth Module không phân giải
+ * được nên không là kênh đoán mật khẩu.
+ */
+export function emailpassOnly(
+  mw: (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => Promise<void> | void,
+) {
+  return (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) =>
+    req.params.auth_provider === "emailpass" ? mw(req, res, next) : next();
+}
+
+/**
+ * `GET`/`HEAD /auth/:actor_type/emailpass` → 405 (T-138). Route gốc Medusa export cả `GET` = authenticate (dành cho bước
+ * chuyển hướng OAuth); body-parser vẫn đọc thân của GET và CSRF bỏ qua GET ⇒ đoán mật khẩu bằng GET lách rate limit đăng
+ * nhập (chỉ khai POST) và nhận JWT thật. Dashboard/SDK đăng nhập emailpass bằng POST; provider khác (OAuth) không bị chạm.
+ */
+export function rejectEmailpassGet(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
+  if (req.params.auth_provider !== "emailpass") return next();
+  res.setHeader("Allow", "POST");
+  return sendProblem(res, 405, "METHOD_NOT_ALLOWED", "Đăng nhập email/mật khẩu chỉ nhận POST");
+}
+
+/**
+ * Định danh rate limit đăng nhập/đăng ký = email (identity emailpass dùng chung mọi actor: `entity_id = email`) — thất bại
+ * qua `/auth/customer/emailpass`, `/auth/<actor lạ>/emailpass` cộng chung bộ đếm với `/auth/user/emailpass`.
+ */
 export const loginIdentity = (req: MedusaRequest): string | null => {
   const email = (req.body as { email?: unknown } | undefined)?.email;
   return typeof email === "string" ? email.slice(0, 320) : null;

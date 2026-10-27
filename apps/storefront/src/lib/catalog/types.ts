@@ -125,6 +125,8 @@ export class CatalogError extends Error {
     readonly code: CatalogErrorCode,
     message: string,
     readonly status: number = 0,
+    /** Giây backend yêu cầu chờ (429 + Retry-After); `null` nếu không có. */
+    readonly retryAfterS: number | null = null,
   ) {
     super(message);
   }

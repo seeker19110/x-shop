@@ -35,8 +35,12 @@
     "check:routes:test": "node --test scripts/check-routes.test.mjs",
     "check:sql-safety": "node scripts/check-sql-safety.mjs",
     "check:sql-safety:test": "node --test scripts/check-sql-safety.test.mjs",
+    "check:schema": "node scripts/ops/check-schema.mjs",
+    "check:schema:test": "node --test scripts/ops/check-schema.test.mjs",
     "depcruise": "depcruise apps/backend/src apps/backend/integration-tests apps/storefront/src packages/domain/src --config .dependency-cruiser.cjs",
-    "depcruise:test": "node --test scripts/depcruise-rules.test.mjs"
+    "depcruise:test": "node --test scripts/depcruise-rules.test.mjs",
+    "check:ci-local": "node scripts/ci-local.mjs",
+    "check:ci-local:test": "node --test scripts/ci-local.test.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

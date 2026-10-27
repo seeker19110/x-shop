@@ -18,13 +18,17 @@ import {
   type FacetName,
   type IndexedProduct,
 } from "@x-shop/domain";
+import catalogIndexDrainJob from "../../src/jobs/catalog-index-drain";
 import { CURRENCY } from "../../src/lib/catalog/constants";
 import {
-  drainCatalogIndex,
+  CATALOG_INDEX_LOCK,
+  drainCatalogIndexForJob,
+  markCatalogDirty,
   markExpiredPrices,
   rebuildCatalogIndex,
   syncCatalogProducts,
 } from "../../src/lib/catalog/indexer";
+import { acquireOrdered, releaseOwned } from "../../src/lib/checkout/locks";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import { facetSql, listingSql, pageSql, type Scope, type Sql } from "../../src/modules/catalog-index/query";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
@@ -618,10 +622,15 @@ medusaIntegrationTestRunner({
         // Hết hạn: job mỗi phút đánh dấu + xả; ở đây gọi trực tiếp đúng các hàm job dùng.
         await new Promise((r) => setTimeout(r, Math.max(0, endsAt.getTime() - Date.now() + 500)));
         expect(await markExpiredPrices(container)).toBeGreaterThanOrEqual(1);
-        await drainCatalogIndex(container);
-        const after = await index().listRows({ channelIds: [seed.base.salesChannelId], category: null }, [
-          idOf("ao-polo-nam"),
-        ]);
+        // Khoá bận (lượt xả khác) → job giao lượt chờ nền (D-081) nên đọc lại tới khi hội tụ.
+        await drainCatalogIndexForJob(container);
+        const after = await eventually(
+          () =>
+            index().listRows({ channelIds: [seed.base.salesChannelId], category: null }, [
+              idOf("ao-polo-nam"),
+            ]),
+          (rs) => rs.some((r) => r.sku === "POLO-TRANG-M" && r.price === 390_000),
+        );
         expect(after.find((r) => r.sku === "POLO-TRANG-M")).toMatchObject({
           price: 390_000,
           compare_at: null,
@@ -651,6 +660,115 @@ medusaIntegrationTestRunner({
           () => list(qs),
           (r) => r.items.some((i) => i.handle === "giay-sneaker-da-trang"),
         );
+      });
+
+      /**
+       * T-137 — điều kiện tải đo được: khoá ghi index đang bị chủ KHÁC giữ (rebuild/sync dài, hoặc tiến trình khác dùng
+       * chung Redis) đúng lúc có ghi. Trước sửa: lượt xả hẹn sau sự kiện thấy khoá bận → bỏ lượt, dấu nằm chờ job mỗi
+       * phút (đo: 41 s; tới 60 s + thời gian giữ khoá). Sau sửa: lượt xả chờ khoá → hội tụ ngay khi khoá nhả.
+       */
+      describe("khoá index đang bị giữ khi có ghi (T-137)", () => {
+        const HOLD_MS = 4_000;
+        /** Biên sau khi nhả khoá — chặt hơn nhiều so với 60 s của §7.4 để phân biệt "kích ngay" với "chờ job phút". */
+        const AFTER_RELEASE_MS = 10_000;
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+        const locking = () => container.resolve(Modules.LOCKING);
+        const holdForeign = async (ownerId: string) =>
+          acquireOrdered(locking(), [CATALOG_INDEX_LOCK], {
+            ownerId,
+            waitMs: 30_000,
+            ttlSeconds: 30,
+            scope: "test-foreign",
+          });
+        const isDirty = async (productId: string) => {
+          const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+          const res = await db.raw("SELECT 1 FROM catalog_index_dirty WHERE product_id = ?", [productId]);
+          return (res.rows as unknown[]).length > 0;
+        };
+        const rowOf = async (sku: string, handle: string) =>
+          (
+            await index().listRows({ channelIds: [seed.base.salesChannelId], category: null }, [idOf(handle)])
+          ).find((r) => r.sku === sku);
+        /**
+         * Job xả chạy ở giây :00 mỗi phút; cửa sổ [giữ khoá … nhả + biên] phải nằm gọn giữa hai nhịp để chỉ đường kích
+         * ngay (không phải job) mới làm test xanh — nếu không, test có thể xanh giả trước khi sửa.
+         */
+        async function betweenCronTicks(windowMs: number): Promise<void> {
+          for (;;) {
+            const s = new Date().getSeconds();
+            if (s >= 8 && s * 1000 + windowMs <= 57_000) return;
+            await sleep(500);
+          }
+        }
+
+        it("đổi giá khi khoá bận: index hội tụ ≤ 10 s sau khi khoá nhả (không chờ job mỗi phút)", async () => {
+          const [variant] = await container
+            .resolve(Modules.PRODUCT)
+            .listProductVariants({ sku: "BLZNU-BE-M" }, { select: ["id"] });
+          await betweenCronTicks(HOLD_MS + AFTER_RELEASE_MS);
+          const owner = `test-foreign-${Date.now()}`;
+          await holdForeign(owner);
+          let released = 0;
+          try {
+            await updateProductVariantsWorkflow(container).run({
+              input: {
+                product_variants: [
+                  { id: variant!.id, prices: [{ amount: 1_190_000, currency_code: CURRENCY }] },
+                ],
+              },
+            });
+            // Sự kiện đã tới subscriber (dấu bẩn có trong DB) và lượt xả hẹn sau nó đã chạy vào lúc khoá bận.
+            await eventually(
+              () => isDirty(idOf("ao-khoac-blazer-nu")),
+              (d) => d,
+              HOLD_MS,
+            );
+            await sleep(HOLD_MS);
+            expect(await isDirty(idOf("ao-khoac-blazer-nu"))).toBe(true);
+          } finally {
+            await releaseOwned(locking(), owner, [CATALOG_INDEX_LOCK]);
+            released = Date.now();
+          }
+          const row = await eventually(
+            () => rowOf("BLZNU-BE-M", "ao-khoac-blazer-nu"),
+            (r) => r?.price === 1_190_000,
+            AFTER_RELEASE_MS,
+          );
+          expect(row?.price).toBe(1_190_000);
+          expect(Date.now() - released).toBeLessThanOrEqual(AFTER_RELEASE_MS);
+        });
+
+        it("job xả gặp khoá bận: KHÔNG chờ trong khe job worker (trả ≤ 2 s), giao lượt nền xả ≤ 10 s sau khi khoá nhả", async () => {
+          const handle = "chan-vay-midi-xep-ly";
+          const pid = idOf(handle);
+          await betweenCronTicks(HOLD_MS + AFTER_RELEASE_MS);
+          const owner = `test-foreign-${Date.now()}`;
+          await holdForeign(owner);
+          let released = 0;
+          try {
+            // Dòng index lệch nguồn + dấu bẩn KHÔNG qua sự kiện (như dấu của markExpiredPrices): chỉ job đưa vào lượt xả.
+            const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+            await db.raw("UPDATE catalog_variant_index SET price = 1 WHERE sku = 'VMIDI-XAM-S'");
+            await markCatalogDirty(container, [pid]);
+            const t0 = Date.now();
+            const job = catalogIndexDrainJob(container).then(() => Date.now() - t0);
+            const took = await Promise.race([job, sleep(2_000).then(() => -1)]);
+            // Job (BullMQ concurrency 1, chung với outbox/expire-holds…) phải trả khe ngay dù khoá bị giữ.
+            expect(took).toBeGreaterThanOrEqual(0);
+            expect(took).toBeLessThan(2_000);
+            await sleep(HOLD_MS - 2_000);
+            expect((await rowOf("VMIDI-XAM-S", handle))?.price).toBe(1);
+          } finally {
+            await releaseOwned(locking(), owner, [CATALOG_INDEX_LOCK]);
+            released = Date.now();
+          }
+          await eventually(
+            () => rowOf("VMIDI-XAM-S", handle),
+            (r) => r?.price === 450_000,
+            AFTER_RELEASE_MS,
+          );
+          expect(Date.now() - released).toBeLessThanOrEqual(AFTER_RELEASE_MS);
+        });
       });
 
       it("rebuild đồng thời với đồng bộ: không trùng dòng; người đọc không thấy trạng thái nửa vời", async () => {

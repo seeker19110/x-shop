@@ -53,8 +53,10 @@
     border-color var(--motion-fast) var(--ease);
 }
 
-.size:hover {
-  border-color: var(--foreground);
+@media (hover: hover) {
+  .size:hover {
+    border-color: var(--foreground);
+  }
 }
 
 .selected {
@@ -70,8 +72,10 @@
   cursor: not-allowed;
 }
 
-.soldOut:hover {
-  border-color: var(--border-strong);
+@media (hover: hover) {
+  .soldOut:hover {
+    border-color: var(--border-strong);
+  }
 }
 
 .note {

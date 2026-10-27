@@ -130,10 +130,10 @@ describe("bản ghi JSON một dòng (BASE-ERR-005/006)", () => {
 describe("che bí mật + PII trong log (BASE-ERR-007, SEC-SECRET-007, CMP-PRIV-008)", () => {
   it("object chứa password/token/cookie/email/SĐT → [REDACTED]; thông điệp có SĐT/email/CCCD bị che", () => {
     const { logger, raw, records } = capture();
-    logger.emit("info", "Khách 0912345678 / a@b.vn / CCCD 001099012345", {
+    logger.emit("info", "Khách 0912345678 / a@example.test / CCCD 099099012345", {
       password: "hunter2",
       nested: { token: "tok", authorization: "Bearer abc", cookie: "sid=1" },
-      customer: { email: "a@b.vn", phone: "0912345678" },
+      customer: { email: "a@example.test", phone: "0912345678" },
       order_id: "XS-ABC123",
     });
     const r = records()[0]!;
@@ -144,7 +144,7 @@ describe("che bí mật + PII trong log (BASE-ERR-007, SEC-SECRET-007, CMP-PRIV-
       customer: { email: REDACTED, phone: REDACTED },
       order_id: "XS-ABC123",
     });
-    expect(raw[0]).not.toMatch(/hunter2|tok"|0912345678|a@b\.vn|001099012345/);
+    expect(raw[0]).not.toMatch(/hunter2|tok"|0912345678|a@b\.vn|099099012345/);
   });
 });
 
@@ -284,6 +284,7 @@ describe("middleware requestLogContext", () => {
     const req = {
       method: "GET",
       originalUrl: url,
+      url,
       requestId,
       scope: { resolve: () => logger },
     };

@@ -49,7 +49,7 @@ Kết luận: tái dựng ở 50k SKU ≈ 2 phút, xa dưới RTO 2 giờ.
 
 ## File upload / media
 
-`apps/backend/medusa-config.ts` không khai File Module → provider mặc định của Medusa ghi ảnh tải qua Admin (`POST /admin/uploads`) vào đĩa cục bộ `apps/backend/static/` của máy server: không sao lưu, mất cùng máy, không chia sẻ giữa nhiều instance. Hướng đã ghi: file module S3-compatible + CDN (PROJECT.md stack, RUNBOOK §6) với versioning + sao chép sang bucket/vùng khác — **chờ chủ dự án chọn dịch vụ** (cần tài khoản thật). Ảnh demo (`static/demo/`) nằm trong git. Chưa có cơ chế → chưa diễn tập.
+`apps/backend/medusa-config.ts` khai File Module với provider local bọc lại (`src/lib/upload`, T-100: tên lưu do server sinh, không dùng tên client) — vẫn là provider cục bộ của Medusa, nên ảnh tải qua Admin (`POST /admin/uploads`) ghi vào đĩa cục bộ `apps/backend/static/` của máy server: không sao lưu, mất cùng máy, không chia sẻ giữa nhiều instance. Hướng đã ghi: thay provider trong File Module bằng S3-compatible + CDN (PROJECT.md stack, RUNBOOK §6) với versioning + sao chép sang bucket/vùng khác — **chờ chủ dự án chọn dịch vụ** (cần tài khoản thật). Ảnh demo (`static/demo/`) nằm trong git. Chưa có cơ chế → chưa diễn tập.
 
 ## Ngoài bảng
 
@@ -58,6 +58,6 @@ Giao dịch ở VNPAY/GHN sau mốc khôi phục không phải kho của hệ th
 ## Còn treo (DB-BACKUP-001 chưa tick tới khi xong)
 
 1. **PITR production cho Postgres** (RPO 15 phút) — chủ dự án chọn managed PITR hoặc tự host (RUNBOOK §4.5), rồi diễn tập PITR thật trên staging và ghi RPO/RTO đo được vào bảng trên.
-2. **Kho file/media** — chọn dịch vụ S3-compatible + versioning/sao chép; cấu hình File Module; diễn tập khôi phục một ảnh đã xoá.
+2. **Kho file/media** — chọn dịch vụ S3-compatible + versioning/sao chép; thay provider local trong File Module (`medusa-config.ts`); diễn tập khôi phục một ảnh đã xoá.
 3. **RTO Postgres đủ bước ở cỡ thật** — diễn tập đủ bước (khôi phục + migrate + đối chiếu) mới chạy trên DB 78 KB; ở 719 MB mới đo riêng sao lưu/khôi phục. Cần diễn tập đủ bước trên cấu hình máy production, cộng thời gian dựng instance PITR.
 4. Thời gian khởi động lại Redis + worker chưa đo.

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
+import { createCustomerAccountWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { vnpay } from "@x-shop/domain";
 import Redis from "ioredis";
@@ -575,16 +576,19 @@ medusaIntegrationTestRunner({
     });
 
     describe("quyền sở hữu giỏ", () => {
+      /**
+       * Khách có tài khoản. Đăng ký khách qua HTTP đóng ở P0 (T-138: identity emailpass dùng chung mọi actor → đăng ký khách
+       * dò/chiếm được email admin) → tạo identity + customer trong tiến trình, đăng nhập qua route thật.
+       */
       async function registerCustomer(email: string): Promise<string> {
         const password = "MatKhau-ThuNghiem-123";
-        const reg = await api.post("/auth/customer/emailpass/register", { email, password }, cfg());
-        expect(reg.status).toBe(200);
-        const created = await api.post(
-          "/store/customers",
-          { email, first_name: "Khách" },
-          cfg({ authorization: `Bearer ${reg.data.token}` }),
-        );
-        expect(created.status).toBe(200);
+        const reg = await container
+          .resolve(Modules.AUTH)
+          .register("emailpass", { body: { email, password } });
+        expect(reg.success).toBe(true);
+        await createCustomerAccountWorkflow(container).run({
+          input: { authIdentityId: reg.authIdentity!.id, customerData: { email, first_name: "Khách" } },
+        });
         const login = await api.post("/auth/customer/emailpass", { email, password }, cfg());
         expect(login.status).toBe(200);
         return login.data.token as string;

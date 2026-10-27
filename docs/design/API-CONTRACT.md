@@ -8,7 +8,7 @@
 ## Catalog (T-014) — shape THẬT của backend (đã đối chiếu bằng fixture phản hồi thật ở `apps/storefront/src/lib/catalog/__fixtures__/backend/`)
 Storefront ánh xạ sang kiểu nội bộ ở `lib/catalog/backend-map.ts`; backend là nguồn chuẩn.
 ### `GET /store/x/products` và `GET /store/x/search`
-Query: `q, color, size, material, price_min, price_max, in_stock=1, sort=newest|price_asc|price_desc, page, page_size≤48, category`.
+Query: `q, color, size, material, price_min, price_max, in_stock=1, sort=newest|price_asc|price_desc, page≤9999, page_size (mặc định 24; >48 bị kẹp về 48), category`.
 `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`.
 ```json
 { "items": [{ "product_id": "prod_…", "handle": "that-lung-da-bo", "title": "Thắt lưng da bò", "price_min": 450000, "price_max": 450000,
@@ -25,8 +25,9 @@ category{handle,name}|null, options{colors:[{value,label,hex|null}], sizes:[{val
 images[{url, alt|null, color|null, width|null, height|null}], size_chart{code,name,version,unit,columns:[{key,label,basis}],rows:[{size,label,values:{key: số|[min,max]}}]}|null,
 model_measurements[{image_set,color,height_cm,chest_cm,waist_cm,hip_cm,size_worn,note}], updated_at`. 404 `NOT_FOUND`.
 ### `GET /store/x/categories` (T-040)
-`{ "categories": [{ "handle": "ao-nu", "name": "Áo nữ", "parent_handle": "nu"|null, "product_count": 5 }] }` — chỉ danh mục có sản phẩm published
-trong kênh của publishable key (đếm gồm danh mục con); cùng Cache-Control catalog.
+`{ "categories": [{ "handle": "ao-nu", "name": "Áo nữ", "parent_handle": "nu"|null, "product_count": 5 }], "count": 1, "limit": 200, "offset": 0 }`
+— chỉ danh mục có sản phẩm published trong kênh của publishable key (đếm gồm danh mục con); cùng Cache-Control catalog. Phân trang
+`limit` (mặc định = tối đa 200, lớn hơn bị kẹp) / `offset` (0–1000); sai → 422 `INVALID_QUERY` (T-121).
 ### `GET /store/x/addresses/provinces` và `/provinces/:code/wards` (T-020)
 `{ "provinces": [{ "code": "01", "name": "Thành phố Hà Nội" }] }` · `{ "province_code": "01", "wards": [{ "code": "00004", "name": "Phường Ba Đình" }] }`
 (404 `NOT_FOUND` khi mã tỉnh sai). `Cache-Control: public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800`.

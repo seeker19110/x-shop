@@ -488,3 +488,94 @@
 - Chọn: Dẫn xuất từ COOKIE_SECRET với nhãn riêng
 - Lý do (tiêu chí chất lượng cuối): (3) không thêm bí mật phải quản lý; COOKIE_SECRET đã bắt buộc ≥32 ký tự ở production; dẫn xuất có nhãn tách mục đích; reviewer xác nhận
 - Đường lùi: Thêm LOG_HASH_KEY nếu cần xoay cookie secret mà vẫn đối chiếu log cũ
+
+### D-070 · 2026-10-26T21:46:26+00:00 · BE-CACHE-007: vô hiệu hoá cache catalog theo sự kiện hay giữ SWR 60 s
+
+- Phương án: (1) Webhook backend → storefront revalidateTag khi sửa sản phẩm/giá (task T-142, có xác thực HMAC + test cập nhật rồi đọc ngay) · (2) Giữ SWR, bỏ vế không nhận bản cũ quá ngưỡng
+- Chọn: Webhook backend → storefront revalidateTag khi sửa sản phẩm/giá (task T-142, có xác thực HMAC + test cập nhật rồi đọc ngay)
+- Lý do (tiêu chí chất lượng cuối): (1) giá hiển thị cũ hàng giờ ở trang ít người xem là sai trải nghiệm/khiếu nại giá; không nới yêu cầu MUST; (3) revalidateTag là cơ chế chuẩn của Next
+- Đường lùi: Tắt webhook, quay về SWR TTL
+
+### D-071 · 2026-10-26T21:46:44+00:00 · CHECK payment_ledger.state: chỉ 'succeeded' hay toàn bộ REFUND_STATES
+
+- Phương án: (1) Chỉ 'succeeded' (mọi đường ghi hiện tại) · (2) Toàn bộ REFUND_STATES theo kiểu TS
+- Chọn: Chỉ 'succeeded' (mọi đường ghi hiện tại)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt hơn: ledger là sổ tiền đã xảy ra; reviewer xác nhận chỉ 2 đường ghi đều 'succeeded'; (2) nới sau bằng migration mới dễ hơn siết
+- Đường lùi: Migration mới nới CHECK khi có đường ghi trạng thái khác
+
+### D-072 · 2026-10-26T21:46:44+00:00 · Danh sách con theo một đơn (refunds?order_id, orders/{ref}/returns) và exports/products.csv chưa có trần
+
+- Phương án: (1) Giữ: bị chặn bởi đơn cha / export theo thiết kế, ghi lý do trong bảng phân loại list-bounds · (2) Thêm trần cứng + cờ truncated
+- Chọn: Giữ: bị chặn bởi đơn cha / export theo thiết kế, ghi lý do trong bảng phân loại list-bounds
+- Lý do (tiêu chí chất lượng cuối): (1) phần tính tiền không được cắt dòng — trần có thể làm sai số hoàn/đổi trả; số con theo một đơn tự nhiên nhỏ; (3) đơn giản
+- Đường lùi: Thêm trần + truncated cho phần hiển thị nếu đo thấy đơn có quá nhiều dòng con
+
+### D-073 · 2026-10-26T22:37:42+00:00 · Đăng ký admin không kèm invite_token (dashboard Medusa gốc gọi register không token)
+
+- Phương án: (1) Giữ: cho qua khi có lời mời chưa nhận còn hạn đúng email (dashboard gốc chạy); chấp nhận rủi ro làm hỏng lời mời (không chiếm được tài khoản vì accept cần token) · (2) Bắt buộc invite_token, làm trang mời riêng trong src/admin
+- Chọn: Giữ: cho qua khi có lời mời chưa nhận còn hạn đúng email (dashboard gốc chạy); chấp nhận rủi ro làm hỏng lời mời (không chiếm được tài khoản vì accept cần token)
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi và UI admin gốc; (1) rủi ro còn lại chỉ là phá lời mời (DoS lời mời), có rate limit, không leo thang quyền — reviewer-alt kiểm lại điểm này
+- Đường lùi: Bắt buộc token + trang mời riêng nếu review/quan sát thấy lạm dụng
+
+### D-074 · 2026-10-26T22:37:43+00:00 · Tài khoản khách (P1, POST04) khi identity emailpass dùng chung actor
+
+- Phương án: (1) Đóng đăng ký khách tới khi làm P1 · (2) Mở kèm xác minh email · (3) Provider riêng cho khách
+- Chọn: Đóng đăng ký khách tới khi làm P1
+- Lý do (tiêu chí chất lượng cuối): (1) đặc tả: mua không cần tài khoản, tài khoản khách là P1; đóng là cách an toàn nhất; (2) quyết thiết kế cùng task P1
+- Đường lùi: Mở khi làm P1 với provider riêng hoặc xác minh email
+
+### D-075 · 2026-10-26T23:25:33+00:00 · Thay D-073: đăng ký admin không kèm invite_token (review T-138: người lạ chiếm trước identity email đang được mời, gắn TOTP của họ; rủi ro chiếm tài khoản qua reset sau này)
+
+- Phương án: (1) Chỉ nhánh token; dashboard: lấy invite_token từ Referer cùng origin /app/invite?token=… khi thân không có, thiếu thì từ chối; dọn identity chưa gắn actor khi xoá/gửi lại lời mời · (2) Chỉ nhánh token, onboarding bằng CLI/trang mời riêng · (3) Giữ D-073 (chấp nhận rủi ro)
+- Chọn: Chỉ nhánh token; dashboard: lấy invite_token từ Referer cùng origin /app/invite?token=… khi thân không có, thiếu thì từ chối; dọn identity chưa gắn actor khi xoá/gửi lại lời mời
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: không có đường tạo identity admin khi không chứng minh có token mời — đúng tiêu chí T-138; (2)(4) dashboard gốc vẫn dùng được vì nó chạy cùng origin với token trên URL; thiếu Referer → từ chối (đóng an toàn)
+- Đường lùi: Phương án 2 (trang mời riêng) nếu Referer không tin cậy trong môi trường thật
+
+### D-076 · 2026-10-27T02:28:12+00:00 · Rebuild catalog toàn phần giữ khoá 108–113 s ở 50k SKU (T-137 Q2) — thay đổi trong lúc đó trễ quá 60 s §7.4
+
+- Phương án: (1) Dựng dòng ngoài khoá, chỉ giữ khoá lúc replaceAll, rồi xả lại dấu có từ sau mốc bắt đầu rebuild (gộp vào T-140) · (2) Chấp nhận, ghi ngoại lệ RPO/§7.4
+- Chọn: Dựng dòng ngoài khoá, chỉ giữ khoá lúc replaceAll, rồi xả lại dấu có từ sau mốc bắt đầu rebuild (gộp vào T-140)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng mục tiêu độ trễ §7.4 ở quy mô production; không nới yêu cầu
+- Đường lùi: Ghi ngoại lệ nếu đo thấy replaceAll ngoài khoá gây sai lệch
+
+### D-077 · 2026-10-27T02:28:13+00:00 · Cô lập Redis cho test tích hợp chạy đồng thời (T-137 Q1)
+
+- Phương án: (1) globalSetup giành độc quyền Redis DB bằng SET NX EX (T-146) · (2) Redis riêng mỗi worktree · (3) Namespace qua medusa-config
+- Chọn: globalSetup giành độc quyền Redis DB bằng SET NX EX (T-146)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt nhất, chỉ đụng hạ tầng test; namespace không phủ locking-redis/workflows-cleaner
+- Đường lùi: Redis riêng mỗi worktree
+
+### D-078 · 2026-10-27T02:41:06+00:00 · Log khoá VNPAY trước chỉ ở IPN; return/querydr chưa có (interpretQueryResponseWithRotation không trả secretUsed)
+
+- Phương án: (1) Giữ: IPN là đường chính xác nhận tiền; RUNBOOK ghi rõ · (2) Mở rộng sang return/querydr
+- Chọn: Giữ: IPN là đường chính xác nhận tiền; RUNBOOK ghi rõ
+- Lý do (tiêu chí chất lượng cuối): (3) đơn giản: IPN là nơi VNPAY ký bằng khoá cấu hình ở cổng, đủ để biết khi nào bỏ khoá trước; querydr do server chủ động gọi
+- Đường lùi: Cho interpretQueryResponseWithRotation trả secretUsed nếu vận hành cần
+
+### D-079 · 2026-10-27T03:11:59+00:00 · T-145: request-target có '#' hoặc '\' (trái RFC 9112)
+
+- Phương án: (1) Chặn ở tầng server (400) · (2) Giữ, lớp chiều sâu đã khớp Express
+- Chọn: Chặn ở tầng server (400)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt hơn, trình duyệt không bao giờ gửi; giảm bề mặt khác biệt parser
+- Đường lùi: Bỏ luật nếu client hợp lệ bị chặn
+
+### D-080 · 2026-10-27T03:11:59+00:00 · T-145: mặc định GET native admin không khai báo quyền (any_role)
+
+- Phương án: (1) Giữ any_role, mở task liệt kê route dashboard rồi đóng sau · (2) Đóng ngay
+- Chọn: Giữ any_role, mở task liệt kê route dashboard rồi đóng sau
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi: đóng ngay vỡ dashboard khi chưa liệt kê đủ route; lỗ hổng URL tuyệt đối đã chặn ở 2 lớp
+- Đường lùi: Đóng mặc định khi native-permissions liệt kê đủ (task sau)
+
+### D-081 · 2026-10-27T03:11:59+00:00 · Thay một phần D-035: drain gặp khoá bận thì chờ (T-137) — nhưng không chờ trong job worker và dừng khi đang tắt
+
+- Phương án: (1) Job phút không chờ (waitMs 0), bận thì giao scheduleCatalogDrain chờ nền ≤300 s; mọi vòng chờ kiểm isDraining() · (2) Nâng concurrency jobWorker
+- Chọn: Job phút không chờ (waitMs 0), bận thì giao scheduleCatalogDrain chờ nền ≤300 s; mọi vòng chờ kiểm isDraining()
+- Lý do (tiêu chí chất lượng cuối): (1) không chặn khe job dùng chung (outbox, expire-holds) và không vượt trần tắt êm T-094; (3) không đổi cấu hình mọi job
+- Đường lùi: Quay về bỏ lượt khi bận (D-035)
+
+### D-082 · 2026-10-27T04:01:31+00:00 · Review T-145 INCONCLUSIVE (dò đường vòng đối nghịch bị bộ phân loại chặn); code đang đẩy có lỗ hổng RBAC đã tái hiện
+
+- Phương án: (1) Merge hotfix ngay + gia cố 🟢1 (từ chối byte ≤0x20/0x7F/≥0x80) + ghi việc rà bảo mật đối nghịch cho người · (2) Giữ hotfix chờ review CLEAN
+- Chọn: Merge hotfix ngay + gia cố 🟢1 (từ chối byte ≤0x20/0x7F/≥0x80) + ghi việc rà bảo mật đối nghịch cho người
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: giữ lại nghĩa là để lỗ hổng đã chứng minh trên PR; hotfix chỉ thu hẹp đầu vào, phần đã rà sạch (unit/tích hợp/đối chiếu parseurl); (2) đường lùi: revert từng commit
+- Đường lùi: Revert 2 commit T-145 nếu rà bảo mật thấy hồi quy

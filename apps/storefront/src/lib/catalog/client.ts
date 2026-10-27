@@ -3,6 +3,7 @@ import { cache } from "react";
 import { categoryName, NAV_CATEGORIES } from "../content/navigation";
 import { mapCategories, mapList, mapProduct, mapSearch, type CategoryEntry } from "./backend-map";
 import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
+import { CATALOG_REVALIDATE_S } from "../cache-policy";
 import { clientIpHeader } from "../security/client-ip";
 import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
@@ -10,7 +11,7 @@ import { isNonEmpty } from "../presence";
 
 /**
  * Client catalog phía server (không import vào client component): chọn nguồn bằng `XS_DATA_SOURCE`.
- * Backend: `fetch` server-side, dữ liệu công khai cache 60 giây (`next.revalidate`).
+ * Backend: `fetch` server-side, dữ liệu công khai cache `CATALOG_REVALIDATE_S` giây (`next.revalidate`, docs/ops/CACHE.md).
  */
 
 /** Số sản phẩm mỗi trang ở storefront (backend cho phép tới 48). */
@@ -40,7 +41,7 @@ async function backendGet<T>(
         ...extraHeaders,
       },
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: 60 } }),
+      ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: CATALOG_REVALIDATE_S } }),
     });
   } catch {
     throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");
@@ -56,6 +57,17 @@ async function backendGet<T>(
   if (res.status === 422) {
     const code = problem.code === "INVALID_RANGE" ? "INVALID_RANGE" : "VALIDATION";
     throw new CatalogError(code, problem.detail ?? "Tham số không hợp lệ.", 422);
+  }
+  if (res.status === 429) {
+    // Backend giới hạn tốc độ (vd. tìm kiếm theo IP): giữ nguyên 429 + Retry-After để route chuyển tiếp cho client,
+    // tránh biến thành 503 "tạm thời" rồi bị retry làm tăng tải đúng lúc đang bị giới hạn.
+    const raw = res.headers.get("retry-after")?.trim() ?? "";
+    throw new CatalogError(
+      "UNAVAILABLE",
+      "Quá nhiều yêu cầu, thử lại sau.",
+      429,
+      /^\d{1,9}$/.test(raw) ? Number(raw) : null,
+    );
   }
   throw new CatalogError("UNAVAILABLE", "Máy chủ dữ liệu đang gặp sự cố.", res.status);
 }
@@ -129,6 +141,31 @@ export async function getProductFresh(handle: string): Promise<ProductDetail | n
   }
 }
 
+/**
+ * GET /store/x/categories phân trang (T-121): mỗi trang tối đa 200 (backend kẹp), tổng tối đa 1000 (CATEGORY_FETCH_MAX của
+ * backend). Đọc lần lượt theo `offset` tới `count` — danh mục thứ 201 trở đi vẫn có trong menu/sitemap/trang danh mục.
+ */
+export const CATEGORY_PAGE_SIZE = 200;
+const CATEGORY_TOTAL_MAX = 1000;
+
+async function fetchAllCategories(): Promise<CategoryEntry[]> {
+  // Mỗi trang cache riêng (revalidate 60 s) nên các trang có thể là ảnh chụp ở thời điểm khác nhau: danh mục vừa có/hết hàng
+  // làm lệch biên trang → bỏ trùng theo handle (mục bị đẩy qua biên chỉ thiếu tới khi cache trang đồng bộ, ≤ một chu kỳ).
+  const byHandle = new Map<string, CategoryEntry>();
+  for (let offset = 0; offset < CATEGORY_TOTAL_MAX;) {
+    const params = new URLSearchParams({ limit: String(CATEGORY_PAGE_SIZE), offset: String(offset) });
+    const raw = await backendGet<unknown>("/store/x/categories", params);
+    const page = mapCategories(raw);
+    for (const c of page) if (!byHandle.has(c.handle)) byHandle.set(c.handle, c);
+    const meta = (raw ?? {}) as { count?: unknown; limit?: unknown };
+    const limit = typeof meta.limit === "number" && meta.limit > 0 ? meta.limit : CATEGORY_PAGE_SIZE;
+    const total = typeof meta.count === "number" ? meta.count : offset + page.length;
+    offset += limit;
+    if (page.length < limit || offset >= total) break;
+  }
+  return [...byHandle.values()];
+}
+
 export interface MenuCategory {
   handle: string;
   name: string;
@@ -141,7 +178,7 @@ export interface MenuCategory {
 export const getCategories = cache(async (): Promise<CategoryEntry[]> => {
   if (resolveDataSource() === "backend") {
     try {
-      return mapCategories(await backendGet<unknown>("/store/x/categories"));
+      return await fetchAllCategories();
     } catch {
       return [];
     }

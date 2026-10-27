@@ -3,6 +3,9 @@
  * (`/ADMIN/X/Refunds/` vẫn tới route `/admin/x/refunds`) — nên chuẩn hoá giống vậy trước khi tra map, tránh lách quyền
  * bằng cách đổi hoa/thường.
  *
+ * Đầu vào phải là pathname router thấy (`requestPath`/`rawRequestPath` ở lib/http/request-path.ts — T-145), KHÔNG phải
+ * `req.originalUrl` thô (URL tuyệt đối, `\`+`#` lệch với cách Express định tuyến).
+ *
  * Mẫu: `:param` khớp đúng một đoạn khác rỗng; đoạn cuối `*` khớp 0..n đoạn còn lại.
  */
 export function normalizeAdminPath(rawUrl: string): string {

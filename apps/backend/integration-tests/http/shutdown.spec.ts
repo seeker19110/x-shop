@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import net from "node:net";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { generateJwtToken } from "@medusajs/framework/utils";
 
 jest.setTimeout(420 * 1000);
 
@@ -25,6 +26,7 @@ const { Client } = createRequire(require.resolve("@medusajs/framework"))("pg") a
 const BACKEND_DIR = join(__dirname, "../..");
 const CLI = require.resolve("@medusajs/cli/cli.js", { paths: [BACKEND_DIR] });
 const ADMIN_DB_URL = process.env.DATABASE_URL!;
+const SHUTDOWN_JWT_SECRET = "x-shop-shutdown-test-only-jwt-secret-0123456789";
 const DB_NAME = `xshop_shutdown_${process.pid}`;
 const DB_URL = (() => {
   const u = new URL(ADMIN_DB_URL);
@@ -38,6 +40,8 @@ function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
     DATABASE_URL: DB_URL,
     NODE_ENV: "development",
     DISABLE_MEDUSA_ADMIN: "true",
+    // Bí mật JWT biết trước để test ký được token mời hợp lệ cho tiến trình con (T-138) — CHỈ cho test.
+    JWT_SECRET: SHUTDOWN_JWT_SECRET,
     ...extra,
   };
   // Tuỳ chọn Node của Jest (vm-modules, heap) không dành cho tiến trình Medusa.
@@ -180,7 +184,25 @@ async function startBackend(extra: Record<string, string>): Promise<Backend> {
 async function slowLogin(port: number) {
   const email = `shutdown-${randomUUID()}@x-shop.test`;
   const password = `pw-${randomUUID()}`;
-  const reg = await request(port, "POST", "/auth/user/emailpass/register", { email, password });
+  // Đăng ký `user` chỉ qua cổng khi có token mời hợp lệ đúng email (T-138, D-075) — tiến trình con không chung container
+  // với test nên ghi lời mời thẳng vào DB, token ký bằng bí mật JWT đã đặt cho tiến trình con (như User Module).
+  const inviteId = `invite_shutdown_${randomUUID()}`;
+  const inviteToken = generateJwtToken({ id: inviteId }, { secret: SHUTDOWN_JWT_SECRET, expiresIn: "1h" });
+  const invite = new Client({ connectionString: DB_URL });
+  await invite.connect();
+  try {
+    await invite.query(
+      `INSERT INTO invite (id, email, accepted, token, expires_at) VALUES ($1, $2, false, $3, now() + interval '1 hour')`,
+      [inviteId, email, inviteToken],
+    );
+  } finally {
+    await invite.end();
+  }
+  const reg = await request(port, "POST", "/auth/user/emailpass/register", {
+    email,
+    password,
+    invite_token: inviteToken,
+  });
   expect(reg.status).toBe(200);
   const lock = new Client({ connectionString: DB_URL });
   await lock.connect();
@@ -389,6 +411,28 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
       await sleep(200);
       expect({ target, alive: be.child.exitCode === null }).toEqual({ target, alive: true });
     }
+    // T-145: hook server của instrumentation chặn request-target không phải origin-form bằng 400 TRƯỚC Express (kể cả
+    // route admin nhạy cảm), vẫn ghi log truy cập; `OPTIONS *` vẫn đi tiếp tới ứng dụng.
+    for (const target of [
+      "http://127.0.0.1/admin/customers/cus_khong_co",
+      "HTTP://127.0.0.1/admin/x/audit",
+      "/admin\\customers/cus_khong_co#y",
+    ]) {
+      expect({ target, status: await raw(target) }).toEqual({ target, status: 400 });
+    }
+    const star = await new Promise<string>((resolve, reject) => {
+      const sock = net.connect(be.port, "127.0.0.1", () =>
+        sock.write("OPTIONS * HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"),
+      );
+      let data = "";
+      sock.on("data", (c: Buffer) => (data += c.toString("latin1")));
+      sock.on("end", () => resolve(data));
+      sock.on("error", reject);
+    });
+    expect(star).not.toContain("INVALID_REQUEST_TARGET");
+    expect(be.output()).toMatch(
+      /"url\.path":"http:\/\/127\.0\.0\.1\/admin\/customers\/cus_khong_co","http\.response\.status_code":400/,
+    );
     expect((await request(be.port, "GET", "/x/readyz")).status).toBe(200);
     expect(be.output()).not.toMatch(/unhandledRejection|uncaughtException/);
     be.child.kill("SIGTERM");
@@ -410,6 +454,87 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
       expect(shutdownLines(be.output()).at(-1)).toMatchObject({ level: "error", timeout_ms: TIMEOUT });
     } finally {
       await slow.release();
+    }
+  });
+
+  /**
+   * T-137 / D-081: lượt xả read model hẹn sau sự kiện đang CHỜ khoá catalog (chủ khác giữ) khi SIGTERM tới; khoá nhả
+   * ngay sau tín hiệu. Lượt chờ không được giành khoá rồi đồng bộ giữa lúc tắt (bảng read model bị khoá → việc đó treo,
+   * tiến trình vượt trần, khoá bỏ lại tới hết lease) — phải thôi chờ, thoát 0 trong trần, dấu bẩn còn lại cho lần sau.
+   */
+  it("SIGTERM khi lượt xả catalog đang chờ khoá: không giành khoá/đồng bộ giữa lúc tắt → thoát 0 trong trần", async () => {
+    const TIMEOUT = 15_000;
+    const redisUrl = process.env.REDIS_URL!;
+    type RedisClient = {
+      set(k: string, v: string, mode: "EX", s: number): Promise<unknown>;
+      get(k: string): Promise<string | null>;
+      del(k: string): Promise<number>;
+      quit(): Promise<unknown>;
+    };
+    const Redis = createRequire(join(BACKEND_DIR, "package.json"))("ioredis") as new (
+      url: string,
+      opts?: Record<string, unknown>,
+    ) => RedisClient;
+    const { Queue } = createRequire(require.resolve("@medusajs/framework"))("bullmq") as {
+      Queue: new (
+        name: string,
+        opts: Record<string, unknown>,
+      ) => {
+        add(name: string, data: unknown, opts: Record<string, unknown>): Promise<unknown>;
+        close(): Promise<void>;
+      };
+    };
+    const LOCK = "medusa_lock:x-shop:catalog-index";
+    const FOREIGN = `foreign-${randomUUID()}`;
+    const PRODUCT = `prod_t137_${randomUUID().slice(0, 8)}`;
+    const be = await startBackend({ SHUTDOWN_DRAIN_DELAY_MS: "1000", SHUTDOWN_TIMEOUT_MS: String(TIMEOUT) });
+    const redis = new Redis(redisUrl);
+    const queueConn = new Redis(redisUrl, { maxRetriesPerRequest: null });
+    const queue = new Queue("events-queue", { prefix: "RedisEventBusService", connection: queueConn });
+    const db = new Client({ connectionString: DB_URL });
+    await db.connect();
+    const tableLock = new Client({ connectionString: DB_URL });
+    await tableLock.connect();
+    const dirty = async () =>
+      Number(
+        (
+          await db.query("SELECT count(*)::int AS n FROM catalog_index_dirty WHERE product_id = $1", [
+            PRODUCT,
+          ])
+        ).rows[0]!.n,
+      );
+    try {
+      await redis.set(LOCK, FOREIGN, "EX", 600);
+      // Sự kiện thật qua event bus của tiến trình con → subscriber đánh dấu + hẹn lượt xả (lượt này chờ khoá).
+      await queue.add(
+        "product.updated",
+        { data: { id: PRODUCT }, metadata: {} },
+        { removeOnComplete: true, attempts: 1 },
+      );
+      await waitFor("dấu bẩn", 10_000, async () => ((await dirty()) > 0 ? true : undefined));
+      await sleep(1_500); // lượt hẹn (250 ms) đã chạy và đang chờ khoá
+      // Giả lập đồng bộ chậm: lượt xả nào bắt đầu ghi read model sẽ treo tới khi test nhả.
+      await tableLock.query("BEGIN");
+      await tableLock.query("LOCK TABLE catalog_variant_index IN ACCESS EXCLUSIVE MODE");
+      const t0 = Date.now();
+      be.child.kill("SIGTERM");
+      await sleep(300);
+      await redis.del(LOCK); // khoá nhả ngay sau tín hiệu — lượt chờ giành được nếu không biết đang tắt
+      const exit = await Promise.race([be.exited, sleep(TIMEOUT + 5_000).then(() => null)]);
+      expect(exit).toMatchObject({ code: 0, signal: null });
+      expect(exit!.at - t0).toBeLessThan(TIMEOUT);
+      expect(await redis.get(LOCK)).toBeNull(); // không bỏ lại khoá tới hết lease
+      await tableLock.query("COMMIT");
+      expect(await dirty()).toBe(1); // dấu còn cho tiến trình khác/lần chạy sau
+      expect(shutdownLines(be.output()).some((l) => l.level === "error")).toBe(false);
+    } finally {
+      await tableLock.query("ROLLBACK").catch(() => undefined);
+      await tableLock.end().catch(() => undefined);
+      await db.end().catch(() => undefined);
+      await redis.del(LOCK).catch(() => 0);
+      await queue.close().catch(() => undefined);
+      await queueConn.quit().catch(() => undefined);
+      await redis.quit().catch(() => undefined);
     }
   });
 });

@@ -51,4 +51,7 @@ export const AUTH_RATE_LIMITS = {
   windowSeconds: 15 * 60,
   login: { perIdentityIp: 5, perIdentity: 20, perIp: 100 },
   mfa: { perIdentityIp: 5, perIdentity: 10, perIp: 100 },
+  // Đăng ký (T-138): lượt hợp lệ chỉ có khi được mời (thành công được hoàn) — mọi lượt bị từ chối là dò/chiếm trước email,
+  // nên ngưỡng IP thấp hơn hẳn đăng nhập.
+  register: { perIdentityIp: 5, perIdentity: 10, perIp: 20 },
 } as const;
