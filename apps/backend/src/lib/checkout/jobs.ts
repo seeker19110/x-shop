@@ -4,7 +4,7 @@ import { cancelOrderWorkflow, deleteReservationsWorkflow } from "@medusajs/medus
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
-import type { OutboxClaim } from "../../modules/checkout/service";
+import type { JobBreakerSnapshot, OutboxClaim } from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG } from "./config";
 import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
@@ -128,10 +128,7 @@ export async function expireHolds(
     info: (m) => log.info(m),
   });
   const due = await s.listExpiredHoldOrderIds(now, opts.limit ?? 100);
-  // Breaker không đóng → xoay danh sách theo số lần đã mở: lượt thử half-open rơi vào đơn KHÁC sau mỗi lần thử lỗi (một
-  // đơn lỗi tạm ổn định ở đầu hàng không được giữ breaker mở mãi — review T-161). Đơn đó vẫn được hỏi khi breaker đóng.
-  const snap = await s.readJobBreaker(VNPAY_QUERYDR_BREAKER_KEY);
-  const ordered = snap && snap.state !== "closed" ? rotate(due, snap.trip_count) : due;
+  const ordered = probeOrder(due, await s.readJobBreaker(VNPAY_QUERYDR_BREAKER_KEY));
   for (const orderId of ordered) {
     const outcome = await withLock(
       container,
@@ -150,6 +147,23 @@ export function rotate<T>(items: readonly T[], n: number): T[] {
   if (items.length === 0) return [];
   const k = ((n % items.length) + items.length) % items.length;
   return [...items.slice(k), ...items.slice(0, k)];
+}
+
+/**
+ * Thứ tự xét đơn quá hạn (review T-161): breaker đóng → giữ nguyên (mọi đơn đều được hỏi, kể cả đơn đang lỗi). Breaker
+ * chưa đóng → đơn đầu hàng nhận lượt thử half-open, nên (1) xoay theo `trip_count` để lượt thử đổi đơn sau mỗi lần thử
+ * lỗi và (2) đơn gây lỗi tạm gần nhất (`last_failed_event_id`) luôn xuống CUỐI — lượt thử KHÔNG BAO GIỜ rơi lại vào đơn
+ * vừa lỗi khi còn đơn khác (kể cả khi đơn mới vào làm phép xoay trùng vị trí). Chỉ còn mỗi đơn đó → nó vẫn được thử.
+ */
+export function probeOrder(
+  due: readonly string[],
+  snap: Pick<JobBreakerSnapshot, "state" | "trip_count" | "last_failed_event_id"> | null,
+): string[] {
+  if (!snap || snap.state === "closed") return [...due];
+  const rotated = rotate(due, snap.trip_count);
+  const last = snap.last_failed_event_id;
+  if (last === null || rotated.length < 2 || !rotated.includes(last)) return rotated;
+  return [...rotated.filter((id) => id !== last), last];
 }
 
 /** Cổng querydr của MỘT đơn qua breaker của lượt chạy (lỗi tạm tính theo đơn — một đơn lỗi lặp chỉ tính một). */

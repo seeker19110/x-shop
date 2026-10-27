@@ -12,6 +12,7 @@ import {
   isTransientQueryFailure,
   OUTBOX_POLICY,
   outboxBackoffMs,
+  probeOrder,
   reconcileAttempts,
   rotate,
 } from "../../src/lib/checkout/jobs";
@@ -491,7 +492,7 @@ medusaIntegrationTestRunner({
         expect(r5.cancelled).toEqual([o1!.orderId]);
       });
 
-      it("lượt thử lỗi liên tiếp ở các đơn khác nhau → mỗi kỳ thử một đơn khác (không lặp lại đơn vừa lỗi)", async () => {
+      it("cổng vẫn hỏng, số đơn không đổi → lượt thử xoay qua đủ mọi đơn và không bao giờ thử lại ngay đơn vừa lỗi", async () => {
         const orders = await placeFour();
         const t0 = future(16 * MIN);
         gateway.down = true;
@@ -504,6 +505,7 @@ medusaIntegrationTestRunner({
           probes.push(gateway.seen[gateway.seen.length - 1]!);
         }
         expect(new Set(probes).size).toBe(4); // xoay hết 4 đơn
+        for (let i = 1; i < probes.length; i++) expect(probes[i]).not.toBe(probes[i - 1]);
         expect(await breakerRow()).toMatchObject({ state: "open", trip_count: 5 });
         for (const o of orders) expect((await fin(o.orderId)).state).toBe("awaiting_payment");
       });
@@ -541,6 +543,80 @@ medusaIntegrationTestRunner({
           const ex = await service().listOpsExceptions({ order_id: o.orderId, kind: "payment_unknown" });
           expect(ex[0]!.detail).toMatchObject({ reason: "breaker_throttled" });
         }
+      });
+
+      it("RV2-V5: trip_count bám số đơn (mỗi kỳ nguội thêm đúng 1 đơn) — đơn lỗi đầu hàng vẫn không giữ được lượt thử", async () => {
+        // Review vòng 2: chỉ xoay theo trip_count thì trip_count ≡ 0 (mod N) mỗi kỳ → lượt thử luôn rơi vào o1 (lỗi ổn định).
+        const orders = await placeFour();
+        const [o1] = orders;
+        gateway.results.set(o1!.txn, { outcome: "unknown", transactionNo: null, reason: "http_500" });
+        const t0 = future(16 * MIN);
+        gateway.down = true;
+        await expireHolds(container, { now: t0, breakerPolicy: POLICY });
+        gateway.down = false;
+        const all = orders.map((o) => ({ orderId: o.orderId, txn: o.txn }));
+        const probes: string[] = [];
+        for (let k = 1; k <= 5; k++) {
+          const extra = await client.placeOrder([[VARIANTS[k % 4]!, 1]], "vnpay");
+          all.push({ orderId: extra.orderId, txn: await txnOf(extra.orderId) });
+          if (k === 1) {
+            await pg().raw(`UPDATE job_breaker SET trip_count = ? WHERE breaker_key = ?`, [all.length, KEY]);
+          }
+          const n = gateway.seen.length;
+          await expireHolds(container, {
+            now: new Date(t0.getTime() + k * 5 * MIN + k),
+            breakerPolicy: POLICY,
+          });
+          probes.push(gateway.seen[n] ?? "none");
+        }
+        // Kỳ 1: o1 nhận lượt thử (đơn vừa lỗi trước đó là o2) và lỗi; kỳ 2: o1 xuống cuối → đơn khác thử → đóng.
+        expect(probes[0]).toBe(o1!.txn);
+        expect(probes[1]).not.toBe(o1!.txn);
+        expect((await breakerRow())?.state).toBe("closed");
+        for (const o of all.slice(1)) expect((await fin(o.orderId)).state).toBe("cancelled");
+        expect((await fin(o1!.orderId)).state).toBe("awaiting_payment");
+        expect(gateway.seen.filter((t) => t === o1!.txn).length).toBeGreaterThanOrEqual(4); // o1 vẫn được hỏi
+      });
+
+      it("RV2-V4: chỉ còn MỘT đơn quá hạn và nó lỗi ổn định → nó vẫn được thử mỗi kỳ; có đơn mới → đơn mới nhận lượt thử", async () => {
+        const placed = await client.placeOrder([["Trắng/M", 1]], "vnpay");
+        const p = { orderId: placed.orderId, txn: await txnOf(placed.orderId) };
+        gateway.results.set(p.txn, { outcome: "unknown", transactionNo: null, reason: "http_500" });
+        const t0 = future(16 * MIN);
+        await service().tripJobBreaker(KEY, "consecutive_failures", t0, ["closed"]);
+        for (let k = 1; k <= 3; k++) {
+          const r = await expireHolds(container, {
+            now: new Date(t0.getTime() + k * 5 * MIN),
+            breakerPolicy: POLICY,
+          });
+          expect(r.unknown).toEqual([p.orderId]); // lượt thử rơi vào chính p
+        }
+        expect(gateway.seen.filter((t) => t === p.txn)).toHaveLength(3);
+        expect(await breakerRow()).toMatchObject({ state: "open", trip_count: 4 });
+        const g = await client.placeOrder([["Đen/S", 1]], "vnpay");
+        const r = await expireHolds(container, {
+          now: new Date(t0.getTime() + 20 * MIN),
+          breakerPolicy: POLICY,
+        });
+        expect(r.cancelled).toEqual([g.orderId]);
+        expect(r.unknown).toEqual([p.orderId]);
+        expect((await breakerRow())?.state).toBe("closed");
+      });
+
+      it("probeOrder: breaker đóng giữ nguyên; chưa đóng → xoay + đơn vừa lỗi xuống cuối (trừ khi chỉ còn nó)", () => {
+        const snap = (state: "closed" | "open" | "half_open", trip_count: number, last: string | null) => ({
+          state,
+          trip_count,
+          last_failed_event_id: last,
+        });
+        expect(probeOrder(["a", "b", "c"], null)).toEqual(["a", "b", "c"]);
+        expect(probeOrder(["a", "b", "c"], snap("closed", 1, "a"))).toEqual(["a", "b", "c"]);
+        expect(probeOrder(["a", "b", "c"], snap("open", 1, null))).toEqual(["b", "c", "a"]);
+        expect(probeOrder(["a", "b", "c"], snap("open", 3, "a"))).toEqual(["b", "c", "a"]);
+        expect(probeOrder(["a", "b", "c"], snap("half_open", 4, "b"))).toEqual(["c", "a", "b"]);
+        expect(probeOrder(["a", "b", "c"], snap("open", 0, "zz"))).toEqual(["a", "b", "c"]);
+        expect(probeOrder(["a"], snap("open", 7, "a"))).toEqual(["a"]);
+        expect(probeOrder([], snap("open", 2, "a"))).toEqual([]);
       });
 
       it("rotate: xoay trái, n lớn hơn độ dài, mảng rỗng", () => {

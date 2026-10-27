@@ -462,7 +462,7 @@ Mô hình thật (`apps/backend/src/lib/outbox/breaker.ts`, T-097, OPS-COST-004)
 gọi VNPAY querydr (T-161) — lỗi tạm = timeout/mạng/adapter ném/HTTP 5xx·408·429 (mỗi đơn tính một); khi breaker không cho gọi, đơn
 quá hạn giữ hàng KHÔNG bị hủy mà xử lý như `unknown` (giữ hàng, attempt `unknown`, ngoại lệ `payment_unknown` với `detail.reason` =
 `breaker_open` | `breaker_probing` | `breaker_throttled` | `breaker_budget_exhausted`, xem §1) và được hỏi lại ở lượt chạy sau khi
-breaker đóng; lượt thử half-open xoay vòng giữa các đơn quá hạn (theo `trip_count`) nên một đơn lỗi ổn định không giữ breaker mở mãi;
+breaker đóng; lượt thử half-open xoay vòng giữa các đơn quá hạn (theo `trip_count`, đơn vừa lỗi — `last_failed_event_id` — luôn xuống cuối) nên một đơn lỗi ổn định không giữ breaker mở mãi;
 ngân sách ngày 144 000 = trần vật lý của lịch chạy nên chỉ mở vì lỗi. Trạng thái ở bảng `job_breaker` (dùng chung mọi bản
 sao), ngân sách lượt gọi theo ngày UTC ở `rate_limit_counter` (bucket `breaker.budget:<breaker>`). Ngưỡng trong code
 (`OUTBOX_BREAKER_POLICY`, `OUTBOX_RUN_LIMITS` — đổi qua review): mỗi lượt chạy tối đa 100 sự kiện / 50 lượt gọi; 5 sự kiện khác nhau

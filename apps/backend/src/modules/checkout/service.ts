@@ -97,6 +97,8 @@ export interface JobBreakerSnapshot {
   trip_reason: JobBreakerTripReason | null;
   /** Số lần đã mở (tích luỹ, không xoá khi đóng) — job xoay vòng ứng viên lượt thử half-open theo số này (T-161). */
   trip_count: number;
+  /** Sự kiện/đơn gây lỗi tạm gần nhất (xoá khi thành công) — job đẩy nó xuống cuối hàng lượt thử half-open (T-161). */
+  last_failed_event_id: string | null;
 }
 
 const dateOrNull = (v: unknown): Date | null => (v == null ? null : new Date(v as string | Date));
@@ -109,6 +111,7 @@ function breakerSnapshot(r: Row): JobBreakerSnapshot {
     probe_until: dateOrNull(r.probe_until),
     trip_reason: (r.trip_reason ?? null) as JobBreakerTripReason | null,
     trip_count: Number(r.trip_count ?? 0),
+    last_failed_event_id: r.last_failed_event_id == null ? null : String(r.last_failed_event_id),
   };
 }
 
@@ -1060,7 +1063,7 @@ class CheckoutModuleService extends MedusaService({
    */
   async readJobBreaker(key: string): Promise<JobBreakerSnapshot | null> {
     const rows = await this.exec(
-      `SELECT state, consecutive_failures, open_until, probe_until, trip_reason, trip_count
+      `SELECT state, consecutive_failures, open_until, probe_until, trip_reason, trip_count, last_failed_event_id
        FROM job_breaker WHERE breaker_key = ?`,
       [key],
     );
@@ -1095,7 +1098,7 @@ class CheckoutModuleService extends MedusaService({
            + CASE WHEN job_breaker.last_failed_event_id IS DISTINCT FROM EXCLUDED.last_failed_event_id THEN 1 ELSE 0 END,
          last_failed_event_id = EXCLUDED.last_failed_event_id,
          updated_at = now()
-       RETURNING state, consecutive_failures, open_until, probe_until, trip_reason, trip_count`,
+       RETURNING state, consecutive_failures, open_until, probe_until, trip_reason, trip_count, last_failed_event_id`,
       [generateEntityId(undefined, "jbr"), key, eventId],
     );
     return breakerSnapshot(rows[0]!);
