@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import {
   addAvailableVariantToCart,
   fillCheckout,
@@ -25,6 +26,7 @@ async function readVnd(page: Page, label: string): Promise<number> {
 test.describe("UX-CONTENT-006 — tổng tiền nhất quán giữa các bước", () => {
   test("tạm tính giỏ = tiền hàng checkout; tổng phải trả ở checkout = tổng cộng ở trang đơn", async ({
     page,
+    buyer,
   }) => {
     await openFirstProductFromHome(page);
     await addAvailableVariantToCart(page);
@@ -33,7 +35,7 @@ test.describe("UX-CONTENT-006 — tổng tiền nhất quán giữa các bước
     expect(cartSubtotal).toBeGreaterThan(0);
 
     await openCheckoutFromCart(page);
-    await fillCheckout(page, "cod");
+    await fillCheckout(page, "cod", buyer);
     const checkoutSubtotal = await readVnd(page, "Tiền hàng");
     const checkoutShipping = await readVnd(page, "Phí vận chuyển");
     const checkoutTotal = await readVnd(page, "Tổng phải trả");

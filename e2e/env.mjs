@@ -12,7 +12,8 @@
  * và `E2E_REDIS_DB`) mà không giẫm cổng/DB/Redis của nhau.
  */
 const OFFSET = Number(process.env.E2E_PORT_OFFSET ?? 0);
-if (!Number.isInteger(OFFSET) || OFFSET < 0 || OFFSET > 20000) throw new Error("E2E_PORT_OFFSET không hợp lệ");
+if (!Number.isInteger(OFFSET) || OFFSET < 0 || OFFSET > 20000)
+  throw new Error("E2E_PORT_OFFSET không hợp lệ");
 export const PORTS = {
   backend: 9100 + OFFSET,
   backendB: 9101 + OFFSET,

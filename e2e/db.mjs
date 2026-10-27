@@ -11,14 +11,6 @@ async function withClient(fn) {
   }
 }
 
-/** Số đơn hàng (không tính nháp) trong DB E2E — để chứng minh reload/đặt lại không tạo đơn thứ hai. */
-export async function countOrders() {
-  return withClient(async (client) => {
-    const r = await client.query('SELECT count(*)::int AS n FROM "order" WHERE is_draft_order = false');
-    return r.rows[0].n;
-  });
-}
-
 /**
  * Dữ liệu cho luồng Store API gọi thẳng (e2e/scale-out.spec.ts): region đầu tiên và một biến thể của sản phẩm đã xuất bản
  * còn ≥ 5 tồn khả dụng (sau boost-stock.mjs).
