@@ -5,5 +5,12 @@
     "apps/backend": { "lines": 28.78, "branches": 83.1 },
     "apps/storefront": { "lines": 91.01, "branches": 80.99 },
     "packages/domain": { "lines": 99.83, "branches": 94.75 }
+  },
+  "integration": {
+    "$comment": "Nguồn integration (T-135, QA-COV-001): so bằng `node scripts/coverage-ratchet.mjs --suite integration` sau `pnpm --filter @x-shop/backend test:integration:coverage` (~35–45 phút, cần Postgres/Redis; CHƯA nối CI — docs/ops/perf/INTEGRATION-COVERAGE.md). Chỉ tăng: `--suite integration --update`.",
+    "measured": "2026-10-27 — pnpm --filter @x-shop/backend test:integration:coverage (provider v8, jest 29, TEST_TYPE=integration:http, Postgres/Redis cục bộ), Node 22.22.0, Linux x86_64; 46/47 suite xanh — shutdown.spec cần `pnpm build` trước, worktree chưa build nên số đo là cận dưới",
+    "packages": {
+      "apps/backend": { "lines": 91.85, "branches": 81.73 }
+    }
   }
 }
