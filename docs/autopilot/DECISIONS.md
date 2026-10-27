@@ -642,3 +642,10 @@
 - Chọn: Giữ: không ký giả (hai nhánh không khớp vẫn chạy cùng bước); redrive phát token mới hạn 15 phút từ lúc gửi; chấp nhận token trùng cùng giây (một link đổi được); STOREFRONT_URL bắt buộc ở production vào danh sách G7
 - Lý do (tiêu chí chất lượng cuối): (1) không lộ tồn tại đơn qua thời gian (nhánh khớp đã chậm hơn vì ghi DB, chênh lệch thật nằm ở outbox bất đồng bộ); token chỉ mở đúng đơn, một lần, gửi về chủ đơn nên phát mới khi redrive không mở rộng quyền; (3) không đổi domain cho ca hiếm
 - Đường lùi: Thêm nonce vào issueOrderToken; lọc sự kiện order.lookup_link quá hạn trong dispatcher
+
+### D-092 · 2026-10-27T09:10:26+00:00 · T-095: bộ đếm webhook khi DB lỗi; topology E2E hai bản sao
+
+- Phương án: (1) Fail-open + log warn (như rate limit Store; callback vẫn phải qua xác thực chữ ký); E2E: A mặc định (HTTP + job), B chỉ HTTP · (2) Fail-closed 503 khi bộ đếm lỗi; E2E cả hai bản chạy job
+- Chọn: Fail-open + log warn (như rate limit Store; callback vẫn phải qua xác thực chữ ký); E2E: A mặc định (HTTP + job), B chỉ HTTP
+- Lý do (tiêu chí chất lượng cuối): (1) giới hạn tần suất là lớp phụ sau xác thực callback, chặn callback thật khi DB chập chờn làm mất cập nhật vận đơn (tệ hơn); (3) topology E2E khớp triển khai dự kiến (một worker, nhiều server)
+- Đường lùi: Đổi nhánh lỗi của hitRateCounter sang 503; thêm MEDUSA_WORKER_MODE cho B
