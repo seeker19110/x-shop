@@ -1,13 +1,26 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as domain from "@x-shop/domain";
 import { describe, expect, it } from "vitest";
 import * as local from "./units";
 
+const DOMAIN_UNITS_SRC = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../packages/domain/src/units.ts",
+);
+const domainNames = [...readFileSync(DOMAIN_UNITS_SRC, "utf8").matchAll(/^export const (\w+)/gm)]
+  .map((m) => m[1]!)
+  .sort();
+
 describe("units (bản sao storefront)", () => {
-  it("giống hệt packages/domain/src/units.ts: cùng tên export, cùng giá trị, cùng kết quả hàm", () => {
-    const names = Object.keys(local).sort();
-    expect(names.length).toBeGreaterThan(10);
-    for (const n of names) {
+  it("tập tên export bằng đúng tập tên của packages/domain/src/units.ts (hai chiều)", () => {
+    expect(domainNames.length).toBeGreaterThan(10);
+    expect(Object.keys(local).sort()).toEqual(domainNames);
+  });
+  it("cùng giá trị, cùng kết quả hàm với domain", () => {
+    for (const n of domainNames) {
       const a = (local as Record<string, unknown>)[n];
       const b = (domain as Record<string, unknown>)[n];
       expect(typeof b, n).toBe(typeof a);

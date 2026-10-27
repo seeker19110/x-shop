@@ -1,4 +1,4 @@
-import { MS_PER_DAY } from "@x-shop/domain";
+import { MS_PER_DAY } from "./units";
 
 /**
  * Khoảng báo cáo chọn theo NGÀY (giờ Việt Nam, UTC+7) → cặp mốc `[from, to)` RFC 3339 có giây và offset mà API đòi.

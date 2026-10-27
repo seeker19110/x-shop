@@ -93,14 +93,17 @@ const BASE_RESTRICTED_SYNTAX = [
 
 /**
  * XC-UNITS-009 (T-120): không "số ma thuật" đổi đơn vị trong mã sản phẩm — dùng hằng/hàm ở
- * `packages/domain/src/units.ts` (storefront: `apps/storefront/src/lib/units.ts`). Bắt `x * 1000`, `x / 1000`,
- * `1024 * x`, `n / 1024`… (kể cả `1_000`). Hệ số làm tròn/đếm không phải đơn vị: đặt tên hằng riêng (vd `DURATION_MS_SCALE`).
+ * `packages/domain/src/units.ts` (bản sao: `apps/storefront/src/lib/units.ts`, `apps/backend/src/admin/lib/units.ts`). Bắt `x * 1000`, `x / 1000`,
+ * `1024 * x`, `n / 1024`… (kể cả `1_000`, `1e3`, `0x3e8`, `1000n`, `y *= 1000`). Hệ số làm tròn/đếm không phải đơn vị: đặt tên hằng riêng (vd `DURATION_MS_SCALE`).
  */
+const UNITS_MAGIC = ":matches(Literal[value=1000], Literal[value=1024])"; // so theo giá trị: bắt cả 1e3, 0x3e8, 1000.0, 1000n
+const UNITS_MESSAGE =
+  "Số ma thuật đổi đơn vị (XC-UNITS-009): dùng hằng/hàm ở units.ts (secondsToMs, msToSecondsCeil, kibToBytes, mibToBytes…).";
 const UNITS_RESTRICTED_SYNTAX = [
+  { selector: `BinaryExpression[operator=/^[*\\/]$/] > ${UNITS_MAGIC}`, message: UNITS_MESSAGE },
   {
-    selector: "BinaryExpression[operator=/^[*\\/]$/] > Literal[raw=/^(1000|1024|1_000|1_024)$/]",
-    message:
-      "Số ma thuật đổi đơn vị (XC-UNITS-009): dùng hằng/hàm ở units.ts (secondsToMs, msToSecondsCeil, kibToBytes, mibToBytes…).",
+    selector: "AssignmentExpression[operator=/^[*\\/]=$/]:matches([right.value=1000], [right.value=1024])",
+    message: UNITS_MESSAGE,
   },
 ];
 
@@ -192,6 +195,27 @@ export default tseslint.config(
     rules: { "no-console": "error" },
   },
   {
+    // Bundle Admin chạy trong trình duyệt: index `@x-shop/domain` kéo `node:fs`/`node:crypto` làm `medusa build` hỏng
+    // (RollupError). Chỉ `import type` được phép; cần giá trị thì dùng bản sao ở admin/lib (format, presence, units).
+    files: ["apps/backend/src/admin/**/*.{ts,tsx}"],
+    ignores: ["**/*.test.{ts,tsx}", "**/__tests__/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@x-shop/domain",
+              allowTypeImports: true,
+              message:
+                "Admin không được import giá trị từ @x-shop/domain (kéo node:fs vào bundle trình duyệt); dùng bản sao ở admin/lib hoặc `import type`.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // XC-UNITS-009: số ma thuật đổi đơn vị chỉ được nằm trong module đơn vị. Ghi đè no-restricted-syntax nên phải
     // lặp luật chung. Ngoại lệ có thời hạn: lib/outbox/retry.ts đang do tác vụ khác sửa (T-120 không đụng) — gỡ khi sửa xong.
     files: ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"],
@@ -200,6 +224,7 @@ export default tseslint.config(
       "**/__tests__/**",
       "packages/domain/src/units.ts",
       "apps/storefront/src/lib/units.ts",
+      "apps/backend/src/admin/lib/units.ts",
       "apps/backend/src/lib/outbox/retry.ts",
     ],
     rules: { "no-restricted-syntax": ["error", ...BASE_RESTRICTED_SYNTAX, ...UNITS_RESTRICTED_SYNTAX] },

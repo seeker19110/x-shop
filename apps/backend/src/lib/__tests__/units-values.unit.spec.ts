@@ -1,4 +1,5 @@
 import { SETTLEMENT_CONFIG } from "../../modules/settlement/constants";
+import { parseJsonBody } from "../audit/http";
 import { MAX_IMPORT_BYTES } from "../catalog/import";
 import { UPLOAD_LIMITS } from "../security/upload";
 import { MAX_CATALOG_CSV_BYTES, MAX_SETTLEMENT_CSV_BYTES } from "../../admin/lib/csv-file";
@@ -34,5 +35,21 @@ describe("giá trị cấu hình sau khi thay số ma thuật bằng hằng đơ
       ok: false,
       code: "SESSION_EXPIRED",
     });
+  });
+
+  it('trần body audit 64 KiB đo bằng BYTE UTF-8 (8000 ký tự "ệ" ×3 byte = 24000 B còn nhận; 22000 ký tự = 66000 B bị bỏ)', () => {
+    const body = (n: number) => JSON.stringify({ pad: "ệ".repeat(n) });
+    expect(parseJsonBody(body(8000))).toEqual({ pad: "ệ".repeat(8000) });
+    const big = body(22_000);
+    expect(big.length).toBeLessThan(64 * 1024); // đo theo ký tự thì lọt
+    expect(Buffer.byteLength(big, "utf8")).toBeGreaterThan(64 * 1024);
+    expect(parseJsonBody(big)).toBeNull();
+  });
+
+  it("parseJsonBody: rỗng, không phải object, Buffer → null", () => {
+    expect(parseJsonBody("")).toBeNull();
+    expect(parseJsonBody("[1]")).toBeNull();
+    expect(parseJsonBody(Buffer.from("{}"))).toBeNull();
+    expect(parseJsonBody("{}")).toEqual({});
   });
 });

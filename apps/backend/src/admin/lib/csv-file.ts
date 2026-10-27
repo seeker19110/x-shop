@@ -1,4 +1,4 @@
-import { bytesToMib, mibToBytes } from "@x-shop/domain";
+import { bytesToMib, mibToBytes } from "./units";
 
 /** Kiểm file CSV phía trình duyệt trước khi gửi (server vẫn kiểm lại — đây chỉ để báo sớm). */
 export const MAX_CATALOG_CSV_BYTES = mibToBytes(2);

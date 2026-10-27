@@ -13,7 +13,7 @@ function problem(status: number, code: string): Response {
 /** 204 khi hợp lệ; 400 JSON/schema sai hoặc dữ liệu giống PII; 413 quá lớn. Chưa lưu gì — chỉ đếm. */
 export async function POST(req: Request): Promise<Response> {
   const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) {
+  if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) {
     recordEvent(null);
     return problem(413, "TOO_LARGE");
   }

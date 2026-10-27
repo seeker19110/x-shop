@@ -557,9 +557,14 @@ async function recordFinished(
 export const ABORT_WAIT_MS = 15_000;
 
 const MAX_PARSED_BODY_BYTES = kibToBytes(64);
-function parseJsonBody(b: unknown): unknown {
+export function parseJsonBody(b: unknown): unknown {
   const text = Buffer.isBuffer(b) ? null : typeof b === "string" ? b : null;
-  if (text === null || text.length > MAX_PARSED_BODY_BYTES || !text.trimStart().startsWith("{")) return null;
+  if (
+    text === null ||
+    Buffer.byteLength(text, "utf8") > MAX_PARSED_BODY_BYTES ||
+    !text.trimStart().startsWith("{")
+  )
+    return null;
   try {
     return JSON.parse(text) as unknown;
   } catch {
