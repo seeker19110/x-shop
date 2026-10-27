@@ -656,3 +656,38 @@
 - Chọn: Đóng một phần: merge T-095 (limiter GHN Postgres + E2E hai bản sao), không tick ARC-RES-005, ghi Thiếu → T-152/T-153/T-154
 - Lý do (tiêu chí chất lượng cuối): (2)(3) lát nhỏ, mỗi việc có Gate riêng; phần đã làm đúng và có test; tick blueprint chỉ khi đủ bằng chứng nên không tick sai MUST
 - Đường lùi: Gộp T-152..T-154 vào một lát nếu muốn đóng ARC-RES-005 một lần
+
+### D-094 · 2026-10-27T10:26:32+00:00 · T-152: chặn sớm trong bộ nhớ không UPSERT nên cửa sổ trước nhẹ hơn sau đợt dội (cửa sổ kế cho qua sớm hơn vài lượt)
+
+- Phương án: (1) Chấp nhận: cùng cửa sổ quyết định y hệt; tổng lượt qua trong cửa sổ trượt vẫn ≤ hạn mức; Retry-After không dài hơn bộ đếm chung · (2) Gom lượt bị chặn sớm, ghi bù UPSERT +n bằng bộ flush nền
+- Chọn: Chấp nhận: cùng cửa sổ quyết định y hệt; tổng lượt qua trong cửa sổ trượt vẫn ≤ hạn mức; Retry-After không dài hơn bộ đếm chung
+- Lý do (tiêu chí chất lượng cuối): (1) hạn mức công bố vẫn giữ; (3) không thêm bộ flush nền và tham số tăng; mục tiêu giảm ghi DB khi bị dội đạt
+- Đường lùi: Thêm tham số tăng cho hitRateCounter và flush định kỳ số lượt bị chặn sớm
+
+### D-095 · 2026-10-27T10:40:26+00:00 · T-155: lỗi bù trừ catalog có mở exception vận hành không (OPS_EXCEPTION_KINDS chưa có kind phù hợp)
+
+- Phương án: (1) Giữ log error trong T-155; tách T-156 thêm kind catalog_compensation_failed (migration + labels + owner) như catalog_index_mismatch (D-040) · (2) Dùng lại kind sẵn có (catalog_index_mismatch/outbox_dead) · (3) Chỉ log, không bao giờ mở exception
+- Chọn: Giữ log error trong T-155; tách T-156 thêm kind catalog_compensation_failed (migration + labels + owner) như catalog_index_mismatch (D-040)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng nghĩa, hiện trên dashboard vận hành; (2) migration tách lát riêng có đường lùi; không làm bẩn kind cũ
+- Đường lùi: Bỏ T-156; giữ chỉ log
+
+### D-096 · 2026-10-27T10:51:02+00:00 · T-153: bỏ cache phí trong tiến trình làm mỗi lần quote đều hỏi GHN; phương thức thanh toán có là đầu vào định phí
+
+- Phương án: (1) Giữ: không cache ở route quote (đo giới hạn tần suất GHN thật trước khi thêm); phương thức thanh toán là đầu vào định phí (cách hiểu chặt) · (2) Thêm cache Redis cho route quote; bỏ điều kiện phương thức thanh toán
+- Chọn: Giữ: không cache ở route quote (đo giới hạn tần suất GHN thật trước khi thêm); phương thức thanh toán là đầu vào định phí (cách hiểu chặt)
+- Lý do (tiêu chí chất lượng cuối): (1) phí báo khách luôn mới; chặt hơn khi phí sau này phụ thuộc COD; (3) đơn giản, không thêm lớp cache; rate limit store đã chặn quote dồn dập
+- Đường lùi: Thêm cache Redis TTL ngắn cho quoteShippingFee; bỏ payment_method khỏi reusableShippingFee
+
+### D-097 · 2026-10-27T11:01:31+00:00 · Phản hồi 400 của Medusa chép giá trị admin vừa gửi (unique: '<Bảng> with k: v, already exists.') ra message/detail
+
+- Phương án: (1) Tách task T-157: error-handler trả thông điệp chung cho dạng dbErrorMapper unique/FK ở 4xx, giữ mã lỗi + tên trường (không giá trị); test admin vẫn hiểu lỗi · (2) Giữ nguyên
+- Chọn: Tách task T-157: error-handler trả thông điệp chung cho dạng dbErrorMapper unique/FK ở 4xx, giữ mã lỗi + tên trường (không giá trị); test admin vẫn hiểu lỗi
+- Lý do (tiêu chí chất lượng cuối): (1) 4xx không lộ chi tiết nội bộ/giá trị, kể cả với admin (log/proxy/APM có thể ghi body); (4) giữ tên trường để admin sửa được
+- Đường lùi: Bỏ mẫu khỏi INTERNAL_LEAK
+
+### D-098 · 2026-10-27T11:17:46+00:00 · T-152: lượt đang bay (chờ DB) có tính vào chặn sớm không — lệch chữ D-092 khi DB treo
+
+- Phương án: (1) Tính: giữ trần ghi DB khi bị dội; khi DB treo và > hạn mức lượt đang bay của một IP thì lượt sau 429, tự hết sau ≤ 2 cửa sổ · (2) Không tính lượt đang bay (mất trần ghi DB khi dội song song)
+- Chọn: Tính: giữ trần ghi DB khi bị dội; khi DB treo và > hạn mức lượt đang bay của một IP thì lượt sau 429, tự hết sau ≤ 2 cửa sổ
+- Lý do (tiêu chí chất lượng cuối): (1) không mở vector dội ghi DB; tác động chỉ khi DB treo — lúc đó handler cũng không xử lý được; giống limiter trong tiến trình cũ (300/10 s)
+- Đường lùi: Bỏ đếm ticket chưa có kết quả khỏi effective() trong LocalHitGuard
