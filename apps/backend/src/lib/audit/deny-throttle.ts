@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { msToSeconds } from "@x-shop/domain";
 
 /**
  * Giới hạn tần suất ghi audit cho lần bị từ chối (RBAC deny) — chống ngập audit log khi một actor (lỗi client, script,
@@ -49,7 +50,7 @@ export async function decideDenyAudit(
   now: Date = new Date(),
   onCounterError?: (e: unknown) => void,
 ): Promise<DenyThrottleDecision> {
-  const windowSeconds = DENY_AUDIT_THROTTLE.windowMs / 1000;
+  const windowSeconds = msToSeconds(DENY_AUDIT_THROTTLE.windowMs);
   let n: number;
   try {
     n = await counter(denyBucket(group), DENY_AUDIT_THROTTLE.windowMs, now);

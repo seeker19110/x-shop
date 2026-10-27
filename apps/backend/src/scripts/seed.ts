@@ -10,7 +10,7 @@ import {
   updateStoresWorkflow,
 } from "@medusajs/medusa/core-flows";
 import { withOwnedLock } from "../lib/checkout/locks";
-import { isNonEmpty } from "@x-shop/domain";
+import { isNonEmpty, secondsToMs } from "@x-shop/domain";
 
 /**
  * Seed nền của x-shop — idempotent: chạy lại (kể cả hai tiến trình cùng lúc) không tạo bản ghi trùng.
@@ -54,7 +54,7 @@ export default async function seedXShop({ container }: Pick<ExecArgs, "container
     container.resolve(Modules.LOCKING),
     SEED.lockKey,
     {
-      waitMs: SEED_LOCK_WAIT_SECONDS * 1000,
+      waitMs: secondsToMs(SEED_LOCK_WAIT_SECONDS),
       ttlSeconds: SEED_LOCK_TTL_SECONDS,
       scope: "seed",
       ownerPrefix: "seed",

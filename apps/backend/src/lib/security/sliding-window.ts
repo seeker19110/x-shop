@@ -1,3 +1,5 @@
+import { msToSecondsCeil } from "@x-shop/domain";
+
 /**
  * Xấp xỉ cửa sổ trượt cho mọi rate limit (T-055, D-034) — hàm thuần, không I/O, không đọc đồng hồ.
  *
@@ -137,5 +139,5 @@ export function slidingRetryAfterSeconds(
   windowMs: number,
   rule: NextRequestRule,
 ): number {
-  return Math.max(1, Math.ceil(retryDelayMs(sample, limit, windowMs, rule) / 1000));
+  return Math.max(1, msToSecondsCeil(retryDelayMs(sample, limit, windowMs, rule)));
 }

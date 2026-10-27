@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { CheckoutError } from "./errors";
+import { secondsToMs } from "@x-shop/domain";
 
 /**
  * Khóa phân tán cho checkout trên Locking Module của Medusa (provider Redis) — đặc tả §6.2 "khóa theo tài nguyên, thứ
@@ -107,7 +108,7 @@ function startRenewal(locking: LockingLike, ownerId: string, keys: string[], ttl
         });
       }
     },
-    Math.max(250, Math.floor((ttlSeconds * 1000) / 3)),
+    Math.max(250, Math.floor(secondsToMs(ttlSeconds) / 3)),
   );
   current.timer.unref?.();
 }

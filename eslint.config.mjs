@@ -47,6 +47,63 @@ function typedNullishRules(scopes) {
   }));
 }
 
+/** Luật `no-restricted-syntax` chung cho mọi file (mã sản phẩm thêm UNITS_RESTRICTED_SYNTAX). */
+const BASE_RESTRICTED_SYNTAX = [
+  {
+    selector:
+      "CallExpression[callee.property.name='catch'][arguments.0.type=/^(Arrow)?FunctionExpression$/][arguments.0.body.type='BlockStatement'][arguments.0.body.body.length=0]",
+    message:
+      "Không nuốt lỗi bằng .catch(() => {}) (BASE-ERR-001): xử lý, chuyển tiếp có ngữ cảnh hoặc ghi log.",
+  },
+  // XC-UNITS-001: thời điểm lưu/trao đổi là UTC RFC 3339 có offset; hiển thị theo múi giờ đi qua Intl.DateTimeFormat
+  // với timeZone tường minh, không qua toLocale* (phụ thuộc locale/múi giờ máy chạy).
+  {
+    selector:
+      "CallExpression[callee.property.name=/^toLocale/][callee.object.type='NewExpression'][callee.object.callee.name='Date']",
+    message:
+      "Cấm new Date().toLocale* (XC-UNITS-001): lưu/trao đổi bằng toISOString(); hiển thị bằng Intl.DateTimeFormat có timeZone tường minh.",
+  },
+  {
+    selector: "CallExpression[callee.property.name=/^toLocale(Date|Time)String$/]",
+    message:
+      "Cấm toLocaleDateString/toLocaleTimeString (XC-UNITS-001): dùng Intl.DateTimeFormat có timeZone tường minh.",
+  },
+  {
+    selector:
+      "NewExpression[callee.name='Date'][arguments.0.value=type(string)]:not([arguments.0.value=/(Z|[+-][0-9]{2}:[0-9]{2})$/])",
+    message:
+      "Cấm dựng Date từ chuỗi không offset (XC-UNITS-001): chuỗi phải RFC 3339 có Z hoặc ±hh:mm (chuỗi ngày trần/không offset đọc theo múi giờ máy).",
+  },
+  {
+    selector:
+      "CallExpression[callee.object.name='Date'][callee.property.name='parse'][arguments.0.value=type(string)]:not([arguments.0.value=/(Z|[+-][0-9]{2}:[0-9]{2})$/])",
+    message: "Cấm Date.parse chuỗi không offset (XC-UNITS-001): chuỗi phải RFC 3339 có Z hoặc ±hh:mm.",
+  },
+  {
+    selector: "NewExpression[callee.name='Date'][arguments.length>=2]",
+    message:
+      "Cấm new Date(năm, tháng, …) (XC-UNITS-001): dựng theo giờ địa phương của máy; dùng Date.UTC(...) hoặc chuỗi RFC 3339 có offset.",
+  },
+  {
+    selector:
+      "NewExpression[callee.name='Date'] > TemplateLiteral.arguments > TemplateElement[tail=true]:not([value.raw=/(Z|[+-][0-9]{2}:[0-9]{2})$/])",
+    message: "Cấm dựng Date từ template chuỗi không offset (XC-UNITS-001).",
+  },
+];
+
+/**
+ * XC-UNITS-009 (T-120): không "số ma thuật" đổi đơn vị trong mã sản phẩm — dùng hằng/hàm ở
+ * `packages/domain/src/units.ts` (storefront: `apps/storefront/src/lib/units.ts`). Bắt `x * 1000`, `x / 1000`,
+ * `1024 * x`, `n / 1024`… (kể cả `1_000`). Hệ số làm tròn/đếm không phải đơn vị: đặt tên hằng riêng (vd `DURATION_MS_SCALE`).
+ */
+const UNITS_RESTRICTED_SYNTAX = [
+  {
+    selector: "BinaryExpression[operator=/^[*\\/]$/] > Literal[raw=/^(1000|1024|1_000|1_024)$/]",
+    message:
+      "Số ma thuật đổi đơn vị (XC-UNITS-009): dùng hằng/hàm ở units.ts (secondsToMs, msToSecondsCeil, kibToBytes, mibToBytes…).",
+  },
+];
+
 export default tseslint.config(
   {
     ignores: [
@@ -125,49 +182,7 @@ export default tseslint.config(
       "@eslint-community/eslint-comments/no-unlimited-disable": "error",
       "@eslint-community/eslint-comments/no-unused-disable": "error",
       "no-empty": ["error", { allowEmptyCatch: false }],
-      "no-restricted-syntax": [
-        "error",
-        {
-          selector:
-            "CallExpression[callee.property.name='catch'][arguments.0.type=/^(Arrow)?FunctionExpression$/][arguments.0.body.type='BlockStatement'][arguments.0.body.body.length=0]",
-          message:
-            "Không nuốt lỗi bằng .catch(() => {}) (BASE-ERR-001): xử lý, chuyển tiếp có ngữ cảnh hoặc ghi log.",
-        },
-        // XC-UNITS-001: thời điểm lưu/trao đổi là UTC RFC 3339 có offset; hiển thị theo múi giờ đi qua Intl.DateTimeFormat
-        // với timeZone tường minh, không qua toLocale* (phụ thuộc locale/múi giờ máy chạy).
-        {
-          selector:
-            "CallExpression[callee.property.name=/^toLocale/][callee.object.type='NewExpression'][callee.object.callee.name='Date']",
-          message:
-            "Cấm new Date().toLocale* (XC-UNITS-001): lưu/trao đổi bằng toISOString(); hiển thị bằng Intl.DateTimeFormat có timeZone tường minh.",
-        },
-        {
-          selector: "CallExpression[callee.property.name=/^toLocale(Date|Time)String$/]",
-          message:
-            "Cấm toLocaleDateString/toLocaleTimeString (XC-UNITS-001): dùng Intl.DateTimeFormat có timeZone tường minh.",
-        },
-        {
-          selector:
-            "NewExpression[callee.name='Date'][arguments.0.value=type(string)]:not([arguments.0.value=/(Z|[+-][0-9]{2}:[0-9]{2})$/])",
-          message:
-            "Cấm dựng Date từ chuỗi không offset (XC-UNITS-001): chuỗi phải RFC 3339 có Z hoặc ±hh:mm (chuỗi ngày trần/không offset đọc theo múi giờ máy).",
-        },
-        {
-          selector:
-            "CallExpression[callee.object.name='Date'][callee.property.name='parse'][arguments.0.value=type(string)]:not([arguments.0.value=/(Z|[+-][0-9]{2}:[0-9]{2})$/])",
-          message: "Cấm Date.parse chuỗi không offset (XC-UNITS-001): chuỗi phải RFC 3339 có Z hoặc ±hh:mm.",
-        },
-        {
-          selector: "NewExpression[callee.name='Date'][arguments.length>=2]",
-          message:
-            "Cấm new Date(năm, tháng, …) (XC-UNITS-001): dựng theo giờ địa phương của máy; dùng Date.UTC(...) hoặc chuỗi RFC 3339 có offset.",
-        },
-        {
-          selector:
-            "NewExpression[callee.name='Date'] > TemplateLiteral.arguments > TemplateElement[tail=true]:not([value.raw=/(Z|[+-][0-9]{2}:[0-9]{2})$/])",
-          message: "Cấm dựng Date từ template chuỗi không offset (XC-UNITS-001).",
-        },
-      ],
+      "no-restricted-syntax": ["error", ...BASE_RESTRICTED_SYNTAX],
     },
   },
   {
@@ -175,6 +190,19 @@ export default tseslint.config(
     files: ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"],
     ignores: ["**/*.test.{ts,tsx}", "**/__tests__/**"],
     rules: { "no-console": "error" },
+  },
+  {
+    // XC-UNITS-009: số ma thuật đổi đơn vị chỉ được nằm trong module đơn vị. Ghi đè no-restricted-syntax nên phải
+    // lặp luật chung. Ngoại lệ có thời hạn: lib/outbox/retry.ts đang do tác vụ khác sửa (T-120 không đụng) — gỡ khi sửa xong.
+    files: ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"],
+    ignores: [
+      "**/*.test.{ts,tsx}",
+      "**/__tests__/**",
+      "packages/domain/src/units.ts",
+      "apps/storefront/src/lib/units.ts",
+      "apps/backend/src/lib/outbox/retry.ts",
+    ],
+    rules: { "no-restricted-syntax": ["error", ...BASE_RESTRICTED_SYNTAX, ...UNITS_RESTRICTED_SYNTAX] },
   },
   {
     // Test vitest: không .only/.skip, mỗi test có assertion (QA-STRAT-008, QA-COV-004).

@@ -1,4 +1,4 @@
-import { ghn, isNonEmpty } from "@x-shop/domain";
+import { ghn, isNonEmpty, secondsToMs } from "@x-shop/domain";
 import { quoteShipping } from "../checkout/shipping";
 import { parseRetryAfterMs, withRetry, type RetryDecision, type RetryDeps } from "../outbox/retry";
 import { getGhnConfig, GHN_RETRY_POLICY, SHIPPING_CONFIG, type GhnRuntimeConfig } from "./config";
@@ -276,7 +276,7 @@ export class MockModeGhnClient implements GhnClient {
     if (fault === "rate_limited") {
       throw new GhnError("unavailable", "GHN mock: http_429", {
         status: 429,
-        retryAfterMs: MOCK_RATE_LIMIT_RETRY_AFTER_SECONDS * 1000,
+        retryAfterMs: secondsToMs(MOCK_RATE_LIMIT_RETRY_AFTER_SECONDS),
       });
     }
     this.lastCreateBody = body;

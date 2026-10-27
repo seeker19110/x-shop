@@ -27,6 +27,8 @@ const SKIP = new Set(["/health", "/x/health", "/x/readyz"]);
 const TRACKED = Symbol.for("x-shop.log.access-tracked");
 const SPAN = Symbol.for("x-shop.log.span-id");
 const HOOKED = Symbol.for("x-shop.log.server-hook");
+/** Làm tròn `duration_ms` đến 3 chữ số thập phân (độ phân giải micro-giây) — hệ số làm tròn, KHÔNG phải đổi đơn vị. */
+const DURATION_MS_SCALE = 1000;
 export const MAX_PATH = 256;
 
 export function pathOf(req: { originalUrl?: unknown; url?: unknown }): string {
@@ -79,7 +81,7 @@ function trackAccess(req: ReqLike, res: ResLike, ctx: () => LogContext, fallback
           "http.request.method": req.method,
           "url.path": path,
           "http.response.status_code": res.statusCode,
-          duration_ms: Math.round(durationMs * 1000) / 1000,
+          duration_ms: Math.round(durationMs * DURATION_MS_SCALE) / DURATION_MS_SCALE,
           ...(aborted && { "http.aborted": true }),
         }),
       );

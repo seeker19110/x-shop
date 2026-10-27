@@ -10,6 +10,8 @@
  *  - người dùng huỷ (AbortSignal của người gọi) → dừng ngay, không retry.
  */
 
+import { secondsToMs } from "../units";
+
 export interface RetryOptions {
   /** Số lần thử LẠI tối đa (không tính lần đầu). Mặc định 3. */
   maxRetries?: number;
@@ -61,7 +63,7 @@ export function parseRetryAfterMs(value: string | null, now: number): number | n
   if (/^\d+$/.test(v)) {
     const s = Number(v);
     // Số quá lớn (> 2^53) vẫn là "chờ rất lâu", không phải "không có": Infinity vượt trần → dừng, không retry ngay.
-    return Number.isSafeInteger(s) ? s * 1000 : Number.POSITIVE_INFINITY;
+    return Number.isSafeInteger(s) ? secondsToMs(s) : Number.POSITIVE_INFINITY;
   }
   // Ngày HTTP luôn có chữ (tên thứ/tháng/GMT); `Date.parse("-3")` hay `"1.5"` lại ra ngày hợp lệ nên phải loại trước.
   if (!/[A-Za-z]/.test(v)) return null;

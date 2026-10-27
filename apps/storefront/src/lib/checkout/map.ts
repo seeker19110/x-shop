@@ -10,6 +10,7 @@ import type {
   SubmitResult,
 } from "./types";
 import { isNonEmpty } from "../presence";
+import { secondsToMs } from "../units";
 
 /**
  * Ánh xạ phản hồi THẬT của `/store/x/checkout/*` (xem `__fixtures__/` — lấy từ backend chạy thật) sang kiểu storefront.
@@ -204,7 +205,7 @@ export function mapSubmitResponse(
   if (code === "BUSY_RETRY") {
     const fromBody = int(body.retry_after_ms);
     // Header rỗng KHÔNG được thành 0 ms (Number("") === 0) — coi như thiếu.
-    const header = isNonEmpty(retryAfterHeader) ? Number(retryAfterHeader) * 1000 : NaN;
+    const header = isNonEmpty(retryAfterHeader) ? secondsToMs(Number(retryAfterHeader)) : NaN;
     const ms = fromBody ?? (Number.isFinite(header) ? header : BUSY_DEFAULT_MS);
     return { kind: "busy", retryAfterMs: Math.min(Math.max(ms, 0), BUSY_MAX_MS) };
   }

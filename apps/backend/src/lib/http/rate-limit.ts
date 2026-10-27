@@ -1,3 +1,5 @@
+import { msToSecondsCeil } from "@x-shop/domain";
+
 /**
  * Giới hạn tần suất nhẹ trong bộ nhớ tiến trình (cửa sổ cố định theo khóa). Dùng cho webhook công khai để chặn dội
  * request rẻ tiền; không thay cho giới hạn ở edge/proxy. Mỗi instance đếm riêng — chạy N bản sao thì hạn mức thật
@@ -34,7 +36,7 @@ export class FixedWindowLimiter {
   retryAfterSeconds(key: string, now = Date.now()): number {
     const cur = this.hits.get(key);
     if (!cur) return 1;
-    return Math.max(1, Math.ceil((cur.windowStart + this.windowMs - now) / 1000));
+    return Math.max(1, msToSecondsCeil(cur.windowStart + this.windowMs - now));
   }
 
   private prune(now: number): void {

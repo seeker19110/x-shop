@@ -1,3 +1,5 @@
+import { mibToBytes } from "@x-shop/domain";
+
 /**
  * Giá trị liệt kê + cấu hình của module `settlement` (T-028: đối soát COD/sao kê, chênh lệch, báo cáo — đặc tả §5.5,
  * AT14, SPEC-fulfillment S-304, SPEC-admin S-406). Một nguồn cho migration (CHECK), parser, service và route.
@@ -101,7 +103,7 @@ export const DEFAULT_SETTLEMENT_OWNER_ROLE = "accountant";
 
 export const SETTLEMENT_CONFIG = {
   /** Trần file nhập (byte) — kiểm trước khi giải mã. */
-  maxFileBytes: 1024 * 1024,
+  maxFileBytes: mibToBytes(1),
   /** Trần số dòng dữ liệu một batch. */
   maxRows: 5_000,
   /** Trần cột `integer` của Postgres (D-009) — vượt là lỗi dòng, không cắt. */

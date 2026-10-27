@@ -1,6 +1,6 @@
 import Redis from "ioredis";
 import { redisRequestOptions } from "../infra/timeouts";
-import { isNonEmpty } from "@x-shop/domain";
+import { isNonEmpty, msToSecondsCeil, secondsToMs } from "@x-shop/domain";
 
 /**
  * Kho khóa–giá trị có TTL cho trạng thái bảo mật dùng chung giữa các instance (nhàn rỗi phiên, bộ đếm rate limit).
@@ -113,12 +113,12 @@ export class MemoryStore implements SecurityStore {
     return this.live(key)?.value ?? null;
   }
   async set(key: string, value: string, ttlSeconds: number) {
-    this.data.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+    this.data.set(key, { value, expiresAt: Date.now() + secondsToMs(ttlSeconds) });
   }
   async incr(key: string, ttlSeconds: number) {
     const e = this.live(key);
     const n = (e ? Number(e.value) : 0) + 1;
-    this.data.set(key, { value: String(n), expiresAt: e?.expiresAt ?? Date.now() + ttlSeconds * 1000 });
+    this.data.set(key, { value: String(n), expiresAt: e?.expiresAt ?? Date.now() + secondsToMs(ttlSeconds) });
     return n;
   }
   async incrPeek(key: string, ttlSeconds: number, peekKey: string, cap: number = Number.MAX_SAFE_INTEGER) {
@@ -138,7 +138,7 @@ export class MemoryStore implements SecurityStore {
   }
   async ttl(key: string) {
     const e = this.live(key);
-    return e ? Math.ceil((e.expiresAt - Date.now()) / 1000) : -2;
+    return e ? msToSecondsCeil(e.expiresAt - Date.now()) : -2;
   }
   async ping() {}
   async close() {

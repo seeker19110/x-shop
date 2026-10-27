@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { ORDER_REF_RE } from "./map";
 import { isNonEmpty } from "../presence";
+import { msToSecondsFloor, SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from "../units";
 
 /**
  * Cookie phiên đơn (POST01): mỗi đơn một cookie `xs_order_<mã đơn>` chứa token ngắn hạn do backend ký. HttpOnly (JS
@@ -29,7 +30,9 @@ export async function readOrderAccess(ref: string): Promise<string | null> {
 export async function writeOrderAccess(ref: string, token: unknown, expiresAt: unknown): Promise<boolean> {
   if (!ORDER_REF_RE.test(ref) || typeof token !== "string" || !TOKEN_RE.test(token)) return false;
   const exp = typeof expiresAt === "string" ? Date.parse(expiresAt) : NaN;
-  const maxAge = Number.isNaN(exp) ? 3600 : Math.max(60, Math.floor((exp - Date.now()) / 1000));
+  const maxAge = Number.isNaN(exp)
+    ? SECONDS_PER_HOUR
+    : Math.max(SECONDS_PER_MINUTE, msToSecondsFloor(exp - Date.now()));
   const production = process.env.NODE_ENV === "production";
   const jar = await cookies();
   jar.set(orderCookieName(ref), token, orderCookieOptions(production, maxAge));

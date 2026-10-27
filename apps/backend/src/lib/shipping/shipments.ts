@@ -3,12 +3,13 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import {
   codAmount,
   ghn,
+  isNonEmpty,
+  msToSecondsCeil,
   type AddressSnapshot,
   type LedgerEntry,
   type QuoteBreakdown,
   type RefundState,
   type ShipmentState,
-  isNonEmpty,
 } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
@@ -345,7 +346,7 @@ async function createShipmentLocked(
     return {
       outcome: "pending",
       shipment,
-      ...(e.retryAfterMs !== null && { retryAfterSeconds: Math.ceil(e.retryAfterMs / 1000) }),
+      ...(e.retryAfterMs !== null && { retryAfterSeconds: msToSecondsCeil(e.retryAfterMs) }),
     };
   }
 }

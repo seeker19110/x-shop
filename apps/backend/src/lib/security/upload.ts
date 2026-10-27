@@ -2,6 +2,7 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import { normalizeAdminPath } from "../admin-security/route-match";
 import { sendProblem } from "../http/problem";
 import { INVALID_PATH, requestPath } from "../http/request-path";
+import { mibToBytes } from "@x-shop/domain";
 
 /**
  * Kiểm upload ảnh của Admin (`POST /admin/uploads`, multer của Medusa giữ file trong bộ nhớ) — SEC04, T-14:
@@ -15,10 +16,10 @@ import { INVALID_PATH, requestPath } from "../http/request-path";
  * Chưa làm (ngoài phạm vi, cần thư viện xử lý ảnh): giải mã/tái mã hoá ảnh và xoá metadata EXIF/GPS.
  */
 export const UPLOAD_LIMITS = {
-  maxFileBytes: 5 * 1024 * 1024,
+  maxFileBytes: mibToBytes(5),
   maxFiles: 10,
   /** Trần cả request (multipart có phần đầu mỗi file). */
-  maxRequestBytes: 20 * 1024 * 1024,
+  maxRequestBytes: mibToBytes(20),
 } as const;
 
 export type ImageType = "image/jpeg" | "image/png" | "image/webp" | "image/avif";

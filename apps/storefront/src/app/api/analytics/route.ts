@@ -1,9 +1,10 @@
 import { recordEvent } from "../../../lib/analytics/stats";
 import { validateEvent } from "../../../lib/analytics/validate";
+import { kibToBytes } from "../../../lib/units";
 
 export const dynamic = "force-dynamic";
 
-const MAX_BODY = 8 * 1024;
+const MAX_BODY_BYTES = kibToBytes(8);
 
 function problem(status: number, code: string): Response {
   return Response.json({ code }, { status, headers: { "Cache-Control": "no-store" } });
@@ -12,7 +13,7 @@ function problem(status: number, code: string): Response {
 /** 204 khi hợp lệ; 400 JSON/schema sai hoặc dữ liệu giống PII; 413 quá lớn. Chưa lưu gì — chỉ đếm. */
 export async function POST(req: Request): Promise<Response> {
   const text = await req.text();
-  if (text.length > MAX_BODY) {
+  if (text.length > MAX_BODY_BYTES) {
     recordEvent(null);
     return problem(413, "TOO_LARGE");
   }

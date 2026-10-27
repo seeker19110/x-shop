@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AdminSessionPolicy } from "./config";
 import type { SecurityStore } from "./store";
-import { isNonEmpty } from "@x-shop/domain";
+import { isNonEmpty, msToSecondsCeil, secondsToMs } from "@x-shop/domain";
 
 /**
  * Chính sách phiên admin (SEC02, SPEC-admin S-402) — hàm thuần + lớp lưu "lần thấy cuối" trong SecurityStore.
@@ -32,7 +32,7 @@ export function mfaCompletedAtMs(ctx: AdminAuthContext): number | null {
 export function sessionAnchorMs(ctx: AdminAuthContext): number | null {
   const mfa = mfaCompletedAtMs(ctx);
   if (mfa !== null) return mfa;
-  return typeof ctx.iat === "number" && Number.isFinite(ctx.iat) ? ctx.iat * 1000 : null;
+  return typeof ctx.iat === "number" && Number.isFinite(ctx.iat) ? secondsToMs(ctx.iat) : null;
 }
 
 /** Không có mốc → không thể áp hạn phiên → từ chối (fail-closed). */
@@ -44,9 +44,9 @@ export function evaluateSession(input: {
 }): { ok: true } | { ok: false; code: SessionCode } {
   const { anchorMs, lastSeenMs, nowMs, policy } = input;
   if (anchorMs === null) return { ok: false, code: "SESSION_EXPIRED" };
-  if (nowMs - anchorMs > policy.maxAgeSeconds * 1000) return { ok: false, code: "SESSION_EXPIRED" };
+  if (nowMs - anchorMs > secondsToMs(policy.maxAgeSeconds)) return { ok: false, code: "SESSION_EXPIRED" };
   const last = lastSeenMs ?? anchorMs;
-  if (nowMs - last > policy.idleSeconds * 1000) return { ok: false, code: "SESSION_IDLE" };
+  if (nowMs - last > secondsToMs(policy.idleSeconds)) return { ok: false, code: "SESSION_IDLE" };
   return { ok: true };
 }
 
@@ -58,7 +58,7 @@ export function evaluateMfa(
 ): { ok: true } | { ok: false; code: MfaCode } {
   const at = mfaCompletedAtMs(ctx);
   if (ctx.mfa_enabled !== true || at === null) return { ok: false, code: "MFA_REQUIRED" };
-  if (reauthSeconds !== null && nowMs - at > reauthSeconds * 1000)
+  if (reauthSeconds !== null && nowMs - at > secondsToMs(reauthSeconds))
     return { ok: false, code: "REAUTH_REQUIRED" };
   return { ok: true };
 }
@@ -90,7 +90,7 @@ export async function checkAndTouchSession(
     policy,
   });
   if (!verdict.ok) return verdict;
-  const remaining = Math.ceil((anchorMs + policy.maxAgeSeconds * 1000 - nowMs) / 1000);
+  const remaining = msToSecondsCeil(anchorMs + secondsToMs(policy.maxAgeSeconds) - nowMs);
   await store.set(key, String(nowMs), Math.max(1, remaining));
   return verdict;
 }

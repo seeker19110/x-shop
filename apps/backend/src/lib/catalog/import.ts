@@ -10,12 +10,13 @@ import {
 } from "@medusajs/medusa/core-flows";
 import {
   IMPORT_COLUMNS,
+  isNonEmpty,
+  mibToBytes,
   parseCsv,
   toCsv,
-  validateImport,
   type ImportRow,
   type ImportRowError,
-  isNonEmpty,
+  validateImport,
 } from "@x-shop/domain";
 import { CATALOG_IMPORT_MODULE } from "../../modules/catalog-import";
 import type CatalogImportModuleService from "../../modules/catalog-import/service";
@@ -26,7 +27,7 @@ import { colorOf, loadDictionary, sizeOf } from "./dictionary";
 import { loadProductSources } from "./product-source";
 
 /** Giới hạn file nhập (ADM02): 2 MB — đủ cho ~20.000 dòng, chặn file làm treo tiến trình. */
-export const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
+export const MAX_IMPORT_BYTES = mibToBytes(2);
 
 export interface PlannedVariant {
   line: number;

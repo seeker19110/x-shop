@@ -13,6 +13,7 @@ import {
 } from "./types";
 import { buildCartView, CART_FIELDS, type ProductLookup, type RawCart, type RawCartLine } from "./view";
 import { isNonEmpty } from "../presence";
+import { minutesToMs } from "../units";
 
 /**
  * Nghiệp vụ giỏ ở server: id giỏ ở cookie HttpOnly, thao tác qua Medusa Store API native (`/store/carts`,
@@ -29,7 +30,7 @@ export const cartEnabled = (): boolean => resolveDataSource() === "backend";
 /* ------------------------------------------------------------------ đọc */
 
 let regionCache: { id: string; at: number } | null = null;
-const REGION_TTL_MS = 10 * 60 * 1000;
+const REGION_TTL_MS = minutesToMs(10);
 
 /** Region tiền VND (kênh bán gắn theo publishable key). Cache ngắn trong tiến trình. */
 export async function getVnRegionId(now = Date.now()): Promise<string> {

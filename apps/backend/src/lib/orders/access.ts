@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { signLookupToken, verifyLookupToken, isNonEmpty } from "@x-shop/domain";
+import { isNonEmpty, secondsToMs, signLookupToken, verifyLookupToken } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CheckoutError } from "../checkout/errors";
@@ -70,7 +70,7 @@ export function readOrderToken(
   if (!r.ok) return null;
   const body = Buffer.from(token.split(".")[0] ?? "", "base64url").toString("utf8");
   const exp = Number(body.slice(body.lastIndexOf(".") + 1));
-  return { orderId: r.orderId, expiresAt: new Date(exp * 1000) };
+  return { orderId: r.orderId, expiresAt: new Date(secondsToMs(exp)) };
 }
 
 export const tokenHash = (token: string) => createHash("sha256").update(token, "utf8").digest("hex");

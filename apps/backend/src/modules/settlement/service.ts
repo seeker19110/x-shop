@@ -19,7 +19,7 @@ import {
 } from "./constants";
 import type { SettlementRow } from "./csv";
 import { classifyLine, nextSettlementState, type SettlementTarget } from "./match";
-import { isNonEmpty } from "@x-shop/domain";
+import { isNonEmpty, msToSecondsFloor } from "@x-shop/domain";
 
 export const BATCH_TABLE = "x_settlement_batch";
 export const LINE_TABLE = "x_settlement_line";
@@ -1067,7 +1067,7 @@ export default class SettlementModuleService {
               : (EXCEPTION_OWNER_ROLE[String(r.kind)] ?? "owner"),
           opened_at: opened.toISOString(),
           due_at: iso(r.due_at),
-          age_seconds: Math.max(0, Math.floor((now.getTime() - opened.getTime()) / 1000)),
+          age_seconds: Math.max(0, msToSecondsFloor(now.getTime() - opened.getTime())),
         };
       }),
       count: byKind.reduce((a, g) => a + g.count, 0),

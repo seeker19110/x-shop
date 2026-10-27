@@ -10,6 +10,7 @@ import {
   wouldExceedLimit,
 } from "../security/sliding-window";
 import type { SecurityStore } from "./store";
+import { secondsToMs } from "@x-shop/domain";
 
 /**
  * Rate limit đăng nhập/MFA theo nhiều tín hiệu (SEC03). Khóa trong kho là băm — không lưu email/IP thô.
@@ -49,7 +50,7 @@ function buckets(scope: LimitScope, identity: string | null, rawIp: string): Buc
   return out;
 }
 
-const windowMs = () => AUTH_RATE_LIMITS.windowSeconds * 1000;
+const windowMs = () => secondsToMs(AUTH_RATE_LIMITS.windowSeconds);
 /** Khoá Redis của bucket trong cửa sổ cố định số `index` (bội của cửa sổ từ epoch). */
 const windowKey = (b: Bucket, index: number) => `${b.key}:w${index}`;
 const windowIndex = (now: Date) => windowStartMs(windowMs(), now.getTime()) / windowMs();
