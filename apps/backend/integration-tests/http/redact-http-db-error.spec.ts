@@ -8,7 +8,8 @@ import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import { adminHeaders, noThrow, storeHeaders } from "../helpers/auth";
 import { createTestProduct } from "../helpers/catalog";
-import { setProductFashionWorkflow } from "../../src/workflows/fashion/set-product-fashion";
+import { FASHION_MODULE } from "../../src/modules/fashion";
+import type FashionModuleService from "../../src/modules/fashion/service";
 
 jest.setTimeout(180 * 1000);
 
@@ -255,6 +256,12 @@ medusaIntegrationTestRunner({
     /**
      * Review T-151 vòng 3, ca B/C: MikroORM nối `\n - detail: …`/`\n - hint: …` vào message và chép `detail` thành trường
      * riêng; Postgres đặt cả hàng vi phạm (`Failing row contains (…)`) hoặc khoá (`Key (…)=(…)`) vào detail.
+     *
+     * Từ T-144/T-155 route fashion làm sạch lỗi bước thay số đo (`sanitizedError`: chỉ tên lỗi + `code`/`constraint`, không
+     * `cause`) → lỗi DB thô không còn tới handler 500 qua route này. Mỗi ca kiểm HAI đường:
+     *  1. route fashion thật: 500, log chỉ có `code=…`/`constraint=…`, không giá trị, không `Failing row`;
+     *  2. lỗi THÔ thật lấy từ DB (module fashion → MikroORM) đi qua `xErrorHandler` → `logServerError` → logger dự án (route
+     *     `/store/x/categories` ném lỗi đó) — đường mục tiêu của T-151: giữ lỗi chính, detail đã băm, không lộ giá trị.
      */
     const MEASURE = {
       image_set: "moi-t151x",
@@ -265,130 +272,158 @@ medusaIntegrationTestRunner({
       size_worn: "m",
     };
     const MEASURE_LEAK = /(?<![\w:.])(?:173|131|127|139)(?![\w:])|moi-t151x/;
-    async function postFashionWith(setup: string, teardown: string, measurements: Record<string, unknown>[]) {
-      const container = getContainer();
-      const pg = container.resolve<{ raw(sql: string): Promise<unknown> }>(
+    function pgOf() {
+      return getContainer().resolve<{ raw(sql: string): Promise<unknown> }>(
         ContainerRegistrationKeys.PG_CONNECTION,
       );
-      const admin = (await adminHeaders(api, container)).headers;
-      const p = await createTestProduct(container);
-      await pg.raw(setup);
+    }
+    function captureStdout() {
       const lines: string[] = [];
       const write = jest.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
         lines.push(String(chunk));
         return true;
       }) as typeof process.stdout.write);
+      return { lines, restore: () => write.mockRestore() };
+    }
+
+    async function postFashionWith(setup: string, teardown: string, measurements: Record<string, unknown>[]) {
+      const container = getContainer();
+      const admin = (await adminHeaders(api, container)).headers;
+      const p = await createTestProduct(container);
+      await pgOf().raw(setup);
+      const out = captureStdout();
       let res: Awaited<ReturnType<typeof api.post>>;
       try {
         res = await api.post(
           `/admin/x/products/${p.id}/fashion`,
-          {
-            attributes: { kind: "apparel", material: "cotton" },
-            model_measurements: measurements,
-          },
+          { attributes: { kind: "apparel", material: "cotton" }, model_measurements: measurements },
           { headers: admin, ...noThrow },
         );
         await new Promise((r) => setTimeout(r, 200));
       } finally {
-        write.mockRestore();
-        await pg.raw(teardown);
+        out.restore();
+        await pgOf().raw(teardown);
       }
-      const logged = lines.filter((l) => l.includes('"level":"error"')).join("");
-      return { status: res.status, logged, body: res.data };
+      const logged = out.lines.filter((l) => l.includes('"level":"error"')).join("");
+      return { status: res.status, logged };
     }
 
-    it("vòng 3 ca B: CHECK thật → 500, log giữ lỗi chính, băm `Failing row contains`", async () => {
-      const { status, logged } = await postFashionWith(
-        "alter table fashion_model_measurement add constraint t151_chk check (height_cm <> 173) not valid",
-        "alter table fashion_model_measurement drop constraint t151_chk",
-        [MEASURE],
-      );
-      expect(status).toBe(500);
-      expect(logged).toContain('violates check constraint \\\\\\"t151_chk\\\\\\"');
-      expect(logged).toMatch(/Failing row contains \(\[h:[0-9a-f]{8}\], \[h:[0-9a-f]{8}\]/);
-      expect(logged).not.toMatch(MEASURE_LEAK);
-    });
+    /** Lỗi thật khi ghi số đo qua module fashion (MikroORM; Medusa `dbErrorMapper` có thể đổi unique/NOT NULL). */
+    async function rawFashionError(setup: string, teardown: string, measurements: Record<string, unknown>[]) {
+      const fashion = getContainer().resolve<FashionModuleService>(FASHION_MODULE);
+      const attrs = (await fashion.createFashionProductAttributes({
+        kind: "apparel",
+      } as never)) as unknown as {
+        id: string;
+      };
+      await pgOf().raw(setup);
+      try {
+        await fashion.createModelMeasurements(
+          measurements.map((m) => ({ ...m, attributes_id: attrs.id })) as never,
+        );
+      } catch (e) {
+        return e;
+      } finally {
+        await pgOf().raw(teardown);
+      }
+      throw new Error("ghi số đo phải lỗi");
+    }
 
-    /**
-     * NOT NULL/unique: Medusa trả 400 (log chỉ ghi dòng info không kèm lỗi) → kiểm thêm lỗi THẬT của MikroORM (chạy workflow
-     * trực tiếp) qua logger dự án: giữ lỗi chính + tên ràng buộc, hàng/khoá trong detail đã băm.
-     */
-    async function workflowErrorLine(
-      setup: string,
-      teardown: string,
-      measurements: Record<string, unknown>[],
-    ) {
-      const container = getContainer();
-      const pg = container.resolve<{ raw(sql: string): Promise<unknown> }>(
-        ContainerRegistrationKeys.PG_CONNECTION,
-      );
-      const p = await createTestProduct(container);
+    /** Ném `err` NGUYÊN VẸN từ một route thật → handler 500 → logger dự án; trả các dòng log lỗi. */
+    async function logThrough500(err: unknown) {
+      const index = getContainer().resolve<CatalogIndexModuleService>(CATALOG_INDEX_MODULE);
+      const spy = jest.spyOn(index, "categoryCounts").mockRejectedValue(err);
+      const out = captureStdout();
+      let res: Awaited<ReturnType<typeof api.get>>;
+      try {
+        res = await api.get("/store/x/categories", { headers: store, ...noThrow });
+      } finally {
+        out.restore();
+        spy.mockRestore();
+      }
+      expect(res.status).toBe(500);
+      const logged = out.lines.filter((l) => l.includes('"level":"error"')).join("");
+      expect(logged).toContain(String(res.data.trace_id));
+      return logged;
+    }
+
+    function loggedDirect(err: unknown) {
       const lines: string[] = [];
-      const logger = createLogger({
+      createLogger({
         service: "t",
         version: "0",
         env: "test",
         level: "error",
         write: (l) => lines.push(l),
-      });
-      await pg.raw(setup);
-      let thrown: unknown = new Error("workflow phải lỗi");
-      try {
-        await setProductFashionWorkflow(container).run({
-          input: {
-            product_id: p.id,
-            attributes: { kind: "apparel", material: "cotton" },
-            model_measurements: measurements as never,
-          },
-        });
-      } catch (e) {
-        thrown = e;
-      } finally {
-        await pg.raw(teardown);
-      }
-      logger.error("ghi DB thất bại", thrown as Error); // có thể là object thường
+      }).error(
+        "ghi DB thất bại",
+        err as Error, // có thể không phải Error — logger xử lý lúc chạy
+      );
       return lines[0]!;
     }
 
-    it("vòng 3: NOT NULL thật qua route (400) và workflow (dbErrorMapper) → log không lộ", async () => {
+    it("vòng 3 ca B: CHECK thật — route fashion chỉ log code/constraint; lỗi thô qua handler 500 băm `Failing row`", async () => {
+      const setup =
+        "alter table fashion_model_measurement add constraint t151_chk check (height_cm <> 173) not valid";
+      const teardown = "alter table fashion_model_measurement drop constraint t151_chk";
+      const route = await postFashionWith(setup, teardown, [MEASURE]);
+      expect(route.status).toBe(500);
+      expect(route.logged).toContain("code=23514");
+      expect(route.logged).toContain("constraint=t151_chk");
+      expect(route.logged).not.toContain("Failing row");
+      expect(route.logged).not.toMatch(MEASURE_LEAK);
+
+      const raw = await rawFashionError(setup, teardown, [MEASURE]);
+      expect(String((raw as Error).message)).toMatch(/173/); // đối chứng: lỗi thô chứa giá trị
+      const logged = await logThrough500(raw);
+      expect(logged).toMatch(/violates check constraint \\+"t151_chk\\+"/);
+      expect(logged).toMatch(/Failing row contains \(\[h:[0-9a-f]{8}\], \[h:[0-9a-f]{8}\]/);
+      expect(logged).not.toMatch(MEASURE_LEAK);
+    });
+
+    it("vòng 3: NOT NULL thật — route fashion 500 không lộ; lỗi dbErrorMapper qua logger không lộ", async () => {
       const { chest_cm: _omit, ...withoutChest } = MEASURE;
       const setup = "alter table fashion_model_measurement alter column chest_cm set not null";
       const teardown = "alter table fashion_model_measurement alter column chest_cm drop not null";
-      const { status, logged, body } = await postFashionWith(setup, teardown, [withoutChest]);
-      expect(status).toBe(400);
-      expect(logged + JSON.stringify(body)).not.toMatch(MEASURE_LEAK);
-      const line = await workflowErrorLine(setup, teardown, [withoutChest]);
+      const route = await postFashionWith(setup, teardown, [withoutChest]);
+      expect(route.status).toBe(500);
+      expect(route.logged).not.toContain("Failing row");
+      expect(route.logged).not.toMatch(MEASURE_LEAK);
+      const line = loggedDirect(await rawFashionError(setup, teardown, [withoutChest]));
       // Medusa `dbErrorMapper` đổi NOT NULL thành thông điệp không mang giá trị.
       expect(line).toContain("Cannot set field 'chest_cm' of Fashion model measurement to null");
       expect(line).not.toMatch(MEASURE_LEAK);
     });
 
-    it("vòng 3: unique thật qua route (400) và workflow (dbErrorMapper chép giá trị) → giá trị đã băm", async () => {
+    it("vòng 3: unique thật — route fashion 500 không lộ; dbErrorMapper chép giá trị → logger băm", async () => {
       const setup = "create unique index t151_uq on fashion_model_measurement (height_cm, hip_cm)";
       const teardown = "drop index t151_uq";
       const twins = [MEASURE, { ...MEASURE, size_worn: "l" }];
-      const { status, logged, body } = await postFashionWith(setup, teardown, twins);
-      expect(status).toBe(400);
-      expect(logged).not.toMatch(MEASURE_LEAK);
-      void body; // phản hồi 400 của Medusa chép giá trị người gửi vào message — ngoài phạm vi log (báo cáo)
-      const line = await workflowErrorLine(setup, teardown, twins);
-      // Medusa `dbErrorMapper` chép giá trị khoá vào văn xuôi → luật riêng băm từng giá trị.
+      const route = await postFashionWith(setup, teardown, twins);
+      expect(route.status).toBe(500);
+      expect(route.logged).not.toMatch(MEASURE_LEAK);
+      const raw = await rawFashionError(setup, teardown, twins);
+      expect(String((raw as Error).message)).toMatch(/height_cm: 173/); // đối chứng
+      const line = loggedDirect(raw);
       expect(line).toMatch(
         /Fashion model measurement with height_cm: \[h:[0-9a-f]{8}\], hip_cm: \[h:[0-9a-f]{8}\], already exists\./,
       );
       expect(line).not.toMatch(MEASURE_LEAK);
     });
 
-    it("vòng 3 ca C: raise … using detail, hint → giữ lỗi chính, detail và hint", async () => {
-      const { status, logged } = await postFashionWith(
+    it("vòng 3 ca C: raise … using detail, hint — route fashion chỉ log code; lỗi thô qua handler 500 giữ lỗi, detail, hint", async () => {
+      const setup =
         "create function t151c_boom() returns trigger language plpgsql as $$ begin if NEW.height_cm = 173 then " +
-          "raise exception 'chiều cao vượt ngưỡng' using detail = 'giá trị gửi lên không hợp lệ', hint = 'kiểm tra dữ liệu'; " +
-          "end if; return NEW; end $$; " +
-          "create trigger t151c_tg before insert on fashion_model_measurement for each row execute function t151c_boom()",
-        "drop trigger t151c_tg on fashion_model_measurement; drop function t151c_boom();",
-        [MEASURE],
-      );
-      expect(status).toBe(500);
+        "raise exception 'chiều cao vượt ngưỡng' using detail = 'giá trị gửi lên không hợp lệ', hint = 'kiểm tra dữ liệu'; " +
+        "end if; return NEW; end $$; " +
+        "create trigger t151c_tg before insert on fashion_model_measurement for each row execute function t151c_boom()";
+      const teardown = "drop trigger t151c_tg on fashion_model_measurement; drop function t151c_boom();";
+      const route = await postFashionWith(setup, teardown, [MEASURE]);
+      expect(route.status).toBe(500);
+      expect(route.logged).toContain("code=P0001");
+      expect(route.logged).not.toMatch(MEASURE_LEAK);
+
+      const logged = await logThrough500(await rawFashionError(setup, teardown, [MEASURE]));
       expect(logged).toContain("[REDACTED] - chiều cao vượt ngưỡng");
       expect(logged).toContain(" - detail: giá trị gửi lên không hợp lệ");
       expect(logged).toContain(" - hint: kiểm tra dữ liệu");
