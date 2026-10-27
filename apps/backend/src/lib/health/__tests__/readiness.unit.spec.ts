@@ -70,10 +70,17 @@ describe("checkReadiness", () => {
   });
 
   it("probe chạy song song: hai probe treo → tổng ≈ một hạn", async () => {
-    const t0 = Date.now();
-    const r = await checkReadiness({ database: never, redis: never }, 80);
-    expect(r).toEqual({ ready: false, failed: ["database", "redis"] });
-    expect(Date.now() - t0).toBeLessThan(150);
+    // Đồng hồ giả: đo wall-clock (< 150 ms) từng đỏ khi máy tải nặng (328 ms). Tiến đúng MỘT hạn mà đã có kết quả
+    // ⇒ hai hạn chạy cùng lúc; chạy tuần tự sẽ cần hai hạn (160 ms) nên còn treo.
+    jest.useFakeTimers();
+    try {
+      let r: Awaited<ReturnType<typeof checkReadiness>> | undefined;
+      void checkReadiness({ database: never, redis: never }, 80).then((v) => (r = v));
+      await jest.advanceTimersByTimeAsync(80);
+      expect(r).toEqual({ ready: false, failed: ["database", "redis"] });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
