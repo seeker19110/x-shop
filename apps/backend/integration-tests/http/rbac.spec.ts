@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
@@ -54,6 +54,74 @@ function scanRouteFiles(): { method: string; path: string; file: string }[] {
   walk(ADMIN_X_DIR);
   return out;
 }
+
+/** Cây route GET admin native của Medusa đang cài (`@medusajs/medusa/dist/api/admin/**\/route.js`) — T-147. */
+function coreNativeGetRoutes(): string[] {
+  const root = join(dirname(require.resolve("@medusajs/medusa/package.json")), "dist/api/admin");
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name === "route.js" && /\bexports\.GET\s*=/.test(readFileSync(full, "utf8"))) {
+        const rel = relative(root, dir).split(sep).filter(Boolean);
+        out.push(["/admin", ...rel.map((s) => s.replace(/^\[(.+)\]$/, ":$1"))].join("/"));
+      }
+    }
+  };
+  walk(root);
+  return out.sort();
+}
+
+/**
+ * Lời gọi admin của dashboard Medusa đang cài (T-147): tên `sdk.admin.<tài nguyên>.<hàm>` trong bundle
+ * `@medusajs/dashboard/dist`, ánh xạ sang `METHOD /admin/...` theo mã `@medusajs/js-sdk/dist/esm/admin` mà dashboard phụ
+ * thuộc (`:p` = tham số đường dẫn). `unmapped` ≠ [] = định dạng js-sdk đổi — test đỏ thay vì bỏ sót im lặng.
+ */
+function dashboardNativeCalls(): { used: number; calls: Map<string, string>; unmapped: string[] } {
+  const dash = dirname(require.resolve("@medusajs/dashboard/package.json"));
+  const used = new Set<string>();
+  for (const f of readdirSync(join(dash, "dist")).filter((n) => /\.m?js$/.test(n)))
+    for (const m of readFileSync(join(dash, "dist", f), "utf8").matchAll(/sdk\.admin\.(\w+)\.(\w+)/g))
+      used.add(`${m[1]}.${m[2]}`);
+  const sdkAdmin = join(dirname(require.resolve("@medusajs/js-sdk", { paths: [dash] })), "esm/admin");
+  const index = readFileSync(join(sdkAdmin, "index.js"), "utf8");
+  const propOf = new Map([...index.matchAll(/this\.(\w+) = new (\w+)\(/g)].map((m) => [m[2]!, m[1]!]));
+  const calls = new Map<string, string>();
+  for (const f of readdirSync(sdkAdmin).filter((n) => n.endsWith(".js") && n !== "index.js")) {
+    const src = readFileSync(join(sdkAdmin, f), "utf8");
+    const prop = propOf.get(/^(?:export (?:default )?)?class (\w+)/m.exec(src)?.[1] ?? "");
+    if (!prop) continue;
+    const consts = new Map([...src.matchAll(/const (\w+) = "(\/admin[^"]*)"/g)].map((m) => [m[1]!, m[2]!]));
+    for (const m of src.matchAll(/\n {4}(\w+)\([^)]*\) \{([\s\S]*?)\n {4}\}/g)) {
+      const key = `${prop}.${m[1]}`;
+      if (!used.has(key)) continue;
+      const call = /this\.client\.fetch\(\s*(`[^`]*`|"[^"]*"|\w+)\s*(,\s*\{([^}]*)\})?/.exec(m[2]!);
+      if (!call) continue;
+      const first = call[1]!;
+      const raw = /^\w+$/.test(first) ? (consts.get(first) ?? first) : first.slice(1, -1);
+      const path = raw
+        .replace(/\$\{(\w+)\}/g, (s, v: string) => consts.get(v) ?? s)
+        .replace(/\$\{[^}]+\}/g, ":p");
+      calls.set(key, `${/method:\s*"(\w+)"/.exec(call[3] ?? "")?.[1] ?? "GET"} ${path}`);
+    }
+  }
+  return { used: used.size, calls, unmapped: [...used].filter((k) => !calls.has(k)).sort() };
+}
+
+/**
+ * Route GET native Medusa CỐ Ý để đóng mặc định (403 với mọi vai trò, kể cả owner) — dashboard 2.22.1 không gọi; mỗi mục
+ * có lý do. Route GET native mới (nâng cấp Medusa) chưa khai và không có ở đây → test đỏ, buộc phân loại.
+ */
+const UNDECLARED_BY_DESIGN: Record<string, string> = {
+  "/admin/index/details": "chẩn đoán Index Module (cờ index_engine), dashboard không dùng",
+  "/admin/uploads/:id":
+    "dashboard chỉ upload (POST); file private chỉ tải qua GET /admin/x/files/:key (T-141)",
+  "/admin/fulfillment-sets/:id/service-zones/:zone_id": "dashboard đọc vùng giao qua stock-locations",
+};
+
+/** Mẫu Express → path cụ thể để tra quy tắc (mọi tham số = `x1`). */
+const concretePath = (pattern: string) => pattern.replace(/:\w+/g, "x1").toLowerCase();
 
 /**
  * T-145: cài hook server của `medusa start` (instrumentation.ts) lên `http.createServer` TRƯỚC khi runner dựng app — server
@@ -266,6 +334,310 @@ medusaIntegrationTestRunner({
         expect((await call("GET", "/admin/x/size-charts", basic)).status).toBe(403);
         expect((await call("POST", "/admin/api-keys", basic, { title: "x", type: "secret" })).status).toBe(
           403,
+        );
+      });
+    });
+
+    describe("T-147: đọc native đóng mặc định — liệt kê theo màn hình dashboard, PII chỉ cho vai trò cần", () => {
+      const UNDECLARED = { kind: "deny", reason: "UNDECLARED_ROUTE" } as const;
+
+      it("mọi route GET dashboard Medusa gọi (bundle + js-sdk) đều có trong cây route và đã khai trong bảng native", () => {
+        const { used, calls, unmapped } = dashboardNativeCalls();
+        expect(unmapped).toEqual([]);
+        expect(used).toBeGreaterThanOrEqual(300);
+        const gets = [...new Set([...calls.values()].filter((c) => c.startsWith("GET ")))].map((c) =>
+          c.slice(4),
+        );
+        expect(gets.length).toBeGreaterThanOrEqual(100);
+        const core = coreNativeGetRoutes();
+        const asRegex = (pattern: string) => new RegExp(`^${pattern.replace(/:\w+/g, "[^/]+")}$`);
+        const problems: string[] = [];
+        for (const path of gets) {
+          const concrete = concretePath(path);
+          if (!core.some((c) => asRegex(c.toLowerCase()).test(concrete)))
+            problems.push(`${path}: không có route`);
+          const rule = resolveAdminRule("GET", concrete);
+          if (rule.kind === "deny") problems.push(`${path}: ${rule.reason}`);
+        }
+        expect(problems).toEqual([]);
+      });
+
+      it("mọi route GET native của Medusa: đã khai, hoặc cố ý đóng (UNDECLARED_BY_DESIGN có lý do); không mục thừa", () => {
+        const core = coreNativeGetRoutes();
+        expect(core.length).toBeGreaterThanOrEqual(100);
+        const undeclared = core.filter((path) => {
+          const rule = resolveAdminRule("GET", concretePath(path));
+          return rule.kind === UNDECLARED.kind && rule.reason === UNDECLARED.reason;
+        });
+        expect(undeclared).toEqual(Object.keys(UNDECLARED_BY_DESIGN).sort());
+      });
+
+      /**
+       * Màn hình dashboard → route đọc (nguồn: hook `src/hooks/api/*` mà `src/routes/<màn>` của @medusajs/dashboard 2.22.1
+       * dùng) → vai trò được đọc. Vai trò khác → 403. Route có cờ tính năng tắt (locales, translations, property-labels, views,
+       * rbac) không đăng ký (404) nên chỉ kiểm tĩnh ở hai test trên.
+       */
+      const SCREENS: { screen: string; urls: string[]; roles: Role[] }[] = [
+        {
+          screen:
+            "khung dashboard + bộ lọc (header cửa hàng, vùng, kênh bán, tiền tệ, plugin, lý do đổi trả/hoàn)",
+          urls: [
+            "/admin/stores",
+            "/admin/regions",
+            "/admin/sales-channels",
+            "/admin/currencies",
+            "/admin/plugins",
+            "/admin/return-reasons",
+            "/admin/refund-reasons",
+          ],
+          roles: [...ROLES],
+        },
+        {
+          screen:
+            "catalog (sản phẩm, biến thể, danh mục, bộ sưu tập, tag, loại, tuỳ chọn, hồ sơ giao, giá gồm thuế)",
+          urls: [
+            "/admin/products",
+            "/admin/product-variants",
+            "/admin/product-categories",
+            "/admin/collections",
+            "/admin/product-tags",
+            "/admin/product-types",
+            "/admin/product-options",
+            "/admin/shipping-profiles",
+            "/admin/price-preferences",
+          ],
+          roles: ["owner", "catalog_manager", "warehouse"],
+        },
+        {
+          screen: "bảng giá / khuyến mãi / chiến dịch",
+          urls: ["/admin/price-lists", "/admin/promotions", "/admin/campaigns"],
+          roles: ["owner", "catalog_manager"],
+        },
+        {
+          screen: "kho (tồn, giữ hàng, kho hàng)",
+          urls: ["/admin/inventory-items", "/admin/reservations", "/admin/stock-locations"],
+          roles: ["owner", "catalog_manager", "order_staff", "warehouse"],
+        },
+        {
+          screen: "đơn hàng (đơn, đổi trả, khiếu nại, đổi hàng, đơn nháp) — PII",
+          urls: [
+            "/admin/orders",
+            "/admin/returns",
+            "/admin/claims",
+            "/admin/exchanges",
+            "/admin/draft-orders",
+          ],
+          roles: ["owner", "order_staff", "accountant"],
+        },
+        {
+          screen: "khách hàng (danh sách, nhóm) — PII",
+          urls: ["/admin/customers", "/admin/customer-groups"],
+          roles: ["owner", "order_staff", "accountant"],
+        },
+        {
+          screen: "form tạo vận đơn (phương án giao)",
+          urls: ["/admin/shipping-options"],
+          roles: ["owner", "order_staff"],
+        },
+        {
+          screen: "thanh toán",
+          urls: ["/admin/payments", "/admin/payments/payment-providers"],
+          roles: ["owner", "accountant"],
+        },
+        {
+          screen: "người dùng / lời mời — PII nhân sự",
+          urls: ["/admin/users", "/admin/invites"],
+          roles: ["owner"],
+        },
+        {
+          screen: "cài đặt chỉ owner (khoá API, thông báo, tìm kiếm toàn cục, thuế, vận chuyển, workflow)",
+          urls: [
+            "/admin/api-keys",
+            "/admin/notifications",
+            "/admin/search?q=a",
+            "/admin/search-indexes",
+            "/admin/tax-regions",
+            "/admin/tax-rates",
+            "/admin/tax-providers",
+            "/admin/fulfillment-providers",
+            "/admin/shipping-option-types",
+            "/admin/workflows-executions",
+          ],
+          roles: ["owner"],
+        },
+      ];
+
+      it.each(SCREENS.map((s) => [s.screen, s] as const))(
+        "màn %s: vai trò cần → 200, vai trò khác → 403",
+        async (_name, { urls, roles }) => {
+          const actual: { url: string; role: string; status: number }[] = [];
+          const expected: typeof actual = [];
+          for (const url of urls) {
+            for (const role of ROLES) {
+              const res = await call("GET", url, accounts[role].headers);
+              actual.push({ url, role, status: res.status });
+              expected.push({ url, role, status: roles.includes(role) ? 200 : 403 });
+            }
+            actual.push({
+              url,
+              role: "(không vai trò)",
+              status: (await call("GET", url, noRole.headers)).status,
+            });
+            expected.push({ url, role: "(không vai trò)", status: 403 });
+          }
+          expect(actual).toEqual(expected);
+        },
+      );
+
+      it("PII thật: CSKH/kho/catalog bị chặn ở khách, địa chỉ, đơn, người dùng, tìm kiếm toàn cục — không lộ email/SĐT", async () => {
+        const EMAIL = "khach-t147@example.test";
+        const PHONE = "0987654321";
+        const [customer] = await container.resolve(Modules.CUSTOMER).createCustomers([
+          {
+            email: EMAIL,
+            phone: PHONE,
+            first_name: "Khach",
+            last_name: "T147",
+            addresses: [{ phone: PHONE }],
+          },
+        ]);
+        const id = customer!.id;
+        const pii = [
+          `/admin/customers/${id}`,
+          `/admin/customers/${id}/addresses`,
+          `/admin/customers?q=${encodeURIComponent(EMAIL)}`,
+          `/admin/search?q=${encodeURIComponent(EMAIL)}`,
+          `/admin/users/${accounts.owner.userId}`,
+          "/admin/users",
+          "/admin/notifications",
+        ];
+        const leaks = (data: unknown) => {
+          const text = JSON.stringify(data);
+          return text.includes(EMAIL) || text.includes(PHONE) || text.includes(accounts.owner.email);
+        };
+        for (const role of ["support", "warehouse", "catalog_manager"] as const) {
+          for (const url of pii) {
+            const res = await call("GET", url, accounts[role].headers);
+            expect({ role, url, status: res.status, code: res.data.code, leak: leaks(res.data) }).toEqual({
+              role,
+              url,
+              status: 403,
+              code: "FORBIDDEN",
+              leak: false,
+            });
+          }
+        }
+        // Vai trò cần (đơn/kế toán) đọc được hồ sơ khách; người dùng/tìm kiếm toàn cục chỉ owner.
+        for (const role of ["order_staff", "accountant", "owner"] as const) {
+          const res = await call("GET", `/admin/customers/${id}?fields=*addresses`, accounts[role].headers);
+          expect({ role, status: res.status }).toEqual({ role, status: 200 });
+          expect((res.data.customer as { email: string }).email).toBe(EMAIL);
+        }
+        for (const role of ["order_staff", "accountant"] as const) {
+          for (const url of [`/admin/users/${accounts.owner.userId}`, `/admin/search?q=${EMAIL}`]) {
+            expect({ role, url, status: (await call("GET", url, accounts[role].headers)).status }).toEqual({
+              role,
+              url,
+              status: 403,
+            });
+          }
+        }
+        const search = await call(
+          "GET",
+          `/admin/search?q=${encodeURIComponent(EMAIL)}`,
+          accounts.owner.headers,
+        );
+        expect(search.status).toBe(200);
+      });
+
+      it("form tạo vận đơn native: nhân viên đơn đọc được biến thể kèm tồn; CSKH/kế toán không; catalog đọc qua catalog.read", async () => {
+        const [product] = await container.resolve(Modules.PRODUCT).createProducts([
+          {
+            title: "Áo T-147",
+            options: [{ title: "Size", values: ["M"] }],
+            variants: [{ title: "M", sku: "T147-M", options: { Size: "M" } }],
+          },
+        ]);
+        const variantId = product!.variants[0]!.id;
+        const detail = `/admin/products/${product!.id}/variants/${variantId}?fields=*inventory_items`;
+        const list = `/admin/products/${product!.id}/variants`;
+        const status = async (url: string, role: Role) =>
+          (await call("GET", url, accounts[role].headers)).status;
+        const actual = await Promise.all(
+          ROLES.map(async (role) => ({
+            role,
+            detail: await status(detail, role),
+            list: await status(list, role),
+          })),
+        );
+        expect(actual).toEqual(
+          ROLES.map((role) => ({
+            role,
+            detail: ["owner", "catalog_manager", "order_staff", "warehouse"].includes(role) ? 200 : 403,
+            list: ["owner", "catalog_manager", "warehouse"].includes(role) ? 200 : 403,
+          })),
+        );
+      });
+
+      it("GET/HEAD native chưa khai → 403 FORBIDDEN với MỌI vai trò, kể cả owner; audit lý do UNDECLARED_ROUTE", async () => {
+        const urls = [
+          "/admin/khong-khai-bao",
+          "/admin/route-doc-moi/abc",
+          "/admin/index/details",
+          "/admin/uploads/file_khong_co",
+          "/admin/fulfillment-sets/fs_1/service-zones/sz_1",
+        ];
+        for (const url of urls) {
+          for (const role of ROLES) {
+            const res = await call("GET", url, accounts[role].headers);
+            expect({ url, role, status: res.status, code: res.data.code }).toEqual({
+              url,
+              role,
+              status: 403,
+              code: "FORBIDDEN",
+            });
+          }
+          const head = await api.request({
+            method: "HEAD",
+            url,
+            headers: accounts.owner.headers,
+            ...noThrow,
+          });
+          expect({ url, head: head.status }).toEqual({ url, head: 403 });
+        }
+        expect((await call("GET", "/admin/khong-khai-bao", {})).status).toBe(401);
+        const audit = container.resolve<AuditModuleService>(AUDIT_MODULE);
+        const { entries } = await audit.list(
+          { action: "rbac.denied", actor_id: accounts.owner.userId },
+          { limit: 20, offset: 0 },
+        );
+        expect(entries.map((e) => e.resource_id)).toContain("GET /admin/khong-khai-bao");
+        expect(entries.find((e) => e.resource_id === "GET /admin/khong-khai-bao")?.changes).toMatchObject({
+          reason: "UNDECLARED_ROUTE",
+          roles: ["owner"],
+        });
+      });
+
+      it("đồng thời: 48 request song song trộn 6 vai trò × route PII/catalog/chưa khai → mỗi request đúng quyền", async () => {
+        const cases: { role: Role; url: string; expected: number }[] = [];
+        for (const role of ROLES) {
+          cases.push({
+            role,
+            url: "/admin/customers",
+            expected: ["owner", "order_staff", "accountant"].includes(role) ? 200 : 403,
+          });
+          cases.push({
+            role,
+            url: "/admin/products",
+            expected: ["owner", "catalog_manager", "warehouse"].includes(role) ? 200 : 403,
+          });
+          cases.push({ role, url: "/admin/stores", expected: 200 });
+          cases.push({ role, url: "/admin/route-doc-moi", expected: 403 });
+        }
+        const all = [...cases, ...cases];
+        const results = await Promise.all(all.map((c) => call("GET", c.url, accounts[c.role].headers)));
+        expect(all.map((c, i) => ({ ...c, actual: results[i]!.status }))).toEqual(
+          all.map((c) => ({ ...c, actual: c.expected })),
         );
       });
     });

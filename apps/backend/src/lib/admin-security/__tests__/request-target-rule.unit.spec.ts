@@ -41,10 +41,13 @@ describe("adminRuleOf (guard RBAC, T-145)", () => {
   });
 
   it("%61dmin/%63ustomers: quy tắc chặt hơn của (đã giải mã, chuỗi router khớp)", () => {
+    // Chuỗi router khớp `/admin/%63ustomers/…` là route native chưa khai → đọc đóng mặc định (T-147) — chặt hơn order.read.
     expect(rule("GET", "/admin/%63ustomers/cus_1")).toEqual({
       path: "/admin/customers/cus_1",
-      rule: perm("order.read"),
+      rule: { kind: "deny", reason: "UNDECLARED_ROUTE" },
     });
+    // Ghi: chuỗi router chưa khai → settings.manage; đã giải mã → catalog.write ⇒ cần cả hai.
+    expect(rule("POST", "/admin/%70roducts/p1")?.rule).toEqual(perm("catalog.write", ["settings.manage"]));
     // Giải mã ra `self` (/admin/users/me) nhưng router khớp /admin/users/:id → vẫn cần user.manage.
     expect(rule("GET", "/admin/users/%6De")?.rule).toEqual(perm("user.manage"));
     // Giải mã ra route công khai nhưng chuỗi router khớp là route khác → không thành public.
@@ -79,7 +82,8 @@ describe("adminRuleOf (guard RBAC, T-145)", () => {
   it("luồng thường không đổi: hoa/thường, `/` cuối, `//`, query", () => {
     expect(rule("POST", "/ADMIN/X/Refunds/?a=1")?.rule).toEqual(resolveAdminRule("POST", "/admin/x/refunds"));
     expect(rule("POST", "/admin//x/refunds")?.path).toBe("/admin/x/refunds");
-    expect(rule("GET", "/admin/products?limit=1")?.rule).toEqual({ kind: "any_role" });
+    expect(rule("GET", "/admin/products?limit=1")?.rule).toEqual(perm("catalog.read"));
+    expect(rule("GET", "/ADMIN/Stores/")?.rule).toEqual({ kind: "any_role" });
     expect(rule("POST", "/admin/invites/accept")?.rule).toEqual({ kind: "public" });
     // Request đi qua middleware mount (req.url bị cắt tiền tố) — dùng originalUrl.
     expect(adminRuleOf({ originalUrl: "/admin/customers/a", url: "/customers/a" }, "GET")?.rule).toEqual(

@@ -48,7 +48,7 @@ describe("resolveAdminRule", () => {
     expect(resolveAdminRule("POST", "/admin/x/users/u/roles")).toMatchObject({ reauth: true });
   });
 
-  it("native: bảng nhạy cảm; đọc chưa khai → any_role; ghi chưa khai → settings.manage", () => {
+  it("native: bảng nhạy cảm; đọc chưa khai → từ chối (T-147); ghi chưa khai → settings.manage", () => {
     // T-044: route native ghi tiền / hủy đơn đóng với mọi vai trò (kể cả owner) — đi qua /admin/x/*.
     for (const path of [
       "/admin/payments/p/refund",
@@ -78,6 +78,20 @@ describe("resolveAdminRule", () => {
     });
     expect(resolveAdminRule("POST", "/admin/products/p1")).toMatchObject({ permission: "catalog.write" });
     expect(resolveAdminRule("GET", "/admin/regions")).toEqual({ kind: "any_role" });
+    // Đọc native chưa khai: đóng với mọi vai trò (kể cả owner) — route đọc mới của Medusa không tự mở (T-147, D-080).
+    for (const path of ["/admin/route-doc-moi", "/admin", "/admin/uploads/u1", "/admin/index/details"]) {
+      expect({ path, rule: resolveAdminRule("GET", path) }).toEqual({
+        path,
+        rule: { kind: "deny", reason: "UNDECLARED_ROUTE" },
+      });
+    }
+    expect(resolveAdminRule("GET", "/admin/products/p1/variants/v1")).toMatchObject({
+      permission: "inventory.read",
+    });
+    expect(resolveAdminRule("GET", "/admin/products/p1/variants")).toMatchObject({
+      permission: "catalog.read",
+    });
+    expect(resolveAdminRule("GET", "/admin/search")).toMatchObject({ permission: "settings.manage" });
     expect(resolveAdminRule("DELETE", "/admin/regions/r")).toMatchObject({ permission: "settings.manage" });
     expect(resolveAdminRule("POST", "/admin/route-moi-trong-tuong-lai")).toMatchObject({
       permission: "settings.manage",
