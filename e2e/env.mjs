@@ -32,11 +32,18 @@ export const URLS = {
 
 const PG_BASE = process.env.E2E_PG_BASE_URL ?? "postgres://xshop:xshop@localhost:5432";
 export const E2E_DB_NAME = process.env.E2E_DB_NAME ?? "xshop_e2e";
+// Hàng rào: run.mjs DROP DB + flushdb Redis — chỉ cho phép tên DB E2E và Redis DB 1..15 (không bao giờ DB dev `xshop`/Redis 0).
+export const E2E_DB_NAME_PATTERN = /^xshop_e2e[a-z0-9_]*$/;
+if (!E2E_DB_NAME_PATTERN.test(E2E_DB_NAME))
+  throw new Error(`E2E_DB_NAME "${E2E_DB_NAME}" không hợp lệ: phải khớp ${E2E_DB_NAME_PATTERN}`);
+const REDIS_DB = process.env.E2E_REDIS_DB ?? "7";
+if (!/^(?:[1-9]|1[0-5])$/.test(REDIS_DB))
+  throw new Error(`E2E_REDIS_DB "${REDIS_DB}" không hợp lệ: phải là số nguyên 1..15 (0 là DB của dev)`);
 export const ADMIN_DB_URL = `${PG_BASE}/postgres`;
 export const DATABASE_URL = `${PG_BASE}/${E2E_DB_NAME}`;
 // DB số 7 (mặc định, đổi bằng E2E_REDIS_DB) riêng cho E2E (khóa, cache, hàng đợi) — không đụng DB 0 của dev.
 const REDIS_BASE = process.env.E2E_REDIS_BASE_URL ?? "redis://localhost:6379";
-export const REDIS_URL = `${REDIS_BASE}/${process.env.E2E_REDIS_DB ?? "7"}`;
+export const REDIS_URL = `${REDIS_BASE}/${REDIS_DB}`;
 
 export const VNPAY = {
   tmnCode: "E2ETEST",

@@ -1,5 +1,5 @@
 import pg from "pg";
-import { DATABASE_URL } from "./env.mjs";
+import { DATABASE_URL, E2E_DB_NAME_PATTERN } from "./env.mjs";
 
 /**
  * Dọn dữ liệu theo danh tính test (QA-E2E-006). Mỗi test có email `<tên>+e2e-<uuid>@example.com` riêng; mọi thứ test tạo
@@ -48,6 +48,9 @@ export async function countOrdersFor(email) {
 export async function cleanupIdentity(email, cartIds = []) {
   assertIdentity(email);
   return withClient(async (client) => {
+    const db = (await client.query("SELECT current_database() AS d")).rows[0].d;
+    if (!E2E_DB_NAME_PATTERN.test(db))
+      throw new Error(`cleanupIdentity: từ chối chạy trên DB "${db}" (không phải DB E2E)`);
     await client.query("BEGIN");
     try {
       const orders = (
@@ -111,19 +114,24 @@ export async function cleanupIdentity(email, cartIds = []) {
       // 1. Trả tồn: trừ bù reserved_quantity theo từng reservation của test rồi xoá reservation.
       const reservations = (
         await client.query(
-          "SELECT id, inventory_item_id, location_id, quantity FROM reservation_item WHERE line_item_id = ANY($1::text[])",
+          "SELECT id, inventory_item_id, location_id, quantity FROM reservation_item WHERE deleted_at IS NULL AND line_item_id = ANY($1::text[])",
           [[...orderLineIds, ...cartLineIds]],
         )
       ).rows;
       for (const rv of reservations) {
-        await client.query(
+        // Chỉ reservation còn sống (deleted_at IS NULL): reservation đã soft-delete (hủy/fulfill) Medusa đã tự trả tồn.
+        // Không GREATEST: kết quả âm = lệch tồn thật → ném lỗi (rollback) để lộ ra, không nuốt.
+        const upd = await client.query(
           `UPDATE inventory_level
-              SET reserved_quantity = GREATEST(reserved_quantity - $3, 0),
+              SET reserved_quantity = reserved_quantity - $3,
                   raw_reserved_quantity = jsonb_set(raw_reserved_quantity, '{value}',
-                    to_jsonb(GREATEST(reserved_quantity - $3, 0)::text))
-            WHERE inventory_item_id = $1 AND location_id = $2`,
+                    to_jsonb((reserved_quantity - $3)::text))
+            WHERE inventory_item_id = $1 AND location_id = $2
+            RETURNING reserved_quantity`,
           [rv.inventory_item_id, rv.location_id, Number(rv.quantity)],
         );
+        if (upd.rowCount !== 1 || Number(upd.rows[0].reserved_quantity) < 0)
+          throw new Error(`Trả tồn lệch: reservation ${rv.id} làm reserved_quantity âm/không tìm thấy level`);
       }
       await client.query("DELETE FROM reservation_item WHERE id = ANY($1::text[])", [
         col(reservations, "id"),

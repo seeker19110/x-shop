@@ -74,8 +74,10 @@ test.describe.serial("AT25 — axe + reflow 320 px trên 6 màn cốt lõi", () 
     page = await (await browser.newContext({ viewport: DESKTOP })).newPage();
   });
   test.afterAll(async () => {
-    const cookies = await page.context().cookies();
-    await page.context().close();
+    // `page` có thể chưa gán (beforeAll lỗi) — khi đó vẫn dọn theo email của buyer.
+    const context = typeof page === "undefined" ? undefined : page.context();
+    const cookies = (await context?.cookies().catch(() => [])) ?? [];
+    await context?.close().catch(() => undefined);
     await cleanupBuyer(
       buyer,
       cookies.filter((c) => c.name === "xs_cart" && c.value).map((c) => c.value),

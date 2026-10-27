@@ -76,6 +76,7 @@ test.describe("T-095 — hai bản sao backend, không sticky session", () => {
       }),
       "tạo giỏ ở A",
     );
+    trackCart(cart.cart.id); // đăng ký ngay: các bước sau lỗi thì teardown vẫn dọn được giỏ
     const quoted = await okJson<{
       quote: { id: string; cart_id: string; cart_version: number; total: number };
     }>(
@@ -85,7 +86,6 @@ test.describe("T-095 — hai bản sao backend, không sticky session", () => {
       }),
       "báo giá ở B",
     );
-    trackCart(cart.cart.id);
     expect(quoted.quote.cart_id).toBe(cart.cart.id);
     expect(Number.isSafeInteger(quoted.quote.total) && quoted.quote.total > 0).toBe(true);
 

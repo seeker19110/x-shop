@@ -21,6 +21,7 @@
     "load:test": "node --test scripts/load/*.test.mjs scripts/perf/*.test.mjs",
     "e2e": "node e2e/run.mjs",
     "e2e:smoke": "node e2e/run.mjs --grep @smoke",
+    "e2e:smoke:test": "node --test e2e/smoke-tags.test.mjs",
     "lint:openapi": "spectral lint docs/design/openapi.yaml --ruleset .spectral.yaml --fail-severity=warn",
     "check:openapi": "node scripts/check-openapi.mjs && pnpm lint:openapi",
     "check:openapi:test": "node --test scripts/check-openapi.test.mjs",
