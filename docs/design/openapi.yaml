@@ -760,8 +760,9 @@ paths:
       operationId: adminDownloadPrivateFile
       summary: "Tải file private (xuất khách hàng/đơn/tồn/sản phẩm, chunk nhập)"
       description: |
-        File private nằm ngoài thư mục công khai `static/` (`PRIVATE_UPLOAD_DIR`) và không có URL công khai; link trong thông báo
-        xuất của Medusa trỏ về route này (T-141). Quyền + MFA kiểm TRƯỚC khi chạm khoá: 401/403 như nhau dù file có hay không.
+        File private nằm ở kho private, rời kho công khai — bucket `S3_PRIVATE_BUCKET` (production, T-154) hoặc
+        `PRIVATE_UPLOAD_DIR` ngoài `static/` (dev/test) — và không có URL công khai; link trong thông báo xuất của Medusa trỏ
+        về route này (T-141). Quyền + MFA kiểm TRƯỚC khi chạm khoá: 401/403 như nhau dù file có hay không.
         Khoá sai mẫu, không có hoặc đã xoá → cùng một 404.
       security:
         - adminSession: []

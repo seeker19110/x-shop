@@ -66,7 +66,9 @@ FILE_STORAGE=s3
 # S3_FILE_URL: gốc URL CÔNG KHAI của S3_BUCKET mà trình duyệt tải ảnh (CDN, website endpoint, hoặc `<endpoint>/<bucket>`);
 #   http(s), không query/fragment/thông tin đăng nhập, `/` cuối bị bỏ. Production: https://. URL ảnh = `<S3_FILE_URL>/<khoá>`.
 # S3_FORCE_PATH_STYLE: true|false; vắng → true khi có S3_ENDPOINT (kho tự host thường cần), false khi dùng AWS.
-# Production + s3 → MEDUSA_BACKEND_URL BẮT BUỘC (URL tải file private trong thông báo xuất dựng từ đây; thiếu = trỏ localhost).
+# Production + s3 → MEDUSA_BACKEND_URL BẮT BUỘC và https (URL tải file private trong thông báo xuất dựng từ đây; thiếu = trỏ
+# localhost). Khoá truy cập cần cả `s3:ListBucket` trên hai bucket (thiếu → khoá không có trả 403 → route tải private 500).
+# Mọi lời gọi kho có hạn (S3_TIMEOUTS, src/lib/infra/timeouts.ts) — không phải biến môi trường.
 # Kho tự host đề xuất (chủ dự án chọn; MinIO bản cộng đồng đã ngừng bảo trì — xem RUNBOOK §8.2b): Garage (AGPL-3.0) hoặc
 # SeaweedFS (Apache-2.0), chạy như DỊCH VỤ RIÊNG, không nhúng/sửa mã.
 S3_ENDPOINT=https://s3.shop.example.vn
@@ -162,7 +164,8 @@ là hằng cấu hình trong `apps/backend/src/lib/checkout/config.ts` (D-002) �
 `medusa build` nạp config nên cần `DATABASE_URL` dù không kết nối — build image truyền URL giả (D-007).
 
 Test tích hợp `upload` (T-154, `apps/backend/integration-tests/http/upload-shared-storage.spec.ts`) mặc định dùng kho S3 giả
-trong tiến trình (CI không cần dịch vụ thêm). Chạy cùng suite với kho thật (bucket đã tạo; bucket công khai cho đọc nặc danh,
+trong tiến trình (CI không cần dịch vụ thêm). Giới hạn của kho giả: không multipart (file > 5 MiB qua stream thất bại), không kiểm
+chữ ký SigV4, không policy/ACL thật — xanh trên kho giả KHÔNG đủ để tick BE-FILE-004/ARC-RES-005. Chạy cùng suite với kho thật (bucket đã tạo; bucket công khai cho đọc nặc danh,
 bucket private thì không):
 
 ```bash
@@ -192,6 +195,10 @@ MEDUSA_BACKEND_URL=http://localhost:9000
 # true = storefront đứng sau proxy tin cậy (LB/CDN) đặt x-real-ip / x-forwarded-for → chuyển tiếp IP khách cho rate limit
 # của backend. Vắng/false = không tin (client gọi thẳng tự khai được): không chuyển tiếp IP (T-034).
 # XS_TRUST_PROXY_HEADERS=false
+# Gốc URL ảnh của kho dùng chung (T-154) = S3_FILE_URL của backend. Chỉ server; ĐỌC LÚC `next build` (images.remotePatterns
+# đóng vào bản build — đổi = build lại). http(s), không query/fragment/thông tin đăng nhập; production phải https:// (sai →
+# build/start dừng, nêu tên biến). Vắng = chỉ ảnh `<MEDUSA_BACKEND_URL>/static/**` (backend FILE_STORAGE=local — dev).
+# XS_MEDIA_URL=https://media.shop.example.vn
 ```
 
 Bảo mật HTTP (T-034, không phải biến môi trường): ngưỡng rate limit ở `apps/backend/src/lib/security/rate-limit.ts`

@@ -283,20 +283,27 @@ Ràng buộc triển khai (chủ dự án làm trước lần deploy đầu có 
    cần tài khoản/khoá của chủ dự án.
 2. **Hai bucket**: `S3_BUCKET` (công khai) có policy đọc nặc danh `s3:GetObject` (hoặc website endpoint/CDN); `S3_PRIVATE_BUCKET` KHÔNG có
    policy công khai/website/CDN. Kiểm sau khi dựng: `curl -sI <S3_ENDPOINT>/<S3_PRIVATE_BUCKET>/x` (không chữ ký) phải 403.
-3. **Một khoá truy cập riêng cho backend**, chỉ quyền `GetObject`/`PutObject`/`DeleteObject` (+ `HeadObject`) trên đúng hai bucket; không
-   quyền quản trị kho. Đặt `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` vào kho bí mật.
+3. **Một khoá truy cập riêng cho backend**, chỉ quyền `s3:GetObject`/`s3:PutObject`/`s3:DeleteObject` trên object và `s3:ListBucket` trên
+   CẢ HAI bucket; không quyền quản trị kho. Thiếu `s3:ListBucket` thì AWS trả 403 (không phải 404) cho khoá không tồn tại → route tải file
+   private trả 500 thay vì 404 (backend log "Kho S3 từ chối đọc (403) khoá hợp lệ…"). Đặt `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` vào kho bí mật.
 4. **Mọi tiến trình dựng File Module có cùng biến S3**: server (mọi bản sao), worker, `medusa db:migrate`, script `medusa exec`. Không cần
    volume dùng chung cho file nữa (PRIVATE_UPLOAD_DIR không dùng khi `s3` — đặt kèm là lỗi khởi động).
 5. **TLS**: production đòi `https://` cho `S3_ENDPOINT` và `S3_FILE_URL` (file private mang PII đi qua kết nối này).
-6. **`MEDUSA_BACKEND_URL`** bắt buộc (URL tải file private trong thông báo xuất).
-7. **Storefront**: thêm host của `S3_FILE_URL` vào `images.remotePatterns` (`apps/storefront/next.config.ts`) và CSP `img-src` — hiện chỉ cho
-   `/static/**` của backend (chưa làm trong T-154).
+6. **`MEDUSA_BACKEND_URL`** bắt buộc, https (URL tải file private trong thông báo xuất).
+7. **Storefront**: đặt `XS_MEDIA_URL` = `S3_FILE_URL` (https ở production) TRƯỚC `next build` — `images.remotePatterns` được đóng vào bản build
+   (`apps/storefront/src/lib/env/media.ts`); đổi host ảnh = build lại storefront. Host này phải phân giải ra IP công khai (bộ chặn SSRF của
+   `next/image` bật ở production). CSP `img-src` không cần nới: ảnh đi qua `/_next/image` cùng origin.
 8. **Chuyển file cũ** (nếu đã chạy local trước đó): chép `static/<khoá>` → bucket công khai, `PRIVATE_UPLOAD_DIR/private-*` → bucket private
    (cùng tên khoá); URL ảnh đã lưu trong sản phẩm vẫn trỏ `/static/…` cũ — cập nhật hoặc giữ `/static` phục vụ tạm tới khi thay.
 
 Đường lùi: đặt lại biến về bản trước + triển khai lại bản trước T-154 (chỉ được khi một bản sao, vì local không dùng chung); file đã ghi ở
 kho vẫn còn — chép ngược về `static/`/PRIVATE_UPLOAD_DIR theo cùng tên khoá. Sức khoẻ kho chưa nằm trong `/x/health` (chưa làm): kho lỗi →
-upload/xuất/tải file private trả 5xx, phần còn lại của shop chạy bình thường.
+upload/xuất/tải file private trả 5xx, phần còn lại của shop chạy bình thường. Mọi lời gọi kho có hạn tường minh (`S3_TIMEOUTS` trong
+`apps/backend/src/lib/infra/timeouts.ts`: kết nối 5 s, request 30 s, socket im lặng 30 s; SDK thử lại 3 lần) — kho treo không làm treo request.
+
+Bằng chứng: test tích hợp `upload` mặc định chạy trên kho S3 GIẢ trong tiến trình (`integration-tests/helpers/fake-s3.ts` — không multipart,
+không kiểm chữ ký SigV4, không policy/ACL thật). Chưa đủ để coi BE-FILE-004/ARC-RES-005 đã đạt: chạy lại suite với kho thật đã dựng ở bước 1
+(`XS_TEST_S3_ENDPOINT…`, `docs/ops/ENV.md`) và lưu kết quả trước khi tick.
 
 ### 8.2a Reverse proxy cho luồng mời admin qua dashboard (T-138, D-075)
 
