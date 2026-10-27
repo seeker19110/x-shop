@@ -825,3 +825,10 @@
 - Chọn: Chỉ https (URL nội bộ từng bản storefront cần TLS)
 - Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn: phân loại mạng riêng dễ sai (DNS, IPv6, proxy), thân webhook lộ danh sách sản phẩm đổi; (2) đường lùi rẻ nếu vận hành không dựng được TLS
 - Đường lùi: Nới schema env cho http + host private
+
+### D-118 · 2026-10-27T21:38:48+00:00 · T-164 phần 2: staff hủy đơn unknown sau khi đối chiếu tay với cổng merchant
+
+- Phương án: (1) Quyền mới payment.override (chỉ owner, tuỳ chọn accountant) + route POST /admin/x/orders/:id/cancel-unverified; bắt buộc lý do + Idempotency-Key + mã đối chiếu merchant; audit order.cancelled_unverified; đóng payment_unknown · (2) Hai người: order_staff đề nghị, accountant khác duyệt · (3) Mở rộng /cancel bằng cờ payment_verified, đòi order.cancel + payment.read
+- Chọn: Quyền mới payment.override (chỉ owner, tuỳ chọn accountant) + route POST /admin/x/orders/:id/cancel-unverified; bắt buộc lý do + Idempotency-Key + mã đối chiếu merchant; audit order.cancelled_unverified; đóng payment_unknown
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: quyền tường minh, không gộp ngầm quyền cũ (loại C); tiền khách không mất vì IPN đến muộn đi đường AT09 late_payment → hoàn tiền; audit + mã đối chiếu cho truy vết; (3) khối lượng vừa, test được; (B) chặt hơn nhưng gấp đôi khối lượng cho thao tác hiếm, để chủ dự án nâng cấp nếu muốn
+- Đường lùi: Gỡ route + quyền; quay lại UPDATE tay theo RUNBOOK
