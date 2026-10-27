@@ -1,4 +1,5 @@
 import type { SqlEntityManager } from "@medusajs/framework/mikro-orm/knex";
+import type { Logger } from "@medusajs/framework/types";
 import { generateEntityId, MedusaService } from "@medusajs/framework/utils";
 import {
   decideOnCapture,
@@ -11,7 +12,9 @@ import {
 import {
   ACTIVE_ATTEMPT_STATES,
   COUNTED_COUPON_STATES,
+  OPS_EXCEPTION_ACTIVE_SCOPES,
   OPS_EXCEPTION_KINDS,
+  type OpsExceptionKind,
   type PaymentMethod,
 } from "./models/constants";
 import {
@@ -93,24 +96,45 @@ const json = (value: unknown) => JSON.stringify(value ?? null);
  * một bigint `hashtext(...)` của module khác (vd. khoá theo đơn của returns mà trigger x_refund dò ở `objsubid = 1`).
  */
 export const OPS_EXCEPTION_LOCK_NS = "x-shop:ops-exception";
-/** Chờ khoá advisory tối đa (ms) — người giữ chỉ giữ trong MỘT câu INSERT; quá → lỗi 55P03 thay vì treo. */
+/** Chờ khoá advisory tối đa (ms) — người giữ chỉ giữ trong MỘT câu INSERT; quá → ghi dự phòng không khoá (D-105). */
 export const OPS_EXCEPTION_LOCK_TIMEOUT_MS = 5_000;
 /** Trần thời gian mỗi câu trong giao dịch kiểm-rồi-tạo (ms). */
 export const OPS_EXCEPTION_STATEMENT_TIMEOUT_MS = 10_000;
 
+/** Mã lỗi PG khi chờ khoá quá `lock_timeout`. */
+const LOCK_NOT_AVAILABLE = "55P03";
+
 /**
- * Khoá advisory của một lời gọi `openOpsExceptionIfNoneActive`: `kind` = khoá cả kind; `scoped` = khoá kind + giá trị
- * phạm vi (JSON khoá đã sắp xếp — thứ tự `active_scope` không đổi khoá), `null` khi không có phạm vi.
+ * Khoá advisory của một lời gọi `openOpsExceptionIfNoneActive`: không phạm vi → `kind`; có phạm vi → kind + giá trị phạm
+ * vi (JSON khoá đã sắp xếp — thứ tự `active_scope` không đổi khoá).
  */
-export function opsExceptionLockKeys(
-  kind: string,
-  scope: Readonly<Record<string, unknown>> | null,
-): { kind: string; scoped: string | null } {
-  if (scope === null) return { kind, scoped: null };
+export function opsExceptionLockKey(kind: string, scope: Readonly<Record<string, unknown>> | null): string {
+  if (scope === null) return kind;
   const ordered = Object.keys(scope)
     .sort()
     .map((k) => [k, scope[k]]);
-  return { kind, scoped: `${kind}:${JSON.stringify(ordered)}` };
+  return `${kind}:${JSON.stringify(ordered)}`;
+}
+
+/**
+ * Hàng rào D-105: `active_scope` phải đúng dạng đã khai cho kind ở `OPS_EXCEPTION_ACTIVE_SCOPES` (so như tập — thứ tự
+ * không quan trọng; trùng khoá là sai). Trả các khoá theo thứ tự đã khai.
+ */
+function assertDeclaredScope(kind: OpsExceptionKind, activeScope: readonly string[]): readonly string[] {
+  const declared = OPS_EXCEPTION_ACTIVE_SCOPES[kind];
+  if (declared === undefined) {
+    throw new Error(
+      `openOpsExceptionIfNoneActive: kind ${kind} chưa khai dạng phạm vi trong OPS_EXCEPTION_ACTIVE_SCOPES`,
+    );
+  }
+  const given = [...activeScope].sort();
+  const want = [...declared].sort();
+  if (given.length !== want.length || given.some((k, i) => k !== want[i])) {
+    throw new Error(
+      `openOpsExceptionIfNoneActive: kind ${kind} khai phạm vi [${declared.join(",")}], nhận [${activeScope.join(",")}]`,
+    );
+  }
+  return declared;
 }
 
 /**
@@ -163,10 +187,12 @@ class CheckoutModuleService extends MedusaService({
   RateLimitCounter,
 }) {
   protected readonly repo_: BaseRepositoryLike;
+  protected readonly logger_: Pick<Logger, "warn"> | undefined;
 
-  constructor(container: { baseRepository: BaseRepositoryLike }, ...rest: unknown[]) {
+  constructor(container: { baseRepository: BaseRepositoryLike; logger?: Logger }, ...rest: unknown[]) {
     super(container, ...rest);
     this.repo_ = container.baseRepository;
+    this.logger_ = container.logger;
   }
 
   private async exec(sql: string, params: unknown[] = [], em?: SqlEntityManager): Promise<Row[]> {
@@ -535,60 +561,48 @@ class CheckoutModuleService extends MedusaService({
 
   /**
    * Mở ngoại lệ chỉ khi CHƯA có ngoại lệ đang hoạt động (open/in_progress) cùng `kind` — và, nếu có `active_scope`,
-   * cùng giá trị các khoá đó trong `detail` (vd. `["product_id"]`: mỗi sản phẩm một ngoại lệ đang mở; mặc định: một
-   * ngoại lệ cho cả kind). Khác `openOpsException` (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại.
+   * cùng giá trị các khoá đó trong `detail` (vd. `["product_id"]`: mỗi sản phẩm một ngoại lệ đang mở; `[]`/không truyền:
+   * một ngoại lệ cho cả kind). Khác `openOpsException` (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại.
+   *
+   * Dạng phạm vi mỗi kind khai MỘT lần ở `OPS_EXCEPTION_ACTIVE_SCOPES` (D-105): kind chưa khai hoặc `active_scope` khác
+   * dạng đã khai → ném lỗi trước khi chạm DB (hai dạng cho một kind giao nhau về điều kiện nhưng khác khoá).
    *
    * Tự tuần tự hoá (T-158, D-099) — người gọi KHÔNG cần khoá riêng: kiểm-rồi-tạo chạy trong MỘT giao dịch giữ
-   * `pg_advisory_xact_lock` (INSERT … WHERE NOT EXISTS một mình không chặn hai lời gọi song song). Không phạm vi → khoá
-   * độc quyền theo kind. Có phạm vi → khoá CHIA SẺ theo kind rồi khoá độc quyền theo kind + giá trị phạm vi: hai sản
-   * phẩm khác nhau không chờ nhau, còn lời gọi không phạm vi cùng kind vẫn loại trừ mọi lời gọi có phạm vi. Thứ tự lấy
-   * khoá luôn kind → kind+phạm vi nên không deadlock. Hợp đồng: mỗi kind dùng MỘT dạng `active_scope` (cùng tập khoá) —
-   * hai dạng khác nhau giao nhau về điều kiện nhưng khác khoá. Chờ khoá quá `OPS_EXCEPTION_LOCK_TIMEOUT_MS` → ném lỗi
-   * PG 55P03 (không treo); mọi câu trong giao dịch có trần `OPS_EXCEPTION_STATEMENT_TIMEOUT_MS`.
+   * `pg_advisory_xact_lock` theo kind (không phạm vi) hoặc kind + giá trị phạm vi (hai sản phẩm khác nhau không chờ
+   * nhau). INSERT … WHERE NOT EXISTS một mình không chặn hai lời gọi song song. Mọi câu trong giao dịch có trần
+   * `OPS_EXCEPTION_STATEMENT_TIMEOUT_MS`; chờ khoá quá `OPS_EXCEPTION_LOCK_TIMEOUT_MS` (PG 55P03) → log warn (chỉ kind,
+   * tên khoá phạm vi, mã lỗi — không giá trị) rồi ghi dự phòng MỘT lần không khoá trong giao dịch mới (D-105: thà có thể
+   * trùng còn hơn mất dấu); dự phòng cũng lỗi → ném lỗi 55P03 gốc.
    *
-   * Khoá phạm vi thiếu trong `detail` → ghi `null` cho khoá đó vào `detail` (T-158, 🟢b review T-156): phạm vi so khớp
-   * `null`, nên dòng đã ghi phải mang `null` (JSON bỏ khoá `undefined`) — nếu không, lần gọi sau không dedupe được.
+   * Khoá phạm vi thiếu trong `detail` → ghi `null` cho khoá đó vào `detail` (🟢b review T-156): phạm vi so khớp `null`,
+   * nên dòng đã ghi phải mang `null` (JSON bỏ khoá `undefined`) — nếu không, lần gọi sau không dedupe được.
    *
    * Luôn tự mở giao dịch riêng (không nhận `em` của người gọi): `set_config(..., true)` đổi timeout tới hết giao dịch và
-   * khoá `xact` giữ tới commit — chạy trong giao dịch dài của người gọi sẽ giữ khoá kind suốt giao dịch đó.
+   * khoá `xact` giữ tới commit — chạy trong giao dịch dài của người gọi sẽ giữ khoá suốt giao dịch đó.
    */
   async openOpsExceptionIfNoneActive(
     input: OpsExceptionInput & { active_scope?: readonly string[] },
   ): Promise<boolean> {
-    const scope =
-      input.active_scope !== undefined && input.active_scope.length > 0
-        ? scopeFromDetail(input.active_scope, input.detail)
-        : null;
+    const scopeKeys = assertDeclaredScope(input.kind, input.active_scope ?? []);
+    const scope = scopeKeys.length > 0 ? scopeFromDetail(scopeKeys, input.detail) : null;
     // Dòng ghi mang đủ khoá phạm vi (thiếu → null) để khớp lại `detail @> scope` ở lần gọi sau.
     const detail = scope === null ? (input.detail ?? null) : { ...input.detail, ...scope };
-    const keys = opsExceptionLockKeys(input.kind, scope);
-    const run = async (tx: SqlEntityManager): Promise<boolean> => {
+    const lockKey = opsExceptionLockKey(input.kind, scope);
+    // SQL NULL (không phải chuỗi JSON 'null' — `'null'::jsonb IS NULL` là false) = không lọc theo detail.
+    const scopeJson = scope === null ? null : json(scope);
+    const run = (locked: boolean) => async (tx: SqlEntityManager) => {
       await this.exec(
         `SELECT set_config('lock_timeout', ?, true), set_config('statement_timeout', ?, true)`,
         [`${OPS_EXCEPTION_LOCK_TIMEOUT_MS}ms`, `${OPS_EXCEPTION_STATEMENT_TIMEOUT_MS}ms`],
         tx,
       );
-      if (keys.scoped === null) {
+      if (locked) {
         await this.exec(
           `SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))`,
-          [OPS_EXCEPTION_LOCK_NS, keys.kind],
-          tx,
-        );
-      } else {
-        // Hai câu riêng: thứ tự lấy khoá (kind trước) phải cố định — thứ tự tính cột trong một SELECT thì không.
-        await this.exec(
-          `SELECT pg_advisory_xact_lock_shared(hashtext(?), hashtext(?))`,
-          [OPS_EXCEPTION_LOCK_NS, keys.kind],
-          tx,
-        );
-        await this.exec(
-          `SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))`,
-          [OPS_EXCEPTION_LOCK_NS, keys.scoped],
+          [OPS_EXCEPTION_LOCK_NS, lockKey],
           tx,
         );
       }
-      // SQL NULL (không phải chuỗi JSON 'null' — `'null'::jsonb IS NULL` là false) = không lọc theo detail.
-      const scopeJson = scope === null ? null : json(scope);
       const rows = await this.exec(
         `INSERT INTO ops_exception (id, kind, dedupe_key, order_id, amount, priority, due_at, detail)
          SELECT ?, ?::text, ?, ?, ?, ?, ?, ?::jsonb
@@ -613,7 +627,20 @@ class CheckoutModuleService extends MedusaService({
       );
       return rows.length === 1;
     };
-    return this.repo_.transaction(run);
+    try {
+      return await this.repo_.transaction(run(true));
+    } catch (e) {
+      if ((e as { code?: unknown } | null)?.code !== LOCK_NOT_AVAILABLE) throw e;
+      this.logger_?.warn(
+        `[ops-exception] Chờ khoá mở ngoại lệ quá ${OPS_EXCEPTION_LOCK_TIMEOUT_MS}ms — ghi dự phòng không khoá: ` +
+          `kind=${input.kind} scope=[${scopeKeys.join(",")}] code=${LOCK_NOT_AVAILABLE}`,
+      );
+      try {
+        return await this.repo_.transaction(run(false));
+      } catch {
+        throw e;
+      }
+    }
   }
 
   /** Attempt còn mở (created/pending/unknown) → `to` (failed|unknown) theo máy trạng thái thanh toán. */

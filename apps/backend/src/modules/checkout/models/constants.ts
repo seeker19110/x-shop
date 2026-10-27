@@ -38,6 +38,19 @@ export const OPS_EXCEPTION_KINDS = [
   /** Bù trừ `set-product-fashion` lỗi (D-095): sản phẩm có thể lệch thuộc tính/bảng size/số đo — chỉ id + mã lỗi. */
   "catalog_compensation_failed",
 ] as const;
+export type OpsExceptionKind = (typeof OPS_EXCEPTION_KINDS)[number];
+
+/**
+ * Hàng rào T-158 (D-105): kind dùng `openOpsExceptionIfNoneActive` → dạng `active_scope` DUY NHẤT của nó (tập khoá trong
+ * `detail`; `[]` = một ngoại lệ đang mở cho cả kind). Helper khoá theo kind + giá trị phạm vi — hai dạng khác nhau cho
+ * cùng kind giao nhau về điều kiện nhưng khác khoá (tạo trùng được), nên helper ném lỗi khi kind chưa khai ở đây hoặc
+ * người gọi truyền dạng khác.
+ */
+export const OPS_EXCEPTION_ACTIVE_SCOPES: { readonly [K in OpsExceptionKind]?: readonly string[] } = {
+  catalog_index_mismatch: [],
+  catalog_compensation_failed: ["product_id"],
+};
+
 export const OPS_EXCEPTION_STATES = ["open", "in_progress", "resolved"] as const;
 export const OPS_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
 export const COUPON_USAGE_STATES = ["held", "used", "released"] as const;

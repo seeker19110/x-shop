@@ -13,7 +13,7 @@ import {
   OPS_EXCEPTION_LOCK_NS,
   OPS_EXCEPTION_LOCK_TIMEOUT_MS,
   OPS_EXCEPTION_STATEMENT_TIMEOUT_MS,
-  opsExceptionLockKeys,
+  opsExceptionLockKey,
 } from "../../src/modules/checkout/service";
 import { OPS_EXCEPTION_KINDS } from "../../src/modules/checkout/models/constants";
 import { FASHION_MODULE } from "../../src/modules/fashion";
@@ -1270,34 +1270,33 @@ medusaIntegrationTestRunner({
               expect(open.map((r) => r.id)).not.toContain(rowA.id);
             });
 
-            it("tương thích indexer: không truyền active_scope → vẫn một ngoại lệ đang mở cho cả kind dù detail khác", async () => {
-              const checkout = container.resolve(CHECKOUT_MODULE) as unknown as {
-                openOpsExceptionIfNoneActive: (i: Record<string, unknown>) => Promise<boolean>;
-              };
+            it("tương thích indexer: kind không phạm vi → một ngoại lệ đang mở cho cả kind dù detail khác; kind có phạm vi → theo product_id", async () => {
+              const checkout = container.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
+              const MISMATCH = "catalog_index_mismatch";
               const opened = [];
               for (const pid of ["prod_x1", "prod_x2"]) {
                 opened.push(
                   await checkout.openOpsExceptionIfNoneActive({
-                    kind: KIND,
-                    dedupe_key: `${KIND}:compat-${pid}`,
+                    kind: MISMATCH,
+                    dedupe_key: `${MISMATCH}:compat-${pid}`,
                     detail: { product_id: pid },
                   }),
                 );
               }
               expect(opened).toEqual([true, false]);
-              // Có active_scope → phạm vi theo product_id: prod_x2 được mở, prod_x1 thì không (đã có).
+              // Có active_scope → phạm vi theo product_id: prod_x2 được mở, rồi prod_x2 lần nữa thì không (đã có).
               const scoped = [];
-              for (const pid of ["prod_x2", "prod_x1"]) {
+              for (const pid of ["prod_x1", "prod_x2", "prod_x2"]) {
                 scoped.push(
                   await checkout.openOpsExceptionIfNoneActive({
                     kind: KIND,
-                    dedupe_key: `${KIND}:scoped-${pid}`,
+                    dedupe_key: `${KIND}:scoped-${pid}-${scoped.length}`,
                     detail: { product_id: pid },
                     active_scope: ["product_id"],
                   }),
                 );
               }
-              expect(scoped).toEqual([true, false]);
+              expect(scoped).toEqual([true, true, false]);
             });
 
             it("hàng rào: CHECK ops_exception.kind trên DB thật = OPS_EXCEPTION_KINDS", async () => {
@@ -1364,24 +1363,29 @@ medusaIntegrationTestRunner({
               }
               /** Giữ khoá advisory y như helper trong một giao dịch riêng tới khi gọi `release`. */
               async function holdLock(kind: string, scope: Record<string, string | null> | null) {
-                const keys = opsExceptionLockKeys(kind, scope);
                 const trx = await pgc().transaction();
-                if (keys.scoped === null) {
-                  await trx.raw(`select pg_advisory_xact_lock(hashtext(?), hashtext(?))`, [
-                    OPS_EXCEPTION_LOCK_NS,
-                    keys.kind,
-                  ]);
-                } else {
-                  await trx.raw(`select pg_advisory_xact_lock_shared(hashtext(?), hashtext(?))`, [
-                    OPS_EXCEPTION_LOCK_NS,
-                    keys.kind,
-                  ]);
-                  await trx.raw(`select pg_advisory_xact_lock(hashtext(?), hashtext(?))`, [
-                    OPS_EXCEPTION_LOCK_NS,
-                    keys.scoped,
-                  ]);
-                }
+                await trx.raw(`select pg_advisory_xact_lock(hashtext(?), hashtext(?))`, [
+                  OPS_EXCEPTION_LOCK_NS,
+                  opsExceptionLockKey(kind, scope),
+                ]);
                 return { release: () => trx.commit() };
+              }
+              /** Bắt log warn của logger mà service checkout thật sự dùng (logger của container module). */
+              async function captureWarns<T>(fn: () => Promise<T>): Promise<{ value: T; warns: string[] }> {
+                const logger = (
+                  svc() as unknown as { logger_: Record<string, (...args: unknown[]) => unknown> }
+                ).logger_;
+                const origWarn = logger.warn!;
+                const warns: string[] = [];
+                logger.warn = (...args: unknown[]) => {
+                  warns.push(args.map(String).join(" "));
+                  return origWarn.apply(logger, args);
+                };
+                try {
+                  return { value: await fn(), warns };
+                } finally {
+                  logger.warn = origWarn;
+                }
               }
               const PENDING = Symbol("pending");
               const settledWithin = <T>(p: Promise<T>, ms: number) =>
@@ -1441,39 +1445,111 @@ medusaIntegrationTestRunner({
                 ]);
               });
 
-              it("lời gọi không phạm vi cùng kind chờ lời gọi có phạm vi (khoá kind chia sẻ/độc quyền)", async () => {
-                const held = await holdLock(KIND, { product_id: "prod_t158_a" });
-                let unscoped: Promise<boolean> | undefined;
-                let pending: unknown;
-                try {
-                  unscoped = svc().openOpsExceptionIfNoneActive({
-                    kind: KIND,
-                    dedupe_key: `${KIND}:t158-unscoped`,
-                    detail: { step: "attributes", product_id: "prod_t158_z" },
-                  });
-                  pending = await settledWithin(unscoped, 500);
-                } finally {
-                  await held.release();
+              it("hàng rào D-105: kind chưa khai hoặc active_scope khác dạng đã khai → ném lỗi, không ghi dòng", async () => {
+                const calls: [string, Record<string, unknown>][] = [
+                  ["có phạm vi nhưng không truyền", { kind: KIND, detail: { product_id: "p" } }],
+                  [
+                    "có phạm vi nhưng truyền []",
+                    { kind: KIND, detail: { product_id: "p" }, active_scope: [] },
+                  ],
+                  [
+                    "thêm khoá",
+                    {
+                      kind: KIND,
+                      detail: { product_id: "p", step: "x" },
+                      active_scope: ["product_id", "step"],
+                    },
+                  ],
+                  ["khoá khác", { kind: KIND, detail: { step: "x" }, active_scope: ["step"] }],
+                  [
+                    "trùng khoá",
+                    { kind: KIND, detail: { product_id: "p" }, active_scope: ["product_id", "product_id"] },
+                  ],
+                  [
+                    "không phạm vi nhưng truyền",
+                    { kind: MISMATCH, detail: { op: "x" }, active_scope: ["op"] },
+                  ],
+                  ["kind chưa khai", { kind: "late_payment", detail: { order_id: "o" } }],
+                ];
+                const results: [string, string][] = [];
+                for (const [label, extra] of calls) {
+                  const err = await svc()
+                    .openOpsExceptionIfNoneActive({
+                      dedupe_key: `t158-fence-${randomUUID()}`,
+                      ...extra,
+                    } as Parameters<CheckoutModuleService["openOpsExceptionIfNoneActive"]>[0])
+                    .then(
+                      () => "không ném",
+                      (e: Error) => e.message,
+                    );
+                  results.push([label, err]);
                 }
-                expect(pending).toBe(PENDING);
-                expect(await unscoped).toBe(true);
+                for (const [label, message] of results) {
+                  expect({ label, message }).toEqual({
+                    label,
+                    message: expect.stringMatching(/chưa khai dạng phạm vi|khai phạm vi \[/),
+                  });
+                }
+                const { rows } = (await pgc().raw(
+                  `select count(*)::int as n from ops_exception where dedupe_key like 't158-fence-%'`,
+                )) as { rows: { n: number }[] };
+                expect(rows[0]!.n).toBe(0);
+                // Dạng đúng (thứ tự không quan trọng với một khoá) → chạy.
+                expect(await openScoped("prod_t158_fence", "ok")).toBe(true);
               });
 
-              it("chờ khoá quá lock_timeout → ném 55P03 (không treo), không ghi dòng", async () => {
-                const held = await holdLock(MISMATCH, null);
+              it("chờ khoá quá lock_timeout → warn (không giá trị) + ghi dự phòng không khoá đúng 1 dòng; lời gọi sau dedupe với dòng đó", async () => {
+                const held = await holdLock(KIND, { product_id: "prod_t158_secret" });
                 const t0 = Date.now();
-                let err: unknown;
+                let r: { value: boolean; warns: string[] };
                 try {
-                  err = await openKind("timeout").catch((e: unknown) => e);
+                  r = await captureWarns(() => openScoped("prod_t158_secret", "timeout"));
                 } finally {
                   await held.release();
                 }
                 const elapsed = Date.now() - t0;
-                expect((err as { code?: string }).code).toBe("55P03");
+                expect(r.value).toBe(true);
                 expect(elapsed).toBeGreaterThanOrEqual(OPS_EXCEPTION_LOCK_TIMEOUT_MS - 200);
                 expect(elapsed).toBeLessThan(OPS_EXCEPTION_STATEMENT_TIMEOUT_MS);
+                const rows = await activeOf(KIND);
+                expect(rows.map((x) => x.detail)).toEqual([
+                  { step: "attributes", product_id: "prod_t158_secret" },
+                ]);
+                const fallback = r.warns.filter((w) => w.includes("ghi dự phòng không khoá"));
+                expect(fallback).toHaveLength(1);
+                expect(fallback[0]).toContain(`kind=${KIND}`);
+                expect(fallback[0]).toContain("scope=[product_id]");
+                expect(fallback[0]).toContain("code=55P03");
+                expect(r.warns.filter((w) => /prod_t158_secret|attributes/.test(w))).toEqual([]);
+                // Khoá đã nhả: lời gọi kế tiếp chạy bình thường (có khoá, không warn) và dedupe với dòng dự phòng.
+                const next = await captureWarns(() => openScoped("prod_t158_secret", "after"));
+                expect(next.value).toBe(false);
+                expect(next.warns.filter((w) => w.includes("ghi dự phòng"))).toEqual([]);
+                expect((await activeOf(KIND)).map((x) => x.id)).toEqual(rows.map((x) => x.id));
+              });
+
+              it("dự phòng sau lock_timeout cũng lỗi → ném lỗi 55P03 gốc, không ghi dòng", async () => {
+                const repo = (
+                  svc() as unknown as { repo_: { transaction: (...a: unknown[]) => Promise<unknown> } }
+                ).repo_;
+                const origTx = repo.transaction;
+                let txCalls = 0;
+                repo.transaction = function (this: unknown, ...args: unknown[]) {
+                  txCalls++;
+                  if (txCalls === 2) return Promise.reject(new Error("dự phòng lỗi giả lập"));
+                  return origTx.apply(this, args);
+                };
+                const held = await holdLock(MISMATCH, null);
+                let err: unknown;
+                try {
+                  err = await openKind("fallback-fails").catch((e: unknown) => e);
+                } finally {
+                  await held.release();
+                  repo.transaction = origTx;
+                }
+                expect(txCalls).toBe(2);
+                expect((err as { code?: string }).code).toBe("55P03");
                 expect(await activeOf(MISMATCH)).toEqual([]);
-                // Timeout chỉ trong giao dịch của helper: lời gọi sau (khoá đã nhả) chạy bình thường.
                 expect(await openKind("after")).toBe(true);
               });
 
@@ -1511,12 +1587,13 @@ medusaIntegrationTestRunner({
               });
 
               it("khoá phạm vi không phụ thuộc thứ tự active_scope", () => {
-                expect(opsExceptionLockKeys(KIND, { b: "1", a: "2" })).toEqual(
-                  opsExceptionLockKeys(KIND, { a: "2", b: "1" }),
+                expect(opsExceptionLockKey(KIND, { b: "1", a: "2" })).toEqual(
+                  opsExceptionLockKey(KIND, { a: "2", b: "1" }),
                 );
-                expect(opsExceptionLockKeys(KIND, { a: "1" }).scoped).not.toEqual(
-                  opsExceptionLockKeys(KIND, { a: "2" }).scoped,
+                expect(opsExceptionLockKey(KIND, { a: "1" })).not.toEqual(
+                  opsExceptionLockKey(KIND, { a: "2" }),
                 );
+                expect(opsExceptionLockKey(KIND, null)).not.toEqual(opsExceptionLockKey(KIND, { a: null }));
               });
             });
             it("hai lượt song song cùng sản phẩm, bù trừ lỗi → không treo (khoá sản phẩm → khoá ngoại lệ), 1 ngoại lệ đang mở", async () => {
