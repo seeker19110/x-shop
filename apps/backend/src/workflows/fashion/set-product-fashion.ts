@@ -264,19 +264,30 @@ export async function recreateMeasurements(
 }
 
 /**
- * Mô tả lỗi an toàn để log: chỉ `name`, `code` (mã lỗi Postgres nếu có) và phần sau " - " CUỐI của message (thông điệp
- * của Postgres trong dạng "<câu SQL> - <lỗi>" của knex). KHÔNG log message thô: knex chép giá trị bind vào câu SQL nên
- * số đo người mẫu (PII) sẽ lọt vào log — bộ che log chỉ băm chuỗi trong nháy, số giữ nguyên.
+ * Mô tả lỗi an toàn để log: CHỈ `name`, `code` (mã Postgres) và — nếu lỗi/`cause` (lỗi driver gốc) có — tên `constraint`,
+ * `table`, `column` (thuộc tính có cấu trúc, chỉ chứa tên, không chứa giá trị). KHÔNG BAO GIỜ lấy chuỗi từ `message`:
+ * knex/MikroORM chép giá trị bind vào câu SQL (kể cả xuống dòng và " - " trong giá trị) và nối `detail`
+ * ("Failing row contains (...)", "Key (col)=(value)") vào message, nên mọi cách cắt message đều có thể lộ số đo
+ * người mẫu/thuộc tính (PII); bộ che log chỉ băm chuỗi trong nháy, số giữ nguyên.
  */
 function safeErrorSummary(e: unknown): string {
   if (!(e instanceof Error)) return `non-error(${typeof e})`;
   const parts = [e.name];
-  const code = (e as { code?: unknown }).code;
-  if (typeof code === "string" || typeof code === "number") parts.push(`code=${code}`);
-  // Chỉ dòng ĐẦU: MikroORM nối "\n - detail: Failing row contains (...)" / "Key (col)=(value)" (chứa giá trị cột) vào message.
-  const head = e.message.split("\n")[0] ?? "";
-  const cut = head.lastIndexOf(" - ");
-  if (cut >= 0) parts.push(`pg=${head.slice(cut + 3).slice(0, 200)}`);
+  const sources = [e, (e as { cause?: unknown }).cause].filter(
+    (x): x is Record<string, unknown> => typeof x === "object" && x !== null,
+  );
+  const pick = (key: string): string | number | undefined => {
+    for (const src of sources) {
+      const v = src[key];
+      if (typeof v === "number") return v;
+      if (typeof v === "string" && /^[\w.$-]{1,128}$/.test(v)) return v;
+    }
+    return undefined;
+  };
+  for (const key of ["code", "constraint", "table", "column"]) {
+    const v = pick(key);
+    if (v !== undefined) parts.push(`${key}=${v}`);
+  }
   return parts.join(" ");
 }
 

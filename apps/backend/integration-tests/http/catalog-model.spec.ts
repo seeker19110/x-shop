@@ -639,9 +639,9 @@ medusaIntegrationTestRunner({
           expect(r).toMatch(/^err: /);
           const undoLine = errors.find((l) => l.includes("Hoàn tác số đo người mẫu lỗi"));
           const origLine = errors.find((l) => l.includes("lỗi gốc trước khi hoàn tác lỗi"));
-          expect(undoLine).toContain("boom recreate");
+          expect(undoLine).toContain("code=P0001");
           expect(undoLine).toContain(oldId);
-          expect(origLine).toContain("boom create");
+          expect(origLine).toContain("code=P0001");
           expect(origLine).toContain(`attributes_id=${attributesId}`);
           for (const line of [undoLine!, origLine!]) {
             expect(line).not.toMatch(/insert into|values|\b(180|94|78|95|170)\b|Dữ liệu demo/i);
@@ -784,7 +784,7 @@ medusaIntegrationTestRunner({
             const line = lines.find((l) => l.includes("Hoàn tác thuộc tính thời trang lỗi"));
             expect(line).toBeDefined();
             expect(line).toContain(`attributes_id=${attributesId}`);
-            expect(line).toContain("boom restore");
+            expect(line).toContain("code=P0001");
             expect(lines.filter((l) => LEAK.test(l))).toEqual([]);
           });
 
@@ -797,6 +797,7 @@ medusaIntegrationTestRunner({
             const line = lines.find((l) => l.includes("Hoàn tác thuộc tính thời trang lỗi"));
             expect(line).toBeDefined();
             expect(line).toContain("code=23514");
+            expect(line).toContain("constraint=t155_chk");
             expect(lines.filter((l) => /Failing row|detail:|cotton|Cotton|100%/i.test(l))).toEqual([]);
             expect(JSON.stringify(body(err))).not.toMatch(/Failing row|detail:|cotton/i);
           });
@@ -819,12 +820,68 @@ medusaIntegrationTestRunner({
             const line = lines.find((l) => l.includes("Hoàn tác số đo người mẫu lỗi"));
             expect(line).toBeDefined();
             expect(line).toContain("code=23514");
+            expect(line).toContain("constraint=t155_chk2");
             expect(
               lines.filter((l) => /Failing row|detail:|\b(180|94|78|95)\b|Dữ liệu demo/i.test(l)),
             ).toEqual([]);
             expect(JSON.stringify(body(err))).not.toMatch(
               /Failing row|detail:|\b(180|94|78|95)\b|Dữ liệu demo/i,
             );
+          });
+
+          it("giá trị nhiều dòng chứa ' - ' (care/composition/note) không lọt vào log hay lỗi", async () => {
+            const { attributesId } = await seededPolo();
+            const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+            const orig = (
+              (await pg.raw(
+                `select a.composition, a.care, (select m.note from fashion_model_measurement m where m.attributes_id = a.id order by m.id limit 1) as note from fashion_product_attributes a where a.id = ?`,
+                [attributesId],
+              )) as { rows: { composition: string | null; care: string | null; note: string | null }[] }
+            ).rows[0]!;
+            await pg.raw(
+              `update fashion_product_attributes set composition = '95% cotton - 5% spandex', care = E'Giat tay\\nKhong say - phoi rieng' where id = ?`,
+              [attributesId],
+            );
+            await pg.raw(
+              `update fashion_model_measurement set note = E'Ghi chu mot - dong\\nhai - ba' where attributes_id = ?`,
+              [attributesId],
+            );
+            const LEAKY = /spandex|Giat tay|Khong say|phoi rieng|Ghi chu|dong|hai - ba|Failing row|detail:/;
+            try {
+              const a = await runWithTrigger(
+                `alter table fashion_product_attributes add constraint t155_chk3 check (material <> 'cotton') not valid;`,
+                "alter table fashion_product_attributes drop constraint if exists t155_chk3;",
+              );
+              const la = a.lines.find((l) => l.includes("Hoàn tác thuộc tính thời trang lỗi"));
+              expect(la).toContain("code=23514");
+              expect(la).toContain("constraint=t155_chk3");
+              expect(a.lines.filter((l) => LEAKY.test(l))).toEqual([]);
+              expect(JSON.stringify(body(a.err))).not.toMatch(LEAKY);
+
+              const m = await runWithTrigger(
+                `alter table fashion_model_measurement add constraint t155_chk4 check (height_cm <> 180) not valid;`,
+                "alter table fashion_model_measurement drop constraint if exists t155_chk4;",
+                {
+                  ...BODY,
+                  model_measurements: [{ image_set: "moi", height_cm: 173, size_worn: "m" }],
+                },
+              );
+              const lm = m.lines.find((l) => l.includes("Hoàn tác số đo người mẫu lỗi"));
+              expect(lm).toContain("code=23514");
+              expect(lm).toContain("constraint=t155_chk4");
+              expect(m.lines.filter((l) => LEAKY.test(l))).toEqual([]);
+              expect(JSON.stringify(body(m.err))).not.toMatch(LEAKY);
+            } finally {
+              await pg.raw(`update fashion_product_attributes set composition = ?, care = ? where id = ?`, [
+                orig.composition,
+                orig.care,
+                attributesId,
+              ]);
+              await pg.raw(`update fashion_model_measurement set note = ? where attributes_id = ?`, [
+                orig.note,
+                attributesId,
+              ]);
+            }
           });
 
           it("gắn lại bảng size lỗi → có log chỉ id + mã lỗi, không giá trị/PII", async () => {
