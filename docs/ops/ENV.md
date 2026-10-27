@@ -144,6 +144,8 @@ MEDUSA_BACKEND_URL=https://api.shop.example.vn
 # VNPAY (SPEC-payment). Bật mặc định (VNPAY_ENABLED=true). Production + bật → BẮT BUỘC đủ 5 biến dưới, URL phải https,
 # không được dùng khoá giả của dev. Dev/test vắng biến → dùng giá trị GIẢ trong env/index.ts (VNPAY_DEV_DEFAULTS) — chỉ ký/kiểm
 # chữ ký cục bộ với MockVnpayGateway, không gọi cổng thật.
+# VNPAY_ENABLED=false (T-166) CHỈ chặn tạo thanh toán VNPAY mới: GIỮ VNPAY_TMN_CODE + VNPAY_HASH_SECRET để IPN của giao dịch
+# đã tạo vẫn xác minh được (thiếu khoá → IPN trả 99, không ghi nhận); đơn đang chờ được giữ hàng, không bị hủy (RUNBOOK §1).
 # VNPAY_ENABLED=true
 # Cách gọi VNPAY từ server (querydr): mock = cổng giả lập cục bộ (mặc định dev/test) · sandbox | live = HTTP tới
 # VNPAY_API_URL. Production + bật: BẮT BUỘC khai rõ sandbox|live, không được mock.

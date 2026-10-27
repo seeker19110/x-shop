@@ -65,7 +65,13 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
   bước 5) và đối chiếu với VNPAY trước khi làm gì khác. Chỉ đặt NULL (không sửa `state`/`hold_check_attempts`). Đơn chưa rõ quá vài giờ (`hold_check_attempts` ≥ 8): đối chiếu trên
   cổng merchant VNPAY theo `txn_ref`; CHƯA có đường hủy tay cho đơn `unknown` (Admin trả 409 PAYMENT_PENDING) — leo thang kỹ
   thuật, không sửa `state` bằng SQL.
-- Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (cờ cấu hình) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
+- `VNPAY_ENABLED=false` (T-166) chỉ chặn TẠO thanh toán VNPAY mới (quote/submit trả lỗi phương thức chưa bật). Đơn VNPAY đang
+  chờ: `x-expire-holds` không querydr, không hủy — giữ hàng như breaker mở (`payment_unknown` lý do `vnpay_disabled`, hẹn lại 1
+  phút, không tăng backoff); hủy tay trả 409 PAYMENT_PENDING; đơn đã có IPN thất bại (không còn attempt mở) vẫn hủy bình thường.
+  IPN vẫn xác minh bằng `VNPAY_TMN_CODE`/`VNPAY_HASH_SECRET` (+ `_PREVIOUS`) — phải giữ các biến này khi tắt; production tắt mà
+  thiếu khoá (hoặc dùng khoá giả dev) → IPN trả 99 để VNPAY gửi lại, không ghi inbox/tiền, log WARN `[payment] IPN VNPAY tới khi
+  không có khoá xác minh`. Bật lại → lượt kế tiếp hỏi lại từng đơn.
+- Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (`VNPAY_ENABLED=false`, giữ khoá) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
 - Xác nhận: không còn attempt `unknown` quá hạn chưa có owner trong `ops_exception`.
 
 ## 2. Hãng vận chuyển lỗi (GHN)

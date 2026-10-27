@@ -44,7 +44,10 @@ data-breach.md). Danh sách liên hệ kiểm lại mỗi quý, ghi ngày kiểm
 1. **Phát hiện** — ghi giờ UTC đầu tiên có triệu chứng và giờ phát hiện.
 2. **Phân mức** — chọn SEV theo §1; nghi ngờ thì lấy mức cao hơn.
 3. **Giảm thiệt hại** — làm TRƯỚC khi chẩn đoán nguyên nhân gốc. Công cụ của x-shop, từ ít đến nhiều can thiệp:
-   - Tạm ẩn phương thức VNPAY (`VNPAY_ENABLED=false` + restart, hoặc cờ cấu hình) để khách chọn COD; giữ endpoint IPN chạy (RUNBOOK §1).
+   - Tạm ẩn phương thức VNPAY (`VNPAY_ENABLED=false` + restart) để khách chọn COD (RUNBOOK §1). Cờ này CHỈ chặn tạo thanh toán
+     VNPAY mới: đơn VNPAY đang chờ được giữ hàng như `unknown` (không hủy, không querydr — `payment_unknown` lý do
+     `vnpay_disabled`), IPN vẫn xác minh và xác nhận đơn. GIỮ NGUYÊN `VNPAY_TMN_CODE`/`VNPAY_HASH_SECRET` (xoá khoá → IPN trả 99,
+     VNPAY gửi lại, không ghi nhận cho tới khi có khoá). Không hủy hàng loạt đơn `unknown`.
    - Dừng nhận đơn nhưng vẫn cho xem catalog (checkout đã tự trả 503 khi mất khóa; nếu cần dừng chủ động, chặn `POST /store/x/checkout/submit` ở reverse proxy).
    - Rollback ứng dụng về SHA trước (RUNBOOK §5) — không rollback DB phá huỷ.
    - Xoay/thu hồi bí mật nghi lộ (RUNBOOK §9, §10); vô hiệu hoá tài khoản admin bị chiếm.
