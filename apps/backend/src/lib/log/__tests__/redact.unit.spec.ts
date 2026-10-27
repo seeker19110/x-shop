@@ -981,6 +981,6 @@ describe("cấu trúc", () => {
 
   it("chuỗi rỗng và Unicode tổ hợp không lỗi", () => {
     expect(redactText("")).toBe("");
-    expect(redactText("Nguyễn")).toBe("Nguyễn");
+    expect(redactText("Nguyễn")).toBe("Nguyễn".normalize("NFC")); // D-112: đầu ra luôn NFC
   });
 });

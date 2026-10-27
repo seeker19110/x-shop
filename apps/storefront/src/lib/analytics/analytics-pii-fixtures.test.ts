@@ -77,6 +77,19 @@ describe("analytics: bộ mẫu PII dùng chung", () => {
   });
 });
 
+describe("chuẩn hoá NFC (D-112)", () => {
+  it.each(["Phường Dịch Vọng, Quận Cầu Giấy", "chứng minh nhân dân số 271234567", "Số 5 ngõ 12 Láng Hạ"])(
+    "dạng tách dấu của %j được nhận như dạng NFC",
+    (v) => {
+      expect(looksLikePii(v.normalize("NFD"))).toBe(true);
+      expect(findPii({ k: v.normalize("NFD") })).toBe("$.k");
+    },
+  );
+  it("chuỗi rỗng không phải PII", () => {
+    expect(looksLikePii("")).toBe(false);
+  });
+});
+
 describe("CMND 9 số: nhận diện khi có từ khoá, không nhận số tiền (D-066)", () => {
   it.each([
     "CMND 012345678",
@@ -120,6 +133,7 @@ describe("looksLikePii: đầu vào đối nghịch (CPU < 50 ms / 32K ký tự)
     ["email: nhiều @ không tên miền", "a@".repeat(N / 2)],
     ["email: tên miền dài không TLD", `a@${"b".repeat(N)}`],
     ["email: chấm lặp", `${"a.".repeat(N / 2)}@`],
+    ["NFD: dấu kết hợp lặp", `a${"\u0301".repeat(N)}`],
     ["số dài", "1".repeat(N)],
     ["số/số lặp", "1/".repeat(N / 2)],
     ["số + khoảng trắng + phẩy", `1${" ".repeat(N)},`],

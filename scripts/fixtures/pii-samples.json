@@ -321,6 +321,41 @@
     },
 
     {
+      "id": "nfd-address",
+      "kind": "address",
+      "value": "12 Nguyễn Trãi, P. Bến Thành, Q.1, TP.HCM",
+      "leak": ["Nguyễn Trãi", "Bến Thành"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "nfd-address-admin",
+      "kind": "address",
+      "value": "Phường Dịch Vọng, Quận Cầu Giấy, Hà Nội",
+      "leak": ["Dịch Vọng", "Cầu Giấy"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "nfd-name-key",
+      "kind": "name",
+      "value": "họ tên: Trần Thị Hồng Nhung",
+      "leak": ["Trần Thị Hồng Nhung"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "nfd-password-key",
+      "kind": "password",
+      "value": "mật khẩu: MatKhau#2026",
+      "leak": ["MatKhau#2026"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "nfd-cmnd-kw",
+      "kind": "cmnd",
+      "value": "chứng minh nhân dân số 271234567",
+      "leak": ["271234567"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
       "id": "ip-kv",
       "kind": "ip",
       "value": "client_ip=203.0.113.45",

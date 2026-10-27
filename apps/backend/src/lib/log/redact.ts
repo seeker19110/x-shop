@@ -657,8 +657,10 @@ function redactAddress(s: string): string {
 
 /** Che bí mật/PII trong một chuỗi. */
 export function redactText(input: string): string {
-  let s =
-    input.length > MAX_TEXT ? `${input.slice(0, MAX_TEXT)}…[cắt ${input.length - MAX_TEXT} ký tự]` : input;
+  // Chuẩn hoá NFC (D-112): chữ có dấu dạng tách (NFD) không được làm các mẫu địa chỉ/khoá tiếng Việt trượt. Cắt trước, tuyến tính.
+  let s = (
+    input.length > MAX_TEXT ? `${input.slice(0, MAX_TEXT)}…[cắt ${input.length - MAX_TEXT} ký tự]` : input
+  ).normalize("NFC");
   s = hashFailingRows(scrubSqlValues(s));
   if (SQL_QUOTED.test(s) || SQL_UPPER.test(s) || looksLikeSelect(s)) {
     const memo = new Map<string, string>(); // literal lặp chỉ băm một lần

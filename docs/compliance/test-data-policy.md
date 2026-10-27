@@ -23,3 +23,10 @@ chưa có thuê bao nào mang số đó, nên **không bao giờ gọi hay nhắ
 | `0933222111` | số thứ ba trong test tra cứu đơn                            |
 | `0806000000` | test chống liệt kê/giới hạn tần suất (security.spec)        |
 | `0212345678` | ca âm: số cố định phải bị từ chối (address, checkout-lib)   |
+
+## Bộ mẫu PII dùng chung cho test log/analytics
+
+`scripts/fixtures/pii-samples.json` là nguồn duy nhất cho test khoá bộ che log backend (`apps/backend/src/lib/log/redact.ts`) và bộ quét `track()` storefront (`apps/storefront/src/lib/analytics/schema.ts`) — D-065. Dữ liệu vẫn tuân các quy tắc trên (email `example.test`, SĐT trong bảng, CCCD tách `parts` để không có chuỗi 12 số liền). Gồm mẫu dạng NFC và NFD (chữ có dấu tách), `negatives` (không được che nhầm) và `knownGaps`.
+
+- `knownGaps`: danh sách giới hạn đã biết mà bộ che KHÔNG phát hiện được (họ tên viết tự do, IP trần trong văn bản). Mỗi giới hạn mới phát hiện phải ghi vào đây kèm lý do (không che vì che nhầm/không nhận ra được); mẫu trong `knownGaps` không được đưa vào `samples`.
+- Thêm mẫu: ghi `scopes` (`backend`, `storefront`) và `leak` (đoạn không được còn trong đầu ra); mẫu mới phải xanh ở cả hai bản test đúng phạm vi.

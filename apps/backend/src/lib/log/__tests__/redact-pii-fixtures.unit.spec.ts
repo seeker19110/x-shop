@@ -32,7 +32,11 @@ const samples = fixture.samples.filter((s) => s.scopes.includes("backend"));
 /** Lỗi nếu bất kỳ đoạn `leak` nào còn trong `out` (thô hoặc dạng đã thoát JSON). */
 function leaked(s: Sample, out: string): string[] {
   const escaped = (x: string) => JSON.stringify(x).slice(1, -1);
-  return s.leak.filter((l) => out.includes(l) || out.includes(escaped(l)));
+  const o = out.normalize("NFC");
+  return s.leak.filter((l) => {
+    const n = l.normalize("NFC");
+    return o.includes(n) || o.includes(escaped(n));
+  });
 }
 
 function capture() {
@@ -166,6 +170,24 @@ describe("CMND 9 số: che khi có từ khoá, không che số tiền (D-066)", 
   });
 });
 
+describe("chuẩn hoá NFC (D-112)", () => {
+  it("dạng tách dấu cho kết quả như dạng NFC", () => {
+    for (const v of [
+      "Phường Dịch Vọng, Quận Cầu Giấy, Hà Nội",
+      "mật khẩu: abc123",
+      "họ tên: Lê Văn Ân",
+      "CMND số 271234567",
+    ]) {
+      expect(redactText(v.normalize("NFD"))).toBe(redactText(v.normalize("NFC")));
+      expect(redactText(v.normalize("NFD"))).not.toBe(v.normalize("NFC"));
+    }
+  });
+  it("chuỗi rỗng và chuỗi không dấu không đổi", () => {
+    expect(redactText("")).toBe("");
+    expect(redactText("order XS-ABC123")).toBe("order XS-ABC123");
+  });
+});
+
 describe("luật T-136: khoá tiếng Việt có dấu, JSON thoát nháy, IP theo khoá", () => {
   it.each([
     "mật khẩu",
@@ -230,6 +252,14 @@ describe("luật T-136: chống ReDoS (CPU < 50 ms / 32K ký tự)", () => {
     ["x-forwarded-for dài", `x-forwarded-for: ${"1.1.1.1, ".repeat(N / 9)}`],
     ["remote_addr IPv6 dài", `remote_addr=${"a:".repeat(N / 2)}`],
     ["ip: nhiều dấu hai chấm", `ip${":".repeat(N)}`],
+    ["NFD: dấu kết hợp lặp", `a${"\u0301".repeat(N)}`],
+    [
+      "NFD: địa chỉ tách dấu lặp",
+      "Ph\u01b0\u1eddng"
+        .normalize("NFD")
+        .concat(" A, ")
+        .repeat(N / 12),
+    ],
     ['JSON thoát: password=\\" lặp', String.raw`password=\"`.repeat(N / 11)],
     ["JSON thoát: không đóng nháy", `${String.raw`password=\"`}${"a".repeat(N)}`],
     ["JSON thoát: nhiều backslash", `password=${"\\".repeat(N)}`],

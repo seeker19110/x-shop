@@ -81,7 +81,9 @@ const ADDRESS_ABBR_RE = /(?:^|[\s,(])(?:P|Q|H|TX|TP|Tp)\.\s?(?:\p{Lu}|\d)/u;
 const HOUSE_NAME_RE = /(?:^|[\s,(])\d+[a-zA-Z]?\s+\p{Lu}\p{Ll}/u;
 
 /** `true` nếu chuỗi giống email, số điện thoại, CCCD/CMND hoặc địa chỉ (T-090: thêm CCCD + SĐT lẫn trong văn bản; T-136: CMND theo từ khóa). */
-export function looksLikePii(s: string): boolean {
+export function looksLikePii(raw: string): boolean {
+  // NFC (D-112): chữ có dấu dạng tách (NFD) không được làm mẫu địa chỉ/từ khóa trượt.
+  const s = raw.normalize("NFC");
   if (EMAIL_RE.test(s)) return true;
   const compact = s.replace(/[\s.()-]/g, "");
   if (PHONE_RE.test(compact) && /^\+?\d+$/.test(compact)) return true;
