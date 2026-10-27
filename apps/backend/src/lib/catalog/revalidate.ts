@@ -222,7 +222,7 @@ export async function tagsForProducts(container: MedusaContainer, productIds: st
   if (ids.length === 0) return [protocol.CATALOG_LIST_TAG];
   const products = await container
     .resolve(Modules.PRODUCT)
-    .listProducts({ id: ids }, { select: ["id", "handle"], withDeleted: true, take: null });
+    .listProducts({ id: ids }, { select: ["id", "handle"], withDeleted: true, take: ids.length });
   const tags = new Set<string>([protocol.CATALOG_LIST_TAG]);
   for (const p of products) {
     const tag = protocol.productTag(p.handle ?? "");
