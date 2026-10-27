@@ -551,3 +551,24 @@
 - Chọn: Giữ: IPN là đường chính xác nhận tiền; RUNBOOK ghi rõ
 - Lý do (tiêu chí chất lượng cuối): (3) đơn giản: IPN là nơi VNPAY ký bằng khoá cấu hình ở cổng, đủ để biết khi nào bỏ khoá trước; querydr do server chủ động gọi
 - Đường lùi: Cho interpretQueryResponseWithRotation trả secretUsed nếu vận hành cần
+
+### D-079 · 2026-10-27T03:11:59+00:00 · T-145: request-target có '#' hoặc '\' (trái RFC 9112)
+
+- Phương án: (1) Chặn ở tầng server (400) · (2) Giữ, lớp chiều sâu đã khớp Express
+- Chọn: Chặn ở tầng server (400)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt hơn, trình duyệt không bao giờ gửi; giảm bề mặt khác biệt parser
+- Đường lùi: Bỏ luật nếu client hợp lệ bị chặn
+
+### D-080 · 2026-10-27T03:11:59+00:00 · T-145: mặc định GET native admin không khai báo quyền (any_role)
+
+- Phương án: (1) Giữ any_role, mở task liệt kê route dashboard rồi đóng sau · (2) Đóng ngay
+- Chọn: Giữ any_role, mở task liệt kê route dashboard rồi đóng sau
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi: đóng ngay vỡ dashboard khi chưa liệt kê đủ route; lỗ hổng URL tuyệt đối đã chặn ở 2 lớp
+- Đường lùi: Đóng mặc định khi native-permissions liệt kê đủ (task sau)
+
+### D-081 · 2026-10-27T03:11:59+00:00 · Thay một phần D-035: drain gặp khoá bận thì chờ (T-137) — nhưng không chờ trong job worker và dừng khi đang tắt
+
+- Phương án: (1) Job phút không chờ (waitMs 0), bận thì giao scheduleCatalogDrain chờ nền ≤300 s; mọi vòng chờ kiểm isDraining() · (2) Nâng concurrency jobWorker
+- Chọn: Job phút không chờ (waitMs 0), bận thì giao scheduleCatalogDrain chờ nền ≤300 s; mọi vòng chờ kiểm isDraining()
+- Lý do (tiêu chí chất lượng cuối): (1) không chặn khe job dùng chung (outbox, expire-holds) và không vượt trần tắt êm T-094; (3) không đổi cấu hình mọi job
+- Đường lùi: Quay về bỏ lượt khi bận (D-035)
