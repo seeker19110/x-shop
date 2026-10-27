@@ -768,3 +768,17 @@
 - Chọn: Giữ 422 (storefront đã xử lý); diffQuotes giữ so mã + số giảm (khách xác nhận số tiền, không phải điều khoản)
 - Lý do (tiêu chí chất lượng cuối): (3) không đổi API-CONTRACT/storefront; (4) khách chỉ phải xác nhận lại khi số tiền đổi; (1) ảnh chụp lưu điều khoản tại lúc submit nên đối soát đúng
 - Đường lùi: Đổi lỗi hết hạn sang 409 DISCOUNT_CHANGED, diffQuotes so thêm snapshot
+
+### D-110 · 2026-10-27T16:14:48+00:00 · T-120: storefront dùng bản sao units.ts (client không được import @x-shop/domain) hay subpath export; lint cột số không hậu tố đơn vị (XC-UNITS-009)
+
+- Phương án: (1) Giữ bản sao có test khoá giống domain; tách T-160 cho lint tên cột số trong migration/model thiếu hậu tố đơn vị · (2) Subpath export @x-shop/domain/units (đổi exports, jest, tsconfig, nới client-bundle test)
+- Chọn: Giữ bản sao có test khoá giống domain; tách T-160 cho lint tên cột số trong migration/model thiếu hậu tố đơn vị
+- Lý do (tiêu chí chất lượng cuối): (3) không nới hàng rào bundle client vừa dựng ở T-098; test khoá chống lệch; lát nhỏ
+- Đường lùi: Thêm subpath export và bỏ bản sao
+
+### D-111 · 2026-10-27T16:24:52+00:00 · T-097: ngưỡng breaker, breaker cho expireHolds, lỗi vĩnh viễn ở lượt thử half-open, cửa sổ ngân sách
+
+- Phương án: (1) Giữ ngưỡng mặc định (notify 3000/ngày, khác 10000; 5 lỗi → nguội 5 phút; trần 100 vòng/50 lượt); tách T-161 cho expireHolds (ảnh hưởng nhả giữ hàng); lỗi vĩnh viễn của lượt thử half-open = dịch vụ đã trả lời → đóng breaker; ngân sách theo ngày UTC · (2) Tính ngưỡng từ lưu lượng dự kiến; áp breaker expireHolds ngay; lỗi vĩnh viễn trung lập; ngày giờ VN
+- Chọn: Giữ ngưỡng mặc định (notify 3000/ngày, khác 10000; 5 lỗi → nguội 5 phút; trần 100 vòng/50 lượt); tách T-161 cho expireHolds (ảnh hưởng nhả giữ hàng); lỗi vĩnh viễn của lượt thử half-open = dịch vụ đã trả lời → đóng breaker; ngân sách theo ngày UTC
+- Lý do (tiêu chí chất lượng cuối): (1) UTC theo luật dự án; đóng khi dịch vụ đã trả lời tránh treo half-open; expireHolds liên quan tồn kho nên lát riêng có test; ngưỡng chỉnh được ở một hằng
+- Đường lùi: Sửa OUTBOX_BREAKER_POLICY; coi lỗi vĩnh viễn half-open là trung lập
