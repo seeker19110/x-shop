@@ -182,7 +182,7 @@ const toDiscrepancy = (r: Row): DiscrepancyView => ({
 export class SettlementError extends Error {
   override readonly name = "SettlementError";
   constructor(
-    readonly code: "BATCH_CONFLICT" | "NOT_FOUND" | "INVALID_STATE",
+    readonly code: "BATCH_CONFLICT" | "IMPORT_IN_PROGRESS" | "NOT_FOUND" | "INVALID_STATE",
     message: string,
     readonly detail: Record<string, unknown> = {},
   ) {
@@ -281,9 +281,35 @@ export default class SettlementModuleService {
     return row ? toBatch(row) : null;
   }
 
+  /**
+   * Giành khoá nhập theo nguồn với hạn chờ `SETTLEMENT_CONFIG.importLockWaitMs` (T-140). Mặc định phiên không có
+   * `lock_timeout` → câu chờ khoá chỉ bị `statement_timeout` (30 s) cắt: lỗi chung 57014 → 500, và request Admin treo tới
+   * lúc đó. Ở đây `lock_timeout` đặt LOCAL chỉ quanh câu chờ (Postgres áp `lock_timeout` cho cả advisory lock — đo ở
+   * docs/db/connections.md §5) rồi trả về mặc định ngay sau khi giành được: khoá dòng `FOR UPDATE` phía sau giữ hành vi
+   * cũ. Hết hạn chờ (55P03) — hoặc `statement_timeout` của môi trường đặt nhỏ hơn hạn chờ (57014) — trên CHÍNH câu này
+   * nghĩa là đang có lần nhập khác giữ khoá → lỗi rõ, gọi lại được (chưa ghi gì; transaction rollback).
+   */
+  private async lockImport(trx: Knex.Transaction, source: SettlementSource): Promise<void> {
+    await trx.raw("select set_config('lock_timeout', ?, true)", [`${SETTLEMENT_CONFIG.importLockWaitMs}ms`]);
+    try {
+      await trx.raw("select pg_advisory_xact_lock(hashtext(?))", [`x-settlement:${source}`]);
+    } catch (e) {
+      const code = (e as { code?: unknown } | null)?.code;
+      if (code === "55P03" || code === "57014") {
+        throw new SettlementError(
+          "IMPORT_IN_PROGRESS",
+          "Đang có một lần nhập đối soát khác cùng nguồn — thử lại sau ít phút",
+          { source },
+        );
+      }
+      throw e;
+    }
+    await trx.raw("set local lock_timeout to default");
+  }
+
   async importBatch(input: ImportBatchInput): Promise<ImportBatchResult> {
     return this.db.transaction(async (trx) => {
-      await trx.raw("select pg_advisory_xact_lock(hashtext(?))", [`x-settlement:${input.source}`]);
+      await this.lockImport(trx, input.source);
 
       const existing = await this.findBatchByHash(input.source, input.content_hash, trx);
       if (existing) return { ...(await this.batchDetail(existing, trx)), replayed: true };

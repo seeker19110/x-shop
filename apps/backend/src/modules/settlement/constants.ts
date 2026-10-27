@@ -113,4 +113,11 @@ export const SETTLEMENT_CONFIG = {
   futureSkewMs: 24 * 3600_000,
   /** Số lỗi dòng tối đa trả về (file lỗi hàng loạt không làm phình phản hồi). */
   maxReportedErrors: 100,
+  /**
+   * Chờ khoá nhập theo nguồn (`pg_advisory_xact_lock`) tối đa chừng này rồi trả 409 IMPORT_IN_PROGRESS (T-140). Phải
+   * nhỏ hơn hẳn `statement_timeout` (30 s, T-092) — nếu không, câu chờ khoá bị cắt bằng lỗi chung 57014 → 500 — và lớn hơn
+   * thời gian một lần nhập trần `maxRows` dòng (đo: docs/db/connections.md §5) để hai lần bấm/nhập song song vẫn tuần tự
+   * hoá êm (lần sau trả bản đã nhập hoặc nhập tiếp), không báo lỗi oan.
+   */
+  importLockWaitMs: 10_000,
 } as const;

@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
 import { z } from "zod";
+import { msToSecondsCeil } from "@x-shop/domain";
 import { recordAudit } from "../audit/record";
 import { logServerError } from "../errors/error-handler";
 import { maskFreeText } from "../audit/sanitize";
@@ -37,6 +38,7 @@ export class SettlementHttpError extends Error {
 
 const SETTLEMENT_ERROR_STATUS: Record<SettlementError["code"], number> = {
   BATCH_CONFLICT: 409,
+  IMPORT_IN_PROGRESS: 409,
   NOT_FOUND: 404,
   INVALID_STATE: 409,
 };
@@ -47,6 +49,9 @@ export function handleSettlementError(req: MedusaRequest, res: MedusaResponse, e
     return sendProblem(res, error.status, error.code, error.message, error.errors, error.extra);
   }
   if (error instanceof SettlementError) {
+    // Lần nhập khác cùng nguồn đang giữ khoá (T-140): chưa ghi gì, gọi lại được.
+    if (error.code === "IMPORT_IN_PROGRESS")
+      res.setHeader("Retry-After", String(msToSecondsCeil(SETTLEMENT_CONFIG.importLockWaitMs)));
     return sendProblem(res, SETTLEMENT_ERROR_STATUS[error.code], error.code, error.message, [], error.detail);
   }
   if (error instanceof MedusaError) {

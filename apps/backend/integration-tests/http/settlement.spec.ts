@@ -1,4 +1,6 @@
+import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import type { MedusaContainer } from "@medusajs/framework/types";
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
@@ -9,6 +11,7 @@ import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { RETURNS_MODULE } from "../../src/modules/returns";
 import type ReturnsModuleService from "../../src/modules/returns/service";
 import { SETTLEMENT_MODULE } from "../../src/modules/settlement";
+import { SETTLEMENT_CONFIG } from "../../src/modules/settlement/constants";
 import type SettlementModuleService from "../../src/modules/settlement/service";
 import { SHIPPING_MODULE } from "../../src/modules/shipping";
 import type ShippingModuleService from "../../src/modules/shipping/service";
@@ -557,6 +560,102 @@ medusaIntegrationTestRunner({
         expect(both.map((x) => x.status).sort()).toEqual([200, 409]);
         const list = await get(`/admin/x/settlements/discrepancies?batch_id=${r.data.batch.id}`);
         expect(list.data.discrepancies[0].events.map((e: J) => e.action)).toEqual(["opened", "resolved"]);
+      });
+    });
+
+    describe("chờ khoá nhập dưới statement_timeout (T-140)", () => {
+      const LOCK_WAIT = SETTLEMENT_CONFIG.importLockWaitMs;
+      /**
+       * Giữ một khoá trong giao dịch riêng (kết nối khác của pool) tới khi `release()` hoặc quá `autoReleaseMs` — tự nhả
+       * để mã cũ (chờ vô hạn: test tích hợp không có statement_timeout) không treo test mà ra kết quả sai rõ ràng.
+       */
+      async function holdLock(sql: string, bindings: string[], autoReleaseMs: number) {
+        const db = container.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION);
+        let release!: () => void;
+        const released = new Promise<void>((r) => (release = r));
+        let ready!: () => void;
+        const acquired = new Promise<void>((r) => (ready = r));
+        const timer = setTimeout(release, autoReleaseMs);
+        const done = db.transaction(async (trx) => {
+          await trx.raw(sql, bindings as unknown as Knex.ValueDict[]);
+          ready();
+          await released;
+        });
+        await acquired;
+        return async () => {
+          clearTimeout(timer);
+          release();
+          await done;
+        };
+      }
+      const timedImport = async (csv: string) => {
+        const t = Date.now();
+        const r = await importCsv(A("accountant"), "ghn_cod", csv);
+        return { r, ms: Date.now() - t };
+      };
+      const ADVISORY = "select pg_advisory_xact_lock(hashtext(?))";
+
+      it("lần nhập khác giữ khoá quá hạn chờ → 409 IMPORT_IN_PROGRESS + Retry-After sau ~hạn chờ (không đợi tới statement_timeout), không ghi gì; nhả rồi nhập lại → 201", async () => {
+        expect(LOCK_WAIT).toBeGreaterThanOrEqual(1_000);
+        expect(LOCK_WAIT).toBeLessThan(30_000); // < statement_timeout mặc định (T-092)
+        const { o, s } = await deliveredCod();
+        const csv = csvOf(line(s.client_order_code, o.total, "cod"));
+        const release = await holdLock(ADVISORY, ["x-settlement:ghn_cod"], LOCK_WAIT * 2);
+        let busy: Awaited<ReturnType<typeof timedImport>>;
+        try {
+          busy = await timedImport(csv);
+        } finally {
+          await release();
+        }
+        expect({ status: busy.r.status, code: busy.r.data.code }).toEqual({
+          status: 409,
+          code: "IMPORT_IN_PROGRESS",
+        });
+        expect(busy.r.headers["content-type"]).toContain("application/problem+json");
+        expect(busy.r.headers["retry-after"]).toBe(String(Math.ceil(LOCK_WAIT / 1000)));
+        expect(busy.r.data).toMatchObject({ source: "ghn_cod" });
+        expect(busy.ms).toBeGreaterThanOrEqual(LOCK_WAIT - 50);
+        expect(busy.ms).toBeLessThan(LOCK_WAIT * 2 - 1_000); // hết hạn chờ, không phải nhờ người giữ tự nhả
+        expect((await settlement().listBatches({}, { limit: 10, offset: 0 })).count).toBe(0);
+        expect(await settlementState(s.id)).toBe("unsettled");
+
+        const retry = await importCsv(A("accountant"), "ghn_cod", csv);
+        expect(retry.status).toBe(201);
+        expect(await settlementState(s.id)).toBe("settled");
+      });
+
+      it("khoá nguồn KHÁC đang bị giữ không chặn; người giữ cùng nguồn nhả trước hạn chờ → chờ rồi nhập bình thường (201)", async () => {
+        const { o, s } = await deliveredCod();
+        const releaseOther = await holdLock(ADVISORY, ["x-settlement:vnpay"], LOCK_WAIT * 2);
+        try {
+          const release = await holdLock(ADVISORY, ["x-settlement:ghn_cod"], 1_500);
+          const { r, ms } = await timedImport(csvOf(line(s.client_order_code, o.total, "cod")));
+          await release();
+          expect(r.status).toBe(201);
+          expect(ms).toBeGreaterThanOrEqual(1_000);
+          expect(ms).toBeLessThan(LOCK_WAIT);
+        } finally {
+          await releaseOther();
+        }
+        expect(await settlementState(s.id)).toBe("settled");
+      });
+
+      it("hạn chờ chỉ áp cho khoá nhập: khoá dòng vận đơn (FOR UPDATE) giữ lâu hơn hạn chờ vẫn được chờ như cũ → 201", async () => {
+        const { o, s } = await deliveredCod();
+        const release = await holdLock(
+          "select id from shipment where id = ? for update",
+          [s.id],
+          LOCK_WAIT + 1_500,
+        );
+        let res: Awaited<ReturnType<typeof timedImport>>;
+        try {
+          res = await timedImport(csvOf(line(s.client_order_code, o.total, "cod")));
+        } finally {
+          await release();
+        }
+        expect(res.r.status).toBe(201);
+        expect(res.ms).toBeGreaterThanOrEqual(LOCK_WAIT + 1_400);
+        expect(await settlementState(s.id)).toBe("settled");
       });
     });
 

@@ -1300,7 +1300,8 @@ paths:
       summary: "Nhập chứng từ đối soát (CSV)"
       description: |
         Thân `text/csv` hoặc multipart trường `file`; một dòng sai → 422 cả file. Cùng chứng từ nhập lại → 200 +
-        `Idempotent-Replayed: true`; mới → 201. Mã batch hãng trùng mà khác nội dung → 409 `BATCH_CONFLICT`. Cần MFA.
+        `Idempotent-Replayed: true`; mới → 201. Mã batch hãng trùng mà khác nội dung → 409 `BATCH_CONFLICT`. Lần nhập khác
+        cùng nguồn giữ khoá quá 10 s → 409 `IMPORT_IN_PROGRESS` + `Retry-After: 10`, chưa ghi gì (T-140). Cần MFA.
       security:
         - adminSession: []
         - adminBearer: []
