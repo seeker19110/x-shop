@@ -38,9 +38,12 @@ export const CATALOG_REVALIDATE_POLICY = {
   /**
    * Bộ ngắt THEO TỪNG URL: một bản storefront lỗi tạm (timeout, không kết nối được, 5xx/408/429) hoặc trả lời chậm hơn
    * `slowResponseMs` → trong khoảng này mọi lần gửi tới URL đó thất bại NGAY (tạm thời, hẹn lại sau phần còn lại; dài hơn
-   * nếu `Retry-After` đòi), không chờ mạng. Bản khoẻ vẫn nhận bình thường.
+   * nếu `Retry-After` đòi), không chờ mạng. Bản khoẻ vẫn nhận bình thường. Thời gian ngắt bắt đầu ngắn rồi gấp đôi mỗi lần
+   * ngắt LIÊN TIẾP (thăm dò hỏng) tới `maxUnavailableCooldownMs`: storefront vừa khởi động lại/route nguội chậm một lần
+   * không làm webhook đứng 30 giây (E2E sau merge T-154), storefront sập lâu chỉ bị thăm dò mỗi 30 giây.
    */
-  unavailableCooldownMs: 30_000,
+  unavailableCooldownMs: 5_000,
+  maxUnavailableCooldownMs: 30_000,
   /** Phản hồi chậm hơn ngưỡng này (kể cả 2xx) cũng mở ngắt — không để storefront chậm giữ khe dispatcher. */
   slowResponseMs: 1_000,
   /**
@@ -246,6 +249,8 @@ interface UrlBreaker {
   until: number;
   /** Đã từng ngắt và chưa có lần gửi thành công → lần thành công kế tiếp phải là tag `catalog` (gửi bù). */
   tripped: boolean;
+  /** Số lần ngắt liên tiếp (thời gian ngắt = cơ bản × 2^(trips−1), có trần). */
+  trips: number;
 }
 
 /** Bộ ngắt theo URL (theo tiến trình) — xem `unavailableCooldownMs`. */
@@ -295,8 +300,13 @@ export async function sendRevalidation(
   const now = deps.now ?? new Date();
   const nowMs = now.getTime();
   const makeNonce = deps.nonce ?? (() => randomBytes(18).toString("base64url"));
-  const { requestTimeoutMs, slowResponseMs, unavailableCooldownMs, maxRetryAfterMs } =
-    CATALOG_REVALIDATE_POLICY;
+  const {
+    requestTimeoutMs,
+    slowResponseMs,
+    unavailableCooldownMs,
+    maxUnavailableCooldownMs,
+    maxRetryAfterMs,
+  } = CATALOG_REVALIDATE_POLICY;
   const results = await Promise.allSettled(
     config.urls.map(async (url) => {
       const breaker = breakers.get(url);
@@ -345,7 +355,13 @@ export async function sendRevalidation(
       const slow = Date.now() - startedAt > slowResponseMs;
       if ((error !== null && isTransientError(error)) || slow) {
         breakers.set(url, {
-          until: nowMs + Math.max(unavailableCooldownMs, retryAfterMs ?? 0),
+          trips: (breaker?.trips ?? 0) + 1,
+          until:
+            nowMs +
+            Math.max(
+              Math.min(unavailableCooldownMs * 2 ** (breaker?.trips ?? 0), maxUnavailableCooldownMs),
+              retryAfterMs ?? 0,
+            ),
           // Chậm nhưng đã nhận (2xx) thì không cần gửi bù; mọi trường hợp khác giữ/bật cờ gửi bù.
           tripped: error !== null || breaker?.tripped === true,
         });

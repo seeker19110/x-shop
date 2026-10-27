@@ -846,7 +846,7 @@ describe("ngắt theo URL khi storefront lỗi tạm/chậm (review T-142 vòng 
     expect(after.calls.map(body)).toEqual([{ id: "e2", tags: ["product:a"] }]);
   });
 
-  it("lần thăm dò hỏng lại → vẫn giữ cờ gửi bù cho lần thành công sau", async () => {
+  it("lần thăm dò hỏng lại → ngắt lâu gấp đôi (trần 30 s), vẫn giữ cờ gửi bù cho lần thành công sau", async () => {
     await sendRevalidation(
       CONFIG,
       { id: "e", tags: ["x"] },
@@ -857,13 +857,54 @@ describe("ngắt theo URL khi storefront lỗi tạm/chậm (review T-142 vòng 
       { id: "e", tags: ["x"] },
       { fetch: fakeFetch(() => 500).fetch, now: at(COOL + 1) },
     ).catch(() => undefined);
+    // Lần ngắt thứ hai: 2 × COOL kể từ lần thăm dò hỏng.
+    const still = await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["x"] },
+      { fetch: fakeFetch().fetch, now: at(3 * COOL) },
+    ).catch((x: unknown) => x);
+    expect(retryInfoOf(still).retryAfterMs).toBe(1);
     const ok = fakeFetch();
     await sendRevalidation(
       CONFIG,
       { id: "e3", tags: ["product:a"] },
-      { fetch: ok.fetch, now: at(2 * COOL + 2) },
+      { fetch: ok.fetch, now: at(3 * COOL + 2) },
     );
     expect(ok.calls.map(body)).toEqual([{ id: "e3", tags: ["catalog"] }]);
+  });
+
+  it("ngắt liên tiếp gấp đôi tới trần; thành công đặt lại về thời gian ngắt ban đầu", async () => {
+    const MAX = CATALOG_REVALIDATE_POLICY.maxUnavailableCooldownMs;
+    let t = 0;
+    const lengths: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      await sendRevalidation(
+        CONFIG,
+        { id: "e", tags: ["x"] },
+        { fetch: fakeFetch(() => 503).fetch, now: at(t) },
+      ).catch(() => undefined);
+      const e = await sendRevalidation(
+        CONFIG,
+        { id: "e", tags: ["x"] },
+        { fetch: fakeFetch().fetch, now: at(t) },
+      ).catch((x: unknown) => x);
+      const len = retryInfoOf(e).retryAfterMs!;
+      lengths.push(len);
+      t += len;
+    }
+    expect(lengths).toEqual([COOL, 2 * COOL, 4 * COOL, Math.min(8 * COOL, MAX), MAX]);
+    await sendRevalidation(CONFIG, { id: "e", tags: ["x"] }, { fetch: fakeFetch().fetch, now: at(t) });
+    await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["x"] },
+      { fetch: fakeFetch(() => 503).fetch, now: at(t + 1) },
+    ).catch(() => undefined);
+    const e = await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["x"] },
+      { fetch: fakeFetch().fetch, now: at(t + 1) },
+    ).catch((x: unknown) => x);
+    expect(retryInfoOf(e).retryAfterMs).toBe(COOL);
   });
 
   it("phản hồi chậm hơn ngưỡng (kể cả 2xx) mở ngắt; 2xx chậm không cần gửi bù", async () => {

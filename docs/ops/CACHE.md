@@ -64,8 +64,9 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
   `outbox_dead` đang mở cho loại này (`openOpsExceptionIfNoneActive`, phạm vi `type`, ưu tiên `normal` — dữ liệu vẫn tươi
   lại theo TTL), không mỗi dòng một ngoại lệ; loại sự kiện khác giữ hành vi cũ.
 - **Không chặn khe outbox-dispatch dùng chung (D-081):** mỗi POST có hạn 2 giây. Bộ ngắt THEO TỪNG URL (trong tiến trình):
-  lỗi tạm (timeout, không kết nối được, 5xx, 408, 429) hoặc phản hồi chậm hơn 1 giây (kể cả 2xx) → ngắt URL đó 30 giây (lâu
-  hơn nếu `Retry-After` đòi): mọi lần gửi tới URL đó thất bại NGAY (tạm thời, hẹn lại sau phần ngắt còn lại); bản storefront
+  lỗi tạm (timeout, không kết nối được, 5xx, 408, 429) hoặc phản hồi chậm hơn 1 giây (kể cả 2xx) → ngắt URL đó 5 giây, gấp đôi
+  mỗi lần ngắt liên tiếp (thăm dò hỏng) tới trần 30 giây, về lại 5 giây sau một lần thành công (lâu hơn nếu `Retry-After`
+  đòi) — storefront vừa khởi động lại/route nguội chậm một lần chỉ làm webhook chậm vài giây: mọi lần gửi tới URL đó thất bại NGAY (tạm thời, hẹn lại sau phần ngắt còn lại); bản storefront
   khoẻ vẫn nhận bình thường; 4xx khác (lỗi khoá/giao thức) không ngắt. Hết ngắt, lần gửi thành công đầu tiên tới URL đó
   mang tag `catalog` (gửi bù cho các dòng đã dead/bị từ chối trong lúc sập). Thêm trần mỗi lượt dispatch: tối đa 3 dòng
   catalog gửi tag riêng, dòng thứ 4 gửi MỘT webhook `catalog` phủ phần còn lại của lượt (thành công → các dòng sau xong không
