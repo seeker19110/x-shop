@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, rmSync } from "node:fs";
+import http from "node:http";
 import { join } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import Redis from "ioredis";
 import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
@@ -80,6 +81,15 @@ medusaIntegrationTestRunner({
         (e) => JSON.parse(JSON.stringify(e)) as Row,
       );
 
+    /**
+     * Xoá bộ đếm gộp audit (`audit.rbac_denied:*` — cùng tiền tố cho mọi nhóm gộp) để ca kiểm "lần 1 của nhóm" không phụ
+     * thuộc ca trước trong cùng cửa sổ 60 s (mọi request test cùng IP 127.0.0.1).
+     */
+    const resetAuditThrottle = () =>
+      container
+        .resolve(ContainerRegistrationKeys.PG_CONNECTION)
+        .raw(`DELETE FROM rate_limit_counter WHERE bucket LIKE 'audit.rbac_denied:%'`);
+
     /** Chờ đủ `n` dòng (ghi sau `finish`), rồi chờ thêm một nhịp để chắc không có dòng thừa. */
     async function waitRows(filter: AuditListFilter, n: number, timeoutMs = 15_000): Promise<Row[]> {
       const until = Date.now() + timeoutMs;
@@ -133,7 +143,14 @@ medusaIntegrationTestRunner({
 
       it("sai mật khẩu và email không tồn tại → failure, actor vô danh, đích là bí danh (không email thô)", async () => {
         const admin = await createAdmin(rawApi, container, { roles: ["support"] });
+        // Thất bại vô danh gộp theo IP + sự kiện (mọi request test cùng IP) → xoá bộ đếm để mỗi lần là "lần 1".
+        await resetAuditThrottle();
         expect((await login(admin.email, "sai-mat-khau")).status).toBe(401);
+        await waitRows(
+          { resource_id: hashIdentifier(container, admin.email) as string, outcome: "failure" },
+          1,
+        );
+        await resetAuditThrottle();
         const ghost = `khong-co-${randomUUID()}@x-shop.test`;
         expect((await login(ghost, "bat-ky")).status).toBe(401);
 
@@ -154,14 +171,15 @@ medusaIntegrationTestRunner({
         expectWellFormed([...wrong, ...missing], [admin.email, ghost, "sai-mat-khau"]);
       });
 
-      it("ĐỒNG THỜI: N lần sai dưới ngưỡng → đúng N dòng failure; vượt ngưỡng → 429 + auth.lockout gộp (lần 1, 10)", async () => {
+      it("ĐỒNG THỜI: N lần sai dưới ngưỡng → gộp theo IP (1 dòng, occurrence 1); vượt ngưỡng → 429 + auth.lockout gộp (lần 1, 10)", async () => {
         const victim = await createAdmin(rawApi, container, { roles: ["support"] });
         const idh = hashIdentifier(container, victim.email) as string;
+        await resetAuditThrottle();
         const n = AUTH_RATE_LIMITS.login.perIdentityIp;
         const first = await Promise.all(Array.from({ length: n }, () => login(victim.email, "sai")));
         expect(first.map((r) => r.status)).toEqual(Array(n).fill(401));
-        const failures = await waitRows({ resource_id: idh, outcome: "failure" }, n);
-        expect(failures).toHaveLength(n);
+        const failures = await waitRows({ resource_id: idh, outcome: "failure" }, 1);
+        expect(failures.map((r) => ((r.changes as Row).throttle as Row).occurrence)).toEqual([1]);
 
         const blocked = await Promise.all(Array.from({ length: 12 }, () => login(victim.email, "sai")));
         expect(blocked.map((r) => r.status)).toEqual(Array(12).fill(429));
@@ -184,12 +202,29 @@ medusaIntegrationTestRunner({
         expectWellFormed([...failures, ...lockouts], [victim.email]);
       });
 
-      it("request vô danh thất bại không định danh (thân rỗng) → không ghi", async () => {
+      it("thất bại vô danh (thân rỗng) → vẫn ghi, gộp theo IP; đổi email mỗi lần KHÔNG lách được gộp (lần 1, 10)", async () => {
+        await resetAuditThrottle();
         const rid = `req-t091-anon-${randomUUID().slice(0, 8)}`;
         const res = await call("POST", "/auth/user/emailpass", { "x-request-id": rid }, {});
         expect(res.status).toBeGreaterThanOrEqual(400);
-        await sleep(600);
-        expect(await list({ request_id: rid })).toHaveLength(0);
+        const empty = await waitRows({ request_id: rid }, 1);
+        expect(empty).toHaveLength(1);
+        expect(empty[0]).toMatchObject({ actor_id: null, resource_id: null, outcome: "failure" });
+
+        // Kẻ dò mật khẩu đổi email mỗi lần (định danh do client chọn): nhóm vẫn là (IP, auth.login, failure).
+        await resetAuditThrottle();
+        const emails = Array.from({ length: 12 }, () => `do-${randomUUID()}@x-shop.test`);
+        for (const email of emails) expect((await login(email, "sai")).status).toBe(401);
+        await sleep(800);
+        const rows = (
+          await Promise.all(emails.map((e) => list({ resource_id: hashIdentifier(container, e) as string })))
+        ).flat();
+        expect(
+          rows
+            .map((r) => ((r.changes as Row).throttle as Row).occurrence)
+            .sort((a, b) => Number(a) - Number(b)),
+        ).toEqual([1, 10]);
+        expectWellFormed([...empty, ...rows], emails);
       });
     });
 
@@ -402,6 +437,111 @@ medusaIntegrationTestRunner({
       expect(res.status).toBe(200);
       expect((res.data.audit_logs as AuditEntry[]).every((r) => r.outcome === "failure")).toBe(true);
       expect((await call("GET", "/admin/x/audit?outcome=error", owner.headers)).status).toBe(422);
+    });
+
+    describe("hồi quy review T-091: khớp route như router thấy, ngắt sớm, id mã hoá", () => {
+      /** Request thô: URL tuyệt đối, GET kèm thân, ngắt socket ngay sau khi gửi. */
+      function raw(
+        method: string,
+        path: string,
+        headers: Record<string, string>,
+        body?: string,
+        opts: { abort?: boolean } = {},
+      ): Promise<{ status: number }> {
+        const base = new URL(
+          String((rawApi as unknown as { defaults: { baseURL: string } }).defaults.baseURL),
+        );
+        return new Promise((resolve, reject) => {
+          const req = http.request(
+            { host: base.hostname, port: base.port, path, method, headers: { "user-agent": UA, ...headers } },
+            (res) => {
+              res.resume();
+              res.on("end", () => resolve({ status: res.statusCode ?? 0 }));
+            },
+          );
+          req.on("error", (e) => (opts.abort === true ? resolve({ status: 0 }) : reject(e)));
+          if (body !== undefined) req.write(body);
+          req.end();
+          if (opts.abort === true) setImmediate(() => req.destroy());
+        });
+      }
+      const jsonHeaders = (body: string) => ({
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(body)),
+      });
+
+      it("🔴1 `POST /auth/%75ser/emailpass` (Express giải mã tham số → vẫn là đăng nhập) sai mật khẩu → auth.login failure", async () => {
+        await resetAuditThrottle();
+        const admin = await createAdmin(rawApi, container, { roles: ["support"] });
+        const idh = hashIdentifier(container, admin.email) as string;
+        const res = await call("POST", "/auth/%75ser/emailpass", {}, { email: admin.email, password: "sai" });
+        expect(res.status).toBe(401);
+        const rows = await waitRows(
+          { action: SECURITY_EVENTS.LOGIN, resource_id: idh, outcome: "failure" },
+          1,
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          changes: { actor_type: "user", provider: "emailpass", status: 401 },
+        });
+        expectWellFormed(rows, [admin.email]);
+      });
+
+      it("🔴1 GET đăng nhập kèm thân (405 từ T-138) → auth.login failure status 405", async () => {
+        await resetAuditThrottle();
+        const admin = await createAdmin(rawApi, container, { roles: ["support"] });
+        const idh = hashIdentifier(container, admin.email) as string;
+        const body = JSON.stringify({ email: admin.email, password: admin.password });
+        expect((await raw("GET", "/auth/user/emailpass", jsonHeaders(body), body)).status).toBe(405);
+        const rows = await waitRows(
+          { action: SECURITY_EVENTS.LOGIN, resource_id: idh, outcome: "failure" },
+          1,
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ changes: { status: 405, route: "GET /auth/:actor_type/:provider" } });
+      });
+
+      it("🔴1 request-target URL tuyệt đối (server test không có hook chặn 400 của medusa start) → vẫn audit đăng nhập", async () => {
+        await resetAuditThrottle();
+        const admin = await createAdmin(rawApi, container, { roles: ["support"] });
+        const idh = hashIdentifier(container, admin.email) as string;
+        const base = new URL(
+          String((rawApi as unknown as { defaults: { baseURL: string } }).defaults.baseURL),
+        );
+        const body = JSON.stringify({ email: admin.email, password: "sai" });
+        const abs = `http://localhost:${base.port}/auth/user/emailpass`;
+        expect((await raw("POST", abs, jsonHeaders(body), body)).status).toBe(401);
+        const rows = await waitRows(
+          { action: SECURITY_EVENTS.LOGIN, resource_id: idh, outcome: "failure" },
+          1,
+        );
+        expect(rows).toHaveLength(1);
+      });
+
+      it("🟠3 `GET /admin/customers/cus%5F…` → data.accessed với resource_id đã giải mã", async () => {
+        const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+        const [customer] = await container
+          .resolve(Modules.CUSTOMER)
+          .createCustomers([{ email: `khach-${randomUUID()}@example.test`, first_name: "Khach" }]);
+        const id = customer!.id;
+        const encoded = id.replace("_", "%5F");
+        expect(encoded).not.toBe(id);
+        expect((await call("GET", `/admin/customers/${encoded}`, owner.headers)).status).toBe(200);
+        const rows = await waitRows({ action: SECURITY_EVENTS.DATA_ACCESSED, actor_id: owner.userId }, 1);
+        expect(rows.map((r) => [r.resource_type, r.resource_id])).toEqual([["customer", id]]);
+      });
+
+      it("🟠1 client ngắt kết nối trước khi xuất xong → data.exported failure, changes.aborted", async () => {
+        const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+        await raw("GET", "/admin/x/exports/products.csv", owner.headers, undefined, { abort: true });
+        const rows = await waitRows({ action: SECURITY_EVENTS.DATA_EXPORTED, actor_id: owner.userId }, 1);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          outcome: "failure",
+          resource_id: "products.csv",
+          changes: { aborted: true },
+        });
+      });
     });
   },
 });

@@ -25,7 +25,7 @@ export interface InventoryAdjustment {
 export const isUniqueViolation = (e: unknown): boolean =>
   typeof e === "object" && e !== null && (e as { code?: string }).code === "23505";
 
-/** Kết quả của hành động (SEC-LOG-002 `outcome`, CMP-AUDIT-002 `result`) — CHECK ở DB (Migration20261026210000). */
+/** Kết quả của hành động (SEC-LOG-002 `outcome`, CMP-AUDIT-002 `result`) — CHECK ở DB (Migration20261027090000). */
 export const AUDIT_OUTCOMES = ["success", "failure", "denied"] as const;
 export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
 

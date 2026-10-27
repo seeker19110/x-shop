@@ -11,9 +11,11 @@ const jwt = (payload: Record<string, unknown>) =>
   `h.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.sig`;
 
 describe("bảng route audit (matchAuditRoute)", () => {
-  const ev = (method: string, url: string) => matchAuditRoute(method, url)?.route.event ?? null;
+  const at = (url: string) => ({ originalUrl: url });
+  const ev = (method: string, url: string) => matchAuditRoute(method, at(url))?.route.event ?? null;
+  const segs = (method: string, url: string) => matchAuditRoute(method, at(url))?.segments ?? null;
 
-  it("đăng nhập user/customer; route /auth khác 3 đoạn không bị nhận nhầm là đăng nhập", () => {
+  it("đăng nhập: mọi actor (identity emailpass dùng chung — T-138); route /auth tĩnh không bị nhận nhầm", () => {
     expect(ev("POST", "/auth/user/emailpass")).toBe(SECURITY_EVENTS.LOGIN);
     expect(ev("POST", "/auth/customer/emailpass?x=1")).toBe(SECURITY_EVENTS.LOGIN);
     expect(ev("POST", "/AUTH/User/EmailPass/")).toBe(SECURITY_EVENTS.LOGIN);
@@ -21,8 +23,14 @@ describe("bảng route audit (matchAuditRoute)", () => {
     expect(ev("POST", "/auth/mfa/factors")).toBe(SECURITY_EVENTS.MFA_ENROLL_STARTED);
     expect(ev("POST", "/auth/mfa/recovery-codes")).toBe(SECURITY_EVENTS.MFA_RECOVERY_CODES_ISSUED);
     expect(ev("POST", "/auth/verification/request")).toBeNull();
-    expect(ev("POST", "/auth/admin/emailpass")).toBeNull();
-    expect(ev("GET", "/auth/user/emailpass")).toBeNull();
+    expect(ev("POST", "/auth/verification/confirm")).toBeNull();
+    // Actor lạ vẫn đoán được mật khẩu admin qua identity emailpass chung → vẫn là đăng nhập (review T-091 🔴1).
+    expect(ev("POST", "/auth/admin/emailpass")).toBe(SECURITY_EVENTS.LOGIN);
+    // GET đăng nhập emailpass (405 từ T-138) vẫn là một lần thử; GET provider khác / route tĩnh GET thì không.
+    expect(ev("GET", "/auth/user/emailpass")).toBe(SECURITY_EVENTS.LOGIN);
+    expect(ev("HEAD", "/auth/user/emailpass")).toBe(SECURITY_EVENTS.LOGIN);
+    expect(ev("GET", "/auth/user/providers")).toBeNull();
+    expect(ev("GET", "/auth/emailpass/user")).toBeNull();
     expect(ev("POST", "/auth/user/emailpass/register")).toBeNull();
     expect(ev("POST", "/auth/user/emailpass/callback")).toBeNull();
   });
@@ -52,7 +60,7 @@ describe("bảng route audit (matchAuditRoute)", () => {
     expect(ev("GET", "/admin/products")).toBeNull();
     expect(ev("GET", "/store/x/products")).toBeNull();
     expect(
-      matchAuditRoute("GET", "/admin/customers/cus_1")?.route.target?.(
+      matchAuditRoute("GET", at("/admin/customers/cus_1"))?.route.target?.(
         ["admin", "customers", "cus_1"],
         {} as never,
       ),
@@ -62,8 +70,40 @@ describe("bảng route audit (matchAuditRoute)", () => {
     });
   });
 
+  it("khớp như router Express thấy (T-145): tham số giải mã %xx, đoạn tĩnh so chuỗi thô, URL tuyệt đối, `\\`, `#`", () => {
+    // Tham số được giải mã: `%75ser` = `user`.
+    expect(ev("POST", "/auth/%75ser/emailpass")).toBe(SECURITY_EVENTS.LOGIN);
+    expect(segs("POST", "/auth/%75ser/%65mailpass")).toEqual(["auth", "user", "emailpass"]);
+    // Đoạn tĩnh mã hoá không khớp route tĩnh (Express cũng không) → rơi về mẫu tham số như router.
+    expect(ev("POST", "/auth/%74oken/refresh")).toBe(SECURITY_EVENTS.LOGIN);
+    expect(ev("GET", "/admin/%63ustomers/cus_1")).toBeNull();
+    // Request-target tuyệt đối / `\` / `#` (production: server chặn 400 trước Express — T-145; không hook thì vẫn khớp).
+    expect(ev("POST", "http://evil.test/auth/user/emailpass")).toBe(SECURITY_EVENTS.LOGIN);
+    expect(ev("GET", "http://h/admin/customers/cus_1?fields=email")).toBe(SECURITY_EVENTS.DATA_ACCESSED);
+    expect(ev("GET", "/admin\\customers\\cus_1#x")).toBe(SECURITY_EVENTS.DATA_ACCESSED);
+    // Id mã hoá được giải mã trước safeId (review T-091 🟠3); mã hoá hỏng → không khớp (Express trả 400).
+    expect(segs("GET", "/admin/customers/cus%5F01ABC")).toEqual(["admin", "customers", "cus_01ABC"]);
+    expect(ev("GET", "/admin/customers/%zz")).toBeNull();
+    expect(matchAuditRoute("GET", {})).toBeNull();
+  });
+
+  it("route PII native theo order.read được ghi data.accessed", () => {
+    for (const p of [
+      "customer-groups",
+      "draft-orders",
+      "returns",
+      "claims",
+      "exchanges",
+      "order-changes",
+      "order-edits",
+      "fulfillments",
+    ]) {
+      expect({ p, ev: ev("GET", `/admin/${p}/x_1`) }).toEqual({ p, ev: SECURITY_EVENTS.DATA_ACCESSED });
+    }
+  });
+
   it("id trên đường dẫn giữ nguyên hoa/thường (khớp mẫu không phân biệt)", () => {
-    const m = matchAuditRoute("DELETE", "/AUTH/mfa/factors/authmfa_01ABCxyz/?a=1");
+    const m = matchAuditRoute("DELETE", at("/AUTH/mfa/factors/authmfa_01ABCxyz/?a=1"));
     expect(m?.route.event).toBe(SECURITY_EVENTS.MFA_FACTOR_REMOVED);
     expect(m?.route.target?.(m.segments, {} as never)).toEqual({
       type: "mfa_factor",
@@ -138,8 +178,8 @@ describe("tokenClaims / resolveActor", () => {
   });
 
   it("actor_id dạng email (token đặt lại mật khẩu) → bí danh, không giữ email; id có ký tự lạ → null", () => {
-    const r = resolveActor(null, { actor_id: "a@b.vn", actor_type: "user" }, pseudo);
-    expect(r).toEqual({ actor_type: "user", actor_id: "idh_6", pseudonymized: true });
+    const r = resolveActor(null, { actor_id: "a@example.test", actor_type: "user" }, pseudo);
+    expect(r).toEqual({ actor_type: "user", actor_id: "idh_14", pseudonymized: true });
     expect(resolveActor(null, { actor_id: "x\ny", actor_type: "user" }, pseudo).actor_id).toBeNull();
   });
 });
@@ -197,7 +237,7 @@ describe("schema sự kiện bảo mật (SEC-LOG-002)", () => {
       SecurityAuditRecord.safeParse({ ...sample, created_at: "2026-10-26T17:00:00+07:00" }).success,
     ).toBe(false);
     expect(SecurityAuditRecord.safeParse({ ...sample, ip_hash: "203.0.113.5" }).success).toBe(false);
-    expect(SecurityAuditRecord.safeParse({ ...sample, email: "a@b.vn" }).success).toBe(false);
+    expect(SecurityAuditRecord.safeParse({ ...sample, email: "a@example.test" }).success).toBe(false);
   });
 
   it("docs/security/security-event.schema.json khớp schema trong mã", () => {

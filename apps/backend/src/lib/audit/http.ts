@@ -4,22 +4,28 @@ import { isNonEmpty } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import type { AuditOutcome } from "../../modules/audit/service";
-import { matchPath, normalizeAdminPath, normalizeMethod } from "../admin-security/route-match";
+import { normalizeMethod } from "../admin-security/route-match";
+import { rawRequestPath } from "../http/request-path";
+import { clientIpOf } from "../security/config";
 import { decideDenyAudit, type WindowCounter } from "./deny-throttle";
 import { SECURITY_EVENTS, type SecurityEventName } from "./events";
-import { hashIdentifier, recordAudit } from "./record";
+import { hashIdentifier, hashIp, recordAudit } from "./record";
 
 /**
  * Audit sự kiện xác thực và xuất/truy cập dữ liệu nhạy cảm theo route (T-091, SEC-LOG-001/002, CMP-AUDIT-002).
  *
  * Một middleware toàn cục (`securityAuditTrail`, đăng ký cho `/auth` và `/admin` ở api/middlewares.ts) tra bảng
- * `AUDIT_ROUTES`; route khớp → gắn `res.once("finish")` và ghi MỘT dòng audit SAU khi phản hồi xong (không thêm độ trễ
- * vào phản hồi, không đổi thời gian phản hồi đăng nhập — BE-AUTH-003), kể cả khi thất bại/bị từ chối:
+ * `AUDIT_ROUTES`; route khớp → ghi MỘT dòng audit SAU khi phản hồi xong (`finish` — không thêm độ trễ vào phản hồi, không
+ * đổi thời gian phản hồi đăng nhập — BE-AUTH-003) hoặc khi kết nối đóng trước đó (`close` khi chưa `writableFinished` →
+ * `failure` + `changes.aborted`: client ngắt giữa chừng khi xuất PII vẫn để lại dấu vết), kể cả khi thất bại/bị từ chối:
+ *   - khớp route NHƯ ROUTER EXPRESS THẤY (T-145, `matchAuditRoute`): pathname từ `rawRequestPath` (URL tuyệt đối, `\`,
+ *     `#` như `parseurl`), đoạn tĩnh so với pathname CHƯA giải mã (không phân biệt hoa thường), đoạn tham số giải mã `%xx`
+ *     — `/auth/%75ser/emailpass` là đăng nhập (actor `user`), `/admin/customers/cus%5F1` có id `cus_1`;
  *   - kết quả theo status (`outcomeOfStatus`): < 400 success · 403/429 denied · còn lại failure;
- *   - route có rate limit (đăng nhập, xác minh MFA): 429 → sự kiện `auth.lockout` (khoá tạm thời theo định danh/IP), gộp
- *     theo (định danh, route) trong cửa sổ — chỉ ghi lần 1, 10, 100… (`deny-throttle.ts`) để dò mật khẩu không làm ngập;
- *   - không biết là ai (không auth_context, không định danh trong thân, không token) mà thất bại → không ghi (chống ngập
- *     bởi request rác vô danh); riêng `/admin`: 401/403 không ghi ở đây (403 do cổng RBAC ghi `rbac.denied`).
+ *   - route có rate limit (đăng nhập, xác minh MFA): 429 → sự kiện `auth.lockout` (khoá tạm thời theo định danh/IP);
+ *   - chống ngập (`deny-throttle.ts`, ghi lần 1, 10, 100… của nhóm trong cửa sổ): lockout, yêu cầu đặt lại mật khẩu và
+ *     MỌI thất bại vô danh gộp theo (`ip_hash`, sự kiện, kết quả) — KHÔNG theo định danh trong thân (kẻ tấn công tự chọn,
+ *     đổi email mỗi lần là lách được); riêng `/admin`: 401/403 không ghi ở đây (403 do cổng RBAC ghi `rbac.denied`).
  * Không PII thô: định danh đăng nhập (email) → bí danh HMAC `idh_…` (`hashIdentifier`); `actor_id` dạng email (token đặt
  * lại mật khẩu của Medusa mang email làm actor_id) cũng thành bí danh; IP → `ip_hash`; User-Agent cắt ngắn + che.
  * Token trong phản hồi chỉ được giải mã phần payload để lấy actor/auth identity — không lưu token.
@@ -44,11 +50,17 @@ export interface AuditRoute {
   throttleAll?: boolean;
   /** Thêm vào `changes` (vd `dataset`, `pii`). */
   details?: Record<string, unknown>;
-  /** Đoạn đường dẫn phải thuộc tập (vd actor_type ∈ {user, customer}). */
+  /** Đoạn tham số (đã giải mã, phân biệt hoa thường như Auth Module) phải thuộc tập — vd provider = `emailpass`. */
   segmentIn?: { index: number; values: readonly string[] };
+  /** Không ghi (route tĩnh của Medusa trùng hình mẫu tham số phía sau, vd `/auth/verification/request`). */
+  skip?: true;
 }
 
-const ACTOR_TYPES = ["user", "customer"] as const;
+/** Actor/provider đã biết; giá trị khác ghi `"other"` (không chép chuỗi do client chọn vào audit). */
+export const KNOWN_ACTOR_TYPES: readonly string[] = ["user", "customer"];
+export const KNOWN_PROVIDERS: readonly string[] = ["emailpass"];
+const known = (v: string | undefined, set: readonly string[]): string =>
+  v !== undefined && set.includes(v) ? v : "other";
 const seg =
   (type: string, index: number): TargetFn =>
   (s) => ({ type, id: s[index] ?? null });
@@ -123,12 +135,26 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
   },
   {
     method: "POST",
+    pattern: "/auth/verification/request",
+    event: SECURITY_EVENTS.LOGIN,
+    scope: "auth",
+    skip: true,
+  },
+  {
+    method: "POST",
+    pattern: "/auth/verification/confirm",
+    event: SECURITY_EVENTS.LOGIN,
+    scope: "auth",
+    skip: true,
+  },
+  // Identity emailpass dùng chung mọi actor (T-138): `/auth/<actor bất kỳ>/emailpass` đều đoán được mật khẩu → mọi actor.
+  {
+    method: "POST",
     pattern: "/auth/:actor_type/:provider/reset-password",
     event: SECURITY_EVENTS.PASSWORD_RESET_REQUESTED,
     scope: "auth",
     identity: "body_identifier",
     throttleAll: true,
-    segmentIn: { index: 1, values: ACTOR_TYPES },
   },
   {
     method: "POST",
@@ -136,7 +162,6 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
     event: SECURITY_EVENTS.PASSWORD_CHANGED,
     scope: "auth",
     identity: "ctx_actor",
-    segmentIn: { index: 1, values: ACTOR_TYPES },
   },
   {
     method: "POST",
@@ -145,7 +170,15 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
     scope: "auth",
     identity: "body_email",
     rateLimited: true,
-    segmentIn: { index: 1, values: ACTOR_TYPES },
+  },
+  // GET/HEAD đăng nhập emailpass (kèm thân) → 405 từ T-138: vẫn là một lần thử đăng nhập bị chặn → ghi.
+  {
+    method: "GET",
+    pattern: "/auth/:actor_type/:provider",
+    event: SECURITY_EVENTS.LOGIN,
+    scope: "auth",
+    identity: "body_email",
+    segmentIn: { index: 2, values: KNOWN_PROVIDERS },
   },
   // --- Xuất dữ liệu ---
   {
@@ -213,6 +246,26 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
     target: seg("order", 2),
     details: { dataset: "orders", pii: true },
   },
+  // Route native RBAC xếp vào `order.read` (native-permissions.ts) — trả tên/địa chỉ/liên hệ khách.
+  ...(
+    [
+      ["customer-groups", "customer_group"],
+      ["draft-orders", "draft_order"],
+      ["returns", "return"],
+      ["claims", "claim"],
+      ["exchanges", "exchange"],
+      ["order-changes", "order_change"],
+      ["order-edits", "order_edit"],
+      ["fulfillments", "fulfillment"],
+    ] as const
+  ).map(([path, type]): AuditRoute => ({
+    method: "GET",
+    pattern: `/admin/${path}/*`,
+    event: SECURITY_EVENTS.DATA_ACCESSED,
+    scope: "admin",
+    target: seg(type, 2),
+    details: { dataset: path.replace(/-/g, "_"), pii: true },
+  })),
 ];
 
 export interface MatchedRoute {
@@ -222,17 +275,68 @@ export interface MatchedRoute {
   method: string;
 }
 
-export function matchAuditRoute(rawMethod: string, rawUrl: string): MatchedRoute | null {
+/**
+ * Khớp một mẫu như path-to-regexp của Express (không strict): đoạn tĩnh so với đoạn CHƯA giải mã, không phân biệt hoa
+ * thường; `:param` khớp một đoạn khác rỗng, giá trị = đoạn đã giải mã (`decodeURIComponent` — Express `decode_param`);
+ * `*` cuối khớp 0..n đoạn còn lại (cũng giải mã). Trả các đoạn đã giải mã, hoặc `null` nếu không khớp/mã hoá hỏng
+ * (Express trả 400 — không phải route này).
+ */
+function matchRoutePattern(pattern: string, rawSegments: readonly string[]): string[] | null {
+  const p = pattern.split("/").filter(Boolean);
+  const decoded: string[] = [];
+  const decode = (v: string): string | null => {
+    try {
+      return decodeURIComponent(v);
+    } catch {
+      return null;
+    }
+  };
+  for (let i = 0; i < p.length; i++) {
+    const seg = p[i] as string;
+    if (seg === "*" && i === p.length - 1) {
+      for (const rest of rawSegments.slice(i)) {
+        const d = decode(rest);
+        if (d === null) return null;
+        decoded.push(d);
+      }
+      return decoded;
+    }
+    const actual = rawSegments[i];
+    if (actual === undefined) return null;
+    if (seg.startsWith(":")) {
+      const d = decode(actual);
+      if (d === null || d === "") return null;
+      decoded.push(d);
+    } else if (seg.toLowerCase() === actual.toLowerCase()) {
+      decoded.push(seg);
+    } else {
+      return null;
+    }
+  }
+  return p.length === rawSegments.length ? decoded : null;
+}
+
+/**
+ * Route audit của request — theo pathname router thấy (`rawRequestPath`, T-145): request-target tuyệt đối, `\`, `#` được
+ * parse như Express; `null` khi pathname không hợp lệ (nơi khác trả 400) hoặc không route nào khớp.
+ */
+export function matchAuditRoute(
+  rawMethod: string,
+  req: { originalUrl?: unknown; url?: unknown },
+): MatchedRoute | null {
   const method = normalizeMethod(rawMethod);
-  // Khớp mẫu trên đường dẫn chữ thường (như Express); id lấy từ đường dẫn GIỮ hoa/thường (id Medusa có chữ hoa).
-  const path = normalizeAdminPath(rawUrl);
-  const q = rawUrl.indexOf("?");
-  const segments = (q >= 0 ? rawUrl.slice(0, q) : rawUrl).split("/").filter(Boolean);
+  const pathname = rawRequestPath(req);
+  if (pathname === null) return null;
+  // `//` và `/` cuối gộp như normalizeAdminPath; GIỮ hoa/thường (id Medusa có chữ hoa).
+  const rawSegments = pathname.split("/").filter(Boolean);
   for (const route of AUDIT_ROUTES) {
-    if (route.method !== method || !matchPath(route.pattern, path)) continue;
+    if (route.method !== method) continue;
+    const segments = matchRoutePattern(route.pattern, rawSegments);
+    if (segments === null) continue;
     const s = route.segmentIn;
-    if (s && !s.values.includes((segments[s.index] ?? "").toLowerCase())) continue;
-    return { route, segments, path, method };
+    if (s && !s.values.includes(segments[s.index] ?? "")) continue;
+    if (route.skip === true) return null;
+    return { route, segments, path: `/${segments.join("/")}`, method };
   }
   return null;
 }
@@ -318,11 +422,17 @@ const counterOf =
     (await req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE).hitRateCounter(bucket, windowMs, now))
       .current;
 
-async function recordFinished(req: MedusaRequest, res: MedusaResponse, body: unknown, m: MatchedRoute) {
+async function recordFinished(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  body: unknown,
+  m: MatchedRoute,
+  aborted: boolean,
+) {
   const { route } = m;
   const status = res.statusCode;
-  const outcome = outcomeOfStatus(status);
-  if (route.scope === "admin" && (status === 401 || status === 403)) return;
+  const outcome = aborted ? "failure" : outcomeOfStatus(status);
+  if (!aborted && route.scope === "admin" && (status === 401 || status === 403)) return;
 
   const ctx = (req as AuthedRequest).auth_context;
   const claims = tokenClaims(body);
@@ -342,19 +452,17 @@ async function recordFinished(req: MedusaRequest, res: MedusaResponse, body: unk
     target = (route.target ?? fixed("route", null))(m.segments, req);
     target = { type: target.type, id: safeId(target.id) };
   }
-  // Vô danh hoàn toàn mà không thành công → bỏ (request rác không định danh không được làm ngập audit).
-  if (outcome !== "success" && actor.actor_id === null && target.id === null) return;
-
-  const lockout = route.rateLimited === true && status === 429;
+  const lockout = !aborted && route.rateLimited === true && status === 429;
   const event = lockout ? SECURITY_EVENTS.LOCKOUT : route.event;
   const changes: Record<string, unknown> = {
     route: `${m.method} ${route.pattern}`,
     status,
     ...route.details,
   };
-  if (route.scope === "auth" && route.segmentIn) {
-    changes.actor_type = m.segments[1]?.toLowerCase() ?? null;
-    changes.provider = m.segments[2]?.toLowerCase() ?? null;
+  if (aborted) changes.aborted = true;
+  if (route.scope === "auth" && route.pattern.startsWith("/auth/:actor_type/:provider")) {
+    changes.actor_type = known(m.segments[1], KNOWN_ACTOR_TYPES);
+    changes.provider = known(m.segments[2], KNOWN_PROVIDERS);
   }
   if (lockout) {
     changes.event = route.event;
@@ -371,13 +479,15 @@ async function recordFinished(req: MedusaRequest, res: MedusaResponse, body: unk
   const code = outcome === "success" ? null : errorCodeOf(body);
   if (code !== null) changes.error_code = code;
 
-  if (lockout || route.throttleAll === true) {
+  // Gộp theo nguồn (IP băm) + sự kiện + kết quả, không theo định danh do client chọn — xem chú thích đầu file.
+  const anonymousFailure = outcome !== "success" && actor.actor_id === null;
+  if (lockout || route.throttleAll === true || anonymousFailure) {
     const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER);
     const decision = await decideDenyAudit(
       counterOf(req),
       {
-        actorType: target.id !== null ? target.type : actor.actor_type,
-        actorId: target.id ?? actor.actor_id,
+        actorType: "ip",
+        actorId: hashIp(req.scope, clientIpOf(req).ip),
         method: m.method,
         routeClass: `audit:${event}`,
         reason: lockout ? "rate_limited" : outcome,
@@ -419,7 +529,7 @@ function parseJsonBody(b: unknown): unknown {
 export function securityAuditTrail(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction): void {
   let matched: MatchedRoute | null = null;
   try {
-    matched = matchAuditRoute(req.method, req.originalUrl);
+    matched = matchAuditRoute(req.method, req);
   } catch {
     matched = null;
   }
@@ -439,8 +549,11 @@ export function securityAuditTrail(req: MedusaRequest, res: MedusaResponse, next
     if (body === null) body = parseJsonBody(b);
     return originalSend(b);
   };
-  res.once("finish", () => {
-    recordFinished(req, res, body, m).catch((e: unknown) => {
+  let recorded = false;
+  const fire = (aborted: boolean) => {
+    if (recorded) return;
+    recorded = true;
+    recordFinished(req, res, body, m, aborted).catch((e: unknown) => {
       try {
         req.scope
           .resolve(ContainerRegistrationKeys.LOGGER)
@@ -449,6 +562,11 @@ export function securityAuditTrail(req: MedusaRequest, res: MedusaResponse, next
         // không có logger — bỏ qua, không làm hỏng tiến trình
       }
     });
+  };
+  res.once("finish", () => fire(false));
+  // Kết nối đóng trước khi phản hồi xong (client ngắt, timeout proxy) → vẫn ghi, đánh dấu aborted.
+  res.once("close", () => {
+    if (!res.writableFinished) fire(true);
   });
   return next();
 }

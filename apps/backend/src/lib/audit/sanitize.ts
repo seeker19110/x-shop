@@ -84,7 +84,7 @@ export function sanitizeChanges(changes: Record<string, unknown>): Record<string
   return walk("", changes, 0) as Record<string, unknown>;
 }
 
-/** Độ dài tối đa của `user_agent` trong audit (CHECK ở DB, Migration20261026210000). */
+/** Độ dài tối đa của `user_agent` trong audit (CHECK ở DB, Migration20261027090000). */
 export const USER_AGENT_MAX = 256;
 // Ký tự điều khiển C0/C1, DEL, ký tự định hướng chữ (bidi), U+2028/2029 — không thuộc User-Agent hợp lệ.
 // eslint-disable-next-line no-control-regex -- lọc chính ký tự điều khiển khỏi header do client gửi
