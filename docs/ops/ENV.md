@@ -83,6 +83,7 @@ PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # vắng HOST = chỉ loopback (trước đây Node nghe mọi giao diện). Container/sau LB phải ĐẶT `HOST=0.0.0.0` tường minh (và
 # không publish cổng DB/Redis); tên máy hoặc IP, không kèm cổng (cổng = `-p`). DEBUG: vắng/false/0 = tắt; bật ở dev
 # (true/1/namespace) được; NODE_ENV=production + DEBUG bật → từ chối khởi động.
+# Xem cấu hình hiệu lực đã che (không cần DB chạy): pnpm --filter @x-shop/backend config:print
 # HOST=127.0.0.1
 # DEBUG=false
 # Che bí mật khi in cấu hình (T-098, BASE-CFG-005): `redactConfig`/`formatEffectiveConfig` (src/lib/env/redact.ts); đối

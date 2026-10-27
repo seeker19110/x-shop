@@ -11,6 +11,7 @@
     "seed": "medusa exec ./src/scripts/seed.ts",
     "seed:catalog": "medusa exec ./src/scripts/seed-catalog.ts",
     "catalog:reindex": "medusa exec ./src/scripts/rebuild-catalog-index.ts",
+    "config:print": "ts-node --transpile-only -O \"{\\\"module\\\":\\\"commonjs\\\"}\" ./src/scripts/print-config.ts",
     "rbac:grant-owner": "medusa exec ./src/scripts/grant-owner.ts",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json && tsc --noEmit -p src/admin/tsconfig.json",
     "test": "TEST_TYPE=unit NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit --passWithNoTests",

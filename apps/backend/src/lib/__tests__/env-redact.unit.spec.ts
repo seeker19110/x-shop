@@ -1,7 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { inspect } from "node:util";
-import { DEFAULT_BIND_HOST, formatEffectiveConfig, parseEnv, REDACTED, redactConfig, type Env } from "../env";
+import {
+  DEFAULT_BIND_HOST,
+  formatEffectiveConfig,
+  parseEnv,
+  REDACTED,
+  redactConfig,
+  renderEffectiveConfig,
+  type Env,
+} from "../env";
 import { SECRET_ENV_KEYS, SECRET_LOOKING_NAME, isSecretName } from "../env/redact";
 
 const base = { DATABASE_URL: "postgres://xshop:xshop@localhost:5432/xshop" };
@@ -182,5 +190,32 @@ describe("BASE-CFG-007 / BASE-SEC-010: mặc định an toàn", () => {
     for (const name of ["dev", "start"]) {
       expect(pkg.scripts[name]).toContain("-H ${HOST:-127.0.0.1}");
     }
+  });
+});
+
+describe("config:print (BASE-CFG-007)", () => {
+  it("đầu ra là JSON đã che: không bí mật nào, có mặc định an toàn", () => {
+    const out = renderEffectiveConfig(withAllSecrets);
+    expectNoSecret(out);
+    expect(JSON.parse(out)).toMatchObject({ host: "127.0.0.1", DEBUG: false, JWT_SECRET: REDACTED });
+  });
+
+  it("cấu hình sai → lỗi nêu tên biến, không lộ giá trị", () => {
+    expect(() => renderEffectiveConfig({ ...withAllSecrets, JWT_SECRET: "ngan-SENTINEL-x" })).toThrow(
+      /JWT_SECRET/,
+    );
+    try {
+      renderEffectiveConfig({ ...withAllSecrets, JWT_SECRET: "ngan-SENTINEL-x" });
+    } catch (e) {
+      expect(String(e)).not.toContain("ngan-SENTINEL-x");
+    }
+  });
+
+  it("script khai báo trong package.json trỏ tới print-config.ts", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    expect(pkg.scripts["config:print"]).toContain("./src/scripts/print-config.ts");
+    expect(fs.existsSync(path.join(__dirname, "../../scripts/print-config.ts"))).toBe(true);
   });
 });

@@ -247,6 +247,8 @@ pnpm build   # domain → medusa build (backend) và next build (storefront)
 # 1) Migration TRƯỚC khi chạy bản mới (một lần, từ một máy/job duy nhất; bản trước phải chạy được với schema mới):
 cd apps/backend && npx medusa db:migrate
 # 2) Backend: hai tiến trình cùng mã, khác chế độ (mỗi tiến trình có đủ biến ở docs/ops/ENV.md)
+#    Script `start` bind 127.0.0.1 mặc định (BASE-SEC-010): sau LB / trong container PHẢI đặt HOST=0.0.0.0 cho tiến trình
+#    server (không publish cổng DB/Redis); thiếu thì LB không tới được backend. Xem cấu hình hiệu lực (đã che): pnpm --filter @x-shop/backend config:print
 MEDUSA_WORKER_MODE=server pnpm --filter @x-shop/backend start   # nhận HTTP (store, admin, IPN, callback GHN)
 MEDUSA_WORKER_MODE=worker pnpm --filter @x-shop/backend start   # chạy job định kỳ (outbox, reconcile, expire-holds…)
 # 3) Storefront

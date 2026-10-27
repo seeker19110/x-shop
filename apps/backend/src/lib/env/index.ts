@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { parseTrustedProxies, TRUSTED_PROXY_KEYWORDS } from "../security/client-ip";
 import { privateDirProblem } from "../upload/private";
-import { redactConfig } from "./redact";
+import { formatEffectiveConfig, redactConfig } from "./redact";
 
 export { REDACTED, SECRET_ENV_KEYS, formatEffectiveConfig, redactConfig } from "./redact";
 
@@ -554,4 +554,14 @@ export function loadEnvOrExit(
   if (result.ok) return result.env;
   hooks.writeError(formatEnvProblems(result.problems));
   return hooks.exit(1);
+}
+
+/**
+ * Cấu hình hiệu lực (đã che bí mật) dạng JSON cho `config:print` (BASE-CFG-007): cùng schema/mặc định như lúc khởi động.
+ * Cấu hình sai → ném lỗi chỉ nêu tên biến + lý do (không giá trị).
+ */
+export function renderEffectiveConfig(source: Readonly<Record<string, string | undefined>>): string {
+  const result = parseEnv(source);
+  if (!result.ok) throw new Error(formatEnvProblems(result.problems));
+  return formatEffectiveConfig(result.env);
 }
