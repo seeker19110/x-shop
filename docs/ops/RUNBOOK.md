@@ -413,6 +413,9 @@ lỗi tạm liên tiếp → mở 5 phút; ngân sách ngày `outbox.notify` 3 0
 chạy, vượt 100 % → mở tới 00:00 UTC hôm sau. Breaker mở → mở ngoại lệ này (ưu tiên `high`, owner `owner`, một ngoại lệ đang mở mỗi
 breaker). **Không mất sự kiện**: sự kiện bị hoãn vẫn `pending`/`failed` trong `outbox_event`, `attempts` không đổi, `next_attempt_at`
 = hết nguội. Hết nguội → đúng một lượt thử (half-open); thành công hoặc lỗi vĩnh viễn (dịch vụ đã trả lời, D-111) → đóng, lỗi tạm → mở thêm một kỳ.
+**Lỗi DB khi đọc/ghi breaker hoặc đếm ngân sách → fail-closed**: lượt chạy job lỗi (log của job `x-outbox-dispatch`), không gọi dịch
+vụ ngoài; sự kiện đang xét giữ lease nhận 60 giây rồi được nhận lại (không tăng `attempts`); nếu đã nhận lượt thử thì breaker ở
+`half_open` tới `probe_until` rồi bản sao khác thử. Không cần thao tác tay — xử lý sự cố DB trước.
 
 1. Xem breaker và lý do (`detail.reason`: `consecutive_failures` | `budget_exhausted`):
 
@@ -430,14 +433,17 @@ breaker). **Không mất sự kiện**: sự kiện bị hoãn vẫn `pending`/`
    (`SELECT type, count(*) FROM outbox_event WHERE created_at > now() - interval '1 day' GROUP BY type;`). Lưu lượng thật tăng → nâng
    ngân sách bằng PR sửa `OUTBOX_BREAKER_POLICY` (có review), không sửa DB.
 4. Đã chắc nguyên nhân hết và cần gửi ngay (không chờ hết nguội): đóng breaker, rồi đưa sự kiện đã hoãn của breaker đó về hạn ngay
-   (không làm bước sau thì chúng được gửi khi tới `next_attempt_at` cũ) —
+   (không làm bước sau thì chúng được gửi khi tới `next_attempt_at` cũ). **Không kéo sự kiện đang được giữ lease**: không có cột
+   lease riêng — lúc nhận, dispatcher đặt `next_attempt_at = now + 60 s` (`OUTBOX_POLICY.claimLeaseMs`), và gửi thông báo KHÔNG
+   chống gửi đôi khi hai bản cùng gửi một lúc (`outbound_message` đang `sending` vẫn cho giữ chỗ lại). Vì vậy chỉ kéo sự kiện có
+   `next_attempt_at` xa hơn một lease (chắc chắn không phải lease đang chạy); phần còn lại tự tới hạn trong ≤ 60 giây —
 
    ```sql
    UPDATE job_breaker SET state = 'closed', consecutive_failures = 0, last_failed_event_id = NULL, open_until = NULL,
           probe_until = NULL, updated_at = now() WHERE breaker_key = '<breaker>';
    -- outbox.notify: type IN ('order.placed_pending', 'order.confirmed', 'order.lookup_link', 'shipment.shipped')
    UPDATE outbox_event SET next_attempt_at = now(), updated_at = now()
-    WHERE state IN ('pending', 'failed') AND type IN ('<loại>') AND next_attempt_at > now();
+    WHERE state IN ('pending', 'failed') AND type IN ('<loại>') AND next_attempt_at > now() + interval '60 seconds';
    ```
 
    (với `budget_exhausted` thì bộ đếm ngày vẫn còn — lượt gọi kế tiếp sẽ mở lại; chỉ làm khi đã nâng ngân sách).

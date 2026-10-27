@@ -111,6 +111,69 @@ medusaIntegrationTestRunner({
           ),
         ).rejects.toThrow(/job_breaker_half_open_has_probe/);
       });
+
+      it("dòng có deleted_at (không dùng xoá mềm) vẫn là breaker của khoá đó ở MỌI câu — không kẹt, không trùng", async () => {
+        // Review T-097 🟢3: trước đây INSERT trùng dòng đã "xoá" còn UPDATE lại lọc nó → tripJobBreaker luôn false.
+        const s = checkout();
+        const key = "it.soft";
+        expect((await s.recordJobBreakerFailure(key, "obx_s1")).consecutive_failures).toBe(1);
+        await pg().raw(`UPDATE job_breaker SET deleted_at = now() WHERE breaker_key = ?`, [key]);
+        expect((await s.recordJobBreakerFailure(key, "obx_s2")).consecutive_failures).toBe(2);
+        expect(await s.readJobBreaker(key)).toMatchObject({ state: "closed", consecutive_failures: 2 });
+        expect(await s.tripJobBreaker(key, "consecutive_failures", at(1_000), ["closed"])).toBe(true);
+        expect(await s.readJobBreaker(key)).toMatchObject({ state: "open", open_until: at(1_000) });
+        expect(await s.claimJobBreakerProbe(key, at(1_000), at(2_000))).toBe(true);
+        expect(await s.recordJobBreakerSuccess(key)).toBe(true);
+        expect((await s.readJobBreaker(key))!.state).toBe("closed");
+        const n = (await pg().raw(`SELECT count(*)::int AS n FROM job_breaker WHERE breaker_key = ?`, [key]))
+          .rows[0];
+        expect(n.n).toBe(1);
+      });
+
+      it("lượt thử bị bỏ dở: chưa hết hạn → không ai nhận; đúng hạn → N lời gọi song song chỉ 1 nhận; dispatcher gửi được và đóng", async () => {
+        // Review T-097 🟠2: phủ vế `state = 'half_open' AND probe_until <= ?` của claimJobBreakerProbe trên Postgres thật.
+        const container = getContainer();
+        const s = checkout();
+        const type = "test.probelease";
+        const key = "outbox.test.probelease";
+        for (let i = 0; i < 3; i++) {
+          await s.insertOutbox(`${type}:${i}`, "agg_pl", type, { i }, undefined, base);
+        }
+        expect(await s.tripJobBreaker(key, "consecutive_failures", base, ["closed"])).toBe(true);
+        // 1. Một bản nhận lượt thử rồi chết (không báo kết quả).
+        const probeUntil = at(10_000);
+        expect(await s.claimJobBreakerProbe(key, base, probeUntil)).toBe(true);
+        expect(await s.readJobBreaker(key)).toMatchObject({ state: "half_open", probe_until: probeUntil });
+        // 2. Chưa hết hạn lượt thử (probe_until − 1 ms) → không ai nhận.
+        expect(await s.claimJobBreakerProbe(key, new Date(probeUntil.getTime() - 1), at(20_000))).toBe(false);
+        // 3. Đúng hạn: 10 lời gọi song song → đúng 1 nhận.
+        const won = await Promise.all(
+          Array.from({ length: 10 }, () => s.claimJobBreakerProbe(key, probeUntil, at(20_000))),
+        );
+        expect(won.filter(Boolean)).toHaveLength(1);
+        expect(await s.readJobBreaker(key)).toMatchObject({ state: "half_open", probe_until: at(20_000) });
+        // Bản vừa nhận cũng chết → 4. hết hạn lượt thử thứ hai thì dispatcher tự nhận lượt thử, gửi được và đóng.
+        const calls: string[] = [];
+        const ok: OutboxHandler = async (_c, e) => {
+          calls.push(e.event_key);
+        };
+        const early = await dispatchOutbox(container, {
+          now: at(19_999),
+          handlers: { [type]: ok },
+          breakerPolicy: POLICY,
+        });
+        expect(calls).toEqual([]);
+        expect(early.deferred).toHaveLength(3);
+        const r = await dispatchOutbox(container, {
+          now: at(20_000),
+          handlers: { [type]: ok },
+          breakerPolicy: POLICY,
+        });
+        expect(r.sent).toHaveLength(3);
+        expect(new Set(calls).size).toBe(3);
+        expect(await s.readJobBreaker(key)).toMatchObject({ state: "closed", probe_until: null });
+        expect((await outboxOf(type)).every((x) => x.state === "sent" && x.attempts === 0)).toBe(true);
+      });
     });
 
     describe("dispatchOutbox + breaker trên Postgres", () => {

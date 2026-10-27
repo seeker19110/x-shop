@@ -352,7 +352,8 @@ export const RateLimitCounter = model
  * Circuit breaker chi phí của job nền/outbox (T-097, OPS-COST-004) — trạng thái DÙNG CHUNG mọi bản sao (ARC-RES-005):
  * mọi chuyển trạng thái là MỘT câu UPDATE có điều kiện trạng thái cũ (lib/outbox/breaker.ts) nên đúng một bản sao
  * thắng mỗi lần mở/thử. `breaker_key` = adapter/bộ xử lý (`notify`, loại sự kiện…). Ngân sách lượt gọi theo ngày đếm ở
- * `rate_limit_counter` (bucket `breaker.budget:<key>`), không ở đây.
+ * `rate_limit_counter` (bucket `breaker.budget:<key>`), không ở đây. Không xoá mềm: `deleted_at` (DSL tự thêm) không
+ * được logic breaker đọc.
  */
 export const JobBreaker = model
   .define("job_breaker", {

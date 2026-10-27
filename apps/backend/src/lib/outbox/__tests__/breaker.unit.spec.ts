@@ -2,6 +2,7 @@ import { dispatchOutbox, type OutboxHandler } from "../../checkout/jobs";
 import { CheckoutError } from "../../checkout/errors";
 import {
   assertBreakerPolicy,
+  budgetBucket,
   breakerKeyOf,
   budgetLevel,
   OUTBOX_BREAKER_POLICY,
@@ -279,6 +280,42 @@ describe("breaker — hai dispatcher song song dùng chung trạng thái", () =>
     expectNoLoss(db, h.calls);
   });
 
+  it("half-open: hai bản KHỞI ĐỘNG CÙNG LÚC, cùng thấy open hết nguội, cùng tranh lượt thử → bản thua không gọi", async () => {
+    // Review T-097 🟠1: phủ nhánh `if (!probe)` của BreakerRun.admit (bản thua đọc lại trạng thái rồi hoãn).
+    const db = fakeOutboxDb(events(6));
+    const h = recorder("fail");
+    await run(db, T0, h.handlers);
+    expect(db.breakers.get(KEY)!.state).toBe("open");
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const calls: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slow: OutboxHandler = async (_c, e) => {
+      calls.push(e.id);
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      if (calls.length === 1) await gate;
+      inFlight--;
+    };
+    const now = at(60_000);
+    // Không chờ A gọi trước: cả hai cùng đọc `open` rồi cùng gọi claimJobBreakerProbe.
+    const pA = run(db, now, { "test.x": slow });
+    const rB = await run(db, now, { "test.x": slow });
+    const callsWhileProbeInFlight = calls.length;
+    const maxDuringProbe = maxInFlight;
+    release();
+    await pA;
+    expect({ callsWhileProbeInFlight, maxDuringProbe, sentByB: rB.sent.length }).toEqual({
+      callsWhileProbeInFlight: 1,
+      maxDuringProbe: 1,
+      sentByB: 0,
+    });
+    expect(rB.deferred.length).toBeGreaterThan(0);
+    expect(db.breakers.get(KEY)!.state).toBe("closed");
+  });
+
   it("half-open: hai lượt song song → đúng MỘT lượt thử; bản kia hoãn trong lúc lượt thử đang bay", async () => {
     const db = fakeOutboxDb(events(6));
     const h = recorder("fail");
@@ -349,6 +386,7 @@ describe("breaker — ngân sách cửa sổ: 80 % cảnh báo, 90 % bóp, vư�
       breaker: KEY,
       reason: "budget_exhausted",
       budget_limit: 10,
+      budget_used: 11, // số đếm thật lúc chạm trần (gồm lượt bị từ chối), không phải `limit`
       open_until: nextDay.toISOString(),
     });
 
@@ -409,10 +447,53 @@ describe("trần mỗi lượt chạy", () => {
     const r = await dispatchOutbox(db.container, { now: T0, breakerPolicy: POLICY });
     expect(r.sent).toHaveLength(3);
     expect(db.breakers.size).toBe(0);
+    // Không tốn ngân sách (review T-097 🟢1): không có lần đếm nào cho breaker của loại này.
+    expect(
+      [...db.counters.keys()].filter((k) => k.startsWith(budgetBucket("outbox.test.unhandled"))),
+    ).toEqual([]);
+    const after = await db.service.hitRateCounter(
+      budgetBucket("outbox.test.unhandled"),
+      POLICY.budgetWindowMs,
+      T0,
+    );
+    expect(after.current).toBe(1); // 1 = chỉ lần đếm của chính dòng này
   });
 
   it("mặc định production: trần 100 vòng / 50 lượt gọi", () => {
     expect(OUTBOX_RUN_LIMITS).toEqual({ maxIterations: 100, maxCalls: 50 });
+  });
+});
+
+describe("lỗi DB khi đếm/đọc breaker → fail-closed", () => {
+  it("hitRateCounter lỗi → lượt chạy ném, không gọi; sự kiện vẫn pending/attempts 0 (giữ lease rồi nhận lại)", async () => {
+    const db = fakeOutboxDb(events(2));
+    const h = recorder("ok");
+    (db.service as unknown as Record<string, unknown>).hitRateCounter = async () => {
+      throw new Error("DB down");
+    };
+    await expect(run(db, T0, h.handlers)).rejects.toThrow("DB down");
+    expect(h.calls).toEqual([]);
+    expect(db.outbox.map((r) => [r.id, r.state, r.attempts, r.next_attempt_at.getTime()])).toEqual([
+      ["e01", "pending", 0, at(OUTBOX_POLICY.claimLeaseMs).getTime()],
+      ["e02", "pending", 0, 0],
+    ]);
+  });
+
+  it("lỗi DB SAU khi đã nhận lượt thử → half_open tới hết hạn lượt thử, rồi bản khác thử được và đóng", async () => {
+    const db = fakeOutboxDb(events(4));
+    const h = recorder("fail");
+    await run(db, T0, h.handlers);
+    const orig = db.service.hitRateCounter;
+    (db.service as unknown as Record<string, unknown>).hitRateCounter = async () => {
+      throw new Error("DB down");
+    };
+    await expect(run(db, at(60_000), h.handlers)).rejects.toThrow("DB down");
+    expect(db.breakers.get(KEY)).toMatchObject({ state: "half_open", probe_until: at(70_000) });
+    (db.service as unknown as Record<string, unknown>).hitRateCounter = orig;
+    h.set("ok");
+    const r = await run(db, at(70_000), h.handlers);
+    expect(r.sent.length).toBeGreaterThan(0);
+    expect(db.breakers.get(KEY)!.state).toBe("closed");
   });
 });
 

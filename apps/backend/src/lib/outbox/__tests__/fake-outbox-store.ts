@@ -211,6 +211,8 @@ export function fakeOutboxDb(events: Array<Partial<FakeOutboxRow> & { id: string
     service,
     outbox,
     breakers,
+    /** Bộ đếm ngân sách: khoá `<bucket>@<window_start ms>` → số đếm. */
+    counters,
     exceptions,
     logs,
     /** Mô phỏng DB lỗi khi mở ngoại lệ. */

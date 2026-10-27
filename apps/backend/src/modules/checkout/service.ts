@@ -1050,11 +1050,15 @@ class CheckoutModuleService extends MedusaService({
    * Trạng thái breaker `key` (đọc mới, ngoài giao dịch). Không có dòng = `closed`, chưa lỗi lần nào (dòng chỉ được tạo
    * khi có lỗi/mở). Mọi chuyển trạng thái dưới đây là MỘT câu có điều kiện trạng thái cũ → nhiều bản sao cùng gọi thì
    * đúng một bản thắng (READ COMMITTED: câu UPDATE chờ khoá dòng rồi xét lại WHERE trên bản mới nhất).
+   *
+   * `job_breaker` KHÔNG dùng xoá mềm (review T-097): cột `deleted_at` chỉ do model DSL tự thêm; mọi câu breaker bỏ qua nó
+   * — một khoá = đúng một dòng (UNIQUE `breaker_key` gồm cả dòng có `deleted_at`), nên lọc ở câu này mà không lọc ở câu
+   * kia sẽ làm breaker kẹt (INSERT trùng dòng đã "xoá", UPDATE lại bỏ qua nó).
    */
   async readJobBreaker(key: string): Promise<JobBreakerSnapshot | null> {
     const rows = await this.exec(
       `SELECT state, consecutive_failures, open_until, probe_until, trip_reason
-       FROM job_breaker WHERE breaker_key = ? AND deleted_at IS NULL`,
+       FROM job_breaker WHERE breaker_key = ?`,
       [key],
     );
     return rows[0] ? breakerSnapshot(rows[0]) : null;
@@ -1067,7 +1071,7 @@ class CheckoutModuleService extends MedusaService({
   async claimJobBreakerProbe(key: string, now: Date, probeUntil: Date): Promise<boolean> {
     const rows = await this.exec(
       `UPDATE job_breaker SET state = 'half_open', probe_until = ?, updated_at = now()
-       WHERE breaker_key = ? AND deleted_at IS NULL
+       WHERE breaker_key = ?
          AND ((state = 'open' AND open_until <= ?) OR (state = 'half_open' AND probe_until <= ?))
        RETURNING id`,
       [probeUntil, key, now, now],
@@ -1103,7 +1107,7 @@ class CheckoutModuleService extends MedusaService({
     const rows = await this.exec(
       `WITH prev AS (
          SELECT id, state FROM job_breaker
-         WHERE breaker_key = ? AND deleted_at IS NULL
+         WHERE breaker_key = ?
            AND (state = 'half_open' OR (state = 'closed' AND (consecutive_failures > 0 OR last_failed_event_id IS NOT NULL)))
          FOR UPDATE)
        UPDATE job_breaker b SET state = 'closed', consecutive_failures = 0, last_failed_event_id = NULL,
@@ -1137,7 +1141,7 @@ class CheckoutModuleService extends MedusaService({
     const rows = await this.exec(
       `UPDATE job_breaker SET state = 'open', open_until = ?, probe_until = NULL, trip_reason = ?,
               trip_count = trip_count + 1, updated_at = now()
-       WHERE breaker_key = ? AND deleted_at IS NULL
+       WHERE breaker_key = ?
          AND ((state = 'closed' AND ?::boolean) OR (state = 'half_open' AND ?::boolean))
        RETURNING id`,
       [openUntil, reason, key, fromClosed, fromHalfOpen],

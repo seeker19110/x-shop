@@ -15,6 +15,10 @@
  * `job_circuit_open` (dispatcher gọi `onTrip`). Sự kiện bị hoãn chỉ dời `next_attempt_at` (không tăng `attempts`) — vẫn
  * nằm trong outbox.
  *
+ * Lỗi DB khi đọc/ghi trạng thái hoặc đếm ngân sách → FAIL-CLOSED: lượt chạy ném lỗi, KHÔNG gọi bộ xử lý; sự kiện đang
+ * xét giữ lease nhận (`claimLeaseMs`) rồi được nhận lại, không tăng `attempts`, không mất. Nếu đã nhận lượt thử
+ * half-open trước khi lỗi → breaker ở `half_open` tới `probe_until`, sau đó bản sao khác thử được.
+ *
  * Trạng thái breaker và bộ đếm ngân sách nằm ở Postgres (`job_breaker`, `rate_limit_counter`) — mọi bản sao thấy cùng
  * trạng thái. `BreakerRun` chỉ giữ số liệu CỦA MỘT lượt chạy (số lượt gọi, mức ngân sách vừa thấy, hạn hoãn đã biết) và
  * bỏ đi khi lượt kết thúc.
@@ -240,7 +244,7 @@ export class BreakerRun {
           key,
           reason: "budget_exhausted",
           openUntil: windowEnd,
-          budgetUsed: limit,
+          budgetUsed: sample.current,
           budgetLimit: limit,
         });
       }
