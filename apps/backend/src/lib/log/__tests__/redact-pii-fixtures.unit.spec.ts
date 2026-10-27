@@ -206,6 +206,12 @@ describe("NFKC: NBSP, toàn chiều rộng, giới hạn độ dài sau chuẩn 
     // Đầu vào dài hơn trần: N = phần bỏ trước chuẩn hoá (đơn vị UTF-16 của đầu vào).
     expect(redactText("x".repeat(MAX_TEXT + 5))).toBe(`${"x".repeat(MAX_TEXT)}…[cắt 5 ký tự]`);
   });
+  it("N cộng cả phần bỏ trước và sau chuẩn hoá: U+FDFA × 40000", () => {
+    // 40000 − 32768 = 7232 bỏ trước; 32768 × 18 − 32768 = 557056 bỏ sau.
+    const out = redactText("ﷺ".repeat(40_000));
+    expect(out.endsWith("…[cắt 564288 ký tự]")).toBe(true);
+    expect(out.length).toBe(MAX_TEXT + "…[cắt 564288 ký tự]".length);
+  });
   it("chuỗi đúng trần không bị cắt", () => {
     expect(redactText("x".repeat(MAX_TEXT))).toBe("x".repeat(MAX_TEXT));
   });

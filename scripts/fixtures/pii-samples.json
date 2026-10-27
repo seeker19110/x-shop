@@ -535,6 +535,20 @@
       "value": "vnpIpAddr=203.0.113.63",
       "leak": ["203.0.113.63"],
       "scopes": ["backend"]
+    },
+    {
+      "id": "ip-camel-v6-upper",
+      "kind": "ip",
+      "value": "userIp=ABCD::1",
+      "leak": ["ABCD::1"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-key-v6-upper",
+      "kind": "ip",
+      "value": "peerIp: 2001:DB8::1",
+      "leak": ["2001:DB8::1"],
+      "scopes": ["backend"]
     }
   ],
   "negatives": [
@@ -559,6 +573,7 @@
     "Backend: CMND cách từ khoá > 16 ký tự, hoặc `cmt` theo sau bởi chữ khác ngoài ngăn cách/số/là không che; `CCCD 012345678` (9 số) không che theo nội dung; ngày sinh trong văn bản không che.",
     "Backend: `password:` ngay sau xuống dòng thoát trong JSON, và mật khẩu chứa dấu nháy kép thoát trong JSON thoát nháy, không che đủ.",
     "Cả hai phía: NFKC đã xử lý NBSP, chữ số toàn chiều rộng và `\uff20`; ký tự Unicode khác NFKC không chuẩn hoá (ví dụ U+200B) chưa xử lý.",
-    "Backend: log lưu dạng NFKC nên chữ không phải PII cũng đổi (`ﬁ`→`fi`, `½`→`1⁄2`, `™`→`TM`, katakana nửa chiều rộng) — đánh đổi đã chấp nhận (D-112). Khoá số nhiều/danh sách IP kiểu `ipList` ngoài `ips` không che theo tên."
+    "Backend: log lưu dạng NFKC nên chữ không phải PII cũng đổi (`ﬁ`→`fi`, `½`→`1⁄2`, `™`→`TM`, katakana nửa chiều rộng) — đánh đổi đã chấp nhận (D-112). Khoá số nhiều/danh sách IP kiểu `ipList` ngoài `ips` không che theo tên.",
+    "Backend: khoá IP camelCase chữ đầu hoa hoặc có tiền tố (`UserIp=`, `x_userIp=`, `XForwardedFor=`) và nhãn `hovaten=` liền không che dạng văn bản (đường object vẫn che theo tên khoá); nới luật bị hoãn vì dễ che nhầm `Skip=`/`Tooltip=`."
   ]
 }
