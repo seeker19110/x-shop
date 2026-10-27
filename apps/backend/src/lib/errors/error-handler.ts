@@ -257,6 +257,9 @@ const ECHO_FORMS: readonly EchoForm[] = [
   // draft-order/utils/validation.js, cart/steps/get-promotion-codes-to-apply.js
   { head: 'Promotion code "', tail: '" not found', reason: PROMO_REASON, field: "promo_codes" },
   { head: 'Promotion code "', tail: '" is not active', reason: PROMO_REASON, field: "promo_codes" },
+  // số nhiều (getMessageByCount): `Promotion codes "A", "B" not found` / `... are not active`
+  { head: 'Promotion codes "', tail: '" not found', reason: PROMO_REASON, field: "promo_codes" },
+  { head: 'Promotion codes "', tail: '" are not active', reason: PROMO_REASON, field: "promo_codes" },
   { head: "The promotion code ", tail: " is invalid", reason: PROMO_REASON, field: "promo_codes" },
   // auth-module.js (`entity_id` của emailpass = email)
   {
@@ -284,8 +287,8 @@ const ECHO_FORMS: readonly EchoForm[] = [
     reason: AUTH_IDENTITY_REASON,
     field: "entity_id",
   },
-  // core-flows: set-auth-app-metadata.js, find-sales-channel.js, update-line-item-in-cart.js, transfer đơn
-  { head: "Key ", tail: " already exists in app metadata", reason: "Khoá metadata đã tồn tại", field: "key" },
+  // core-flows: find-sales-channel.js, update-line-item-in-cart.js, transfer đơn.
+  // (`Key <k> already exists in app metadata` bị bỏ: nguồn ném `new Error` thường → 500, không bao giờ tới nhánh 4xx.)
   {
     head: "Unable to assign cart to disabled Sales Channel: ",
     reason: "Kênh bán hàng đang tắt",

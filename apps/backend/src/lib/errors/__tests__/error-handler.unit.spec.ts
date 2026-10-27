@@ -728,6 +728,20 @@ describe("toHttpProblem — thông điệp nghiệp vụ Medusa chép giá trị
     ["promo không hoạt động", T.INVALID_DATA, 400, `Promotion code "${SECRET}" is not active`, "promo_codes"],
     ["promo không hợp lệ", T.INVALID_DATA, 400, `The promotion code ${SECRET} is invalid`, "promo_codes"],
     [
+      "nhiều promo không tìm thấy",
+      T.INVALID_DATA,
+      400,
+      `Promotion codes "${SECRET}", "${SECRET}" not found`,
+      "promo_codes",
+    ],
+    [
+      "nhiều promo không hoạt động",
+      T.INVALID_DATA,
+      400,
+      `Promotion codes "${SECRET}", "${SECRET}" are not active`,
+      "promo_codes",
+    ],
+    [
       "authIdentity không thấy",
       T.NOT_FOUND,
       404,
@@ -750,12 +764,11 @@ describe("toHttpProblem — thông điệp nghiệp vụ Medusa chép giá trị
     ],
     [
       "provider identity không thấy",
-      T.NOT_FOUND,
-      404,
+      T.INVALID_DATA,
+      400,
       `Provider identity with entity_id ${SECRET} and provider emailpass not found`,
       "entity_id",
     ],
-    ["app metadata trùng khoá", T.INVALID_DATA, 400, `Key ${SECRET} already exists in app metadata`, "key"],
     [
       "kênh bán hàng tắt",
       T.INVALID_DATA,
@@ -766,14 +779,14 @@ describe("toHttpProblem — thông điệp nghiệp vụ Medusa chép giá trị
     ["dòng hàng không đơn giá", T.INVALID_DATA, 400, `Line item ${SECRET} has no unit price`, undefined],
     [
       "chuyển đơn cho khách vãng lai",
-      T.NOT_ALLOWED,
+      T.INVALID_DATA,
       400,
       `Cannot transfer order: order_01 to a guest customer account: ${SECRET}`,
       "customer_id",
     ],
     [
       "chuyển đơn cho khách đã đăng ký",
-      T.NOT_ALLOWED,
+      T.INVALID_DATA,
       400,
       `Cannot transfer order: order_01 to registered customer account: ${SECRET}. Only guest customers are allowed.`,
       "customer_id",
@@ -849,7 +862,7 @@ describe("toHttpProblem — thông điệp nghiệp vụ Medusa chép giá trị
       "Email đã có tài khoản",
       "Variant with provided options already exists.",
       "Variant (x) with provided options exist.",
-      "Key already exists in app metadata",
+      "Promotion codes without quotes",
       "Product has no options",
       "Line item with id: li_01 was not found",
       "Variant (",
@@ -873,9 +886,39 @@ describe("toHttpProblem — thông điệp nghiệp vụ Medusa chép giá trị
     expect(JSON.stringify(toHttpProblem(pg, "t").body)).not.toContain("Variant (x)");
   });
 
+  // Ca âm: giữ head nhưng tail/mid sai → KHÔNG được viết lại (bắt lỗi che thừa khi bỏ tail/mid khỏi một dạng).
+  const negatives: string[] = [
+    "Variant (x) with provided options",
+    'Variant "x" has a different combination as "y".',
+    'Variant "x" has same combination of option values as "y"',
+    'Product "x" has duplicate option assignments: [a',
+    'Product "x" has other problem: [a]',
+    'Product "x" has variants with missing options: [a',
+    'Product "x" has other problem: [a',
+    "Product has 2 option values but there were 1 provided option values for the variant: x",
+    "Product has 2 values but there were 1 provided option values for the variant: x.",
+    "Invalid product handle 'x'. It is fine",
+    'Value "x" is assigned a rank',
+    "Option value x does not exist",
+    "Option value x is unknown for option y",
+    'Promotion code "x" is fine',
+    'Promotion codes "x", "y" are fine',
+    "The promotion code x is valid",
+    'AuthIdentity with entity_id "x" is fine',
+    'ProviderIdentity with entity_id "x" is fine',
+    'Multiple authIdentities found for entity_id "x',
+    "Provider identity with entity_id x and provider y found",
+    "Provider identity with entity_id x for provider y not found",
+    "Line item x has a price",
+  ];
+  it.each(negatives)("ca âm: giữ head, tail/mid sai %j → không viết lại", (m) => {
+    expect(echoedValueMessage(m)).toBeNull();
+    expect(toHttpProblem(new MedusaError(T.INVALID_DATA, m), "t").body.detail).toBe(m);
+  });
+
   it("head và tail không chồng lấn: thiếu chỗ cho giá trị thì không khớp", () => {
-    expect(echoedValueMessage("Key already exists in app metadata")).toBeNull();
-    expect(echoedValueMessage("Key  already exists in app metadata")).not.toBeNull();
+    expect(echoedValueMessage("Line item has no unit price")).toBeNull();
+    expect(echoedValueMessage("Line item  has no unit price")).not.toBeNull();
   });
 
   const N = 32_768;
@@ -883,7 +926,7 @@ describe("toHttpProblem — thông điệp nghiệp vụ Medusa chép giá trị
     ["head lặp", `Variant (${"Variant (".repeat(N / 9)}`],
     ["mid lặp, không đuôi", `Product "${'" has duplicate option assignments: ['.repeat(N / 36)}`],
     ["mid lặp, có đuôi", `Product "${'" has variants with missing options: ['.repeat(N / 36)}]`],
-    ["toàn khoảng trắng", `Key ${" ".repeat(N)}already exists in app metadata`],
+    ["toàn khoảng trắng", `Line item ${" ".repeat(N)}has no unit price`],
     ["Option value lặp", `Option value ${" does not exist for option ".repeat(N / 27)}`],
     ["promo đuôi lệch", `Promotion code "${'" not foun'.repeat(N / 9)}`],
     ["chuỗi 1 MB", `A refund with idempotency key ${"x".repeat(1_000_000)}`],
