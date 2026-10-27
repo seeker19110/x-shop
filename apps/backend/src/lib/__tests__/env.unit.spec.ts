@@ -258,6 +258,21 @@ describe("parseEnv — production", () => {
       hashSecret: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET,
       hashSecretPrevious: null,
     });
+    // Mã merchant giả của dev bị chặn ở production cho CẢ hai nhánh (không phân biệt hoa/thường); lỗi chỉ nêu tên biến.
+    for (const enabled of ["true", "false"]) {
+      for (const code of [
+        VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE,
+        VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE.toLowerCase(),
+      ]) {
+        const source = { ...(enabled === "true" ? production : off), VNPAY_TMN_CODE: code };
+        expect(variablesOf(source)).toEqual(["VNPAY_TMN_CODE"]);
+        expect(JSON.stringify(problemsOf(source))).not.toContain(code);
+      }
+    }
+    // Dev/test: mã giả là mặc định hợp lệ.
+    expect(
+      parseEnv({ DATABASE_URL: DB, NODE_ENV: "test", VNPAY_TMN_CODE: VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE }).ok,
+    ).toBe(true);
     // Không lộ khoá khi dump.
     expect(JSON.stringify(offResult.env.vnpayIpnKeys)).not.toContain(production.VNPAY_HASH_SECRET);
   });

@@ -877,11 +877,16 @@ class CheckoutModuleService extends MedusaService({
     return rows.map((r) => String(r.order_id));
   }
 
-  /** Tồn đọng đơn quá hạn chưa rõ: còn `awaiting_payment`, quá `hold_expires_at`, đã hỏi ≥ 1 lần (T-164). */
+  /**
+   * Tồn đọng đơn quá hạn chưa rõ đang giữ hàng (T-164): còn `awaiting_payment`, quá `hold_expires_at`, và job đã xét mà
+   * chưa ra kết cục — querydr chưa rõ/lỗi (`hold_check_attempts` ≥ 1) HOẶC bị hoãn không hỏi (breaker mở, VNPAY tắt —
+   * không tăng số lần nhưng có `next_check_at`). Đơn quá hạn chưa từng được xét (cả hai trống) không tính.
+   */
   async countUnknownHoldBacklog(now: Date): Promise<number> {
     const rows = await this.exec(
       `SELECT count(*)::int AS n FROM order_finance
-       WHERE state = 'awaiting_payment' AND hold_expires_at <= ? AND hold_check_attempts >= 1 AND deleted_at IS NULL`,
+       WHERE state = 'awaiting_payment' AND hold_expires_at <= ? AND deleted_at IS NULL
+         AND (hold_check_attempts >= 1 OR next_check_at IS NOT NULL)`,
       [now],
     );
     return Number(rows[0]?.n ?? 0);

@@ -84,8 +84,8 @@ export interface ExpireSummary {
   deferred: string[];
   skipped: string[];
   /**
-   * Sau lượt chạy: số đơn quá hạn còn `awaiting_payment` đã hỏi ≥ 1 lần mà chưa rõ (`hold_check_attempts` ≥ 1) — tồn
-   * đọng đang giữ hàng; ≥ `HOLD_RECHECK_POLICY.backlogWarnAt` → log WARN (T-164, RUNBOOK §1).
+   * Sau lượt chạy: số đơn quá hạn còn `awaiting_payment` đã được xét mà chưa có kết cục — chưa rõ/lỗi
+   * (`hold_check_attempts` ≥ 1) hoặc bị hoãn (`next_check_at` có giá trị) — tồn đọng đang giữ hàng; ≥ `HOLD_RECHECK_POLICY.backlogWarnAt` → log WARN (T-164, RUNBOOK §1).
    */
   unknownBacklog: number;
 }

@@ -565,6 +565,15 @@ const schema = baseSchema
         message: "không được dùng khoá giả của dev",
       });
     }
+    // Mã merchant giả của dev (không phân biệt hoa/thường) — chặn ở CẢ hai nhánh bật/tắt (T-166: tắt vẫn dùng mã + khoá để
+    // xác minh IPN). Chỉ nêu tên biến, không in giá trị.
+    if (env.VNPAY_TMN_CODE?.toUpperCase() === VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE.toUpperCase()) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["VNPAY_TMN_CODE"],
+        message: "không được dùng mã merchant giả của dev",
+      });
+    }
     if (env.VNPAY_ENABLED) {
       for (const key of VNPAY_REQUIRED) {
         if (env[key] === undefined) {

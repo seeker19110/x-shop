@@ -1081,6 +1081,10 @@ medusaIntegrationTestRunner({
           expect((await ipn(api, params)).data).toEqual(R.unknownError);
           const r = await expireHolds(container, { now: t0 });
           expect(r).toMatchObject({ cancelled: [], deferred: [o.orderId] });
+          // Hoãn ngay lần xét đầu (số lần vẫn 0) vẫn tính là tồn đọng đang giữ hàng (review vòng 2).
+          expect((await fin(o.orderId)).hold_check_attempts).toBe(0);
+          expect(r.unknownBacklog).toBe(1);
+          expect(await service().countUnknownHoldBacklog(t0)).toBe(1);
         });
         expect(await inboxCount(txn)).toBe(0);
         expect((await service().listOpsExceptions({ kind: "webhook_rejected" })).length).toBe(rejectedBefore);
