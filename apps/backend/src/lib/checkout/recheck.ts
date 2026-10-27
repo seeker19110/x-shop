@@ -13,16 +13,17 @@ export type QueryCheck = { outcome: vnpay.QueryOutcome | "skipped"; reason: stri
 
 /**
  * Cổng của lời gọi querydr (T-161 — circuit breaker): `admit()` xét NGAY TRƯỚC lời gọi (sau mọi điều kiện tiên quyết —
- * không tốn lượt cho đơn không cần hỏi); false → KHÔNG gọi VNPAY, kết quả `deferred`. `settle(raw)` nhận kết quả thô
- * ngay sau lời gọi, TRƯỚC khi xử lý (lỗi xử lý về sau không che tín hiệu sức khoẻ của cổng).
+ * không tốn lượt cho đơn không cần hỏi); trả lý do từ chối (vd. `breaker_open`, `breaker_throttled`) → KHÔNG gọi VNPAY,
+ * kết quả `deferred` mang đúng lý do đó; `null` → gọi. `settle(raw)` nhận kết quả thô ngay sau lời gọi, TRƯỚC khi xử lý
+ * (lỗi xử lý về sau không che tín hiệu sức khoẻ của cổng).
  */
 export interface QueryGate {
-  admit(): Promise<boolean>;
+  admit(): Promise<string | null>;
   settle(raw: QueryStatusResult): Promise<void>;
 }
 
 /** Không gọi querydr vì cổng từ chối (breaker mở/đang thử/bóp) — trạng thái tiền CHƯA RÕ, không được coi là "chưa trả". */
-export type DeferredQuery = { outcome: "deferred"; reason: "breaker_open" };
+export type DeferredQuery = { outcome: "deferred"; reason: string };
 
 /**
  * Hỏi VNPAY (querydr) trạng thái attempt đang mở của đơn rồi đi CÙNG đường xử lý với IPN (inbox nguồn `query`).
@@ -55,7 +56,8 @@ export async function queryAndProcess(
     { order: { created_at: "DESC" } },
   );
   if (!pa) return { outcome: "skipped", reason: "no_open_payment" };
-  if (opts.gate && !(await opts.gate.admit())) return { outcome: "deferred", reason: "breaker_open" };
+  const refused = opts.gate ? await opts.gate.admit() : null;
+  if (refused !== null) return { outcome: "deferred", reason: refused };
   let raw: QueryStatusResult;
   try {
     raw = await gateway.queryStatus({

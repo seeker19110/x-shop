@@ -77,7 +77,7 @@ export interface ExpireSummary {
   unknown: string[];
   /**
    * Không gọi querydr vì breaker `vnpay.querydr` mở/đang thử/bóp (T-161): xử lý NHƯ `unknown` (giữ hàng, attempt
-   * `unknown`, ngoại lệ payment_unknown lý do `breaker_open`) — không hủy, không nhả; lượt sau khi breaker đóng hỏi lại.
+   * `unknown`, ngoại lệ payment_unknown lý do `breaker_<lý do hoãn>`) — không hủy, không nhả; lượt sau khi breaker đóng hỏi lại.
    */
   deferred: string[];
   skipped: string[];
@@ -127,7 +127,12 @@ export async function expireHolds(
     warn: (m) => log.warn(m),
     info: (m) => log.info(m),
   });
-  for (const orderId of await s.listExpiredHoldOrderIds(now, opts.limit ?? 100)) {
+  const due = await s.listExpiredHoldOrderIds(now, opts.limit ?? 100);
+  // Breaker không đóng → xoay danh sách theo số lần đã mở: lượt thử half-open rơi vào đơn KHÁC sau mỗi lần thử lỗi (một
+  // đơn lỗi tạm ổn định ở đầu hàng không được giữ breaker mở mãi — review T-161). Đơn đó vẫn được hỏi khi breaker đóng.
+  const snap = await s.readJobBreaker(VNPAY_QUERYDR_BREAKER_KEY);
+  const ordered = snap && snap.state !== "closed" ? rotate(due, snap.trip_count) : due;
+  for (const orderId of ordered) {
     const outcome = await withLock(
       container,
       lockKeys.order(orderId),
@@ -140,11 +145,21 @@ export async function expireHolds(
   return summary;
 }
 
+/** Xoay trái `n` vị trí (n ≥ 0; mảng rỗng → rỗng). */
+export function rotate<T>(items: readonly T[], n: number): T[] {
+  if (items.length === 0) return [];
+  const k = ((n % items.length) + items.length) % items.length;
+  return [...items.slice(k), ...items.slice(0, k)];
+}
+
 /** Cổng querydr của MỘT đơn qua breaker của lượt chạy (lỗi tạm tính theo đơn — một đơn lỗi lặp chỉ tính một). */
 function querydrGate(breaker: BreakerRun, orderId: string, now: Date): QueryGate {
   const key = VNPAY_QUERYDR_BREAKER_KEY;
   return {
-    admit: async () => (await breaker.admit(key, now)).kind === "call",
+    admit: async () => {
+      const a = await breaker.admit(key, now);
+      return a.kind === "call" ? null : `breaker_${a.reason}`;
+    },
     settle: async (raw) => {
       if (isTransientQueryFailure(raw.reason)) await breaker.onFailure(key, orderId, now);
       // Cổng đã trả lời (kể cả `unknown` vì chữ ký/số tiền sai — D-111): half_open → closed; closed → xoá đếm lỗi.
@@ -178,7 +193,7 @@ async function expireOne(
     const [after] = await s.listOrderFinances({ order_id: orderId });
     return after?.state === "confirmed" ? "confirmed" : "skipped";
   }
-  // Breaker mở → chưa hỏi được: trạng thái tiền CHƯA RÕ, đi đúng đường `unknown` (không bao giờ suy ra "chưa trả").
+  // Breaker mở/đang thử/bóp → chưa hỏi được: trạng thái tiền CHƯA RÕ, đi đúng đường `unknown` (không bao giờ suy ra "chưa trả").
   if (q.outcome === "unknown" || q.outcome === "deferred") {
     const [pa] = await s.listPaymentAttempts({ order_id: orderId, state: ["created", "pending", "unknown"] });
     if (pa) await s.movePaymentAttempt(pa.id, "unknown");

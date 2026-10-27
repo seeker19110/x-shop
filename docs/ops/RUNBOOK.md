@@ -44,6 +44,9 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
 ## 1. Cổng thanh toán lỗi (VNPAY không phản hồi, IPN không về)
 - Dấu hiệu: `payment_attempt` ở `pending`/`unknown` tăng; cảnh báo "đã nhận dấu hiệu thanh toán nhưng chưa xử lý > 5 phút".
 - Kiểm tra: log `webhook_inbox` (verified, result); job `expire-holds` có chạy; gọi `querydr` thủ công cho vài `txn_ref`.
+- Breaker `vnpay.querydr` (T-161, §14): VNPAY lỗi tạm liên tiếp → job `expire-holds` ngừng gọi querydr, mở ngoại lệ `job_circuit_open`
+  (`detail.breaker = 'vnpay.querydr'`); đơn quá hạn được giữ như `unknown` (`payment_unknown` lý do `breaker_*`), tự hỏi lại khi
+  breaker đóng. IPN không đi qua breaker — vẫn xác nhận đơn bình thường.
 - Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (cờ cấu hình) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
 - Xác nhận: không còn attempt `unknown` quá hạn chưa có owner trong `ops_exception`.
 
@@ -455,9 +458,12 @@ code=55P03`; bản trùng đóng theo bước 5. `detail` chỉ có id + mã l�
 last_drilled: chưa diễn tập (test đơn vị `breaker` + test tích hợp `outbox-breaker`).
 
 Mô hình thật (`apps/backend/src/lib/outbox/breaker.ts`, T-097, OPS-COST-004): dispatcher outbox chia breaker theo adapter
-(`outbox.notify` = mọi thông báo email/SMS; loại khác `outbox.<loại sự kiện>`); job `expire-holds` có breaker `vnpay.querydr` cho lời gọi
-VNPAY querydr (T-161) — khi mở, đơn quá hạn giữ hàng KHÔNG bị hủy mà xử lý như `unknown` (giữ hàng, ngoại lệ `payment_unknown` lý do
-`breaker_open`, xem §1); ngân sách ngày 144 000 = trần vật lý của lịch chạy nên chỉ mở vì lỗi. Trạng thái ở bảng `job_breaker` (dùng chung mọi bản
+(`outbox.notify` = mọi thông báo email/SMS; loại khác `outbox.<loại sự kiện>`); job `x-expire-holds` có breaker `vnpay.querydr` cho lời
+gọi VNPAY querydr (T-161) — lỗi tạm = timeout/mạng/adapter ném/HTTP 5xx·408·429 (mỗi đơn tính một); khi breaker không cho gọi, đơn
+quá hạn giữ hàng KHÔNG bị hủy mà xử lý như `unknown` (giữ hàng, attempt `unknown`, ngoại lệ `payment_unknown` với `detail.reason` =
+`breaker_open` | `breaker_probing` | `breaker_throttled` | `breaker_budget_exhausted`, xem §1) và được hỏi lại ở lượt chạy sau khi
+breaker đóng; lượt thử half-open xoay vòng giữa các đơn quá hạn (theo `trip_count`) nên một đơn lỗi ổn định không giữ breaker mở mãi;
+ngân sách ngày 144 000 = trần vật lý của lịch chạy nên chỉ mở vì lỗi. Trạng thái ở bảng `job_breaker` (dùng chung mọi bản
 sao), ngân sách lượt gọi theo ngày UTC ở `rate_limit_counter` (bucket `breaker.budget:<breaker>`). Ngưỡng trong code
 (`OUTBOX_BREAKER_POLICY`, `OUTBOX_RUN_LIMITS` — đổi qua review): mỗi lượt chạy tối đa 100 sự kiện / 50 lượt gọi; 5 sự kiện khác nhau
 lỗi tạm liên tiếp → mở 5 phút; ngân sách ngày `outbox.notify` 3 000, loại khác 10 000 — 80 % log WARN, 90 % bóp còn 5 lượt gọi/lượt
@@ -468,9 +474,11 @@ và mở ngoại lệ này với `detail.breaker = 'outbox.notify.customer_trigg
 (5 lượt/giờ/SĐT) và nguồn yêu cầu trước khi nâng trần. Breaker mở → mở ngoại lệ này (ưu tiên `high`, owner `owner`, một ngoại lệ đang mở mỗi
 breaker). **Không mất sự kiện**: sự kiện bị hoãn vẫn `pending`/`failed` trong `outbox_event`, `attempts` không đổi, `next_attempt_at`
 = hết nguội. Hết nguội → đúng một lượt thử (half-open); thành công hoặc lỗi vĩnh viễn (dịch vụ đã trả lời, D-111) → đóng, lỗi tạm → mở thêm một kỳ.
-**Lỗi DB khi đọc/ghi breaker hoặc đếm ngân sách → fail-closed**: lượt chạy job lỗi (log của job `x-outbox-dispatch`), không gọi dịch
-vụ ngoài; sự kiện đang xét giữ lease nhận 60 giây rồi được nhận lại (không tăng `attempts`); nếu đã nhận lượt thử thì breaker ở
-`half_open` tới `probe_until` rồi bản sao khác thử. Không cần thao tác tay — xử lý sự cố DB trước.
+**Lỗi DB khi đọc/ghi breaker hoặc đếm ngân sách → fail-closed**: lượt chạy job lỗi (chỉ có log lỗi của job `x-outbox-dispatch`
+hoặc `x-expire-holds` — KHÔNG có ngoại lệ vận hành), không gọi dịch vụ ngoài; outbox: sự kiện đang xét giữ lease nhận 60 giây rồi được
+nhận lại (không tăng `attempts`); expire-holds: không querydr, không hủy — đơn vẫn `awaiting_payment` quá hạn, giữ hàng tới lượt chạy
+sau; nếu đã nhận lượt thử thì breaker ở `half_open` tới `probe_until` rồi bản sao khác thử. Không cần thao tác tay — xử lý sự cố DB
+trước.
 
 1. Xem breaker và lý do (`detail.reason`: `consecutive_failures` | `budget_exhausted`):
 
@@ -502,7 +510,18 @@ vụ ngoài; sự kiện đang xét giữ lease nhận 60 giây rồi được n
    ```
 
    (với `budget_exhausted` thì bộ đếm ngày vẫn còn — lượt gọi kế tiếp sẽ mở lại; chỉ làm khi đã nâng ngân sách).
-5. Đóng ngoại lệ kèm ghi chú nguyên nhân (Admin chưa có nút đóng):
+5. Riêng `detail.breaker = 'vnpay.querydr'` (job `x-expire-holds`): đơn bị hoãn có ngoại lệ `payment_unknown` lý do `breaker_*`;
+   đơn lỗi thật có lý do `timeout`/`network`/`http_5xx`/`adapter_error:…` —
+
+   ```sql
+   SELECT detail->>'reason' AS reason, count(*) FROM ops_exception
+    WHERE kind = 'payment_unknown' AND state IN ('open', 'in_progress') AND detail->>'source' = 'expire-holds' GROUP BY 1;
+   ```
+
+   KHÔNG hủy tay các đơn này (§1). Cổng đã hồi phục (querydr thủ công cho vài `txn_ref` trả lời bình thường) → đóng breaker bằng câu
+   `UPDATE job_breaker …` ở bước 4 với `breaker_key = 'vnpay.querydr'` (không có bước kéo outbox); lượt `x-expire-holds` kế tiếp
+   (≤ 1 phút) hỏi lại và xác nhận/hủy đúng từng đơn. Sau đó đóng các `payment_unknown` lý do `breaker_*` của đơn đã có kết cục.
+6. Đóng ngoại lệ kèm ghi chú nguyên nhân (Admin chưa có nút đóng):
 
    ```sql
    UPDATE ops_exception SET state = 'resolved', updated_at = now()

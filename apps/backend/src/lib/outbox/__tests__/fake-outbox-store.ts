@@ -52,6 +52,7 @@ export function fakeOutboxDb(events: Array<Partial<FakeOutboxRow> & { id: string
     open_until: r.open_until,
     probe_until: r.probe_until,
     trip_reason: r.trip_reason,
+    trip_count: r.trip_count,
   });
   const ensure = (key: string): BreakerRow => {
     let r = breakers.get(key);
