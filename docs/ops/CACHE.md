@@ -1,6 +1,6 @@
 # Chiến lược cache và vô hiệu hoá (BE-CACHE-007, FE-STATE-005)
 
-Cập nhật 2026-10-26. Mọi số dưới đây có một nơi khai báo duy nhất ở `apps/storefront/src/lib/cache-policy.ts`;
+Cập nhật 2026-10-27 (T-142: vô hiệu hoá catalog theo sự kiện). Mọi số dưới đây có một nơi khai báo duy nhất ở `apps/storefront/src/lib/cache-policy.ts`;
 `apps/storefront/src/lib/cache-policy.test.ts` kiểm tài liệu này khớp mã và kiểm "cập nhật nguồn → đọc lại không nhận bản
 cũ quá ngưỡng". Đổi số trong mã mà quên sửa tài liệu thì test đỏ.
 
@@ -17,7 +17,7 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
 
 | Loại cache | Cơ chế | Giá trị | Ai vô hiệu hoá, khi nào | Cũ tối đa sau khi nguồn đổi |
 | --- | --- | --- | --- | --- |
-| Dữ liệu catalog (fetch phía server) | TTL | `next.revalidate` = 60 giây | Next làm mới nền sau TTL (stale-while-revalidate); đường cần đúng tuyệt đối dùng `no-store` | 60 giây + 1 lần đọc (khoá ít người xem: tới lần đọc kế tiếp) |
+| Dữ liệu catalog (fetch phía server) | Sự kiện + TTL | `next.tags` + `next.revalidate` = 60 giây | Backend gửi webhook ký HMAC → `/api/revalidate` gọi `revalidateTag(tag, { expire: 0 })` khi sản phẩm/giá/tồn đổi; Next làm mới nền sau TTL (lưới an toàn); đường cần đúng tuyệt đối dùng `no-store` | webhook chạy: vài giây (cửa sổ gộp 2 giây + lượt xả read model + gửi); webhook lỗi/tắt: 60 giây + 1 lần đọc |
 | Trang chủ (ISR) | TTL | `export const revalidate = 60` | Next dựng lại nền sau TTL (cũng SWR) | như dòng catalog; hai lớp cùng 60 giây có thể lệch pha |
 | API công khai của storefront | TTL (CDN/trình duyệt) | `public, s-maxage=60, stale-while-revalidate=300` | CDN theo `s-maxage`; không có purge thủ công | 420 giây + 1 lần đọc ở lớp Next phía sau |
 | Danh mục tỉnh/phường | TTL | 86400 giây (+ `max-age=3600` ở trình duyệt) | Next làm mới nền sau TTL; đổi bản dữ liệu hành chính → xem mục riêng | 86400 giây + 1 lần đọc (server) |
@@ -28,23 +28,57 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
 
 ## Dữ liệu catalog (fetch phía server)
 
-- **Mã:** `apps/storefront/src/lib/catalog/client.ts` (`backendGet`): `fetch(..., { next: { revalidate: CATALOG_REVALIDATE_S } })`
-  = **60 giây** cho danh sách, tìm kiếm, chi tiết sản phẩm, danh mục. `getProductFresh` dùng `cache: "no-store"`.
-- **Cơ chế:** TTL. Khoá cache của Next gồm URL đầy đủ, nên bộ lọc/trang/sắp xếp khác nhau là các mục khác nhau.
+- **Mã:** `apps/storefront/src/lib/catalog/client.ts` (`backendGet`):
+  `fetch(..., { next: { revalidate: CATALOG_REVALIDATE_S, tags } })` = **60 giây** cho danh sách, tìm kiếm, chi tiết sản
+  phẩm, danh mục; `getProductFresh` dùng `cache: "no-store"`. Route nhận webhook: `apps/storefront/src/app/api/revalidate/`.
+- **Cơ chế:** sự kiện + TTL. Khoá cache của Next gồm URL đầy đủ, nên bộ lọc/trang/sắp xếp khác nhau là các mục khác nhau.
   Tìm kiếm chuyển tiếp IP khách (chống lạm dụng) nên khoá tách theo IP — chấp nhận vì truy vấn tìm kiếm vốn phân tán.
-- **Ai/khi nào vô hiệu hoá:** Next. Khi mục đã quá 60 giây, request kế tiếp NHẬN NGAY BẢN CŨ và kích làm mới nền
-  (stale-while-revalidate, `patch-fetch.js` của Next 16, nhánh `entry.isStale`); request sau đó mới thấy bản mới. Làm
-  mới nền lỗi thì giữ bản cũ và thử lại ở request sau; chỉ khi chưa có mục nào thì lỗi nguồn mới báo ra. Không có
-  purge theo sự kiện: backend không gọi ngược storefront khi sửa sản phẩm.
-- **Ngưỡng chấp nhận được:** sửa sản phẩm/giá hiện trên trang danh mục, tìm kiếm, PDP chậm **60 giây cộng thêm tới lần
-  đọc kế tiếp của cùng khoá**: khoá đông người xem thì cỡ 60 giây, khoá ít người xem có thể cũ hơn nhiều (một lần đọc
-  cũ rồi mới mới). Chấp nhận được vì giá/tồn lúc mua luôn kiểm lại tươi. Đề xuất nếu cần chặt hơn: webhook backend →
-  storefront gọi `revalidateTag` theo sự kiện sửa sản phẩm (chưa làm).
+- **Ai/khi nào vô hiệu hoá:** (1) **sự kiện** — backend báo storefront qua webhook khi sản phẩm/biến thể/giá/price list/
+  tồn đổi (mục dưới), storefront hết hạn NGAY các mục mang tag tương ứng: lần đọc kế tiếp nạp lại từ backend, không phát bản
+  cũ thêm lần nào; (2) **TTL** — lưới an toàn khi webhook lỗi/tắt: mục quá 60 giây thì request kế tiếp NHẬN NGAY BẢN CŨ và
+  kích làm mới nền (stale-while-revalidate, `patch-fetch.js` của Next 16, nhánh `entry.isStale`); request sau đó mới thấy bản
+  mới. Làm mới nền lỗi thì giữ bản cũ và thử lại ở request sau; chỉ khi chưa có mục nào thì lỗi nguồn mới báo ra.
+- **Tag** (`next.tags`, tên khai một nơi ở `@x-shop/domain` `catalogRevalidate`): mọi fetch catalog mang `catalog`; danh
+  sách/tìm kiếm/danh mục thêm `catalog:list`; PDP thêm `product:<handle đã encodeURIComponent>`.
+- **Ngưỡng chấp nhận được:** webhook chạy → sửa sản phẩm/giá/tồn hiện trên PDP, danh mục, tìm kiếm sau **vài giây** (cửa sổ
+  gộp 2 giây + lượt xả read model + một POST; E2E `e2e/catalog-revalidate.spec.ts` đòi < 15 giây trên hệ thật). Webhook lỗi
+  hoặc tắt → như trước: **60 giây cộng thêm tới lần đọc kế tiếp của cùng khoá** (khoá ít người xem có thể cũ hơn nhiều).
+  Chấp nhận được vì giá/tồn lúc mua luôn kiểm lại tươi.
 - **Không được cũ:** giá và tồn dùng để thêm vào giỏ, báo giá và đặt hàng. Giỏ gọi `getProductFresh` (`no-store`);
-  checkout do server báo giá lại ở từng bước và lúc đặt (đặc tả §7.4). Giá trên PDP chỉ là thông tin tham khảo tới 60 giây.
+  checkout do server báo giá lại ở từng bước và lúc đặt (đặc tả §7.4). Giá trên PDP chỉ là thông tin tham khảo (vài giây
+  khi webhook chạy, tới 60 giây khi webhook lỗi).
 - **Test:** `cache-policy.test.ts` ("cache dữ liệu catalog"): sửa nguồn → trong TTL còn bản cũ; hết TTL lần đọc đầu vẫn
   trả bản cũ rồi lần sau mới (mô hình SWR của Next); khoá ít người xem; `getProductFresh` thấy bản mới ngay; nguồn lỗi
-  sau khi hết hạn vẫn phát bản cũ, chưa có mục mà lỗi thì báo lỗi.
+  sau khi hết hạn vẫn phát bản cũ, chưa có mục mà lỗi thì báo lỗi. `lib/catalog/revalidate-cache.test.ts`: sửa giá → webhook
+  → đọc PDP ngay thấy giá mới (không webhook thì còn giá cũ), chỉ làm mới đúng tag, chữ ký sai không đụng cache.
+
+### Vô hiệu hoá theo sự kiện: webhook backend → storefront (T-142, D-070)
+
+- **Luồng:** workflow ghi (sản phẩm, biến thể, giá, price list, tồn/giữ hàng, danh mục) → sự kiện Medusa → subscriber
+  `catalog-index-sync` đánh dấu sản phẩm bẩn → lượt xả đồng bộ read model (`lib/catalog/indexer.ts`) → **sau khi** read model
+  đã mới, `lib/catalog/revalidate.ts` ghi outbox `catalog.revalidate` (rebuild toàn phần → một dòng "cả catalog"). Ghi SAU
+  read model để danh sách/tìm kiếm nạp lại đọc được bản mới (PDP đọc nguồn trực tiếp). Giá khuyến mãi hết hạn (job mỗi phút
+  `markExpiredPrices`) đi cùng đường.
+- **Không chặn ghi backend:** workflow đã commit trước khi sự kiện chạy; lỗi ghi outbox chỉ log (storefront dựa TTL); lỗi
+  gửi nằm trong outbox (retry backoff, quá 8 lần hoặc 4xx → `dead` + ngoại lệ `outbox_dead`).
+- **Gộp + trần tần suất** (`CATALOG_REVALIDATE_POLICY`): cửa sổ 2 giây; mỗi (sản phẩm, cửa sổ) đúng một dòng outbox (khoá sự
+  kiện chứa mốc cửa sổ, idempotent); quá 20 sản phẩm trong một cửa sổ → một dòng "cả catalog". Cuối cửa sổ tiến trình gửi
+  MỘT webhook gộp các dòng rồi đánh dấu `sent`; gửi lỗi/tiến trình chết → dòng đến hạn sau 10 giây và job `outbox-dispatch`
+  gửi từng dòng.
+- **Webhook:** `POST <CATALOG_REVALIDATE_URLS | STOREFRONT_URL/api/revalidate>` thân `{ id, tags }`, header
+  `x-xshop-timestamp`, `x-xshop-nonce`, `x-xshop-signature: v1=<HMAC-SHA256(khoá, "v1:<ts>:<nonce>:<thân thô>")>`. Khoá
+  `CATALOG_REVALIDATE_SECRET` chung hai phía (docs/ops/ENV.md). Storefront: chữ ký sai/thiếu/lệch giờ > 300 giây → 401;
+  nonce đã dùng → 409; thân sai → 400; > 16 KiB → 413; chưa cấu hình khoá → 503. Gọi lại cùng nội dung với nonce mới (retry)
+  → 200 lần nữa (revalidate idempotent).
+- **Giới hạn đã biết:** cache dữ liệu của Next nằm trong từng tiến trình storefront → chạy nhiều bản thì liệt kê URL từng bản
+  trong `CATALOG_REVALIDATE_URLS` (backend gửi tới mọi URL). Bộ nhớ nonce cũng theo tiến trình: phát lại sang bản khác chỉ gây
+  một lần revalidate thừa (vô hại). Đổi handle: tag tính theo handle hiện tại → URL handle cũ còn bản cũ tới TTL. API công khai
+  `/api/catalog/*` sau CDN không có purge — vẫn theo ngưỡng 420 giây ở mục dưới (chỉ là gợi ý/số đếm).
+- **Đường lùi (D-070):** bỏ `CATALOG_REVALIDATE_SECRET` ở backend → không ghi outbox, storefront về thuần TTL.
+- **Test:** backend `lib/catalog/__tests__/revalidate.unit.spec.ts` (gộp, trần, đồng thời, ký, phân loại lỗi),
+  `integration-tests/http/catalog-revalidate.spec.ts` (sửa giá → webhook đã ký; storefront 500/401 → ghi vẫn thành công,
+  outbox giữ/dead; gộp); storefront `app/api/revalidate/revalidate-route.test.ts` (401/409/400/413/503, đồng thời phát lại);
+  E2E `e2e/catalog-revalidate.spec.ts` (hệ thật, Next 16 thật).
 
 ## Trang chủ (ISR)
 
@@ -52,7 +86,8 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
   Layout gốc gọi `connection()` để gắn nonce CSP nên trang vẫn render lúc request; phần dữ liệu thật sự được cache
   là các `fetch` catalog ở trên.
 - **Cơ chế:** TTL 60 giây, cũng theo SWR như mục trước. Trang dựng từ cache dữ liệu catalog (cũng 60 giây) nên hai lớp
-  có thể lệch pha và cộng dồn tối đa khoảng hai chu kỳ cộng lần đọc kế tiếp.
+  có thể lệch pha và cộng dồn tối đa khoảng hai chu kỳ cộng lần đọc kế tiếp. Vì trang render lúc request, dữ liệu catalog
+  của nó (fetch có tag) cũng hết hạn theo webhook như mục trước.
 - **Test:** `cache-policy.test.ts` kiểm `revalidate` của trang chủ bằng `CATALOG_REVALIDATE_S`.
 
 ## API công khai của storefront

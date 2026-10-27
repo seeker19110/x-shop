@@ -18,6 +18,7 @@ export const SECRET_ENV_KEYS = [
   "VNPAY_HASH_SECRET",
   "VNPAY_HASH_SECRET_PREVIOUS",
   "GHN_TOKEN",
+  "CATALOG_REVALIDATE_SECRET",
 ] as const;
 
 export const SECRET_CONFIG_FIELDS = [
@@ -25,6 +26,8 @@ export const SECRET_CONFIG_FIELDS = [
   "hashSecret",
   "hashSecretPrevious",
   "token",
+  // catalogRevalidate.secret (T-142)
+  "secret",
 ] as const;
 
 export const REDACTED = "***";

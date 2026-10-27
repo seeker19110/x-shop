@@ -180,6 +180,36 @@ const secret = z
   .string()
   .min(MIN_SECRET_LENGTH, { message: `phải dài tối thiểu ${MIN_SECRET_LENGTH} ký tự` });
 
+/** Trần số đích webhook revalidate (một mục mỗi bản storefront khi chạy nhiều bản — T-142). */
+export const MAX_CATALOG_REVALIDATE_URLS = 8;
+/** Đường route nhận webhook ở storefront (apps/storefront/src/app/api/revalidate/route.ts). */
+export const CATALOG_REVALIDATE_PATH = "/api/revalidate";
+
+/**
+ * Danh sách URL http(s) cách nhau dấu phẩy (≤ `MAX_CATALOG_REVALIDATE_URLS`): không khoảng trắng trong mục, `\`, `@`
+ * (thông tin đăng nhập), query, fragment — nên giá trị không bao giờ mang bí mật (khác `DATABASE_URL`/`REDIS_URL`).
+ */
+const urlList = z.string().refine(
+  (raw) => {
+    const parts = raw.split(",").map((p) => p.trim());
+    return (
+      parts.length <= MAX_CATALOG_REVALIDATE_URLS &&
+      parts.every((entry) => {
+        if (entry === "" || /[\s\\@#?]/.test(entry)) return false;
+        try {
+          const u = new URL(entry);
+          return (u.protocol === "http:" || u.protocol === "https:") && u.hostname !== "";
+        } catch {
+          return false;
+        }
+      })
+    );
+  },
+  {
+    message: `phải là danh sách ≤ ${MAX_CATALOG_REVALIDATE_URLS} URL http(s) cách nhau dấu phẩy (không thông tin đăng nhập, query, fragment)`,
+  },
+);
+
 /** Danh sách origin cách nhau dấu phẩy: mỗi mục là origin http(s) hoặc biểu thức chính quy dạng /…/. */
 const corsList = z.string().refine(
   (raw) =>
@@ -251,6 +281,10 @@ const baseSchema = z.object({
   AUTH_CORS: optionalText.pipe(corsList.optional()),
   MEDUSA_BACKEND_URL: optionalText.pipe(urlWithProtocol(["http:", "https:"], "http(s)://").optional()),
   STOREFRONT_URL: optionalText.pipe(baseUrl.optional()),
+  // Webhook vô hiệu hoá cache catalog → storefront (T-142, D-070). Khoá HMAC chung với storefront (≥ 32 ký tự); vắng = tắt
+  // (storefront chỉ dựa TTL — đường lùi của D-070). URLS vắng = `<STOREFRONT_URL>/api/revalidate`.
+  CATALOG_REVALIDATE_SECRET: optionalText.pipe(secret.optional()),
+  CATALOG_REVALIDATE_URLS: optionalText.pipe(urlList.optional()),
   // Thư mục file private (T-141, BE-FILE-005): không ký tự điều khiển; rời thư mục công khai `static/` (kiểm ở superRefine).
   PRIVATE_UPLOAD_DIR: optionalText.pipe(
     z
@@ -368,6 +402,13 @@ const schema = baseSchema
         });
       }
     }
+    if (env.CATALOG_REVALIDATE_URLS !== undefined && env.CATALOG_REVALIDATE_SECRET === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["CATALOG_REVALIDATE_URLS"],
+        message: "chỉ đặt khi đã đặt CATALOG_REVALIDATE_SECRET",
+      });
+    }
     if (env.PRIVATE_UPLOAD_DIR !== undefined) {
       const problem = privateDirProblem(publicStaticDir(), env.PRIVATE_UPLOAD_DIR);
       if (problem !== null) ctx.addIssue({ code: "custom", path: ["PRIVATE_UPLOAD_DIR"], message: problem });
@@ -480,6 +521,18 @@ const schema = baseSchema
       },
       // STOREFRONT_URL đã chuẩn hoá ở schema; production đã bắt buộc biến nên mặc định dev không áp ở production.
       storefrontUrl: env.STOREFRONT_URL ?? DEV_STOREFRONT_URL,
+      // null = tắt webhook revalidate (không ghi outbox, storefront dựa TTL).
+      catalogRevalidate:
+        env.CATALOG_REVALIDATE_SECRET === undefined
+          ? null
+          : {
+              secret: env.CATALOG_REVALIDATE_SECRET,
+              urls: (
+                env.CATALOG_REVALIDATE_URLS?.split(",").map((u) => u.trim()) ?? [
+                  `${env.STOREFRONT_URL ?? DEV_STOREFRONT_URL}${CATALOG_REVALIDATE_PATH}`,
+                ]
+              ).map((u) => u.replace(/\/+$/, "")),
+            },
       // Production đã bắt buộc biến (tuyệt đối) nên mặc định dev không áp ở production.
       privateUploadDir: path.resolve(
         env.PRIVATE_UPLOAD_DIR ?? path.join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME),
@@ -501,6 +554,7 @@ const schema = baseSchema
     // `JSON.stringify`/`console.log`/`util.inspect` trên Env và các đối tượng lồng (ghn, vnpay) luôn ra bản đã che (BASE-CFG-005).
     // Không chặn được `{ ...env }`/`Object.entries`: các cách đó sao chép GIÁ TRỊ THẬT — dump phải qua redactConfig.
     withRedaction(effective.ghn);
+    if (effective.catalogRevalidate !== null) withRedaction(effective.catalogRevalidate);
     if (effective.vnpay !== null) withRedaction(effective.vnpay);
     return withRedaction(effective);
   });

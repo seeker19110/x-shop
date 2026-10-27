@@ -10,4 +10,5 @@ export * from "./address/index.js";
 export * from "./access/index.js";
 export * as vnpay from "./providers/vnpay/index.js";
 export * as ghn from "./providers/ghn/index.js";
+export * as catalogRevalidate from "./catalog-revalidate/index.js";
 export * from "./units.js";

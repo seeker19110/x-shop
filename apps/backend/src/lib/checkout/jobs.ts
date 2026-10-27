@@ -10,6 +10,7 @@ import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
 import { syncNativePayment } from "./payment";
+import { CATALOG_REVALIDATE_EVENT, catalogRevalidateHandler } from "../catalog/revalidate";
 import { queryAndProcess } from "./recheck";
 import { validateOutboxPayload } from "../outbox/payload";
 import { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs } from "../outbox/policy";
@@ -257,6 +258,8 @@ export { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs };
 /** Bộ xử lý mặc định. Thông báo khách (email/SMS) đi qua `lib/notify` (T-029) theo message key duy nhất. */
 export const DEFAULT_OUTBOX_HANDLERS: Record<string, OutboxHandler> = {
   ...Object.fromEntries(NOTIFICATION_EVENT_TYPES.map((t) => [t, notificationHandler] as const)),
+  // Webhook vô hiệu hoá cache catalog của storefront (T-142) — đường dự phòng khi lượt gửi gộp cuối cửa sổ lỗi.
+  [CATALOG_REVALIDATE_EVENT]: catalogRevalidateHandler,
   "payment.native_sync": async (container, event) => {
     const orderId = String(event.payload.order_id ?? event.aggregate_id);
     const r = await withLock(

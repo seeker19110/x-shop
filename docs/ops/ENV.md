@@ -47,6 +47,15 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # khoảng trắng/xuống dòng/tab, `\`, `@`, `?`, `#` bị từ chối lúc khởi động (hay gặp: newline thừa khi tạo từ file/echo);
 # gốc dùng thật được chuẩn hoá từ URL đã parse (scheme/host viết thường, bỏ cổng mặc định).
 STOREFRONT_URL=https://shop.example.vn
+# Webhook vô hiệu hoá cache catalog → storefront (T-142, D-070; docs/ops/CACHE.md). BÍ MẬT, ≥ 32 ký tự ngẫu nhiên (sinh:
+# openssl rand -base64 48), PHẢI TRÙNG CATALOG_REVALIDATE_SECRET của storefront. Vắng = tắt: không ghi outbox, storefront
+# chỉ hết hạn theo TTL 60 giây (đường lùi của D-070). Đổi khoá: đặt cùng giá trị mới ở storefront rồi backend (webhook gửi
+# trong lúc lệch khoá bị 401 → outbox `dead` + ngoại lệ `outbox_dead`; dữ liệu vẫn tươi lại sau TTL).
+# CATALOG_REVALIDATE_SECRET=
+# Đích webhook: danh sách ≤ 8 URL http(s) cách dấu phẩy, không thông tin đăng nhập/query/fragment; chỉ đặt khi đã đặt khoá.
+# Vắng = `<STOREFRONT_URL>/api/revalidate`. Chạy NHIỀU bản storefront → liệt kê URL nội bộ của TỪNG bản (cache dữ liệu của
+# Next nằm trong từng tiến trình; gửi qua LB chỉ tới một bản).
+# CATALOG_REVALIDATE_URLS=http://storefront-1:3000/api/revalidate,http://storefront-2:3000/api/revalidate
 # Thư mục file PRIVATE của File Module (T-141, BE-FILE-005): xuất khách hàng/đơn (PII), xuất tồn/sản phẩm, chunk nhập sản
 # phẩm. Phải RỜI thư mục công khai `static/` (Express phục vụ `/static`) — không trùng, không nằm trong, không chứa nó; không
 # ký tự điều khiển. Production BẮT BUỘC, đường dẫn tuyệt đối trên volume bền, chỉ user chạy backend đọc/ghi được (vd.
@@ -89,7 +98,8 @@ PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # Che bí mật khi in cấu hình (T-098, BASE-CFG-005): `redactConfig`/`formatEffectiveConfig` (src/lib/env/redact.ts); đối
 # tượng `Env` (và `ghn`, `vnpay` lồng trong đó) tự che khi JSON.stringify/console.log/util.inspect; `{ ...env }` hay
 # Object.entries sao chép GIÁ TRỊ THẬT — nơi dump phải qua `redactConfig`. Trường bí mật rỗng in "(chưa đặt)". Danh sách bí mật `SECRET_ENV_KEYS`: DATABASE_URL, REDIS_URL (có mật
-# khẩu), JWT_SECRET, COOKIE_SECRET, AUTH_MFA_ENCRYPTION_KEY, ORDER_LOOKUP_SECRET, VNPAY_HASH_SECRET(_PREVIOUS), GHN_TOKEN.
+# khẩu), JWT_SECRET, COOKIE_SECRET, AUTH_MFA_ENCRYPTION_KEY, ORDER_LOOKUP_SECRET, VNPAY_HASH_SECRET(_PREVIOUS), GHN_TOKEN,
+# CATALOG_REVALIDATE_SECRET.
 # Thêm biến bí mật mới → thêm vào danh sách. Hàng rào test duyệt MỌI khoá của schema (cả biến optional vắng mặt): tên
 # giống bí mật (secret/token/password/…/_KEY) hoặc `*_URL` chưa xếp vào "bí mật" hay danh sách URL đã xác minh không
 # chứa user:pass → test đỏ.
@@ -146,6 +156,10 @@ MEDUSA_BACKEND_URL=http://localhost:9000
 # true = storefront đứng sau proxy tin cậy (LB/CDN) đặt x-real-ip / x-forwarded-for → chuyển tiếp IP khách cho rate limit
 # của backend. Vắng/false = không tin (client gọi thẳng tự khai được): không chuyển tiếp IP (T-034).
 # XS_TRUST_PROXY_HEADERS=false
+# BÍ MẬT (chỉ server, `SECRET_SERVER_ENV_KEYS` trong src/lib/env — T-098): khoá HMAC của webhook `/api/revalidate` (T-142),
+# ≥ 32 ký tự, TRÙNG CATALOG_REVALIDATE_SECRET của backend. Vắng = route trả 503, cache catalog chỉ theo TTL. Sai độ dài →
+# getServerEnv() ném lỗi nêu tên biến (không in giá trị). Không bao giờ đặt tiền tố NEXT_PUBLIC_.
+# CATALOG_REVALIDATE_SECRET=
 ```
 
 Bảo mật HTTP (T-034, không phải biến môi trường): ngưỡng rate limit ở `apps/backend/src/lib/security/rate-limit.ts`

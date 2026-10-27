@@ -18,6 +18,7 @@ import {
   type PricingContext,
   type VariantPrice,
 } from "./sell-state";
+import { notifyCatalogChanged } from "./revalidate";
 
 /** Khoá ghi read model: đồng bộ theo sự kiện và rebuild toàn phần không xen kẽ (không ghi đè bằng dữ liệu cũ). */
 export const CATALOG_INDEX_LOCK = "x-shop:catalog-index";
@@ -311,6 +312,8 @@ async function syncUnlocked(
   const stored = written.size > 0 ? await index.countRows([...written]) : 0;
   reportBuild(container, "sync", { ...report, rows: writtenRows }, stored);
   if (report.missing.length > 0) await openMismatchException(container, "sync", report);
+  // Read model đã mới → báo storefront làm mới cache (T-142). Gồm cả sản phẩm bị bỏ qua: PDP đọc nguồn trực tiếp.
+  await notifyCatalogChanged(container, { productIds: ids });
   return { rows: writtenRows, skipped };
 }
 
@@ -358,6 +361,8 @@ async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResul
           `giá bán (kỳ vọng ${report.expected} dòng, dựng ${report.rows}).`,
       );
     await openMismatchException(container, "rebuild", report);
+    // Bảng cũ được giữ nhưng nguồn (PDP đọc trực tiếp) có thể đã đổi → vẫn làm mới cả catalog ở storefront (T-142).
+    await notifyCatalogChanged(container, { all: true });
     return {
       products: ids.length,
       rows: 0,
@@ -367,6 +372,7 @@ async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResul
     };
   }
   await index.replaceAll(rows);
+  await notifyCatalogChanged(container, { all: true });
   reportBuild(container, "rebuild", report, await index.countRows());
   container
     .resolve(ContainerRegistrationKeys.LOGGER)

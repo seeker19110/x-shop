@@ -8,10 +8,13 @@ import { clientIpHeader } from "../security/client-ip";
 import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
 import { isNonEmpty } from "../presence";
+import { LIST_TAGS, productTags } from "./revalidate";
 
 /**
  * Client catalog phía server (không import vào client component): chọn nguồn bằng `XS_DATA_SOURCE`.
- * Backend: `fetch` server-side, dữ liệu công khai cache `CATALOG_REVALIDATE_S` giây (`next.revalidate`, docs/ops/CACHE.md).
+ * Backend: `fetch` server-side, dữ liệu công khai cache `CATALOG_REVALIDATE_S` giây (`next.revalidate`, docs/ops/CACHE.md)
+ * và gắn tag (`next.tags`) để webhook của backend hết hạn ngay khi sản phẩm/giá/tồn đổi (T-142, `/api/revalidate`):
+ * danh sách/tìm kiếm/danh mục = `LIST_TAGS`, PDP = `productTags(handle)`.
  */
 
 /** Số sản phẩm mỗi trang ở storefront (backend cho phép tới 48). */
@@ -29,6 +32,7 @@ async function backendGet<T>(
   params?: URLSearchParams,
   fresh = false,
   extraHeaders: Record<string, string> = {},
+  tags: readonly string[] = LIST_TAGS,
 ): Promise<T> {
   const base = getServerEnv().MEDUSA_BACKEND_URL;
   const qs = params && params.size > 0 ? `?${params.toString()}` : "";
@@ -41,7 +45,9 @@ async function backendGet<T>(
         ...extraHeaders,
       },
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: CATALOG_REVALIDATE_S } }),
+      ...(fresh
+        ? { cache: "no-store" as const }
+        : { next: { revalidate: CATALOG_REVALIDATE_S, tags: [...tags] } }),
     });
   } catch {
     throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");
@@ -118,7 +124,13 @@ export async function search(
 export const getProduct = cache(async (handle: string): Promise<ProductDetail | null> => {
   if (resolveDataSource() === "fixtures") return fixtureProduct(handle);
   try {
-    const raw = await backendGet<unknown>(`/store/x/products/${encodeURIComponent(handle)}`);
+    const raw = await backendGet<unknown>(
+      `/store/x/products/${encodeURIComponent(handle)}`,
+      undefined,
+      false,
+      {},
+      productTags(handle),
+    );
     return mapProduct(raw, backendBase());
   } catch (e) {
     if (e instanceof CatalogError && e.code === "NOT_FOUND") return null;

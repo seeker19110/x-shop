@@ -39,6 +39,9 @@ export const clientEnvSchema = z.object({
   NEXT_PUBLIC_ANALYTICS_TRANSPORT: z.enum(ANALYTICS_TRANSPORTS).default("none"),
 });
 
+/** Độ dài tối thiểu của bí mật (≈ 256 bit nếu sinh ngẫu nhiên) — khớp MIN_SECRET_LENGTH của backend. */
+export const MIN_SECRET_LENGTH = 32;
+
 export const DATA_SOURCES = ["backend", "fixtures"] as const;
 export type DataSource = (typeof DATA_SOURCES)[number];
 
@@ -51,7 +54,21 @@ export const serverEnvSchema = z.object({
    * limit của backend. Vắng/`false` = không tin (client gọi thẳng tự khai được) — lib/security/client-ip.ts.
    */
   XS_TRUST_PROXY_HEADERS: z.enum(["true", "false"]).optional(),
+  /**
+   * Khoá HMAC chung với backend cho webhook vô hiệu hoá cache catalog (`/api/revalidate`, T-142, D-070). BÍ MẬT, ≥ 32 ký
+   * tự. Vắng = route trả 503, cache catalog chỉ hết hạn theo TTL (đường lùi của D-070).
+   */
+  CATALOG_REVALIDATE_SECRET: z
+    .string()
+    .min(MIN_SECRET_LENGTH, `phải dài tối thiểu ${MIN_SECRET_LENGTH} ký tự`)
+    .optional(),
 });
+
+/**
+ * Biến server BÍ MẬT (T-098, SEC-SECRET-007 — cùng vai trò `SECRET_ENV_KEYS` của backend): không bao giờ in/log giá trị.
+ * Thêm biến bí mật mới vào schema server → thêm vào đây; `env.test.ts` chặn tên giống bí mật chưa đăng ký.
+ */
+export const SECRET_SERVER_ENV_KEYS = ["CATALOG_REVALIDATE_SECRET"] as const;
 
 export type ClientEnv = z.infer<typeof clientEnvSchema>;
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

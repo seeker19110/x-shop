@@ -13,7 +13,15 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ADMIN_DB_URL, backendEnv, DATABASE_URL, E2E_DB_NAME, REDIS_URL, storefrontEnv } from "./env.mjs";
+import {
+  ADMIN_DB_URL,
+  backendEnv,
+  DATABASE_URL,
+  E2E_ADMIN,
+  E2E_DB_NAME,
+  REDIS_URL,
+  storefrontEnv,
+} from "./env.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const backendDir = path.join(root, "apps/backend");
@@ -92,6 +100,9 @@ async function prepare() {
   await medusa(["exec", "./src/scripts/seed.ts"]);
   await medusa(["exec", "./src/scripts/seed-catalog.ts"]);
   await run("node", ["e2e/boost-stock.mjs"]);
+  // Admin owner TEST-ONLY cho spec sửa catalog qua Admin API (catalog-revalidate.spec.ts, T-142).
+  await medusa(["user", "-e", E2E_ADMIN.email, "-p", E2E_ADMIN.password]);
+  await medusa(["exec", "./src/scripts/grant-owner.ts", E2E_ADMIN.email]);
   const key = await readPublishableKey();
 
   // Luôn build lại storefront: publishable key đổi theo mỗi lần seed và được nhúng vào bundle lúc build.

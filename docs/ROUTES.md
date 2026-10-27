@@ -32,6 +32,7 @@
 | `/api/cart/count` | `api/cart/count/route.ts` | stream động | Đếm giỏ theo cookie phiên, `private, no-store`. |
 | `/api/catalog/count` | `api/catalog/count/route.ts` | cache dùng chung | Đếm kết quả lọc công khai, `public, s-maxage=60`. |
 | `/api/catalog/suggest` | `api/catalog/suggest/route.ts` | cache dùng chung | Gợi ý tìm kiếm công khai, `Cache-Control` công khai. |
+| `/api/revalidate` | `api/revalidate/route.ts` | stream động | Webhook backend (POST ký HMAC, chống phát lại) → `revalidateTag` catalog, `force-dynamic`, `no-store` (T-142). |
 | `/manifest.webmanifest` | `manifest.ts` | tĩnh | Manifest PWA, không phụ thuộc request. |
 | `/robots.txt` | `robots.ts` | stream động | `force-dynamic`: URL site lấy từ biến môi trường lúc chạy. |
 | `/sitemap.xml` | `sitemap.ts` | stream động | `force-dynamic`: liệt kê sản phẩm/danh mục hiện có từ backend. |
