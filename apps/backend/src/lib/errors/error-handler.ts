@@ -16,7 +16,8 @@ import { traceIdOf } from "./trace";
  * - Thân `application/problem+json` (RFC 9457) có `code` + `trace_id`; giữ `message` (= `detail`) vì client Medusa
  *   (js-sdk, Admin) đọc khoá này.
  * - 5xx: thông điệp chung, không stack/đường dẫn/SQL/tên bảng/phiên bản; đầy đủ (stack) chỉ ở log server kèm `trace_id`.
- *   4xx: giữ thông điệp của lỗi trừ khi nó đến từ Postgres (Medusa chép tên bảng/cột vào) hoặc trông như lộ nội bộ.
+ *   4xx: giữ thông điệp của lỗi trừ khi nó đến từ Postgres (Medusa chép tên bảng/cột vào), trông như lộ nội bộ, hoặc là
+ *   thông điệp `dbErrorMapper` của Medusa chép giá trị người gửi (unique ở 400, FK ở 404 → thông điệp chung giữ tên trường, T-157).
  * - Phản hồi đã gửi một phần (`headersSent`) → ghi log rồi để Express đóng kết nối (`next(err)`).
  */
 
@@ -154,16 +155,16 @@ function dbValueResult(reason: string, fields: string[]): DbValueMessage {
  * chung giữ tên trường, bỏ giá trị và tên bảng. Chỉ `indexOf`/`endsWith`/`split` có trần — tuyến tính, không regex backtrack.
  * Hình dạng đúng mà tên trường không hợp lệ → vẫn thông điệp chung (không tên trường): đóng an toàn.
  */
-export function dbValueMessage(message: unknown): DbValueMessage | null {
+export function dbValueMessage(message: unknown, status: number): DbValueMessage | null {
   if (typeof message !== "string") return null;
   const tooLong = message.length > MAX_DB_MESSAGE;
-  if (message.endsWith(UNIQUE_TAIL)) {
+  if (status === 400 && message.endsWith(UNIQUE_TAIL)) {
     const at = message.indexOf(" with ");
     if (at < 1) return null;
     const fields = tooLong ? [] : fieldsOf(message.slice(at + 6, message.length - UNIQUE_TAIL.length), ", ");
     return dbValueResult(DUPLICATE_REASON, fields);
   }
-  if (message.startsWith(FK_HEAD) && message.endsWith(FK_TAIL)) {
+  if (status === 404 && message.startsWith(FK_HEAD) && message.endsWith(FK_TAIL)) {
     const fields = tooLong
       ? []
       : fieldsOf(message.slice(FK_HEAD.length, message.length - FK_TAIL.length), ",");
@@ -214,7 +215,7 @@ export function toHttpProblem(err: unknown, traceId: string): HttpProblem {
       if (status < 500) {
         if (typeof mapped.body.code === "string" && /^[a-z_]{1,64}$/.test(mapped.body.code))
           code = mapped.body.code;
-        const dbMsg = isPostgresError(err) ? null : dbValueMessage(mapped.body.message);
+        const dbMsg = isPostgresError(err) ? null : dbValueMessage(mapped.body.message, status);
         if (dbMsg !== null) {
           detail = dbMsg.detail;
           errors = dbMsg.fields.map((param) => ({ param, reason: dbMsg.reason }));

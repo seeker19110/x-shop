@@ -594,8 +594,36 @@ describe("toHttpProblem — dbErrorMapper không chép giá trị (T-157)", () =
     ]) {
       expect(toHttpProblem(new MedusaError(MedusaError.Types.INVALID_DATA, m), "t").body.detail).toBe(m);
     }
-    expect(dbValueMessage("Giỏ hàng không tồn tại")).toBeNull();
-    expect(dbValueMessage(undefined)).toBeNull();
+    expect(dbValueMessage("Giỏ hàng không tồn tại", 400)).toBeNull();
+    expect(dbValueMessage(undefined, 400)).toBeNull();
+  });
+
+  it("chỉ viết lại đúng status: unique ở 400, FK ở 404; status khác giữ nguyên", () => {
+    const u = "T with handle: ok, already exists.";
+    const f = "You tried to set relationship a: b, but such entity does not exist";
+    const unauthorized = toHttpProblem(new MedusaError(MedusaError.Types.UNAUTHORIZED, u), "t");
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.body.detail).toBe(u);
+    const forbidden = toHttpProblem(new MedusaError(MedusaError.Types.FORBIDDEN, f), "t");
+    expect(forbidden.body.detail).toBe(f);
+    expect(toHttpProblem(new MedusaError(MedusaError.Types.INVALID_DATA, f), "t").body.detail).toBe(f);
+    expect(dbValueMessage(u, 404)).toBeNull();
+    expect(dbValueMessage(f, 400)).toBeNull();
+  });
+
+  it("33 cặp ngắn (< 4096 ký tự) → thông điệp chung, không có trường", () => {
+    const pairs = Array.from({ length: 33 }, (_, i) => `k${i}: v`);
+    const u = toHttpProblem(new MedusaError(MedusaError.Types.INVALID_DATA, uniqueMsg(pairs)), "t");
+    expect(u.body.detail).toBe("Giá trị đã tồn tại");
+    expect(u.body.errors).toBeUndefined();
+    const f = toHttpProblem(new MedusaError(MedusaError.Types.NOT_FOUND, fkMsg(pairs)), "t");
+    expect(f.body.detail).toBe("Tham chiếu không tồn tại");
+    expect(f.body.errors).toBeUndefined();
+    const ok = toHttpProblem(
+      new MedusaError(MedusaError.Types.INVALID_DATA, uniqueMsg(pairs.slice(0, 32))),
+      "t",
+    );
+    expect(ok.body.errors).toHaveLength(32);
   });
 
   const N = 32_768;
@@ -611,9 +639,10 @@ describe("toHttpProblem — dbErrorMapper không chép giá trị (T-157)", () =
     ["unique: không đuôi", `T with ${"a: b, ".repeat(N / 6)}already exist`],
   ];
   it.each(adversarial)("đối nghịch %s → < 50 ms CPU", (_n, input) => {
-    dbValueMessage(input.slice(0, 100));
+    dbValueMessage(input.slice(0, 100), 400);
     const t0 = process.cpuUsage();
-    dbValueMessage(input);
+    dbValueMessage(input, 400);
+    dbValueMessage(input, 404);
     toHttpProblem(new MedusaError(MedusaError.Types.INVALID_DATA, input), "t");
     const d = process.cpuUsage(t0);
     expect((d.user + d.system) / 1000).toBeLessThan(50);
