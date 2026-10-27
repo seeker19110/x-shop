@@ -416,6 +416,7 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
     for (const target of [
       "http://127.0.0.1/admin/customers/cus_khong_co",
       "HTTP://127.0.0.1/admin/x/audit",
+      "/admin\\customers/cus_khong_co#y",
     ]) {
       expect({ target, status: await raw(target) }).toEqual({ target, status: 400 });
     }

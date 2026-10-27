@@ -772,10 +772,17 @@ medusaIntegrationTestRunner({
             "GET /admin/x/audit",
           ]),
         );
-        // Mã hoá hỏng ở đường dẫn admin → 400 (không đoán quy tắc).
-        expect((await raw("GET", "/admin/customers/%E0%A4%A", support.headers)).json.code).toBe(
-          "INVALID_PATH",
-        );
+        // Mã hoá hỏng ở đường dẫn admin → 400 INVALID_PATH, không lộ dữ liệu. Ở Medusa 2.22.1 lõi (tra route của CORS/auth
+        // /admin) ném URIError trước cổng → handler lỗi trả 400; nhánh 400 + audit của cổng (D-080) là phòng thủ chiều sâu,
+        // kiểm ở unit (request-target-rule.unit.spec.ts).
+        for (const target of ["/admin/customers/%E0%A4%A", "/admin/khong-co-route/%zz"]) {
+          const bad = await raw("GET", target, support.headers);
+          expect({ target, status: bad.status, code: bad.json.code }).toEqual({
+            target,
+            status: 400,
+            code: "INVALID_PATH",
+          });
+        }
       });
     });
   },

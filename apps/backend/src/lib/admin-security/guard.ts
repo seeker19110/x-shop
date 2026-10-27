@@ -113,6 +113,10 @@ async function auditDenied(
   }
 }
 
+/** Quy tắc/nhãn audit cho path admin không hợp lệ (400 INVALID_PATH, D-080) — lớp route `deny:INVALID_PATH`. */
+const INVALID_PATH_RULE: AdminRule = { kind: "deny", reason: "INVALID_PATH" };
+export const INVALID_PATH_RESOURCE = "(đường dẫn không hợp lệ)";
+
 /**
  * Quy tắc quyền cho request admin (T-145) — tra từ pathname ROUTER THẤY (`lib/http/request-path.ts`), không từ
  * `originalUrl` thô (URL tuyệt đối, `\`+`#` từng rơi xuống mặc định `any_role` trong khi Express vẫn tới route nhạy cảm):
@@ -147,7 +151,12 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
   const method = normalizeMethod(req.method);
   if (method === "OPTIONS") return next();
   const resolved = adminRuleOf(req, method);
-  if (resolved === null) return sendProblem(res, INVALID_PATH.status, INVALID_PATH.code, INVALID_PATH.title);
+  if (resolved === null) {
+    // D-080: ghi audit qua cùng bộ gộp từ chối (lần 1, 10, 100… theo actor + lớp route). Không ghi đường dẫn thô —
+    // có thể chứa PII/rác đối nghịch; chỉ method + nhãn cố định.
+    await auditDenied(req, method, INVALID_PATH_RESOURCE, INVALID_PATH_RULE, { reason: "invalid_path" });
+    return sendProblem(res, INVALID_PATH.status, INVALID_PATH.code, INVALID_PATH.title);
+  }
   const { path, rule } = resolved;
   if (rule.kind === "public") return next();
 

@@ -61,6 +61,12 @@ describe("hook server: request-target (T-145)", () => {
     expect(isAcceptedRequestTarget("GET", "HTTP://X/admin")).toBe(false);
     expect(isAcceptedRequestTarget("GET", "admin/customers")).toBe(false);
     expect(isAcceptedRequestTarget("GET", "")).toBe(false);
+    // D-079: `#` và `\` không hợp lệ trong request-target.
+    expect(isAcceptedRequestTarget("GET", "/admin\\customers/x#y")).toBe(false);
+    expect(isAcceptedRequestTarget("GET", "/admin\\customers/x")).toBe(false);
+    expect(isAcceptedRequestTarget("GET", "/admin/customers/x#y")).toBe(false);
+    expect(isAcceptedRequestTarget("GET", "/admin/customers/x?q=#")).toBe(false);
+    expect(isAcceptedRequestTarget("GET", "/admin/customers/x?q=%23")).toBe(true);
     expect(isAcceptedRequestTarget("GET", undefined)).toBe(false);
   });
 
@@ -85,6 +91,21 @@ describe("hook server: request-target (T-145)", () => {
         "GET /admin/customers/cus_1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
       );
       expect(ok.startsWith("HTTP/1.1 200")).toBe(true);
+      for (const target of [
+        "/admin\\customers/cus_1#y",
+        "/admin\\customers/cus_1",
+        "/admin/customers/cus_1#y",
+      ]) {
+        const res = await rawExchange(
+          s.port,
+          `GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`,
+        );
+        expect({ target, line: res.split("\r\n")[0], code: res.includes("INVALID_REQUEST_TARGET") }).toEqual({
+          target,
+          line: "HTTP/1.1 400 Bad Request",
+          code: true,
+        });
+      }
       const star = await rawExchange(s.port, "OPTIONS * HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
       expect(star.startsWith("HTTP/1.1 200")).toBe(true);
       expect(seen).toEqual(["GET /admin/customers/cus_1", "OPTIONS *"]);

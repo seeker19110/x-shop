@@ -122,9 +122,12 @@ export function trackRawRequest(req: unknown, res: unknown, fallback: AppLogger)
  * Request-target server chấp nhận (T-145): origin-form (`/…`) hoặc `OPTIONS *` (RFC 9112 §3.2). Dạng tuyệt đối
  * (`http://host/admin/…`, chỉ dành cho proxy) và mọi dạng khác bị từ chối TRƯỚC Express — Express/Medusa định tuyến theo
  * pathname đã parse nên request-target tuyệt đối từng lách được cổng RBAC/audit khớp chuỗi thô.
+ * Có `#` hoặc `\` cũng bị từ chối (D-079): không hợp lệ trong request-target (RFC 9112/3986, trình duyệt không gửi), và
+ * `#` đẩy `parseurl` sang `url.parse` — hàm này đổi `\` → `/` (`/admin\customers/1#x` tới `/admin/customers/:id`).
  */
 export function isAcceptedRequestTarget(method: unknown, target: unknown): boolean {
   if (typeof target !== "string") return false;
+  if (target.includes("#") || target.includes("\\")) return false;
   if (target.startsWith("/")) return true;
   return target === "*" && typeof method === "string" && method.toUpperCase() === "OPTIONS";
 }
@@ -149,7 +152,7 @@ function rejectRequestTarget(req: RawReq, res: RawRes): void {
     if (req.requestId === undefined && typeof header === "string") req.requestId = header;
     const body = JSON.stringify({
       type: "about:blank",
-      title: "Request-target không hợp lệ: chỉ nhận đường dẫn bắt đầu bằng '/'",
+      title: "Request-target không hợp lệ: chỉ nhận đường dẫn bắt đầu bằng '/', không chứa '#' hoặc '\\'",
       status: 400,
       code: "INVALID_REQUEST_TARGET",
       errors: [],

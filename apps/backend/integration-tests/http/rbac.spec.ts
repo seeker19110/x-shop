@@ -430,8 +430,10 @@ medusaIntegrationTestRunner({
         const variants: [string, number][] = [
           [`/admin/%63ustomers/${customerId}`, 403],
           [`/admin/%63%75%73%74%6F%6D%65%72%73/${customerId}`, 403],
-          [`/admin\\customers/${customerId}#x`, 403],
-          [`/ADMIN\\Customers/${customerId}#x`, 403],
+          // D-079: `#`/`\\` bị lớp server chặn (400) trước Express.
+          [`/admin\\customers/${customerId}#x`, 400],
+          [`/ADMIN\\Customers/${customerId}#x`, 400],
+          [`/admin\\customers/${customerId}`, 400],
           [`/admin/customers/${customerId}%2F`, 403],
           [`/admin/customers/%zz`, 400],
           [`/%61dmin/customers/${customerId}`, 404],
@@ -451,6 +453,18 @@ medusaIntegrationTestRunner({
         expect(entries.map((e) => e.resource_id)).toContain(
           `GET /admin/customers/${customerId.toLowerCase()}`,
         );
+      });
+
+      it("D-079: support + `GET /admin\\customers/<id>#y` (socket thô) → 400 INVALID_REQUEST_TARGET trước Express, không lộ PII", async () => {
+        for (const target of [`/admin\\customers/${customerId}#y`, `/admin/customers/${customerId}#y`]) {
+          const res = await rawRequest(port, target, accounts.support.headers);
+          expect({ target, status: res.status, code: res.json.code, leak: leaks(res.text) }).toEqual({
+            target,
+            status: 400,
+            code: "INVALID_REQUEST_TARGET",
+            leak: false,
+          });
+        }
       });
 
       it("đồng thời: 20 request trộn (tuyệt đối/origin-form) song song → mỗi request đúng kết quả, không lộ PII", async () => {

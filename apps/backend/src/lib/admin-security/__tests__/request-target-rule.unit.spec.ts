@@ -1,5 +1,15 @@
-import { adminRuleOf } from "../guard";
+import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { AUDIT_MODULE } from "../../../modules/audit";
+import { CHECKOUT_MODULE } from "../../../modules/checkout";
+import { adminRuleOf, adminSecurityGuard, INVALID_PATH_RESOURCE } from "../guard";
 import { isAdminPath, resolveAdminRule, strictestRule, type AdminRule } from "../policy";
+
+// Unit không có env đầy đủ (DATABASE_URL…) → IP khách cố định; phần còn lại của module giữ nguyên.
+jest.mock("../../security/config", () => ({
+  ...jest.requireActual<Record<string, unknown>>("../../security/config"),
+  clientIpOf: () => ({ ip: "127.0.0.1" }),
+}));
 
 /** T-145 — cổng RBAC tra quyền theo pathname router thấy; giải mã `%xx` không đưa về quy tắc lỏng hơn. */
 
@@ -106,5 +116,80 @@ describe("strictestRule / isAdminPath", () => {
     expect(isAdminPath("/admin/x")).toBe(true);
     expect(isAdminPath("/administrator")).toBe(false);
     expect(isAdminPath("//admin")).toBe(false);
+  });
+});
+
+describe("cổng: 400 INVALID_PATH có audit gộp (D-080)", () => {
+  it("3 lần path mã hoá hỏng → 400 mỗi lần, next không chạy; audit rbac.denied đúng 1 dòng (lần 1), không đường dẫn thô", async () => {
+    const records: Record<string, unknown>[] = [];
+    const errors: string[] = [];
+    let hits = 0;
+    const scope = {
+      resolve: (key: string): unknown => {
+        if (key === CHECKOUT_MODULE) return { hitRateCounter: () => Promise.resolve({ current: ++hits }) };
+        if (key === AUDIT_MODULE)
+          return {
+            record: (e: Record<string, unknown>) => {
+              records.push(e);
+              return Promise.resolve(e);
+            },
+          };
+        if (key === ContainerRegistrationKeys.CONFIG_MODULE)
+          return { projectConfig: { http: { cookieSecret: "unit-only" } } };
+        if (key === ContainerRegistrationKeys.LOGGER)
+          return { warn: () => undefined, error: (m: string) => errors.push(m) };
+        throw new Error(`không có ${key}`);
+      },
+    };
+    const statuses: number[] = [];
+    const next = jest.fn();
+    for (let i = 0; i < 3; i++) {
+      const req = {
+        method: "GET",
+        originalUrl: "/admin/x/khach-t145%40example.test%E0%A4%A",
+        headers: {},
+        socket: { remoteAddress: "127.0.0.1" },
+        auth_context: { actor_type: "user", actor_id: "user_t145" },
+        scope,
+      };
+      const res = {
+        req,
+        statusCode: 200,
+        body: "",
+        status(n: number) {
+          this.statusCode = n;
+          return this;
+        },
+        setHeader() {
+          return this;
+        },
+        send(b: string) {
+          this.body = b;
+          return this;
+        },
+      };
+      await adminSecurityGuard(
+        req as unknown as MedusaRequest,
+        res as unknown as MedusaResponse,
+        next as unknown as MedusaNextFunction,
+      );
+      statuses.push(res.statusCode);
+      expect(JSON.parse(res.body)).toMatchObject({ code: "INVALID_PATH" });
+    }
+    expect(statuses).toEqual([400, 400, 400]);
+    expect(next).not.toHaveBeenCalled();
+    expect(hits).toBe(3);
+    expect(errors).toEqual([]);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      action: "rbac.denied",
+      actor_type: "user",
+      actor_id: "user_t145",
+      resource_type: "route",
+      resource_id: `GET ${INVALID_PATH_RESOURCE}`,
+      changes: { reason: "invalid_path", throttle: { occurrence: 1 } },
+    });
+    expect(JSON.stringify(records)).not.toContain("example.test");
+    expect(JSON.stringify(records)).not.toContain("khach-t145");
   });
 });

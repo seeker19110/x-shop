@@ -8,7 +8,7 @@ export type AdminRule =
   | { kind: "public" }
   | { kind: "self" }
   | { kind: "any_role" }
-  | { kind: "deny"; reason: "UNDECLARED_ROUTE" | NativeDenyReason }
+  | { kind: "deny"; reason: "UNDECLARED_ROUTE" | "INVALID_PATH" | NativeDenyReason }
   | { kind: "permission"; permission: Permission; also: readonly Permission[]; reauth: boolean };
 
 export const ADMIN_X_PREFIX = "/admin/x";
