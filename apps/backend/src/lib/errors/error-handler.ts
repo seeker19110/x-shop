@@ -17,7 +17,8 @@ import { traceIdOf } from "./trace";
  *   (js-sdk, Admin) đọc khoá này.
  * - 5xx: thông điệp chung, không stack/đường dẫn/SQL/tên bảng/phiên bản; đầy đủ (stack) chỉ ở log server kèm `trace_id`.
  *   4xx: giữ thông điệp của lỗi trừ khi nó đến từ Postgres (Medusa chép tên bảng/cột vào), trông như lộ nội bộ, hoặc là
- *   thông điệp `dbErrorMapper` của Medusa chép giá trị người gửi (unique ở 400, FK ở 404 → thông điệp chung giữ tên trường, T-157).
+ *   thông điệp `dbErrorMapper` của Medusa chép giá trị người gửi (unique ở 400, FK ở 404 → thông điệp chung giữ tên trường, T-157)
+ *   hoặc một dạng nghiệp vụ Medusa nội suy giá trị người gửi (email, khoá idempotency, mã khuyến mãi, tiêu đề, handle…, T-159).
  * - Phản hồi đã gửi một phần (`headersSent`) → ghi log rồi để Express đóng kết nối (`next(err)`).
  */
 
@@ -173,6 +174,160 @@ export function dbValueMessage(message: unknown, status: number): DbValueMessage
   return null;
 }
 
+/**
+ * Một dạng thông điệp 4xx của Medusa 2.22.1 nội suy GIÁ TRỊ người gửi (T-159, D-097): `head` + giá trị + [`mid` + giá
+ * trị] + `tail`. Chỉ khớp bằng `startsWith`/`endsWith`/`indexOf` — không regex.
+ */
+interface EchoForm {
+  head: string;
+  mid?: string;
+  tail?: string;
+  reason: string;
+  field?: string;
+}
+
+const OPTION_COMBO_REASON = "Tổ hợp tuỳ chọn của biến thể đã tồn tại";
+const OPTION_ASSIGN_REASON = "Tuỳ chọn của sản phẩm không hợp lệ";
+const PROMO_REASON = "Mã khuyến mãi không hợp lệ";
+const AUTH_IDENTITY_REASON = "Không tìm thấy danh tính xác thực";
+const REFUND_KEY_REASON = "Khoá idempotency của hoàn tiền đã được dùng";
+
+/**
+ * Các dạng (đường dẫn nguồn: `node_modules/@medusajs/<gói>/dist/…`, bản 2.22.1).
+ * Ưu tiên PII/giá trị nhạy cảm: email (khách, tài khoản, `entity_id` của emailpass), khoá idempotency, mã khuyến mãi,
+ * tiêu đề/handle do admin nhập. Id hệ thống (`prod_…`) không thuộc danh sách này.
+ */
+const ECHO_FORMS: readonly EchoForm[] = [
+  // product-module-service.js
+  {
+    head: "Variant (",
+    tail: ") with provided options already exists.",
+    reason: OPTION_COMBO_REASON,
+    field: "options",
+  },
+  {
+    head: 'Variant "',
+    mid: '" has same combination of option values as "',
+    tail: '".',
+    reason: OPTION_COMBO_REASON,
+    field: "options",
+  },
+  {
+    head: 'Product "',
+    mid: '" has duplicate option assignments: [',
+    tail: "]",
+    reason: OPTION_ASSIGN_REASON,
+    field: "options",
+  },
+  {
+    head: 'Product "',
+    mid: '" has variants with missing options: [',
+    tail: "]",
+    reason: OPTION_ASSIGN_REASON,
+    field: "options",
+  },
+  {
+    head: "Product has ",
+    mid: " option values but there were ",
+    tail: ".",
+    reason: OPTION_ASSIGN_REASON,
+    field: "options",
+  },
+  {
+    head: "Invalid product handle '",
+    tail: "'. It must contain URL safe characters",
+    reason: "Handle sản phẩm không hợp lệ",
+    field: "handle",
+  },
+  {
+    head: 'Value "',
+    tail: '" is assigned a rank but is not defined in the list of values.',
+    reason: "Giá trị có thứ hạng nhưng không nằm trong danh sách",
+    field: "values",
+  },
+  // product/utils/resolve-allowed-option-values.js
+  {
+    head: "Option value ",
+    mid: " does not exist for option ",
+    reason: "Giá trị tuỳ chọn không tồn tại",
+    field: "options",
+  },
+  // payment-module.js (cả hai dạng "already exists … for a different amount" và "still in progress")
+  { head: "A refund with idempotency key ", reason: REFUND_KEY_REASON, field: "idempotency_key" },
+  // draft-order/utils/validation.js, cart/steps/get-promotion-codes-to-apply.js
+  { head: 'Promotion code "', tail: '" not found', reason: PROMO_REASON, field: "promo_codes" },
+  { head: 'Promotion code "', tail: '" is not active', reason: PROMO_REASON, field: "promo_codes" },
+  { head: "The promotion code ", tail: " is invalid", reason: PROMO_REASON, field: "promo_codes" },
+  // auth-module.js (`entity_id` của emailpass = email)
+  {
+    head: 'AuthIdentity with entity_id "',
+    tail: '" not found',
+    reason: AUTH_IDENTITY_REASON,
+    field: "entity_id",
+  },
+  {
+    head: 'ProviderIdentity with entity_id "',
+    tail: '" not found',
+    reason: AUTH_IDENTITY_REASON,
+    field: "entity_id",
+  },
+  {
+    head: 'Multiple authIdentities found for entity_id "',
+    tail: '"',
+    reason: AUTH_IDENTITY_REASON,
+    field: "entity_id",
+  },
+  {
+    head: "Provider identity with entity_id ",
+    mid: " and provider ",
+    tail: " not found",
+    reason: AUTH_IDENTITY_REASON,
+    field: "entity_id",
+  },
+  // core-flows: set-auth-app-metadata.js, find-sales-channel.js, update-line-item-in-cart.js, transfer đơn
+  { head: "Key ", tail: " already exists in app metadata", reason: "Khoá metadata đã tồn tại", field: "key" },
+  {
+    head: "Unable to assign cart to disabled Sales Channel: ",
+    reason: "Kênh bán hàng đang tắt",
+    field: "sales_channel_id",
+  },
+  { head: "Line item ", tail: " has no unit price", reason: "Dòng hàng chưa có đơn giá" },
+  {
+    head: "Cannot transfer order: ",
+    reason: "Không thể chuyển đơn cho tài khoản khách này",
+    field: "customer_id",
+  },
+  // user-module.js
+  {
+    head: "User account for following email(s) already exist: ",
+    reason: "Email đã có tài khoản",
+    field: "email",
+  },
+];
+
+/** Trần độ dài để tìm `mid` bằng `indexOf` (dài hơn: `head`+`tail` khớp là đủ — đóng an toàn, vẫn thông điệp chung). */
+const MAX_ECHO_MESSAGE = 4096;
+
+/**
+ * Thông điệp nghiệp vụ 4xx của Medusa chép giá trị người gửi (T-159): trả thông điệp chung, giữ tên trường (nếu có),
+ * bỏ giá trị. Status/mã do `toHttpProblem` giữ nguyên. Thông điệp của chính dự án (tiếng Việt) không khớp dạng nào.
+ */
+export function echoedValueMessage(message: unknown): DbValueMessage | null {
+  if (typeof message !== "string") return null;
+  for (const f of ECHO_FORMS) {
+    if (!message.startsWith(f.head)) continue;
+    const tailLen = f.tail?.length ?? 0;
+    if (message.length < f.head.length + (f.mid?.length ?? 0) + tailLen) continue;
+    if (f.tail !== undefined && !message.endsWith(f.tail)) continue;
+    if (f.mid !== undefined && message.length <= MAX_ECHO_MESSAGE) {
+      const at = message.indexOf(f.mid, f.head.length);
+      if (at === -1 || at + f.mid.length > message.length - tailLen) continue;
+    }
+    return dbValueResult(f.reason, f.field === undefined ? [] : [f.field]);
+  }
+  return null;
+}
+
 function safeDetail(message: unknown, status: number): string {
   if (typeof message !== "string" || message.trim() === "" || message.length > MAX_DETAIL)
     return titleOf(status);
@@ -215,7 +370,9 @@ export function toHttpProblem(err: unknown, traceId: string): HttpProblem {
       if (status < 500) {
         if (typeof mapped.body.code === "string" && /^[a-z_]{1,64}$/.test(mapped.body.code))
           code = mapped.body.code;
-        const dbMsg = isPostgresError(err) ? null : dbValueMessage(mapped.body.message, status);
+        const dbMsg = isPostgresError(err)
+          ? null
+          : (dbValueMessage(mapped.body.message, status) ?? echoedValueMessage(mapped.body.message));
         if (dbMsg !== null) {
           detail = dbMsg.detail;
           errors = dbMsg.fields.map((param) => ({ param, reason: dbMsg.reason }));
