@@ -18,6 +18,9 @@ export const SECRET_ENV_KEYS = [
   "VNPAY_HASH_SECRET",
   "VNPAY_HASH_SECRET_PREVIOUS",
   "GHN_TOKEN",
+  // Khoá kho file S3 (T-154): ID cũng che — cặp ID/secret lộ một nửa vẫn giúp dò.
+  "S3_ACCESS_KEY_ID",
+  "S3_SECRET_ACCESS_KEY",
 ] as const;
 
 export const SECRET_CONFIG_FIELDS = [
@@ -25,6 +28,8 @@ export const SECRET_CONFIG_FIELDS = [
   "hashSecret",
   "hashSecretPrevious",
   "token",
+  "accessKeyId",
+  "secretAccessKey",
 ] as const;
 
 export const REDACTED = "***";

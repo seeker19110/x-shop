@@ -8,6 +8,8 @@ import {
   loadEnvOrExit,
   parseEnv,
   PRODUCTION_REQUIRED,
+  S3_REQUIRED,
+  S3_VARIABLES,
   ORDER_LOOKUP_DEV_SECRET,
   VNPAY_DEV_DEFAULTS,
   VNPAY_REQUIRED,
@@ -29,7 +31,15 @@ const production = {
   ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
   XS_TRUSTED_PROXIES: "10.0.0.0/8",
   STOREFRONT_URL: "https://shop.example.vn/",
-  PRIVATE_UPLOAD_DIR: "/var/lib/xshop/private-uploads",
+  MEDUSA_BACKEND_URL: "https://api.shop.example.vn",
+  FILE_STORAGE: "s3",
+  S3_ENDPOINT: "https://s3.shop.example.vn",
+  S3_REGION: "garage",
+  S3_BUCKET: "xshop-public",
+  S3_PRIVATE_BUCKET: "xshop-private",
+  S3_FILE_URL: "https://cdn.shop.example.vn/xshop-public",
+  S3_ACCESS_KEY_ID: "GK0123456789abcdef01234567",
+  S3_SECRET_ACCESS_KEY: "s3-secret-0123456789abcdef0123456789abcdef",
   STORE_CORS: "https://shop.example.vn",
   ADMIN_CORS: "https://admin.example.vn,http://localhost:9000",
   AUTH_CORS: "https://admin.example.vn,/\\.example\\.vn$/",
@@ -406,8 +416,6 @@ describe("PRIVATE_UPLOAD_DIR (T-141 — file private ngoài thư mục công kha
     expect(dev.ok && dev.env.privateUploadDir).toBe(path.join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME));
     const rel = parseEnv({ DATABASE_URL: DB, PRIVATE_UPLOAD_DIR: "./tmp/../riêng tư" });
     expect(rel.ok && rel.env.privateUploadDir).toBe(path.resolve("riêng tư"));
-    const prod = parseEnv(production);
-    expect(prod.ok && prod.env.privateUploadDir).toBe("/var/lib/xshop/private-uploads");
     expect(parseEnv({ DATABASE_URL: DB, PRIVATE_UPLOAD_DIR: "   " }).ok).toBe(true); // rỗng = không đặt
   });
 
@@ -431,14 +439,139 @@ describe("PRIVATE_UPLOAD_DIR (T-141 — file private ngoài thư mục công kha
     },
   );
 
-  it("production: bắt buộc, phải tuyệt đối", () => {
-    expect(PRODUCTION_REQUIRED).toContain("PRIVATE_UPLOAD_DIR");
-    expect(variablesOf({ ...production, PRIVATE_UPLOAD_DIR: undefined })).toEqual(["PRIVATE_UPLOAD_DIR"]);
-    expect(variablesOf({ ...production, PRIVATE_UPLOAD_DIR: "private-uploads" })).toEqual([
-      "PRIVATE_UPLOAD_DIR",
+  it("production (T-154: chỉ s3) → không còn bắt buộc; đặt kèm FILE_STORAGE=s3 bị từ chối (file private ở bucket private)", () => {
+    expect(PRODUCTION_REQUIRED).not.toContain("PRIVATE_UPLOAD_DIR");
+    expect(parseEnv(production).ok).toBe(true);
+    for (const value of ["/var/lib/xshop/private-uploads", "private-uploads", path.join(cwdStatic, "p")]) {
+      expect(variablesOf({ ...production, PRIVATE_UPLOAD_DIR: value })).toEqual(["PRIVATE_UPLOAD_DIR"]);
+    }
+  });
+});
+
+describe("FILE_STORAGE + S3_* (T-154 — file dùng chung giữa các bản sao)", () => {
+  const s3Dev = {
+    DATABASE_URL: DB,
+    FILE_STORAGE: "s3",
+    S3_ENDPOINT: "http://127.0.0.1:3900",
+    S3_REGION: "garage",
+    S3_BUCKET: "xshop-public",
+    S3_PRIVATE_BUCKET: "xshop-private",
+    S3_FILE_URL: "http://xshop-public.web.localhost:3902/",
+    S3_ACCESS_KEY_ID: "GKdev0123456789",
+    S3_SECRET_ACCESS_KEY: "dev-secret-0123456789",
+  };
+
+  it("dev/test vắng → local; không biến S3 nào bị đòi", () => {
+    const r = parseEnv({ DATABASE_URL: DB });
+    expect(r.ok && r.env.fileStorage).toEqual({ kind: "local" });
+    expect(parseEnv({ DATABASE_URL: DB, FILE_STORAGE: "  " }).ok).toBe(true); // rỗng = vắng
+    const local = parseEnv({ DATABASE_URL: DB, FILE_STORAGE: "local" });
+    expect(local.ok && local.env.fileStorage).toEqual({ kind: "local" });
+  });
+
+  it("s3 đủ biến → cấu hình hiệu lực (endpoint chuẩn hoá origin, URL công khai bỏ `/` cuối, path-style mặc định khi có endpoint)", () => {
+    const r = parseEnv(s3Dev);
+    if (!r.ok) throw new Error(JSON.stringify(r.problems));
+    expect(r.env.fileStorage).toEqual({
+      kind: "s3",
+      endpoint: "http://127.0.0.1:3900",
+      region: "garage",
+      bucket: "xshop-public",
+      privateBucket: "xshop-private",
+      fileUrl: "http://xshop-public.web.localhost:3902",
+      accessKeyId: "GKdev0123456789",
+      secretAccessKey: "dev-secret-0123456789",
+      forcePathStyle: true,
+    });
+  });
+
+  it("S3_FORCE_PATH_STYLE: vắng + không endpoint (AWS) → false; đặt tường minh được tôn trọng", () => {
+    const aws = parseEnv({ ...s3Dev, S3_ENDPOINT: undefined, S3_REGION: "ap-southeast-1" });
+    expect(aws.ok && aws.env.fileStorage.kind === "s3" && aws.env.fileStorage.forcePathStyle).toBe(false);
+    const off = parseEnv({ ...s3Dev, S3_FORCE_PATH_STYLE: "false" });
+    expect(off.ok && off.env.fileStorage.kind === "s3" && off.env.fileStorage.forcePathStyle).toBe(false);
+    expect(variablesOf({ ...s3Dev, S3_FORCE_PATH_STYLE: "yes" })).toEqual(["S3_FORCE_PATH_STYLE"]);
+  });
+
+  it("s3 thiếu từng biến bắt buộc → nêu đúng tên biến", () => {
+    for (const key of S3_REQUIRED) {
+      expect(variablesOf({ ...s3Dev, [key]: undefined })).toEqual([key]);
+    }
+  });
+
+  it("hai bucket trùng → lỗi ở S3_PRIVATE_BUCKET", () => {
+    expect(variablesOf({ ...s3Dev, S3_PRIVATE_BUCKET: "xshop-public" })).toEqual(["S3_PRIVATE_BUCKET"]);
+  });
+
+  it.each([
+    ["đường dẫn path-style", "http://127.0.0.1:3900/xshop-private"],
+    ["đường dẫn sâu", "https://cdn.example/a/xshop-private/b"],
+    ["host virtual-host", "https://xshop-private.s3.example"],
+    ["host trùng tên", "https://xshop-private"],
+  ])("S3_FILE_URL trỏ vào bucket private (%s) → lỗi", (_l, url) => {
+    expect(variablesOf({ ...s3Dev, S3_FILE_URL: url })).toEqual(["S3_FILE_URL"]);
+  });
+
+  it("S3_FILE_URL chỉ chứa tên bucket private như một phần chuỗi (không phải đoạn/nhãn) → hợp lệ", () => {
+    expect(parseEnv({ ...s3Dev, S3_FILE_URL: "https://cdn.example/xshop-private-thumbs" }).ok).toBe(true);
+  });
+
+  it("s3 + PRIVATE_UPLOAD_DIR → lỗi (không dùng, tránh tưởng file private nằm trên volume)", () => {
+    expect(variablesOf({ ...s3Dev, PRIVATE_UPLOAD_DIR: "/srv/private" })).toEqual(["PRIVATE_UPLOAD_DIR"]);
+  });
+
+  it("local (vắng hoặc tường minh) + biến S3_* → lỗi từng biến (cấu hình lẫn)", () => {
+    for (const key of S3_VARIABLES) {
+      const value = key === "S3_FORCE_PATH_STYLE" ? "true" : (s3Dev as Record<string, string>)[key]!;
+      expect(variablesOf({ DATABASE_URL: DB, [key]: value })).toEqual([key]);
+      expect(variablesOf({ DATABASE_URL: DB, FILE_STORAGE: "local", [key]: value })).toEqual([key]);
+    }
+  });
+
+  it.each([
+    ["S3_ENDPOINT", "ftp://s3.example"],
+    ["S3_ENDPOINT", "https://user:pass@s3.example"],
+    ["S3_ENDPOINT", "https://s3.example/bucket"],
+    ["S3_ENDPOINT", "https://s3.example?x=1"],
+    ["S3_ENDPOINT", "khong-phai-url"],
+    ["S3_REGION", "US-EAST-1"],
+    ["S3_REGION", "a b"],
+    ["S3_BUCKET", "Xshop"],
+    ["S3_BUCKET", "ab"],
+    ["S3_BUCKET", "a..b"],
+    ["S3_BUCKET", "../x"],
+    ["S3_PRIVATE_BUCKET", "xshop_private"],
+    ["S3_FILE_URL", "https://cdn.example/?q=1"],
+    ["S3_FILE_URL", "https://u:p@cdn.example"],
+    ["S3_ACCESS_KEY_ID", "a b c"],
+    ["S3_ACCESS_KEY_ID", "ab"],
+    ["S3_SECRET_ACCESS_KEY", "ngắn"],
+    ["S3_SECRET_ACCESS_KEY", "co khoang trang 0123"],
+    ["S3_SECRET_ACCESS_KEY", "bí-mật-unicode-0123456"],
+    ["FILE_STORAGE", "nfs"],
+  ])("%s = %j → lỗi đúng tên biến, không in giá trị", (key, value) => {
+    const problems = problemsOf({ ...s3Dev, [key]: value });
+    expect(problems.map((p) => p.variable)).toEqual([key]);
+    expect(formatEnvProblems(problems)).not.toContain(value);
+  });
+
+  it("production: FILE_STORAGE bắt buộc; local bị từ chối", () => {
+    expect(PRODUCTION_REQUIRED).toContain("FILE_STORAGE");
+    expect(variablesOf({ ...production, FILE_STORAGE: undefined })).toEqual(["FILE_STORAGE"]);
+    const local: Record<string, string | undefined> = { ...production, FILE_STORAGE: "local" };
+    for (const key of S3_VARIABLES) local[key] = undefined;
+    const problems = problemsOf(local);
+    expect(problems.map((p) => p.variable)).toEqual(["FILE_STORAGE"]);
+    expect(problems[0]!.reason).toContain("không được dùng local ở production");
+  });
+
+  it("production + s3: endpoint/URL công khai phải https; MEDUSA_BACKEND_URL bắt buộc", () => {
+    expect(variablesOf({ ...production, S3_ENDPOINT: "http://s3.internal:3900" })).toEqual(["S3_ENDPOINT"]);
+    expect(variablesOf({ ...production, S3_FILE_URL: "http://cdn.shop.example.vn/p" })).toEqual([
+      "S3_FILE_URL",
     ]);
-    expect(variablesOf({ ...production, PRIVATE_UPLOAD_DIR: path.join(cwdStatic, "p") })).toEqual([
-      "PRIVATE_UPLOAD_DIR",
-    ]);
+    expect(variablesOf({ ...production, MEDUSA_BACKEND_URL: undefined })).toEqual(["MEDUSA_BACKEND_URL"]);
+    // AWS (không endpoint) hợp lệ.
+    expect(parseEnv({ ...production, S3_ENDPOINT: undefined, S3_REGION: "ap-southeast-1" }).ok).toBe(true);
   });
 });

@@ -41,9 +41,30 @@ export const PRODUCTION_REQUIRED = [
   "XS_TRUSTED_PROXIES",
   // Gốc URL storefront để dựng liên kết gửi khách (liên kết tra cứu đơn — T-149); thiếu thì thư trỏ về localhost.
   "STOREFRONT_URL",
-  // Thư mục file private (xuất PII, chunk nhập — T-141): đường dẫn tuyệt đối ngoài `static/`, trên volume bền của máy chủ.
-  "PRIVATE_UPLOAD_DIR",
+  // Kho file (T-154): production chỉ nhận `s3` — file phải dùng chung giữa các bản sao (đĩa cục bộ của từng máy thì không).
+  "FILE_STORAGE",
 ] as const;
+
+/**
+ * Kho file của File Module (T-154): `local` = đĩa của máy đang chạy (`static/` + PRIVATE_UPLOAD_DIR) — CHỈ dev/test một
+ * tiến trình, mặc định khi vắng ở dev/test (provider in cảnh báo); `s3` = kho S3-compatible dùng chung giữa các bản sao
+ * (bucket công khai + bucket private) — bắt buộc ở production.
+ */
+export const FILE_STORAGES = ["local", "s3"] as const;
+export type FileStorageKind = (typeof FILE_STORAGES)[number];
+
+/** Biến bắt buộc khi FILE_STORAGE=s3 (S3_ENDPOINT vắng = AWS S3 theo S3_REGION). */
+export const S3_REQUIRED = [
+  "S3_REGION",
+  "S3_BUCKET",
+  "S3_PRIVATE_BUCKET",
+  "S3_FILE_URL",
+  "S3_ACCESS_KEY_ID",
+  "S3_SECRET_ACCESS_KEY",
+] as const;
+
+/** Mọi biến S3 — đặt bất kỳ biến nào mà FILE_STORAGE không phải `s3` là cấu hình lẫn (lỗi, tránh tưởng đã dùng chung). */
+export const S3_VARIABLES = [...S3_REQUIRED, "S3_ENDPOINT", "S3_FORCE_PATH_STYLE"] as const;
 
 /**
  * Thư mục file private khi chạy dev/test mà không đặt PRIVATE_UPLOAD_DIR: `<cwd>/private-uploads` (cạnh `static/`, không
@@ -217,6 +238,41 @@ const intInRange = (fallback: number, min: number, max: number, unit = "giây") 
       .refine((n) => n >= min && n <= max, { message: `phải là số nguyên ${unit} trong [${min}, ${max}]` }),
   );
 
+/** Gốc URL dịch vụ (endpoint S3): http(s), có host, không đường dẫn/query/fragment/thông tin đăng nhập. */
+const originUrl = z.string().refine(
+  (raw) => {
+    if (/[\s\\@?#]/.test(raw)) return false;
+    try {
+      const u = new URL(raw);
+      return (
+        (u.protocol === "http:" || u.protocol === "https:") &&
+        u.hostname !== "" &&
+        u.pathname === "/" &&
+        u.search === "" &&
+        u.hash === "" &&
+        u.username === "" &&
+        u.password === ""
+      );
+    } catch {
+      return false;
+    }
+  },
+  { message: "phải là URL gốc http(s):// (không đường dẫn, query, fragment hay thông tin đăng nhập)" },
+);
+
+/** Tên bucket theo quy tắc chung của S3 (chữ thường, số, `.`, `-`; 3–63 ký tự; không `..`). */
+const bucketName = z
+  .string()
+  .refine((v) => /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(v) && !v.includes(".."), {
+    message: "phải là tên bucket S3 hợp lệ (a-z, 0-9, '.', '-'; 3–63 ký tự)",
+  });
+
+/** Khoá truy cập S3: ký tự in được, không khoảng trắng. */
+const s3Credential = (min: number) =>
+  z.string().refine((v) => v.length >= min && v.length <= 256 && /^[\x21-\x7e]+$/.test(v), {
+    message: `phải dài ${min}–256 ký tự in được, không khoảng trắng`,
+  });
+
 /** Tên máy/địa chỉ IP để bind: không khoảng trắng, không ký tự URL (`/`, `:` ngoài IPv6, `@`…). */
 const bindHost = z.string().refine((v) => /^[A-Za-z0-9._-]+$/.test(v) || isIPv6(v), {
   message: "phải là tên máy hoặc địa chỉ IP (vd. 127.0.0.1, 0.0.0.0, ::1)",
@@ -258,6 +314,27 @@ const baseSchema = z.object({
       // eslint-disable-next-line no-control-regex -- chặn đúng ký tự điều khiển (NUL, xuống dòng…) trong đường dẫn
       .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), { message: "không được chứa ký tự điều khiển" })
       .optional(),
+  ),
+  // Kho file (T-154): vắng = local ở dev/test; production bắt buộc s3 (superRefine).
+  FILE_STORAGE: optionalText.pipe(
+    z.enum(FILE_STORAGES, { message: `phải là một trong ${FILE_STORAGES.join("|")}` }).optional(),
+  ),
+  S3_ENDPOINT: optionalText.pipe(originUrl.optional()),
+  S3_REGION: optionalText.pipe(
+    z
+      .string()
+      .regex(/^[a-z0-9-]{1,40}$/, { message: "phải là mã vùng chữ thường/số/gạch nối (vd. us-east-1, auto)" })
+      .optional(),
+  ),
+  S3_BUCKET: optionalText.pipe(bucketName.optional()),
+  S3_PRIVATE_BUCKET: optionalText.pipe(bucketName.optional()),
+  // Gốc URL công khai của S3_BUCKET (CDN/web endpoint của kho) — URL ảnh trả cho storefront dựng từ đây.
+  S3_FILE_URL: optionalText.pipe(baseUrl.optional()),
+  S3_ACCESS_KEY_ID: optionalText.pipe(s3Credential(3).optional()),
+  S3_SECRET_ACCESS_KEY: optionalText.pipe(s3Credential(8).optional()),
+  // Path-style (`<endpoint>/<bucket>/<khoá>`): vắng → bật khi có S3_ENDPOINT (kho tự host), tắt khi dùng AWS.
+  S3_FORCE_PATH_STYLE: optionalText.pipe(
+    z.enum(["true", "false"], { message: "phải là true|false" }).optional(),
   ),
   // Proxy tin cậy (LB, storefront) được phép báo IP khách qua X-Forwarded-For. Vắng = không tin header nào (SEC03).
   XS_TRUSTED_PROXIES: optionalText.pipe(
@@ -368,6 +445,9 @@ const schema = baseSchema
         });
       }
     }
+    fileStorageProblems(env).forEach(([variable, message]) =>
+      ctx.addIssue({ code: "custom", path: [variable], message }),
+    );
     if (env.PRIVATE_UPLOAD_DIR !== undefined) {
       const problem = privateDirProblem(publicStaticDir(), env.PRIVATE_UPLOAD_DIR);
       if (problem !== null) ctx.addIssue({ code: "custom", path: ["PRIVATE_UPLOAD_DIR"], message: problem });
@@ -480,10 +560,11 @@ const schema = baseSchema
       },
       // STOREFRONT_URL đã chuẩn hoá ở schema; production đã bắt buộc biến nên mặc định dev không áp ở production.
       storefrontUrl: env.STOREFRONT_URL ?? DEV_STOREFRONT_URL,
-      // Production đã bắt buộc biến (tuyệt đối) nên mặc định dev không áp ở production.
+      // Chỉ dùng khi FILE_STORAGE=local (dev/test; production bắt buộc s3 nên mặc định dev không áp ở production).
       privateUploadDir: path.resolve(
         env.PRIVATE_UPLOAD_DIR ?? path.join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME),
       ),
+      fileStorage: fileStorageConfig(env),
       orderLookupSecret:
         env.ORDER_LOOKUP_SECRET ?? (env.NODE_ENV === "production" ? "" : ORDER_LOOKUP_DEV_SECRET),
       vnpay: env.VNPAY_ENABLED
@@ -501,11 +582,111 @@ const schema = baseSchema
     // `JSON.stringify`/`console.log`/`util.inspect` trên Env và các đối tượng lồng (ghn, vnpay) luôn ra bản đã che (BASE-CFG-005).
     // Không chặn được `{ ...env }`/`Object.entries`: các cách đó sao chép GIÁ TRỊ THẬT — dump phải qua redactConfig.
     withRedaction(effective.ghn);
+    if (effective.fileStorage.kind === "s3") withRedaction(effective.fileStorage);
     if (effective.vnpay !== null) withRedaction(effective.vnpay);
     return withRedaction(effective);
   });
 
 export type Env = z.output<typeof schema>;
+
+type BaseEnv = z.output<typeof baseSchema>;
+
+/** Kho file hiệu lực: vắng ở dev/test → local. */
+function effectiveStorage(env: BaseEnv): FileStorageKind | undefined {
+  return env.FILE_STORAGE ?? (env.NODE_ENV === "production" ? undefined : "local");
+}
+
+/**
+ * Lỗi cấu hình kho file (T-154) dạng [biến, lý do] — lý do không chứa giá trị.
+ *  - production: chỉ `s3` (vắng do PRODUCTION_REQUIRED báo); endpoint/URL công khai phải https; MEDUSA_BACKEND_URL bắt buộc
+ *    (URL route tải file private dựng từ đây — thiếu thì link xuất trỏ localhost).
+ *  - s3: đủ S3_REQUIRED; hai bucket khác nhau; S3_FILE_URL không trỏ vào bucket private; PRIVATE_UPLOAD_DIR không dùng.
+ *  - local: không đặt biến S3_* nào (tránh tưởng đã dùng kho chung trong khi file vẫn ở đĩa máy này).
+ */
+function fileStorageProblems(env: BaseEnv): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  const storage = effectiveStorage(env);
+  const production = env.NODE_ENV === "production";
+  if (storage === undefined) return out;
+  if (storage === "local") {
+    if (production) {
+      out.push([
+        "FILE_STORAGE",
+        "không được dùng local ở production — đĩa từng máy không dùng chung giữa các bản sao (đặt s3)",
+      ]);
+    }
+    for (const key of S3_VARIABLES) {
+      if (env[key] !== undefined) out.push([key, "chỉ đặt khi FILE_STORAGE=s3"]);
+    }
+    return out;
+  }
+  for (const key of S3_REQUIRED) {
+    if (env[key] === undefined) out.push([key, "bắt buộc khi FILE_STORAGE=s3"]);
+  }
+  if (env.PRIVATE_UPLOAD_DIR !== undefined) {
+    out.push([
+      "PRIVATE_UPLOAD_DIR",
+      "không dùng khi FILE_STORAGE=s3 (file private nằm ở S3_PRIVATE_BUCKET) — bỏ biến",
+    ]);
+  }
+  if (env.S3_BUCKET !== undefined && env.S3_BUCKET === env.S3_PRIVATE_BUCKET) {
+    out.push(["S3_PRIVATE_BUCKET", "phải khác S3_BUCKET (bucket công khai)"]);
+  } else if (env.S3_FILE_URL !== undefined && env.S3_PRIVATE_BUCKET !== undefined) {
+    const u = new URL(env.S3_FILE_URL);
+    const priv = env.S3_PRIVATE_BUCKET;
+    const inPath = u.pathname.split("/").includes(priv);
+    const inHost = u.hostname === priv || u.hostname.startsWith(`${priv}.`);
+    if (inPath || inHost) out.push(["S3_FILE_URL", "không được trỏ vào S3_PRIVATE_BUCKET"]);
+  }
+  if (production) {
+    if (env.MEDUSA_BACKEND_URL === undefined) {
+      out.push([
+        "MEDUSA_BACKEND_URL",
+        "bắt buộc khi NODE_ENV=production và FILE_STORAGE=s3 (URL tải file private)",
+      ]);
+    }
+    for (const key of ["S3_ENDPOINT", "S3_FILE_URL"] as const) {
+      const value = env[key];
+      if (value !== undefined && !value.startsWith("https://")) {
+        out.push([key, "phải dùng https:// ở production"]);
+      }
+    }
+  }
+  return out;
+}
+
+export type FileStorageConfig =
+  | { kind: "local" }
+  | {
+      kind: "s3";
+      endpoint: string | undefined;
+      region: string;
+      bucket: string;
+      privateBucket: string;
+      fileUrl: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      forcePathStyle: boolean;
+    };
+
+/** Chỉ gọi sau superRefine (s3 đã đủ biến). */
+function fileStorageConfig(env: BaseEnv): FileStorageConfig {
+  if (effectiveStorage(env) !== "s3") return { kind: "local" };
+  return {
+    kind: "s3",
+    endpoint: env.S3_ENDPOINT === undefined ? undefined : new URL(env.S3_ENDPOINT).origin,
+    region: env.S3_REGION ?? "",
+    bucket: env.S3_BUCKET ?? "",
+    privateBucket: env.S3_PRIVATE_BUCKET ?? "",
+    fileUrl: env.S3_FILE_URL ?? "",
+    accessKeyId: env.S3_ACCESS_KEY_ID ?? "",
+    secretAccessKey: env.S3_SECRET_ACCESS_KEY ?? "",
+    forcePathStyle:
+      env.S3_FORCE_PATH_STYLE === undefined
+        ? env.S3_ENDPOINT !== undefined
+        : env.S3_FORCE_PATH_STYLE === "true",
+  };
+}
 
 /** Kiểm biến môi trường; không ném lỗi, không đọc `process.env` trực tiếp (dễ test). */
 export function parseEnv(source: Readonly<Record<string, string | undefined>>): EnvResult {

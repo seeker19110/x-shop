@@ -21,6 +21,7 @@ const NON_SECRET_URLS: ReadonlySet<string> = new Set([
   "VNPAY_API_URL",
   "VNPAY_RETURN_URL",
   "GHN_BASE_URL",
+  "S3_FILE_URL",
 ]);
 
 const base = { DATABASE_URL: "postgres://xshop:xshop@localhost:5432/xshop" };
@@ -40,6 +41,14 @@ const withAllSecrets: Record<string, string> = {
   GHN_BASE_URL: "https://ghn.example.vn",
   GHN_TOKEN: "SENTINELtokenghn0123456789",
   GHN_SHOP_ID: "123",
+  FILE_STORAGE: "s3",
+  S3_ENDPOINT: "http://127.0.0.1:3900",
+  S3_REGION: "garage",
+  S3_BUCKET: "xshop-public",
+  S3_PRIVATE_BUCKET: "xshop-private",
+  S3_FILE_URL: "http://xshop-public.web.localhost:3902",
+  S3_ACCESS_KEY_ID: "SENTINEL-s3_access_key_id",
+  S3_SECRET_ACCESS_KEY: "SENTINEL-s3_secret_access_key-0123456789",
 };
 
 const SENTINEL_VALUES = [
@@ -52,6 +61,8 @@ const SENTINEL_VALUES = [
   "SENTINEL-vnpay_hash_secret",
   "SENTINEL-vnpay_hash_secret_previous",
   "SENTINELtokenghn",
+  "SENTINEL-s3_access_key_id",
+  "SENTINEL-s3_secret_access_key",
 ];
 
 function parse(source: Record<string, string>): Env {
@@ -71,6 +82,7 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
     expect(env.JWT_SECRET).toContain("SENTINEL-jwt_secret");
     expect(env.vnpay?.hashSecretPrevious).toContain("SENTINEL-vnpay_hash_secret_previous");
     expect(env.ghn.token).toContain("SENTINELtokenghn");
+    expect(env.fileStorage.kind === "s3" && env.fileStorage.secretAccessKey).toContain("SENTINEL-s3_secret");
   });
 
   it("JSON.stringify(env) không chứa bí mật nào", () => {
@@ -85,6 +97,9 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
       orderLookupSecret: REDACTED,
       vnpay: { hashSecret: REDACTED, hashSecretPrevious: REDACTED },
       ghn: { token: REDACTED },
+      S3_ACCESS_KEY_ID: REDACTED,
+      S3_SECRET_ACCESS_KEY: REDACTED,
+      fileStorage: { kind: "s3", bucket: "xshop-public", accessKeyId: REDACTED, secretAccessKey: REDACTED },
     });
   });
 
@@ -130,6 +145,8 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
     expectNoSecret(JSON.stringify(env.vnpay));
     expectNoSecret(inspect(env.ghn));
     expectNoSecret(inspect(env.vnpay));
+    expectNoSecret(JSON.stringify(env.fileStorage));
+    expectNoSecret(inspect(env.fileStorage));
     expect(env.ghn.token).toContain("SENTINELtokenghn"); // trường trực tiếp vẫn thật
   });
 
