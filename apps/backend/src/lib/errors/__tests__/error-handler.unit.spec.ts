@@ -10,6 +10,7 @@ import {
   toHttpProblem,
   xErrorHandler,
 } from "../error-handler";
+import { REDACTED } from "../../log/redact";
 import { REQUEST_ID_PATTERN, traceIdOf } from "../trace";
 import { isNonEmpty } from "@x-shop/domain";
 
@@ -430,6 +431,40 @@ describe("logServerError", () => {
     circular.self = circular;
     expect(logServerError(req as unknown as MedusaRequest, "checkout", circular)).toBe("r-9");
     expect(logs[0]!.msg).toMatch(/^\[checkout\] POST \/store\/x\/thing trace_id=r-9: /);
+  });
+
+  /**
+   * T-151 review (🟢6): `describeError` tự che TRƯỚC khi tuần tự hoá — logger giả ở đây ghi nguyên văn (không che), nên
+   * bỏ `redactLog` trong describeError là test này đỏ (logger thật che lại lần nữa nên test qua logger thật không phát hiện).
+   */
+  const PII_THROWN = {
+    name: "DriverException",
+    email: "khach.hang@example.test",
+    phone: "0912345678",
+    customer: { full_name: "Nguyễn Văn A", note: "giao 12 Lê Lợi, Phường Bến Nghé, Quận 1" },
+    detail: "gọi lại 0987 654 321",
+    message: `update "fashion_product_attributes" set "image_exception_by" = 'user_qa_t144', "weight" = 9431 where "id" = 'fpa_01J' - boom`,
+  };
+  const PII_LEAK = /khach\.hang|0912345678|Nguyễn|Lê Lợi|Bến Nghé|0987|user_qa_t144|9431|fpa_01J/;
+  function assertRedactedMessage(msg: string) {
+    expect(msg).not.toMatch(PII_LEAK);
+    expect(msg).toContain(`"email":"${REDACTED}"`);
+    expect(msg).toContain(`"phone":"${REDACTED}"`);
+    expect(msg).toContain(`"customer":{"full_name":"${REDACTED}","note":"giao [ADDRESS]"}`);
+    expect(msg).toContain(`update \\"fashion_product_attributes\\" set ${REDACTED} - boom`);
+  }
+
+  it("logServerError: object thường có PII (tên trường, nội dung, câu SQL) → thông điệp đã che", () => {
+    const { req, logs } = fakeReq("r-151");
+    logServerError(req as unknown as MedusaRequest, "x", PII_THROWN);
+    assertRedactedMessage(logs[0]!.msg);
+  });
+
+  it("xErrorHandler 500 với object thường có PII → log đã che, phản hồi không lộ gì", () => {
+    const { logs, body } = run(PII_THROWN, "r-152");
+    expect(body?.status).toBe(500);
+    expect(JSON.stringify(body)).not.toMatch(PII_LEAK);
+    assertRedactedMessage(logs[0]!.msg);
   });
 });
 

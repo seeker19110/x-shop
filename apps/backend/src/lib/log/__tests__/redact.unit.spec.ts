@@ -1,4 +1,5 @@
 import { inspect } from "node:util";
+import { knex } from "@medusajs/framework/mikro-orm/knex";
 import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText, shortHash } from "../redact";
 
 /**
@@ -45,6 +46,19 @@ describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
     ["SQL knex: INSERT INTO + xuống dòng + at lặp", "INSERT INTO t (a)\n  at ".repeat(N / 21)],
     ["SQL knex: nháy lẻ + at lặp", "insert into t (a) values ('\n    at ".repeat(N / 35)],
     ["SQL knex: delete from lặp", 'delete from "t" '.repeat(N / 16)],
+    // Review T-151 vòng 2: ứng viên select bị loại không được quét lại vùng (bản cũ: 130 ms CPU với 32K).
+    ["SQL knex: select from nháy lặp, không where", 'select a from "t" '.repeat(N / 18)],
+    ["SQL knex: select join lặp", 'select a from "t" join "u" on '.repeat(N / 30)],
+    ["SQL knex: select from trần lặp (bị loại)", "select a from b ".repeat(N / 16)],
+    ["SQL knex: select + stack lặp", 'select 1 from "t"\n    at '.repeat(N / 25)],
+    ["SQL knex: delete using lặp", 'delete from "t" using '.repeat(N / 22)],
+    ["SQL knex: update alias lặp", 'update "t" as "x" set '.repeat(N / 22)],
+    ["SQL knex: dollar-quote lặp", 'insert into "t" ($$'.repeat(N / 19)],
+    ["SQL knex: dollar-tag không đóng lặp", 'insert into "t" ($a$ - '.repeat(N / 23)],
+    ["SQL knex: E-string lặp", 'insert into "t" (E\'\\'.repeat(N / 20)],
+    ["SQL knex: nháy kép lẻ lặp", 'insert into "t" ("\n    at '.repeat(N / 26)],
+    ["SQL knex: nháy đơn + ' - ' lặp", 'insert into "t" (\' - '.repeat(N / 21)],
+    ["SQL knex: select danh sách rất dài", `select ${'"p0"."c", '.repeat(N / 10)} from "t" where "h" = 1`],
   ];
   it.each(cases)("%s → < 50 ms", (_name, input) => {
     redactText(input.slice(0, 100)); // làm nóng regex
@@ -149,12 +163,12 @@ describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
     ).toBe(`delete from "cart" ${REDACTED} - fk violation`);
   });
 
-  it("select … where có literal: bỏ điều kiện, giữ phần chọn", () => {
+  it("select … where có literal: bỏ danh sách chọn và mọi thứ sau bảng đầu tiên", () => {
     expect(
       redactText(
         `select "o".* from "order" as "o" where "o"."total" = 250000 and "o"."note" is not null limit 1 - timeout`,
       ),
-    ).toBe(`select "o".* from "order" as "o" ${REDACTED} - timeout`);
+    ).toBe(`select ${REDACTED} from "order" ${REDACTED} - timeout`);
   });
 
   it("SQL viết thường, định danh không nháy (knex.raw/migration)", () => {
@@ -166,7 +180,7 @@ describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
     );
     expect(redactText("delete from t_m where h = 180 - boom")).toBe(`delete from t_m ${REDACTED} - boom`);
     expect(redactText("select * from t_m where h = 180 and w = 61 - boom")).toBe(
-      `select * from t_m ${REDACTED} - boom`,
+      `select ${REDACTED} from t_m ${REDACTED} - boom`,
     );
   });
 
@@ -213,12 +227,12 @@ describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
       `    at y (/b.js:1:1)\nCaused by: error: delete from "u" where "id" = 5 - z`;
     const out = redactText(text);
     expect(out).not.toMatch(/9431|180|"id" = 5/);
-    expect(out).toContain('select "id" from "cart" limit 1 - boom');
+    expect(out).toContain(`select ${REDACTED} from "cart" ${REDACTED} - boom\n    at x (/a.js:1:1)`);
     expect(out).toContain("- dup");
     expect(out).toContain("- z");
     expect(redactText(`select 9431 as h from "t" - boom`)).toBe(`select ${REDACTED} from "t" - boom`);
     expect(redactText(`select "id" from "t" where "n" = 5 - boom`)).toBe(
-      `select "id" from "t" ${REDACTED} - boom`,
+      `select ${REDACTED} from "t" ${REDACTED} - boom`,
     );
   });
 
@@ -240,6 +254,168 @@ describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
         `insert into "t" ("a") values (1) - boom1\nCaused by: error: insert into "t" ("a") values (2) - boom2`,
       ),
     ).toBe(`insert into "t" ${REDACTED} - boom1\nCaused by: error: insert into "t" ${REDACTED} - boom2`);
+  });
+
+  describe("review vòng 2: bỏ toàn bộ thân câu, không phân tích mệnh đề", () => {
+    it("🟠2 danh sách cột rất dài (MikroORM) vẫn che điều kiện", () => {
+      const cols = Array.from({ length: 90 }, (_, i) => `"f0"."column_name_${i}"`).join(", ");
+      expect(cols.length).toBeGreaterThan(2048);
+      const out = redactText(
+        `select ${cols} from "fashion_model_measurement" as "f0" where "f0"."height_cm" = 173 - canceling statement due to statement timeout`,
+      );
+      expect(out).toBe(
+        `select ${REDACTED} from "fashion_model_measurement" ${REDACTED} - canceling statement due to statement timeout`,
+      );
+    });
+
+    it.each([
+      [`delete from "t" using "u" where "u"."x" = 9431 - boom`, `delete from "t" ${REDACTED} - boom`],
+      [`delete from "t" as "x" where "x"."h" = 9431 - boom`, `delete from "t" as "x" ${REDACTED} - boom`],
+      [`update "t" as "x" set "a" = 9431 - boom`, `update "t" as "x" set ${REDACTED} - boom`],
+      [
+        `select "a" from "t" inner join "u" on "u"."id" = "t"."id" and "u"."h" = 9431 - boom`,
+        `select ${REDACTED} from "t" ${REDACTED} - boom`,
+      ],
+      [`select * from "t" limit 9431 - boom`, `select ${REDACTED} from "t" ${REDACTED} - boom`],
+      [`select * from "t" offset 9431 - boom`, `select ${REDACTED} from "t" ${REDACTED} - boom`],
+      [`select "id" from "t" - boom`, `select ${REDACTED} from "t" - boom`],
+      // 🟢5 SQL viết tay: E-string, dollar-quote (có/không tag), định danh chứa `'`.
+      [
+        `insert into "t" ("a","b") values (E'x\\' - y\n    at z', 9431) - boom`,
+        `insert into "t" ${REDACTED} - boom`,
+      ],
+      [`insert into "t" ("a","b") values (E'a''b\\\\', 9431) - boom`, `insert into "t" ${REDACTED} - boom`],
+      [
+        `insert into "t" ("a","b") select $$x - y\n    at q$$, 9431 - boom`,
+        `insert into "t" ${REDACTED} - boom`,
+      ],
+      [`insert into "t" ("a","b") select $q$x' - $$ y$q$, 9431 - boom`, `insert into "t" ${REDACTED} - boom`],
+      [`insert into "t" ("o'x", "h") values ('a - b', 9431) - boom`, `insert into "t" ${REDACTED} - boom`],
+      // `$1` (tham số) không phải dollar-quote.
+      [`update "t" set "h" = $1 where "id" = $2 - boom`, `update "t" set ${REDACTED} - boom`],
+    ])("%j → %j", (input, expected) => {
+      expect(redactText(input)).toBe(expected);
+    });
+
+    it("dollar-quote không đóng → bỏ tới hết (đóng an toàn)", () => {
+      const out = redactText(`insert into "t" ("a") select $$x - y, 9431 - boom\n    at f (/a.js:1:1)`);
+      expect(out).toBe(`insert into "t" ${REDACTED}`);
+    });
+
+    it("`from` nằm trong literal của danh sách chọn → không giữ làm tên bảng", () => {
+      const out = redactText(`select 'Nguyen from "Ha Noi"' as n from "t" where "h" = 173 - boom`);
+      expect(out).not.toMatch(/Nguyen|Ha Noi|173/);
+      // `from` kế tiếp nằm trong literal → bỏ cả tên bảng (an toàn hơn đoán).
+      expect(out).toBe(`select ${REDACTED} - boom`);
+    });
+
+    it("câu do knex sinh với giá trị đối nghịch (nháy, \\, ' - ', xuống dòng + at, Caused by) không lộ số", () => {
+      const db = knex({ client: "pg" });
+      const evil = [
+        "x\\' - y\n    at z",
+        "a'' - b\n    at c",
+        "o'brien - x\nCaused by: y",
+        "back\\\\ - q\n  at r",
+        "$$ - $q$",
+      ];
+      for (const note of evil) {
+        const sqls = [
+          db("t").insert({ note, h: 9431, w: 180 }).toString(),
+          db("t").update({ note, h: 9431 }).where({ id: "abc-777" }).toString(),
+          db("t").where({ note, h: 9431 }).del().toString(),
+          db("t").select("a").where({ note }).andWhere("h", 9431).limit(180).toString(),
+          db("t as x")
+            .join("u", "u.id", "x.id")
+            .where("u.h", 9431)
+            .andWhere({ note })
+            .select("x.a")
+            .toString(),
+        ];
+        for (const sql of sqls) {
+          const out = redactText(`error: ${sql} - boom\n    at f (/a.js:1:1)`);
+          expect(out).not.toMatch(/9431|180|abc-777|brien|back/);
+          expect(out).toMatch(/ - boom\n {4}at f \(\/a\.js:1:1\)$/);
+        }
+      }
+      void db.destroy();
+    });
+
+    it("thuộc tính (seed cố định, 400 ca): giá trị do client điều khiển ghép từ ký tự đặc biệt không làm lộ số qua knex", () => {
+      const db = knex({ client: "pg" });
+      const atoms = [
+        "'",
+        "''",
+        '"',
+        "\\",
+        "\\'",
+        " - ",
+        "$$",
+        "$a$",
+        "E'",
+        "\n    at x",
+        "\nCaused by: y",
+        "\n",
+        " ",
+        "a",
+        "(",
+        ")",
+      ];
+      let seed = 151;
+      const rnd = (n: number) => {
+        seed = (seed * 1103515245 + 12345) % 2147483648;
+        return seed % n;
+      };
+      for (let k = 0; k < 400; k++) {
+        const note = Array.from({ length: 1 + rnd(12) }, () => atoms[rnd(atoms.length)]).join("");
+        const sql = [
+          () => db("t").insert({ note, h: 9431 }).toString(),
+          () => db("t").update({ note, h: 9431 }).where({ id: 7 }).toString(),
+          () => db("t").where({ note }).andWhere("h", 9431).del().toString(),
+          () => db("t").select("a").where({ note }).andWhere("h", 9431).toString(),
+        ][k % 4]!();
+        const out = redactText(`${sql} - boom\n    at f (/a.js:1:1)`);
+        expect([note, out]).toEqual([note, expect.not.stringMatching(/9431/)]);
+        expect(out.endsWith(" - boom\n    at f (/a.js:1:1)")).toBe(true);
+      }
+      void db.destroy();
+    });
+
+    it("chạy lại trên đầu ra không đổi gì (idempotent — logger che hai lần: describeError rồi message)", () => {
+      for (const t of [
+        `select "a" from "t" where "h" = 1 - boom`,
+        `insert into "t" ("a") values (1) - boom`,
+        `update "t" as "x" set "a" = 1 - boom`,
+        `delete from "t" using "u" where "u"."x" = 1 - boom`,
+      ]) {
+        const once = redactText(t);
+        expect(redactText(once)).toBe(once);
+        expect(redactText(JSON.stringify({ message: t }))).toBe(JSON.stringify({ message: once }));
+      }
+    });
+
+    it("gọi xen kẽ nhiều đầu vào cho kết quả như gọi riêng (regex dùng chung không giữ trạng thái lastIndex)", () => {
+      const inputs = [
+        `select "a" from "t" where "h" = 1 - boom`,
+        "không tìm thấy sản phẩm 'ao-thun'",
+        `update "t" set "a" = 2 - x\nCaused by: error: delete from "u" where "id" = 3 - y`,
+        "select the items from the list where possible",
+        `insert into "t" ("a") values ($$a$$, 4) - z`,
+      ];
+      const alone = inputs.map((t) => redactText(t));
+      const mixed = [...inputs, ...[...inputs].reverse()].map((t) => redactText(t));
+      expect(mixed.slice(0, inputs.length)).toEqual(alone);
+      expect(mixed.slice(inputs.length)).toEqual([...alone].reverse());
+    });
+
+    it("câu văn vẫn giữ nguyên (không nhận nhầm là SQL)", () => {
+      for (const t of [
+        "Please select an option from the menu - then retry",
+        'update the "cart" set of rules - later',
+        "delete from cart failed with 500",
+      ]) {
+        expect(redactText(t)).toBe(t);
+      }
+    });
   });
 
   it("không đụng văn bản thường nhắc update/insert/select/delete", () => {

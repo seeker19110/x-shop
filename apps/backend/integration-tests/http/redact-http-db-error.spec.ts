@@ -3,7 +3,8 @@ import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import seedXShop from "../../src/scripts/seed";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
-import { noThrow, storeHeaders } from "../helpers/auth";
+import { adminHeaders, noThrow, storeHeaders } from "../helpers/auth";
+import { createTestProduct } from "../helpers/catalog";
 
 jest.setTimeout(180 * 1000);
 
@@ -68,6 +69,67 @@ medusaIntegrationTestRunner({
       expect(logged).toContain("boom trigger");
       expect(logged).toContain(String(res.data.trace_id));
       expect(logged).not.toMatch(LEAKS);
+    });
+
+    /**
+     * Ca V3 của review T-144: workflow thật (`POST /admin/x/products/:id/fashion`) cập nhật `fashion_product_attributes`
+     * qua MikroORM, trigger làm câu UPDATE lỗi → 500 → `logServerError` → logger dự án ghi stdout. Giá trị đã chèn
+     * (`image_exception_by`, lý do, id bản ghi) không được còn trong bất kỳ dòng log lỗi nào.
+     */
+    it("V3: lỗi UPDATE fashion_product_attributes qua workflow → 500, log không còn giá trị", async () => {
+      const container = getContainer();
+      const pg = container.resolve<{ raw(sql: string): Promise<unknown> }>(
+        ContainerRegistrationKeys.PG_CONNECTION,
+      );
+      const admin = (await adminHeaders(api, container)).headers;
+      const p = await createTestProduct(container);
+      const url = `/admin/x/products/${p.id}/fashion`;
+      const first = await api.post(
+        url,
+        { attributes: { kind: "apparel", material: "cotton" } },
+        { headers: admin },
+      );
+      expect(first.status).toBe(200);
+      const attributesId = String((first.data.attributes as { id?: unknown } | null)?.id ?? "");
+      await pg.raw(
+        "create function t151_v3_boom() returns trigger language plpgsql as $$ begin raise exception 'boom v3 %', TG_OP; end $$",
+      );
+      await pg.raw(
+        "create trigger t151_v3_tg before update on fashion_product_attributes for each row execute function t151_v3_boom()",
+      );
+      const lines: string[] = [];
+      const write = jest.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+        lines.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write);
+      let res: Awaited<ReturnType<typeof api.post>>;
+      try {
+        res = await api.post(
+          url,
+          {
+            attributes: {
+              kind: "apparel",
+              material: "cotton",
+              image_exception_by: "user_qa_t144",
+              image_exception_reason: "Lý do riêng 9431 của Nguyễn",
+            },
+          },
+          { headers: admin, ...noThrow },
+        );
+        await new Promise((r) => setTimeout(r, 200));
+      } finally {
+        write.mockRestore();
+        await pg.raw("drop trigger if exists t151_v3_tg on fashion_product_attributes");
+        await pg.raw("drop function if exists t151_v3_boom()");
+      }
+      expect(res.status).toBe(500);
+      const errorLines = lines.filter((l) => l.includes('"level":"error"'));
+      expect(errorLines.length).toBeGreaterThan(0);
+      const logged = errorLines.join("");
+      expect(logged).toMatch(/update \\+"fashion_product_attributes\\+" set \[REDACTED\] - boom v3 UPDATE/);
+      expect(logged).toContain(String(res.data.trace_id));
+      expect(logged).not.toMatch(/user_qa_t144|9431|Nguyễn|Lý do riêng/);
+      if (attributesId !== "") expect(logged).not.toContain(attributesId);
     });
   },
 });

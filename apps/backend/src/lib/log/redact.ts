@@ -217,35 +217,60 @@ function looksLikeSelect(s: string): boolean {
 const SQL_LITERAL = /'(?:[^']|'')*'/g;
 
 /**
- * Câu SQL của knex/pg trong thông điệp lỗi (`<sql đã chèn giá trị> - <lỗi>`, knex `compileSqlOnError`): giá trị bind gồm cả
- * SỐ (số đo, tiền gắn người), `null`, JSON — mẫu "chuỗi trong nháy" không bắt được. Nên bỏ NGUYÊN danh sách/điều kiện giá
- * trị: giữ động từ + bảng và phần lỗi sau ` - ` CUỐI (ngoài nháy đơn) trong vùng của câu.
- * Vùng của câu = từ câu tới biên đầu tiên NGOÀI nháy đơn: dòng stack `    at …`, `Caused by:`, `[errors N]` — literal do
- * client điều khiển có thể chứa `\n    at` nên biên nằm trong nháy không tính. Quét một lượt qua vùng (tuyến tính).
- * Nhận dạng: động từ + định danh (có nháy — kể cả `\"` khi chuỗi đã qua JSON.stringify — hoặc trần) + dấu hiệu cú pháp
- * SQL ngay sau (`(`/`values`/`select` cho insert, `set <cột> =` cho update, `where` cho delete) để khỏi bắt câu văn
- * ("Insert into "orders" failed", "update the set of…"); mọi lượng từ có trần.
+ * Câu SQL của knex/pg/MikroORM trong thông điệp lỗi (`<sql đã chèn giá trị> - <lỗi>`, knex `compileSqlOnError`): giá trị
+ * bind gồm cả SỐ (số đo, tiền gắn người), `null`, JSON — mẫu "chuỗi trong nháy" không bắt được.
+ *
+ * Cách làm (T-151, sau hai vòng bộ phân tích theo mệnh đề sinh hồi quy): KHÔNG phân tích `set`/`where`/`join`/`limit`…
+ * Nhận ra đầu câu rồi bỏ NGUYÊN phần thân tới ` - ` CUỐI (ngoài nháy) của vùng; chỉ giữ:
+ *  - ghi/xoá: đoạn đầu đã khớp (`insert into "t"`, `update "t" [as "x"] set`, `delete from "t" [as "x"]`) + `[REDACTED]`;
+ *  - `select`: `select [REDACTED] from "<bảng đầu tiên>" [REDACTED]` (danh sách chọn cũng bỏ — có thể chứa literal).
+ *
+ * Vùng của câu = từ câu tới biên đầu tiên NGOÀI nháy: dòng stack `    at …`, `Caused by:`, `[errors N]` (logger nối chuỗi
+ * cause) — literal do client điều khiển có thể chứa `\n    at` nên biên trong nháy không tính. Bộ quét hiểu: `'…'` (kể cả
+ * `''`), `E'…'` (thoát bằng `\`), `"định danh"` (dấu `'` bên trong không mở nháy), `$tag$…$tag$` (không đóng → nháy tới hết).
+ *
+ * Nhận dạng (mọi lượng từ có trần): động từ + định danh (có nháy — kể cả `\"` khi chuỗi đã qua JSON.stringify — hoặc trần)
+ * + dấu hiệu cú pháp ngay sau (`(`/`values`/`select`/`default` cho insert, `set <cột> =` cho update, `where`/`using`/
+ * `returning` cho delete) để khỏi bắt câu văn ("Insert into "orders" failed", "update the set of…"). `select` cần `from`
+ * kế tiếp có định danh trong nháy, hoặc `FROM` viết hoa, hoặc (định danh trần) `where <cột> <so sánh>` ngay sau.
+ *
+ * Tuyến tính: ứng viên `select` được nhận/loại CHỈ bằng các khớp regex đã nhớ (mỗi mẫu chỉ quét tới); chỉ câu ĐÃ NHẬN mới
+ * được quét vùng và luôn bị tiêu thụ tới cuối câu. Thêm trần cứng: tổng ký tự quét ≤ `SCAN_BUDGET × độ dài`; vượt trần →
+ * bỏ toàn bộ phần còn lại sau động từ (đóng an toàn).
+ *
+ * Giới hạn đã biết (còn lọt): (1) SQL KHÔNG kèm ` - <lỗi>` mà có phép trừ ` - ` ngoài nháy (`set "a" = "a" - 5`) — phần
+ * sau phép trừ cuối được giữ (thông điệp lỗi knex luôn có ` - <lỗi>` nên không gặp ở đường lỗi DB); (2) `select` với bảng
+ * định danh trần và không có `where <so sánh>` (`select * from t limit 5`, chỉ có ở SQL viết tay) không nhận ra được — không
+ * phân biệt được với câu văn; (3) `E'…\'…'` viết tay đã qua JSON.stringify (`\\'`) bị hiểu sai biên nháy; (4) phần lỗi sau
+ * ` - ` của Postgres (vd `invalid input syntax for type integer: "abc"`) giữ nguyên — chỉ qua các mẫu nội dung chung.
  */
 const SQL_IDENT = String.raw`(?:\\?"[^"\n]{1,128}\\?"|[\w.]{1,128})`;
 const SQL_COL = String.raw`(?:\\?"[^"\n]{1,128}\\?"|\w{1,128})`;
+const SQL_ALIAS = String.raw`(?:\s{1,4}(?:as\s{1,4})?${SQL_IDENT})?`;
 const WRITE_STMT = new RegExp(
-  String.raw`\b(?:insert\s{1,4}into\s{1,4}${SQL_IDENT}(?=\s{0,4}(?:\(|values\s|select\s|default\s))|update\s{1,4}${SQL_IDENT}\s{1,4}set(?=\s{1,4}${SQL_COL}\s{0,4}=)|delete\s{1,4}from\s{1,4}${SQL_IDENT}(?=\s{1,4}where\s))`,
+  String.raw`\b(?:insert\s{1,4}into\s{1,4}${SQL_IDENT}(?:\s{1,4}as\s{1,4}${SQL_IDENT})?(?=\s{0,4}(?:\(|values\s|select\s|default\s|overriding\s))` +
+    String.raw`|update\s{1,4}(?:only\s{1,4})?${SQL_IDENT}${SQL_ALIAS}\s{1,4}set(?=\s{1,4}${SQL_COL}\s{0,4}=)` +
+    String.raw`|delete\s{1,4}from\s{1,4}(?:only\s{1,4})?${SQL_IDENT}${SQL_ALIAS}(?=\s{1,4}(?:where|using|returning)\s))`,
   "gi",
 );
 const SELECT_START = /\bselect\s/gi;
-const FROM_RE = new RegExp(String.raw`\sfrom\s{1,4}(?:\\?"[^"\n]{1,128}\\?"|[\w.]{1,128})`, "gi");
+const FROM_RE = new RegExp(String.raw`\sfrom\s{1,4}${SQL_IDENT}`, "gi");
 const FROM_QUOTED = /^\sfrom\s{1,4}\\?"/i;
+const FROM_UPPER = /^\sFROM\s/;
 const WHERE_RE = /\swhere\s/gi;
 /** `where <cột> =|<|>|!=|in (` — dấu hiệu SELECT thật khi bảng không có nháy (khỏi bắt câu văn "…from catalog where price is high"). */
 const WHERE_CMP = new RegExp(
   String.raw`\swhere\s{1,4}(?:\\?"[^"\n]{1,128}\\?"(?:\.\\?"[^"\n]{1,128}\\?")?|[\w.]{1,128})\s{0,4}(?:=|<|>|!=|in\s{0,3}\()`,
   "iy",
 );
+/** Bảng trần: `where` phải ở gần `from` (một tên bảng + vài join) — xa hơn là câu văn. */
+const MAX_BARE_WHERE = 2048;
 const REGION_BOUNDARY = /\n(?:\s{2,8}at\s|Caused by:|\[errors \d{1,3}\])/y;
+const DOLLAR_TAG = /\$(?:[A-Za-z_][A-Za-z0-9_]{0,62})?\$/y;
+const IDENT_CHAR = /[A-Za-z0-9_$]/;
 const SQL_VALUES_MARK = "[REDACTED]";
-/** Danh sách chọn có số/nháy (`select 9431 as h`) → bỏ cả danh sách. */
-const SELECT_LIST_VALUE = /[\d']/;
-const MAX_SELECT_LIST = 2048;
+/** Trần tổng số ký tự bộ quét vùng được đọc, theo bội số độ dài chuỗi (thực tế ≤ 3 lần/vùng). */
+const SCAN_BUDGET = 4;
 
 /** Khớp kế tiếp của regex `g` từ `from`. */
 function execFrom(re: RegExp, s: string, from: number): RegExpExecArray | null {
@@ -253,20 +278,63 @@ function execFrom(re: RegExp, s: string, from: number): RegExpExecArray | null {
   return re.exec(s);
 }
 
-/** Biên vùng (ngoài nháy đơn) và vị trí ` - ` cuối ngoài nháy (−1 nếu không có) của câu bắt đầu ở `from`. */
-function scanRegion(s: string, from: number): { regionEnd: number; sep: number } {
-  let inQuote = false;
+const OUT = 0;
+const SINGLE = 1;
+const ESCAPED = 2; // E'…'
+const DOUBLE = 3;
+
+interface Region {
+  /** Biên vùng (ngoài nháy) hoặc hết chuỗi. */
+  end: number;
+  /** Vị trí ` - ` cuối ngoài nháy trong vùng; −1 nếu không có. */
+  sep: number;
+  /** `probe` nằm ngoài nháy (dùng để chỉ giữ tên bảng khi `from` thật sự thuộc câu, không nằm trong literal). */
+  probeOut: boolean;
+}
+
+/** Quét vùng của câu bắt đầu ở `from`. `null` = hết ngân sách (`budget.left`). */
+function scanRegion(s: string, from: number, probe: number, budget: { left: number }): Region | null {
+  let state = OUT;
   let sep = -1;
+  let probeOut = false;
   for (let i = from; i < s.length; i++) {
+    if (--budget.left < 0) return null;
     const c = s.charCodeAt(i);
-    if (c === 39) inQuote = !inQuote;
-    else if (inQuote) continue;
-    else if (c === 10) {
+    if (state === SINGLE || state === ESCAPED) {
+      if (state === ESCAPED && c === 92) i++;
+      else if (c === 39) {
+        if (s.charCodeAt(i + 1) === 39) i++;
+        else state = OUT;
+      }
+      continue;
+    }
+    if (state === DOUBLE) {
+      if (c === 34) state = OUT;
+      // Định danh không chứa xuống dòng: `"` lẻ (trong phần lỗi) không được nuốt biên vùng phía sau.
+      if (c !== 10) continue;
+      state = OUT;
+    }
+    if (i === probe) probeOut = true;
+    if (c === 39) {
+      const e = s.charCodeAt(i - 1) | 32;
+      state = i - 1 >= from && e === 101 && !IDENT_CHAR.test(s[i - 2] ?? "") ? ESCAPED : SINGLE;
+    } else if (c === 34) state = DOUBLE;
+    else if (c === 36 && !IDENT_CHAR.test(s[i - 1] ?? "")) {
+      DOLLAR_TAG.lastIndex = i;
+      const m = DOLLAR_TAG.exec(s);
+      if (m !== null) {
+        const close = s.indexOf(m[0], i + m[0].length);
+        budget.left -= (close === -1 ? s.length : close) - i;
+        if (budget.left < 0) return null;
+        if (close === -1) return { end: s.length, sep, probeOut }; // không đóng → nháy tới hết
+        i = close + m[0].length - 1;
+      }
+    } else if (c === 10) {
       REGION_BOUNDARY.lastIndex = i;
-      if (REGION_BOUNDARY.test(s)) return { regionEnd: i, sep };
+      if (REGION_BOUNDARY.test(s)) return { end: i, sep, probeOut };
     } else if (c === 32 && s.startsWith(" - ", i)) sep = i;
   }
-  return { regionEnd: s.length, sep };
+  return { end: s.length, sep, probeOut };
 }
 
 function whereHasComparison(s: string, whereAt: number): boolean {
@@ -274,9 +342,11 @@ function whereHasComparison(s: string, whereAt: number): boolean {
   return WHERE_CMP.test(s);
 }
 
+/** Cuối câu: ` - ` cuối ngoài nháy (sau `min`) nếu có, không thì biên vùng. */
+const stmtEnd = (r: Region, min: number) => (r.sep >= min ? r.sep : r.end);
+
 /**
- * Duyệt `s` MỘT lượt (mỗi mẫu quét tới trước, kết quả khớp được nhớ → tuyến tính kể cả khi có hàng nghìn câu): bỏ giá trị
- * ở mọi câu SQL ghi/xoá và `select` có điều kiện/giá trị; trả `s` nguyên vẹn nếu không có câu nào.
+ * Duyệt `s` MỘT lượt: bỏ thân mọi câu SQL ghi/xoá/select nhận ra được; trả `s` nguyên vẹn nếu không có câu nào.
  */
 function scrubSqlValues(s: string): string {
   let write: RegExpExecArray | null | undefined;
@@ -285,58 +355,66 @@ function scrubSqlValues(s: string): string {
   let where: RegExpExecArray | null | undefined;
   const fresh = (m: RegExpExecArray | null | undefined, re: RegExp, at: number) =>
     m === undefined || (m !== null && m.index < at) ? execFrom(re, s, at) : m;
+  const budget = { left: SCAN_BUDGET * s.length + 1024 };
   let out = "";
   let pos = 0;
   while (pos < s.length) {
     write = fresh(write, WRITE_STMT, pos);
     sel = fresh(sel, SELECT_START, pos);
-    // Ứng viên SELECT: chỉ xét khi đứng trước câu ghi kế tiếp.
     if (sel !== null && (write === null || sel.index < write.index)) {
       const at = sel.index;
-      from = fresh(from, FROM_RE, at);
+      const verb = s.slice(at, at + 6);
+      from = fresh(from, FROM_RE, at + 6);
       if (from === null) {
-        sel = null; // không còn `from` nào phía sau → không còn select nào đáng xét
+        sel = null; // không còn `from` nào phía sau → không còn select nào nhận được
         continue;
       }
-      where = fresh(where, WHERE_RE, from.index);
-      const whereOk =
-        where !== null && where.index - from.index < MAX_SELECT_LIST && whereHasComparison(s, where.index);
-      if (
-        from.index - at > MAX_SELECT_LIST ||
-        !(FROM_QUOTED.test(from[0]) || /\sFROM /.test(from[0]) || whereOk)
-      ) {
-        sel = execFrom(SELECT_START, s, at + 6); // không phải câu SQL → ứng viên kế
+      const fromEnd = from.index + from[0].length;
+      // `from` thuộc câu ghi phía sau (`… select an option; insert into "t" select … from "u"`) → không phải của select này.
+      let ok = write === null || from.index < write.index;
+      if (ok && !FROM_QUOTED.test(from[0]) && !FROM_UPPER.test(from[0])) {
+        where = fresh(where, WHERE_RE, fromEnd);
+        ok =
+          where !== null &&
+          where.index - fromEnd < MAX_BARE_WHERE &&
+          (write === null || where.index < write.index) &&
+          whereHasComparison(s, where.index);
+      }
+      if (!ok) {
+        sel = execFrom(SELECT_START, s, at + 6); // không phải câu SQL → ứng viên kế (không quét vùng)
         continue;
       }
-      const { regionEnd, sep } = scanRegion(s, at);
-      const stmtEnd = sep > at ? sep : regionEnd;
-      const whereAt = where !== null && where.index < stmtEnd ? where.index : -1;
-      const list = s.slice(at + 7, from.index);
-      const needList = SELECT_LIST_VALUE.test(list) && !/^\s*\*\s*$/.test(list);
-      if (whereAt === -1 && !needList) {
-        out += s.slice(pos, at + 6); // không có giá trị ở đây; xét tiếp phần sau
-        pos = at + 6;
-        sel = execFrom(SELECT_START, s, pos);
-        continue;
+      const r = scanRegion(s, at, from.index, budget);
+      if (r === null) {
+        out += `${s.slice(pos, at)}${verb} ${SQL_VALUES_MARK}`;
+        pos = s.length;
+        break;
       }
-      const tail = s.slice(from.index, whereAt === -1 ? stmtEnd : whereAt);
-      const head = [
-        needList ? s.slice(at, at + 6) + " " + SQL_VALUES_MARK : s.slice(at, from.index),
-        tail,
-      ].join("");
-      out += `${s.slice(pos, at)}${head}${whereAt === -1 ? "" : ` ${SQL_VALUES_MARK}`}`;
-      pos = Math.max(stmtEnd, from.index);
+      const end = stmtEnd(r, at);
+      const tableIn = r.probeOut && fromEnd <= end;
+      let head = `${verb} ${SQL_VALUES_MARK}`;
+      if (tableIn) {
+        head += ` ${from[0].slice(1)}`;
+        if (/\S/.test(s.slice(fromEnd, end))) head += ` ${SQL_VALUES_MARK}`;
+      }
+      out += s.slice(pos, at) + head;
+      pos = Math.max(end, tableIn ? fromEnd : at + 6);
       continue;
     }
     if (write === null) break;
     const abs = write.index;
-    const { regionEnd, sep } = scanRegion(s, abs + write[0].length);
-    const stmtEnd = sep > abs ? sep : regionEnd;
+    const headEnd = abs + write[0].length;
+    const r = scanRegion(s, headEnd, -1, budget);
     out += `${s.slice(pos, abs)}${write[0]} ${SQL_VALUES_MARK}`;
-    pos = Math.max(stmtEnd, abs + write[0].length);
+    if (r === null) {
+      pos = s.length;
+      break;
+    }
+    pos = Math.max(stmtEnd(r, headEnd), headEnd);
   }
   return out + s.slice(pos);
 }
+
 /** Trần độ dài chuỗi đưa vào bộ che/log (đủ cho stack nhiều tầng cause); phần thừa bị cắt và ghi số ký tự bỏ. */
 export const MAX_TEXT = 32_768;
 

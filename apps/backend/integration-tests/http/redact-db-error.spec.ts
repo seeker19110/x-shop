@@ -107,6 +107,41 @@ describe("log lỗi DB không lộ giá trị đã chèn (T-151)", () => {
     );
   });
 
+  /**
+   * Review vòng 2: câu do knex query builder sinh, chạy dưới dạng chuỗi đã chèn giá trị (`toString()` — đúng dạng knex chép
+   * vào message khi `compileSqlOnError`) để message lỗi thật chứa giá trị.
+   */
+  it("review vòng 2: select danh sách cột > 2048 ký tự (như MikroORM) vẫn che điều kiện", async () => {
+    const cols = Array.from({ length: 90 }, (_, i) => `height_cm as height_alias_${i}`);
+    const sql = db("t151_measure")
+      .select(cols)
+      .where({ height_cm: 180, id: "abc-777" })
+      .andWhere("bust_cm", 9431)
+      .andWhereRaw("1 / 0 = 1")
+      .toString();
+    const err = await caught(() => db.raw(sql));
+    expect(err.message).toMatch(/9431/);
+    expect(err.message.indexOf(" from ")).toBeGreaterThan(2048);
+    assertClean(err, "division by zero");
+  });
+
+  it("review vòng 2: delete … using (join) và update … as alias", async () => {
+    const del = db("t151_measure")
+      .using(["t151_measure as m2"])
+      .where("t151_measure.id", "abc-777")
+      .andWhere("m2.hip_cm", 95)
+      .del()
+      .toString();
+    expect(del).toMatch(/^delete from "t151_measure" using /);
+    assertClean(await caught(() => db.raw(del)));
+    lines.length = 0;
+    assertClean(
+      await caught(() =>
+        db.raw(`update "t151_measure" as "m" set "height_cm" = 180 where "m"."id" = 'abc-777'`),
+      ),
+    );
+  });
+
   it("query builder (bind $n): message không chứa giá trị", async () => {
     const err = await caught(() =>
       db("t151_measure").insert({ id: "fmm_01J", height_cm: 180, bust_cm: 9431, hip_cm: 95, note: "Nguyễn" }),

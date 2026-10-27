@@ -211,6 +211,31 @@ describe("ngoại lệ theo OTel kèm chuỗi nguyên nhân (BASE-ERR-009)", () 
     expect(exceptionFields(circ)["exception.type"]).toBe("object");
   });
 
+  /**
+   * T-151 review (🟢6): `describeNonError` tự che TRƯỚC khi JSON.stringify — gọi `exceptionFields` trực tiếp (không qua
+   * logger, vốn che lại lần nữa) nên bỏ `redactLog` trong describeNonError là test này đỏ.
+   */
+  it("giá trị không phải Error (trực tiếp và trong chuỗi cause) có PII → exceptionFields đã che", () => {
+    const raw = {
+      email: "khach.hang@example.test",
+      phone: "0912345678",
+      shipping: { line: "12 Lê Lợi, Phường Bến Nghé, Quận 1" },
+      message: `insert into "fashion_model_measurement" ("height_cm", "hip_cm") values (173, 99) - boom`,
+    };
+    const leak = /khach\.hang|0912345678|Lê Lợi|Bến Nghé|173|\b99\b/;
+    const direct = exceptionFields(raw)["exception.message"];
+    const chained = String(
+      exceptionFields(new Error("ghi DB thất bại", { cause: raw }))["exception.stacktrace"],
+    );
+    for (const text of [direct, chained]) {
+      expect(text).not.toMatch(leak);
+      expect(text).toContain(`"email":"${REDACTED}"`);
+      expect(text).toContain(`"phone":"${REDACTED}"`);
+      expect(text).toContain(`insert into \\"fashion_model_measurement\\" ${REDACTED} - boom`);
+    }
+    expect(chained).toContain('Caused by: {"email"');
+  });
+
   it("thông điệp/stack ngoại lệ cũng qua bộ che", () => {
     const { logger, records } = capture();
     logger.error(new Error("gửi SMS tới 0912345678 thất bại"));
