@@ -317,9 +317,15 @@ export function isLockUnavailable(e: unknown): boolean {
   return e instanceof CheckoutError && e.code === "LOCK_UNAVAILABLE";
 }
 
-/** Số chủ đang có khóa được gia hạn — chỉ để test/giám sát rò khóa. */
-export function activeLeaseCount(): number {
-  return leases.size;
+/**
+ * Số chủ đang có khóa được gia hạn — chỉ để test/giám sát rò khóa. `exceptKeys`: bỏ qua chủ chỉ giữ các khóa này (vd lượt
+ * đồng bộ read model catalog đang chạy hợp lệ do sự kiện kích, không phải rò khóa checkout).
+ */
+export function activeLeaseCount(exceptKeys: readonly string[] = []): number {
+  if (exceptKeys.length === 0) return leases.size;
+  let n = 0;
+  for (const lease of leases.values()) if ([...lease.keys].some((k) => !exceptKeys.includes(k))) n++;
+  return n;
 }
 
 export const lockKeys = {
