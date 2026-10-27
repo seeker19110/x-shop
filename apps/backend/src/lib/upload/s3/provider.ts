@@ -3,6 +3,7 @@ import { DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { S3FileService } from "@medusajs/file-s3/dist/services/s3-file";
 import type { FileTypes, Logger, S3FileServiceOptions } from "@medusajs/framework/types";
 import { AbstractFileProviderService, MedusaError } from "@medusajs/framework/utils";
+import { s3RequestHandlerOptions, type S3Timeouts } from "../../infra/timeouts";
 import { isPrivateFileKey, isPublicFileKey, PRIVATE_KEY_PREFIX, requireUploadExtension } from "../key";
 import { privateFileUrl } from "../private";
 
@@ -25,6 +26,10 @@ import { privateFileUrl } from "../private";
  * Khác provider gốc: `delete` không nuốt lỗi (file PII phải xoá thật hoặc báo lỗi); thiếu file → lỗi `code: "ENOENT"` như
  * provider local (route tải trả 404); không cấp URL ký để client tự PUT (`getPresignedUploadUrl` — server không kiểm được
  * nội dung, route `/admin/uploads/presigned-urls` cũng đã tắt ở lib/security/upload.ts).
+ *
+ * Kho treo/chậm: mọi request có hạn tường minh (`S3_TIMEOUTS`, lib/infra/timeouts.ts — mặc định của SDK là vô hạn).
+ * Ghi stream (xuất lớn, multipart) thất bại giữa chừng: đã đo (s3-provider-faults.unit.spec.ts) — bên ghi kiểu Medusa chạy hết
+ * và nhận lỗi ở `promise`, không unhandled rejection; giữ test làm hàng rào khi nâng `@aws-sdk/lib-storage`.
  */
 
 export interface SharedS3Options {
@@ -43,6 +48,8 @@ export interface SharedS3Options {
   force_path_style: boolean;
   /** Gốc backend để dựng URL route tải file private. */
   backend_url: string;
+  /** Chỉ cho test: hạn ngắn hơn `S3_TIMEOUTS` của lib/infra/timeouts.ts (server treo). */
+  timeouts?: Partial<S3Timeouts>;
 }
 
 /** Cache của object private: không cho proxy/trình duyệt giữ bản sao. */
@@ -55,6 +62,15 @@ export function isS3NotFound(err: unknown): boolean {
   const name = (err as { name?: unknown } | null)?.name;
   return typeof name === "string" && S3_NOT_FOUND.has(name);
 }
+
+/** Kho từ chối (403) — với khoá hợp lệ thường là THIẾU `s3:ListBucket` (AWS khi đó trả 403 thay vì 404 cho khoá không có). */
+export function isS3AccessDenied(err: unknown): boolean {
+  const e = err as { name?: unknown; $metadata?: { httpStatusCode?: unknown } } | null;
+  return e?.name === "AccessDenied" || e?.$metadata?.httpStatusCode === 403;
+}
+
+export const ACCESS_DENIED_HINT =
+  "Kho S3 từ chối đọc (403) khoá hợp lệ: khoá truy cập thiếu quyền s3:GetObject, hoặc thiếu s3:ListBucket nên khoá không tồn tại cũng trả 403 thay vì 404 (RUNBOOK §8.2b)";
 
 /** Thiếu file: cùng `code` với provider local (`ENOENT`) để route tải trả 404 như nhau; không chứa khoá. */
 export function fileNotFound(): MedusaError {
@@ -81,7 +97,7 @@ export class BucketStore extends S3FileService {
       return true;
     } catch (err) {
       if (isS3NotFound(err)) return false;
-      throw err;
+      return this.mapReadError(err);
     }
   }
 
@@ -92,12 +108,18 @@ export class BucketStore extends S3FileService {
     }
   }
 
+  /** Thiếu khoá → ENOENT; 403 → log nguyên nhân hay gặp (không kèm khoá) rồi ném tiếp (vẫn 500 — sai cấu hình). */
+  protected mapReadError(err: unknown): never {
+    if (isS3NotFound(err)) throw fileNotFound();
+    if (isS3AccessDenied(err)) this.logger_.error(ACCESS_DENIED_HINT);
+    throw err;
+  }
+
   override async getDownloadStream(file: FileTypes.ProviderGetFileDTO): Promise<Readable> {
     try {
       return await super.getDownloadStream(file);
     } catch (err) {
-      if (isS3NotFound(err)) throw fileNotFound();
-      throw err;
+      return this.mapReadError(err);
     }
   }
 
@@ -105,8 +127,7 @@ export class BucketStore extends S3FileService {
     try {
       return await super.getAsBuffer(file);
     } catch (err) {
-      if (isS3NotFound(err)) throw fileNotFound();
-      throw err;
+      return this.mapReadError(err);
     }
   }
 }
@@ -150,6 +171,8 @@ export class SharedS3FileService extends AbstractFileProviderService {
       acl: false as const,
       additional_client_config: {
         forcePathStyle: options.force_path_style,
+        // Hạn tường minh (mặc định SDK: vô hạn) — lib/infra/timeouts.ts.
+        requestHandler: s3RequestHandlerOptions(options.timeouts),
         // Kho S3-compatible tự host không phải bản nào cũng nhận checksum mặc định (CRC32) của SDK v3 mới — chỉ gửi khi
         // thao tác bắt buộc (DeleteObjects…).
         requestChecksumCalculation: "WHEN_REQUIRED",

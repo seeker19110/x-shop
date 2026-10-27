@@ -571,6 +571,9 @@ describe("FILE_STORAGE + S3_* (T-154 — file dùng chung giữa các bản sao)
       "S3_FILE_URL",
     ]);
     expect(variablesOf({ ...production, MEDUSA_BACKEND_URL: undefined })).toEqual(["MEDUSA_BACKEND_URL"]);
+    expect(variablesOf({ ...production, MEDUSA_BACKEND_URL: "http://api.shop.example.vn" })).toEqual([
+      "MEDUSA_BACKEND_URL",
+    ]);
     // AWS (không endpoint) hợp lệ.
     expect(parseEnv({ ...production, S3_ENDPOINT: undefined, S3_REGION: "ap-southeast-1" }).ok).toBe(true);
   });

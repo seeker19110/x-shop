@@ -599,7 +599,8 @@ function effectiveStorage(env: BaseEnv): FileStorageKind | undefined {
 /**
  * Lỗi cấu hình kho file (T-154) dạng [biến, lý do] — lý do không chứa giá trị.
  *  - production: chỉ `s3` (vắng do PRODUCTION_REQUIRED báo); endpoint/URL công khai phải https; MEDUSA_BACKEND_URL bắt buộc
- *    (URL route tải file private dựng từ đây — thiếu thì link xuất trỏ localhost).
+ *    và https (URL route tải file private dựng từ đây — thiếu thì link xuất trỏ localhost; http thì phiên admin + file PII
+ *    đi qua kết nối không mã hoá).
  *  - s3: đủ S3_REQUIRED; hai bucket khác nhau; S3_FILE_URL không trỏ vào bucket private; PRIVATE_UPLOAD_DIR không dùng.
  *  - local: không đặt biến S3_* nào (tránh tưởng đã dùng kho chung trong khi file vẫn ở đĩa máy này).
  */
@@ -645,7 +646,7 @@ function fileStorageProblems(env: BaseEnv): Array<[string, string]> {
         "bắt buộc khi NODE_ENV=production và FILE_STORAGE=s3 (URL tải file private)",
       ]);
     }
-    for (const key of ["S3_ENDPOINT", "S3_FILE_URL"] as const) {
+    for (const key of ["S3_ENDPOINT", "S3_FILE_URL", "MEDUSA_BACKEND_URL"] as const) {
       const value = env[key];
       if (value !== undefined && !value.startsWith("https://")) {
         out.push([key, "phải dùng https:// ở production"]);

@@ -10,11 +10,16 @@ import type { AddressInfo } from "node:net";
  * Hỗ trợ (path-style `/<bucket>/<khoá>`): PutObject, GetObject, HeadObject, DeleteObject; bucket lạ → NoSuchBucket.
  * Quyền: request có `Authorization` SigV4 phải mang đúng access key (chữ ký KHÔNG được kiểm — giả lập); request nặc danh chỉ
  * được GET/HEAD trên bucket công khai (như policy `s3:GetObject` cho `*`), còn lại AccessDenied 403.
+ * KHÔNG có: multipart (`?uploads` → 501 — file > 5 MiB qua getUploadStream thất bại), kiểm chữ ký SigV4, policy/ACL thật,
+ * phiên bản object. Kết quả trên kho giả KHÔNG đủ làm bằng chứng tick BE-FILE-004 — cần chạy với kho thật.
+ * `missingKeyStatus: 403` giả lập AWS khi khoá truy cập thiếu `s3:ListBucket` (khoá không có → AccessDenied thay vì 404).
  */
 export interface FakeS3Options {
   accessKeyId: string;
   publicBuckets: readonly string[];
   privateBuckets: readonly string[];
+  /** Mã trả cho khoá không tồn tại: 404 (mặc định) hoặc 403 AccessDenied (AWS khi thiếu s3:ListBucket). */
+  missingKeyStatus?: 404 | 403;
 }
 
 export interface FakeS3 {
@@ -88,8 +93,10 @@ export async function startFakeS3(opts: FakeS3Options): Promise<FakeS3> {
       }
       if (method === "GET" || method === "HEAD") {
         const obj = store.get(key);
-        if (obj === undefined)
+        if (obj === undefined) {
+          if (opts.missingKeyStatus === 403) return xmlError(res, 403, "AccessDenied", method);
           return xmlError(res, 404, method === "HEAD" ? "NotFound" : "NoSuchKey", method);
+        }
         res.statusCode = 200;
         res.setHeader("content-type", obj.contentType);
         res.setHeader("content-length", String(obj.body.length));

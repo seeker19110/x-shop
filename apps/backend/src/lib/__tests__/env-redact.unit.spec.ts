@@ -108,6 +108,18 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
     expectNoSecret(formatEffectiveConfig(env));
   });
 
+  it("tuỳ chọn provider S3 dạng snake_case (fileProviderEntry) cũng bị che khi dump", () => {
+    const out = redactConfig({
+      options: {
+        access_key_id: "SENTINEL-s3_access_key_id",
+        secret_access_key: "SENTINEL-s3_secret_access_key",
+        bucket: "b",
+      },
+    });
+    expectNoSecret(JSON.stringify(out));
+    expect(out.options).toEqual({ access_key_id: REDACTED, secret_access_key: REDACTED, bucket: "b" });
+  });
+
   it("che đủ MỌI biến trong SECRET_ENV_KEYS", () => {
     for (const key of SECRET_ENV_KEYS) {
       const out = redactConfig({ [key]: "gia-tri-that", other: "ok" }) as Record<string, string>;

@@ -30,6 +30,9 @@ export const SECRET_CONFIG_FIELDS = [
   "token",
   "accessKeyId",
   "secretAccessKey",
+  // Tuỳ chọn provider S3 (snake_case, lib/upload/config → medusa-config) nếu bị dump qua redactConfig.
+  "access_key_id",
+  "secret_access_key",
 ] as const;
 
 export const REDACTED = "***";
