@@ -2,6 +2,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import Redis from "ioredis";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "../../src/lib/catalog/constants";
 import { loadProductSources } from "../../src/lib/catalog/product-source";
 import { FASHION_MODULE } from "../../src/modules/fashion";
@@ -10,7 +11,9 @@ import { DEMO_PRODUCTS } from "../../src/scripts/catalog-demo-data";
 import seedCatalog from "../../src/scripts/seed-catalog";
 import {
   type MeasurementSnapshot,
+  productFashionLockKey,
   recreateMeasurements,
+  type SetProductFashionInput,
   setProductFashionWorkflow,
 } from "../../src/workflows/fashion/set-product-fashion";
 import { adminHeaders } from "../helpers/auth";
@@ -297,7 +300,151 @@ medusaIntegrationTestRunner({
           expect(srcAfter?.sizeChart?.code).toBe("ao-nam");
         });
 
-        it("hai request lỗi đồng thời → cả hai 400, số đo cũ còn đúng một bản", async () => {
+        /** Cổng một lần, có hạn chờ — hạn vượt nghĩa là thứ tự ép không xảy ra (test đỏ thay vì treo). */
+        function gate(label: string, ms = 20_000) {
+          let open!: () => void;
+          const opened = new Promise<void>((r) => (open = r));
+          const wait = () =>
+            Promise.race([
+              opened,
+              new Promise<void>((_, rej) => setTimeout(() => rej(new Error(`gate timeout: ${label}`)), ms)),
+            ]);
+          return { open, wait, opened };
+        }
+
+        const outcome = (p: Promise<unknown>) =>
+          p.then(
+            () => "ok",
+            (e: unknown) => `err: ${String((e as Error)?.message ?? e)}`,
+          );
+
+        type Patchable = Record<string, (...args: unknown[]) => Promise<unknown>>;
+        const firstOf = (args: unknown[]) =>
+          ([] as { id?: string; image_set?: string }[]).concat(args[0] as never)[0];
+
+        /**
+         * Ép xen kẽ bất lợi giữa hai lượt A, B cho cùng sản phẩm: A dừng ở `pauseA` (sau khi đọc / sau khi tạo số đo mới)
+         * tới khi B hoặc bị khoá chặn, hoặc đã chạy tới cùng điểm; B (nếu chạy được) dừng sau khi tạo số đo tới khi A
+         * xong. Không khoá → xen kẽ xảy ra đúng như ép; có khoá → B bị chặn, A chạy hết (cả bù trừ) rồi B mới chạy.
+         */
+        async function interleave(
+          a: SetProductFashionInput,
+          b: SetProductFashionInput,
+          pauseA: "list" | "create",
+        ) {
+          const fashion = container.resolve(FASHION_MODULE) as unknown as Patchable;
+          const locking = container.resolve(Modules.LOCKING) as unknown as Patchable;
+          const orig = {
+            list: fashion.listModelMeasurements!,
+            create: fashion.createModelMeasurements!,
+            acquire: locking.acquire!,
+          };
+          const aPaused = gate("A tới điểm dừng");
+          const bBlocked = gate("B bị khoá chặn");
+          const bReached = gate("B tới điểm dừng");
+          const aDone = gate("A xong");
+          const lockKey = productFashionLockKey(a.product_id);
+          const aSet = a.model_measurements?.[0]?.image_set;
+          const bSet = b.model_measurements?.[0]?.image_set;
+          let lockRefusals = 0;
+          let replaceLists = 0;
+          let aWaited = false;
+          const waitForB = async () => {
+            aWaited = true;
+            aPaused.open();
+            await Promise.race([bBlocked.opened, bReached.opened, gate("A chờ B").wait()]);
+          };
+          locking.acquire = (...args: unknown[]) =>
+            orig.acquire.apply(locking, args).catch((e: unknown) => {
+              if (String(args[0]).includes(lockKey)) {
+                lockRefusals++;
+                bBlocked.open();
+              }
+              throw e;
+            });
+          fashion.listModelMeasurements = async (...args: unknown[]) => {
+            const f = args[0] as Record<string, unknown> | undefined;
+            const res = await orig.list.apply(fashion, args);
+            if (pauseA === "list" && f && typeof f.attributes_id === "string" && !("id" in f)) {
+              const n = ++replaceLists;
+              if (n === 1) await waitForB();
+              else if (n === 2) bReached.open();
+            }
+            return res;
+          };
+          fashion.createModelMeasurements = async (...args: unknown[]) => {
+            const res = await orig.create.apply(fashion, args);
+            const set = firstOf(args)?.image_set;
+            if (pauseA === "create" && set === aSet && !aWaited) {
+              await waitForB();
+            } else if (pauseA === "create" && set === bSet && bSet !== aSet) {
+              bReached.open();
+              await aDone.wait();
+            } else if (pauseA === "create" && set === aSet && aWaited && bSet === aSet) {
+              // A và B cùng image_set: lần tạo thứ hai là của B.
+              bReached.open();
+              await aDone.wait();
+            }
+            return res;
+          };
+          try {
+            const runA = outcome(setProductFashionWorkflow(container).run({ input: a })).finally(() =>
+              aDone.open(),
+            );
+            await aPaused.wait();
+            const runB = outcome(setProductFashionWorkflow(container).run({ input: b }));
+            const [ra, rb] = await Promise.all([runA, runB]);
+            return { ra, rb, lockRefusals };
+          } finally {
+            fashion.listModelMeasurements = orig.list;
+            fashion.createModelMeasurements = orig.create;
+            locking.acquire = orig.acquire;
+          }
+        }
+
+        const failing = (id: string, image_set: string): SetProductFashionInput => ({
+          product_id: id,
+          attributes: { kind: "apparel", material: "cotton" },
+          size_chart_id: null,
+          model_measurements: [{ image_set, height_cm: 171, size_worn: "m" }],
+        });
+        const succeeding = (id: string, image_set: string): SetProductFashionInput => ({
+          product_id: id,
+          attributes: { kind: "apparel", material: "cotton" },
+          model_measurements: [{ image_set, height_cm: 172, size_worn: "s" }],
+        });
+
+        it("hai lượt lỗi cùng sản phẩm, ép xen kẽ → lượt sau chờ khoá; cả hai lỗi, số đo cũ còn đúng một bản", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          const r = await interleave(failing(id, "moi"), failing(id, "moi"), "create");
+          expect(r.ra).toContain("SIZE_CHART_MISSING");
+          expect(r.rb).toContain("SIZE_CHART_MISSING");
+          expect(r.lockRefusals).toBeGreaterThan(0);
+          expect(await measurementRows(attributesId, true)).toEqual(before);
+          const [src] = await loadProductSources(container, { id: [id] });
+          expect(src?.sizeChart?.code).toBe("ao-nam");
+        });
+
+        it("lượt A lỗi, lượt B thay số đo thành công chen vào → chỉ còn số đo của B (bù trừ A không làm sống lại bản cũ)", async () => {
+          const { id, attributesId } = await seededPolo();
+          const r = await interleave(failing(id, "a-set"), succeeding(id, "b-set"), "create");
+          expect(r.ra).toContain("SIZE_CHART_MISSING");
+          expect(r.rb).toBe("ok");
+          const after = await measurementRows(attributesId, true);
+          expect(after.map((m) => m.image_set)).toEqual(["b-set"]);
+        });
+
+        it("hai lượt thành công đồng thời (T-150), ép cùng đọc trước khi xoá → đúng một bộ số đo (của lượt sau)", async () => {
+          const { id, attributesId } = await seededPolo();
+          const r = await interleave(succeeding(id, "a-set"), succeeding(id, "b-set"), "list");
+          expect([r.ra, r.rb]).toEqual(["ok", "ok"]);
+          const after = await measurementRows(attributesId, true);
+          expect(after.map((m) => m.image_set)).toEqual(["b-set"]);
+          expect(r.lockRefusals).toBeGreaterThan(0);
+        });
+
+        it("hai request HTTP lỗi đồng thời → cả hai 400, số đo cũ còn đúng một bản", async () => {
           const { id, attributesId } = await seededPolo();
           const before = await measurementRows(attributesId);
           const errs = await Promise.all([
@@ -306,6 +453,88 @@ medusaIntegrationTestRunner({
           ]);
           expect(errs.map(status)).toEqual([400, 400]);
           expect(await measurementRows(attributesId)).toEqual(before);
+        });
+
+        it("tạo số đo mới lỗi sau khi đã xoá bản cũ → workflow lỗi, bước tự hoàn tác, số đo cũ còn nguyên", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          const fashion = container.resolve(FASHION_MODULE) as unknown as Patchable;
+          const origCreate = fashion.createModelMeasurements!;
+          fashion.createModelMeasurements = async (...args: unknown[]) => {
+            if (firstOf(args)?.image_set === "moi")
+              throw new Error("canceling statement due to statement timeout");
+            return origCreate.apply(fashion, args);
+          };
+          let r: string;
+          try {
+            r = await outcome(setProductFashionWorkflow(container).run({ input: succeeding(id, "moi") }));
+          } finally {
+            fashion.createModelMeasurements = origCreate;
+          }
+          expect(r).toContain("statement timeout");
+          expect(await measurementRows(attributesId, true)).toEqual(before);
+        });
+
+        it("lệnh tạo số đo mới đã ghi nhưng báo lỗi → hoàn tác xoá cả bản không kịp nhận id, số đo cũ còn nguyên", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          const fashion = container.resolve(FASHION_MODULE) as unknown as Patchable;
+          const origCreate = fashion.createModelMeasurements!;
+          fashion.createModelMeasurements = async (...args: unknown[]) => {
+            const res = await origCreate.apply(fashion, args);
+            if (firstOf(args)?.image_set === "moi") throw new Error("connection terminated after commit");
+            return res;
+          };
+          let r: string;
+          try {
+            r = await outcome(setProductFashionWorkflow(container).run({ input: succeeding(id, "moi") }));
+          } finally {
+            fashion.createModelMeasurements = origCreate;
+          }
+          expect(r).toContain("connection terminated");
+          expect(await measurementRows(attributesId, true)).toEqual(before);
+        });
+
+        it("hoàn tác số đo lỗi → log error kèm attributes_id và id (không số đo), workflow báo lỗi, khoá vẫn nhả", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          const oldId = String(before[0]!.id);
+          const fashion = container.resolve(FASHION_MODULE) as unknown as Patchable;
+          const logger = container.resolve(ContainerRegistrationKeys.LOGGER) as unknown as Record<
+            string,
+            (...args: unknown[]) => unknown
+          >;
+          const origCreate = fashion.createModelMeasurements!;
+          const origError = logger.error!;
+          const errors: string[] = [];
+          fashion.createModelMeasurements = async (...args: unknown[]) => {
+            if (firstOf(args)?.id === oldId) throw new Error("recreate boom");
+            return origCreate.apply(fashion, args);
+          };
+          logger.error = (...args: unknown[]) => {
+            errors.push(args.map(String).join(" "));
+            return origError.apply(logger, args);
+          };
+          let r: string;
+          try {
+            r = await outcome(setProductFashionWorkflow(container).run({ input: failing(id, "moi") }));
+          } finally {
+            fashion.createModelMeasurements = origCreate;
+            logger.error = origError;
+          }
+          expect(r).toMatch(/^err: /);
+          const line = errors.find((l) => l.includes("Hoàn tác số đo người mẫu lỗi"));
+          expect(line).toBeDefined();
+          expect(line).toContain(`attributes_id=${attributesId}`);
+          expect(line).toContain(oldId);
+          expect(line).toContain("recreate boom");
+          expect(line).not.toMatch(/Dữ liệu demo|height_cm|size_worn/);
+          // Khoá đã nhả dù bù trừ lỗi: lượt kế tiếp chạy được ngay, không chờ hết lease.
+          const t0 = Date.now();
+          expect(
+            await outcome(setProductFashionWorkflow(container).run({ input: succeeding(id, "sau") })),
+          ).toBe("ok");
+          expect(Date.now() - t0).toBeLessThan(4_000);
         });
 
         it("thay thành công → chỉ còn số đo mới, bản cũ bị xoá hẳn (không giữ PII người mẫu)", async () => {
@@ -338,6 +567,37 @@ medusaIntegrationTestRunner({
             recreateMeasurements(fashion, attributesId, snapshot),
           ]);
           expect(await measurementRows(attributesId)).toEqual(before);
+        });
+
+        it("tạo lại số đo: tạo lỗi mà id vẫn thiếu (attributes không tồn tại) → ném lại lỗi, không nuốt", async () => {
+          const { attributesId } = await seededPolo();
+          const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
+          const [row] = await measurementRows(attributesId);
+          const ghost = { ...row, id: "fmm_t144_khong_ton_tai" } as unknown as MeasurementSnapshot;
+          await expect(
+            recreateMeasurements(fashion, "fpa_t144_khong_ton_tai", [ghost]),
+          ).rejects.toBeDefined();
+          expect(await fashion.listModelMeasurements({ id: [ghost.id] }, { withDeleted: true })).toEqual([]);
+        });
+
+        it("workflow không lưu lượt chạy (bản chụp số đo là PII): không có workflow_execution, không còn khoá Redis", async () => {
+          const { id } = await seededPolo();
+          expect(
+            await outcome(setProductFashionWorkflow(container).run({ input: failing(id, "moi") })),
+          ).toContain("SIZE_CHART_MISSING");
+          await setProductFashionWorkflow(container).run({ input: succeeding(id, "moi") });
+          const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+          const res = (await pg.raw(
+            "select count(*)::int as n from workflow_execution where workflow_id = 'x-set-product-fashion'",
+          )) as { rows: { n: number }[] };
+          expect(res.rows[0]!.n).toBe(0);
+          const redis = new Redis(process.env.REDIS_URL!);
+          try {
+            expect(await redis.keys("*x-set-product-fashion*")).toEqual([]);
+            expect(await redis.keys(`*${productFashionLockKey(id)}*`)).toEqual([]);
+          } finally {
+            redis.disconnect();
+          }
         });
 
         it("không đăng nhập → 401, số đo không đổi", async () => {

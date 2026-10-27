@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils";
 import {
@@ -10,6 +11,7 @@ import {
 import { emitEventStep } from "@medusajs/medusa/core-flows";
 import { CATALOG_PRODUCTS_CHANGED } from "../../lib/catalog/constants";
 import { assertPublishable } from "../../lib/catalog/publish-readiness";
+import { acquireOrdered, releaseOwnedQuietly } from "../../lib/checkout/locks";
 import { FASHION_MODULE } from "../../modules/fashion";
 import type FashionModuleService from "../../modules/fashion/service";
 import type { ProductFashionInput } from "../../modules/fashion/validators";
@@ -148,6 +150,64 @@ export async function relinkSizeChart(
 
 type MeasurementInput = NonNullable<ProductFashionInput["model_measurements"]>[number];
 
+/* ---------------------------------------------------------------- khoá theo sản phẩm */
+
+/** Như `reviseSizeChartWorkflow`: chờ khoá bận 5 s (quá → BUSY_RETRY 409); lease 60 s, gia hạn nền khi còn chạy. */
+const FASHION_LOCK_WAIT_MS = 5_000;
+const FASHION_LOCK_TTL_SECONDS = 60;
+export const productFashionLockKey = (productId: string) => `x-shop:product-fashion:${productId}`;
+
+type HeldLock = { ownerId: string; keys: string[] };
+
+async function releaseFashionLock(container: MedusaContainer, held: HeldLock): Promise<void> {
+  const err = await releaseOwnedQuietly(container.resolve(Modules.LOCKING), held.ownerId, held.keys);
+  if (err !== null)
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .warn(`[set-product-fashion] Nhả khoá lỗi/quá hạn (lease tự hết): ${(err as Error).message}`);
+}
+
+/**
+ * Bước ĐẦU workflow: giữ khoá theo sản phẩm suốt workflow. Đọc–xoá–tạo số đo, đổi link bảng size và bù trừ (tạo lại bản
+ * chụp) chỉ đúng khi không có lượt khác cho cùng sản phẩm chen giữa: thiếu khoá, bù trừ của lượt lỗi làm sống lại số đo
+ * cũ đè lên kết quả của lượt thành công, hai lượt song song để lại hai bộ số đo (T-144, T-150). Bù trừ chạy ngược thứ
+ * tự bước nên bù trừ của bước này (nhả khoá) chạy SAU mọi bù trừ khác; đường thành công nhả ở `releaseFashionLockStep`.
+ * Dùng `acquireOrdered` (lời gọi Redis có hạn, gia hạn lease) thay `acquireLockStep` của core-flows — lý do ở
+ * `lib/checkout/locks.ts`; `withOwnedLock` không dùng được vì chỉ bọc một bước.
+ */
+const acquireFashionLockStep = createStep(
+  "x-product-fashion-acquire-lock",
+  async (input: { product_id: string }, { container }) => {
+    const ownerId = `product-fashion:${randomUUID()}`;
+    const keys = await acquireOrdered(
+      container.resolve(Modules.LOCKING),
+      [productFashionLockKey(input.product_id)],
+      {
+        ownerId,
+        waitMs: FASHION_LOCK_WAIT_MS,
+        ttlSeconds: FASHION_LOCK_TTL_SECONDS,
+        scope: "product-fashion",
+      },
+    );
+    const held: HeldLock = { ownerId, keys };
+    return new StepResponse(held, held);
+  },
+  async (held, { container }) => {
+    if (!held || held.keys.length === 0) return;
+    await releaseFashionLock(container, held);
+  },
+);
+
+const releaseFashionLockStep = createStep(
+  "x-product-fashion-release-lock",
+  async (held: HeldLock, { container }) => {
+    await releaseFashionLock(container, held);
+    return new StepResponse(undefined);
+  },
+);
+
+/* ---------------------------------------------------------------- số đo người mẫu */
+
 /** Cột của `fashion_model_measurement` cần chụp để tạo lại y nguyên khi bù trừ (giữ cả `id`). */
 const MEASUREMENT_KEYS = [
   "id",
@@ -164,8 +224,9 @@ const MEASUREMENT_KEYS = [
 export type MeasurementSnapshot = Record<(typeof MEASUREMENT_KEYS)[number], unknown> & { id: string };
 
 /**
- * Tạo lại số đo đã chụp, idempotent: chỉ tạo bản ghi chưa có. Hai lần bù trừ chạy song song có thể cùng thấy "thiếu" rồi
- * cùng tạo → bên thua gặp trùng khoá; khi đó mọi id đã có mặt nghĩa là kết quả đã đúng nên bỏ qua lỗi.
+ * Tạo lại số đo đã chụp, idempotent khi bù trừ được gọi lại: chỉ tạo bản ghi chưa có. Tạo lỗi mà mọi id đã có mặt (lượt
+ * trước đã tạo xong) → kết quả đã đúng, bỏ qua; còn thiếu id → ném lại lỗi gốc. Không thay cho khoá theo sản phẩm: hai
+ * lượt cho cùng sản phẩm phải tuần tự nhờ `acquireFashionLockStep`.
  */
 export async function recreateMeasurements(
   fashion: FashionModuleService,
@@ -187,11 +248,49 @@ export async function recreateMeasurements(
   }
 }
 
+type MeasurementCompensation = {
+  attributesId: string;
+  createdIds: string[];
+  previous: MeasurementSnapshot[];
+};
+
+/**
+ * Hoàn tác bước thay số đo: đưa số đo của `attributes_id` về ĐÚNG bản chụp — xoá mọi bản ghi không có trong bản chụp
+ * (gồm cả bản lượt này đã tạo mà không kịp nhận id, vd. lệnh tạo đã commit nhưng client báo lỗi), rồi tạo lại bản thiếu.
+ * An toàn vì workflow giữ khoá theo sản phẩm: không lượt nào khác ghi số đo của sản phẩm này trong lúc đó.
+ * Lỗi → log (chỉ id, không số đo — PII) rồi ném lại để workflow báo bù trừ thất bại.
+ */
+async function undoReplaceMeasurements(
+  container: MedusaContainer,
+  comp: MeasurementCompensation,
+): Promise<void> {
+  const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
+  try {
+    const keep = new Set(comp.previous.map((m) => m.id));
+    const current = await fashion.listModelMeasurements({ attributes_id: comp.attributesId });
+    const extra = [...new Set([...comp.createdIds, ...current.map((m) => m.id)])].filter(
+      (id) => !keep.has(id),
+    );
+    if (extra.length) await fashion.deleteModelMeasurements(extra);
+    if (comp.previous.length) await recreateMeasurements(fashion, comp.attributesId, comp.previous);
+  } catch (e) {
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .error(
+        `[set-product-fashion] Hoàn tác số đo người mẫu lỗi: attributes_id=${comp.attributesId} ` +
+          `created_ids=${comp.createdIds.join(",") || "-"} previous_ids=${comp.previous.map((m) => m.id).join(",") || "-"}: ` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      );
+    throw e;
+  }
+}
+
 /**
  * Thay toàn bộ số đo người mẫu. Bản cũ bị XOÁ CỨNG (số đo là PII của người mẫu, data-map `retention: model-release` —
  * không để lại bản soft-delete không ai dọn), nên bước chụp đủ cột bản cũ vào dữ liệu bù trừ và tạo lại cùng `id` khi
  * workflow lỗi ở bước sau (vd. `assertStillPublishableStep`). `restore*` của MedusaService chỉ gỡ soft-delete, không
- * cứu được bản ghi đã xoá cứng (T-144).
+ * cứu được bản ghi đã xoá cứng (T-144). Bước tự lỗi (tạo bản mới lỗi sau khi đã xoá) không được workflow bù trừ → tự
+ * hoàn tác rồi ném lại.
  */
 const replaceMeasurementsStep = createStep(
   "x-replace-model-measurements",
@@ -208,23 +307,28 @@ const replaceMeasurementsStep = createStep(
           MEASUREMENT_KEYS.map((k) => [k, (m as Record<string, unknown>)[k] ?? null]),
         ) as MeasurementSnapshot,
     );
-    if (previous.length) await fashion.deleteModelMeasurements(previous.map((m) => m.id));
-    const created = input.model_measurements.length
-      ? await fashion.createModelMeasurements(
-          input.model_measurements.map((m) => ({ ...m, attributes_id: input.attributes_id })) as never,
-        )
-      : [];
-    return new StepResponse(undefined, {
+    const comp: MeasurementCompensation = {
       attributesId: input.attributes_id,
-      createdIds: (created as { id: string }[]).map((m) => m.id),
+      createdIds: [],
       previous: snapshot,
-    });
+    };
+    try {
+      if (previous.length) await fashion.deleteModelMeasurements(previous.map((m) => m.id));
+      const created = input.model_measurements.length
+        ? await fashion.createModelMeasurements(
+            input.model_measurements.map((m) => ({ ...m, attributes_id: input.attributes_id })) as never,
+          )
+        : [];
+      comp.createdIds = (created as { id: string }[]).map((m) => m.id);
+    } catch (e) {
+      await undoReplaceMeasurements(container, comp);
+      throw e;
+    }
+    return new StepResponse(undefined, comp);
   },
   async (comp, { container }) => {
     if (!comp) return;
-    const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
-    if (comp.createdIds.length) await fashion.deleteModelMeasurements(comp.createdIds);
-    if (comp.previous.length) await recreateMeasurements(fashion, comp.attributesId, comp.previous);
+    await undoReplaceMeasurements(container, comp);
   },
 );
 
@@ -237,16 +341,24 @@ const assertStillPublishableStep = createStep(
   },
 );
 
-/** Đặt thuộc tính thời trang + bảng size + số đo người mẫu cho một sản phẩm (ADM01, PDP03–04). */
+/**
+ * Đặt thuộc tính thời trang + bảng size + số đo người mẫu cho một sản phẩm (ADM01, PDP03–04).
+ *
+ * KHÔNG bật `store`/`retentionTime`/`idempotent`/timeout/bước async cho workflow này: khi đó engine lưu lượt chạy (cả dữ
+ * liệu bù trừ — bản chụp số đo người mẫu, PII) vào `workflow_execution`, ngoài vòng xoá theo data-map. Test
+ * `catalog-model` khẳng định không có bản lưu.
+ */
 export const setProductFashionWorkflow = createWorkflow(
   "x-set-product-fashion",
   (input: SetProductFashionInput) => {
+    const lock = acquireFashionLockStep({ product_id: input.product_id });
     const attributesId = upsertAttributesStep({ product_id: input.product_id, attributes: input.attributes });
     setSizeChartStep({ product_id: input.product_id, size_chart_id: input.size_chart_id });
     replaceMeasurementsStep({ attributes_id: attributesId, model_measurements: input.model_measurements });
     assertStillPublishableStep({ product_id: input.product_id });
     const eventData = transform({ input }, ({ input }) => ({ product_ids: [input.product_id] }));
     emitEventStep({ eventName: CATALOG_PRODUCTS_CHANGED, data: eventData });
+    releaseFashionLockStep(lock);
     return new WorkflowResponse({ attributes_id: attributesId });
   },
 );
