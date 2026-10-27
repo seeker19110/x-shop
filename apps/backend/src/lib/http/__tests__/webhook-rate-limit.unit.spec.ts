@@ -211,13 +211,18 @@ describe("chặn sớm trong bộ nhớ (LocalHitGuard)", () => {
   });
 
   it("vắt qua ranh giới cửa sổ: cùng quyết định trong cửa sổ đầu; sau đó không bao giờ lọt quá hạn mức trượt", async () => {
+    let writes = 0;
     const run = async (guard: LocalHitGuard | null) => {
       const shared = new MemoryCounter();
+      const counted: WindowHit = (b, ms, now) => {
+        writes += 1;
+        return shared.hit(b, ms, now);
+      };
       const phases: boolean[][] = [[], []];
       for (const [k, t] of [9_900, 10_100].entries()) {
         for (let i = 0; i < 400; i += 1) {
           phases[k]!.push(
-            (await consumeWebhookRate(hitOf(shared), "ghnCallbackIp", "203.0.113.7", at(t), undefined, guard))
+            (await consumeWebhookRate(counted, "ghnCallbackIp", "203.0.113.7", at(t), undefined, guard))
               .allowed,
           );
         }
@@ -225,6 +230,8 @@ describe("chặn sớm trong bộ nhớ (LocalHitGuard)", () => {
       return phases;
     };
     const [g1, g2] = await run(new LocalHitGuard());
+    // 300 ở cửa sổ đầu + 3 sau khi ô lăn (previous = 300 được giữ): ghi DB ≤ limit + 3, không phải 800.
+    expect(writes).toBe(limit + 3);
     const [n1] = await run(null);
     expect(g1).toEqual(n1); // cùng cửa sổ: y hệt bộ đếm chung
     // Lượt bị chặn sớm không được đếm vào DB nên cửa sổ trước "nhẹ" hơn: 300·0,99 = 297 → đúng 3 lượt nữa, không hơn.
@@ -252,5 +259,99 @@ describe("chặn sớm trong bộ nhớ (LocalHitGuard)", () => {
         await consumeWebhookRate(broken, "ghnCallbackIp", "203.0.113.7", at(0), undefined, guard),
       ).toEqual({ allowed: true });
     }
+  });
+});
+
+describe("LocalHitGuard — trần bộ nhớ, chi phí, release qua ranh giới (review T-152)", () => {
+  it("trần cứng: N khoá lớn không làm Map vượt trần; hết chỗ → bỏ qua chặn sớm (đi thẳng bộ đếm chung)", async () => {
+    const guard = new LocalHitGuard(100);
+    const hit = hitOf(new MemoryCounter());
+    for (let i = 0; i < 1_000; i += 1) {
+      const d = await consumeWebhookRate(
+        hit,
+        "ghnCallbackIp",
+        `10.0.${i >> 8}.${i & 255}`,
+        at(0),
+        undefined,
+        guard,
+      );
+      expect(d.allowed).toBe(true);
+    }
+    expect(guard.size).toBeLessThanOrEqual(100);
+    // Khoá ngoài trần vẫn bị bộ đếm chung chặn đúng ngưỡng (không theo dõi cục bộ).
+    const shared = new MemoryCounter();
+    const full = new LocalHitGuard(1);
+    await consumeWebhookRate(hitOf(shared), "ghnCallbackIp", "1.1.1.1", at(0), undefined, full);
+    const outs: boolean[] = [];
+    for (let i = 0; i < limit + 5; i += 1)
+      outs.push(
+        (await consumeWebhookRate(hitOf(shared), "ghnCallbackIp", "2.2.2.2", at(0), undefined, full)).allowed,
+      );
+    expect(outs.filter(Boolean)).toHaveLength(limit);
+    expect(full.size).toBe(1);
+  });
+
+  it("ô cũ được dọn khi sang cửa sổ mới để nhường chỗ (không kẹt đầy mãi)", () => {
+    const guard = new LocalHitGuard(10);
+    for (let i = 0; i < 10; i += 1) guard.reserve(`b${i}`, limit, 10_000, at(0));
+    expect(guard.reserve("moi", limit, 10_000, at(1_000))).toMatchObject({ ticket: null }); // đầy, chưa có ô cũ
+    const later = guard.reserve("moi", limit, 10_000, at(30_000)); // 3 cửa sổ sau: ô cũ đã trôi
+    expect(later).toMatchObject({ blocked: false, ticket: expect.anything() as unknown });
+    expect(guard.size).toBeLessThanOrEqual(10);
+  });
+
+  it("CPU: 50 000 khoá khác nhau nằm trong ngân sách (O(1) mỗi request, không duyệt Map)", () => {
+    const guard = new LocalHitGuard();
+    const before = process.cpuUsage();
+    for (let i = 0; i < 50_000; i += 1) guard.reserve(`webhook.ghnCallbackIp:${i}`, limit, 10_000, at(1_000));
+    const used = process.cpuUsage(before);
+    const ms = (used.user + used.system) / 1000;
+    expect(guard.size).toBeLessThanOrEqual(10_000);
+    expect(ms).toBeLessThan(1_000); // mã cũ (sweep O(n) mỗi request): ~12 000 ms
+  });
+
+  it("DB treo vắt qua ranh giới rồi lỗi: lượt giữ chỗ được trả đúng ô, guard không chặn lượt mà bộ đếm chung cho qua", async () => {
+    const guard = new LocalHitGuard();
+    const failers: Array<(e: Error) => void> = [];
+    const hanging: WindowHit = () =>
+      new Promise((_, reject) => {
+        failers.push(reject);
+      });
+    const pending = Array.from({ length: limit }, () =>
+      consumeWebhookRate(hanging, "ghnCallbackIp", "203.0.113.7", at(9_999), undefined, guard),
+    );
+    // Trong lúc 300 lượt còn treo, một request ở cửa sổ kế làm ô lăn (previous = 300). Lượt đang bay được tính để giữ trần
+    // ghi DB (đánh đổi có chủ ý: chỉ xảy ra khi DB đang treo, lúc đó bộ đếm chung cũng chưa ghi được).
+    const fresh = new MemoryCounter();
+    expect(
+      (await consumeWebhookRate(hitOf(fresh), "ghnCallbackIp", "203.0.113.7", at(10_001), undefined, guard))
+        .allowed,
+    ).toBe(false);
+    failers.forEach((f) => f(new Error("db down"))); // DB lỗi sau khi cửa sổ đã lăn → trả chỗ vào `previous`
+    expect((await Promise.all(pending)).every((d) => d.allowed)).toBe(true);
+    // Bộ đếm chung trống: mọi lượt kế phải qua, có guard cũng như không (trước sửa: guard chặn vì previous = 300).
+    for (let i = 0; i < 5; i += 1) {
+      const withGuard = await consumeWebhookRate(
+        hitOf(fresh),
+        "ghnCallbackIp",
+        "203.0.113.7",
+        at(10_001),
+        undefined,
+        guard,
+      );
+      expect(withGuard.allowed).toBe(true);
+    }
+  });
+
+  it("release trả đúng ô: cùng cửa sổ → current; lăn 1 cửa sổ → previous; lăn xa → không đổi", () => {
+    const guard = new LocalHitGuard();
+    const rsv = (t: number) => guard.reserve("b", 5, 10_000, at(t));
+    const ticket = (r: ReturnType<typeof rsv>) => (r.blocked ? null : r.ticket);
+    const t1 = ticket(rsv(9_999));
+    guard.reserve("b", 5, 10_000, at(10_500)); // ô lăn: previous = 1, current = 1
+    guard.release(t1); // phải giảm previous
+    // 4 lượt nữa ở cửa sổ này: hiệu dụng (current 1 + 4)=5 + previous 0 → vẫn ≤ 5; lượt thứ 6 mới bị chặn
+    for (let i = 0; i < 4; i += 1) expect(rsv(10_500).blocked).toBe(false);
+    expect(rsv(10_500).blocked).toBe(true);
   });
 });

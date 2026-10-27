@@ -63,40 +63,67 @@ interface LocalCell {
   previous: number;
 }
 
+/** Giữ chỗ đã ghi nhận ở bộ chặn sớm — mang theo cửa sổ lúc giữ để trả đúng ô dù cửa sổ đã lăn trong lúc chờ DB. */
+export interface LocalTicket {
+  bucket: string;
+  start: number;
+  windowMs: number;
+}
+
+export type LocalReservation =
+  { blocked: false; ticket: LocalTicket | null } | { blocked: true; retryAfterSeconds: number };
+
+/** Trần số khoá theo dõi (như `FixedWindowLimiter.maxKeys`): vượt trần → bỏ qua chặn sớm, đi thẳng tới bộ đếm chung. */
+export const LOCAL_GUARD_MAX_KEYS = 10_000;
+
 /**
  * Số lượt của RIÊNG tiến trình này đã gửi tới bộ đếm chung, theo khoá, cùng cấu trúc cửa sổ cố định + trượt. Tăng đồng
- * bộ TRƯỚC khi `await` DB nên request song song không lọt cùng lúc. Ô quá 2 cửa sổ bị dọn khi truy cập (bộ nhớ ≤ số
- * khoá hoạt động trong 2 cửa sổ).
+ * bộ TRƯỚC khi `await` DB nên request song song không lọt cùng lúc. Bộ nhớ có trần cứng `maxKeys`; dọn ô cũ (> 1 cửa
+ * sổ) chỉ khi cần chỗ cho khoá mới và tối đa một lần mỗi cửa sổ → chi phí mỗi request O(1) (không để kẻ tấn công nhiều
+ * khoá, vd IPv6 /48 = 65 536 khoá /64, biến thành O(n) mỗi request). Hết chỗ → không giữ chỗ, bộ đếm chung vẫn quyết
+ * định (đúng ngữ nghĩa, chỉ mất tối ưu chặn ghi DB).
  */
 export class LocalHitGuard {
   private readonly cells = new Map<string, LocalCell>();
+  private lastSweepStart = -1;
 
-  private cell(bucket: string, windowMs: number, now: Date): LocalCell {
-    const start = windowStartMs(windowMs, now.getTime());
+  constructor(private readonly maxKeys: number = LOCAL_GUARD_MAX_KEYS) {}
+
+  /** Số khoá đang theo dõi (test/quan sát). */
+  get size(): number {
+    return this.cells.size;
+  }
+
+  private sweep(windowMs: number, startNow: number): void {
+    if (this.lastSweepStart === startNow) return;
+    this.lastSweepStart = startNow;
+    const floor = startNow - windowMs;
+    for (const [k, c] of this.cells) if (c.start < floor) this.cells.delete(k);
+  }
+
+  private cell(bucket: string, windowMs: number, start: number): LocalCell | null {
     const old = this.cells.get(bucket);
-    let c: LocalCell;
-    if (!old || old.start > start) c = { start, current: 0, previous: 0 };
-    else if (old.start === start) c = old;
-    else c = { start, current: 0, previous: old.start === start - windowMs ? old.current : 0 };
+    if (!old) {
+      if (this.cells.size >= this.maxKeys) {
+        this.sweep(windowMs, start);
+        if (this.cells.size >= this.maxKeys) return null;
+      }
+      const fresh = { start, current: 0, previous: 0 };
+      this.cells.set(bucket, fresh);
+      return fresh;
+    }
+    if (old.start === start) return old;
+    if (old.start > start) return { start, current: 0, previous: 0 }; // đồng hồ lùi: không đụng ô, không giữ chỗ
+    const c = { start, current: 0, previous: old.start === start - windowMs ? old.current : 0 };
     this.cells.set(bucket, c);
     return c;
   }
 
-  private sweep(windowMs: number, now: Date): void {
-    if (this.cells.size < 1024) return;
-    const floor = windowStartMs(windowMs, now.getTime()) - windowMs;
-    for (const [k, c] of this.cells) if (c.start < floor) this.cells.delete(k);
-  }
-
-  /** Lượt kế có chắc chắn bị bộ đếm chung chặn không? Không → ghi nhận lượt sắp gửi (đã tăng). */
-  reserve(
-    bucket: string,
-    limit: number,
-    windowMs: number,
-    now: Date,
-  ): { blocked: false } | { blocked: true; retryAfterSeconds: number } {
-    this.sweep(windowMs, now);
-    const c = this.cell(bucket, windowMs, now);
+  /** Lượt kế có chắc chắn bị bộ đếm chung chặn không? Không → ghi nhận lượt sắp gửi (ticket; null = không theo dõi). */
+  reserve(bucket: string, limit: number, windowMs: number, now: Date): LocalReservation {
+    const start = windowStartMs(windowMs, now.getTime());
+    const c = this.cell(bucket, windowMs, start);
+    if (!c) return { blocked: false, ticket: null };
     const sample: WindowSample = sampleAt(c, windowMs, now);
     if (wouldExceedLimit(sample, limit, windowMs)) {
       // Như bộ đếm chung sẽ tính sau khi đếm lượt này (current + 1) — khớp tuyệt đối khi chỉ bản này đóng góp, ngắn hơn
@@ -107,18 +134,30 @@ export class LocalHitGuard {
         retryAfterSeconds: slidingRetryAfterSeconds(afterHit, limit, windowMs, NEXT_HIT),
       };
     }
+    if (this.cells.get(bucket) !== c) return { blocked: false, ticket: null };
     c.current += 1;
-    return { blocked: false };
+    return { blocked: false, ticket: { bucket, start, windowMs } };
   }
 
-  /** Lượt đã giữ chỗ nhưng bộ đếm chung lỗi (không ghi được) → trả lại để chế độ "cho qua khi lỗi" không tự khoá. */
-  release(bucket: string, windowMs: number, now: Date): void {
-    const c = this.cells.get(bucket);
-    if (c && c.start === windowStartMs(windowMs, now.getTime()) && c.current > 0) c.current -= 1;
+  /**
+   * Lượt đã giữ chỗ nhưng bộ đếm chung lỗi (không ghi được) → trả lại để chế độ "cho qua khi lỗi" không tự khoá. Cửa sổ
+   * có thể đã lăn trong lúc chờ DB: ô còn ở cửa sổ lúc giữ → giảm `current`; ô đã lăn đúng 1 cửa sổ → lượt đó nay nằm ở
+   * `previous`; lăn xa hơn → đã trôi hết, không còn gì để trả.
+   */
+  release(ticket: LocalTicket | null): void {
+    if (!ticket) return;
+    const c = this.cells.get(ticket.bucket);
+    if (!c) return;
+    if (c.start === ticket.start) {
+      if (c.current > 0) c.current -= 1;
+    } else if (c.start === ticket.start + ticket.windowMs && c.previous > 0) {
+      c.previous -= 1;
+    }
   }
 
   clear(): void {
     this.cells.clear();
+    this.lastSweepStart = -1;
   }
 }
 
@@ -139,15 +178,17 @@ export async function consumeWebhookRate(
 ): Promise<WebhookRateDecision> {
   const { limit, windowMs } = WEBHOOK_RATE_LIMITS[name];
   const bucket = webhookRateBucket(name, ip);
+  let ticket: LocalTicket | null = null;
   if (guard) {
     const early = guard.reserve(bucket, limit, windowMs, now);
     if (early.blocked) return { allowed: false, retryAfterSeconds: early.retryAfterSeconds };
+    ticket = early.ticket;
   }
   let sample: WindowSample;
   try {
     sample = await hit(bucket, windowMs, now);
   } catch (e) {
-    guard?.release(bucket, windowMs, now);
+    guard?.release(ticket);
     onCounterError(e);
     return { allowed: true };
   }

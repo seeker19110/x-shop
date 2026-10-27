@@ -208,6 +208,26 @@ medusaIntegrationTestRunner({
         expect(again.counters).toBe(0);
       });
 
+      it("ranh giới đúng 2×windowMs: hàng ở now−windowMs−1ms giữ, now−2·windowMs−1ms xoá (chống đột biến hệ số)", async () => {
+        await pg().raw(`DELETE FROM rate_limit_counter`);
+        const now = new Date();
+        const bucket = webhookRateBucket("vnpayIpnIp", "203.0.113.9");
+        const put = async (id: string, ms: number) =>
+          pg().raw(`INSERT INTO rate_limit_counter (id, bucket, window_start, count) VALUES (?, ?, ?, 1)`, [
+            id,
+            bucket,
+            new Date(now.getTime() - ms),
+          ]);
+        await put("rlc_keep", ipnWindowMs + 1);
+        await put("rlc_drop", 2 * ipnWindowMs + 1);
+        const r = await checkout().purgeOrderAccessRecords(now, windows);
+        expect(r.counters).toBe(1);
+        const left = (await pg().raw(`SELECT id FROM rate_limit_counter WHERE bucket = ?`, [bucket])) as {
+          rows: Array<{ id: string }>;
+        };
+        expect(left.rows.map((x) => x.id)).toEqual(["rlc_keep"]);
+      });
+
       it("tên chính sách/cửa sổ không hợp lệ bị từ chối (không ghép bậy vào LIKE)", async () => {
         await expect(checkout().purgeOrderAccessRecords(new Date(), { "x%": 10_000 })).rejects.toThrow(
           RangeError,
