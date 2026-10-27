@@ -31,7 +31,9 @@ import {
  * Chặn sớm trong bộ nhớ (T-152): mỗi bản sao nhớ số lượt NÓ đã gửi tới bộ đếm chung trong cửa sổ. Chỉ khi riêng số đó đã
  * vượt hạn mức (hiệu dụng + 1 > limit) mới trả 429 không chạm DB. Bộ đếm chung ≥ số đếm cục bộ của mọi bản sao, nên
  * lượt bị chặn sớm chắc chắn cũng bị bộ đếm chung chặn — kết quả cho/chặn không đổi; chỉ giới hạn số UPSERT mỗi
- * IP/bản/cửa sổ ≤ hạn mức (dội 100 000 request không còn 100 000 lần ghi DB). Lượt bị chặn sớm không được đếm vào DB.
+ * IP/bản/cửa sổ ≤ hạn mức (dội 100 000 request không còn 100 000 lần ghi DB). Lượt bị chặn sớm không được đếm vào DB
+ * (D-094). Ngoại lệ có chủ ý: lượt ĐANG BAY (chờ DB) vẫn tính vào chặn sớm để giữ trần ghi DB — khi DB treo, > hạn mức
+ * lượt đang bay của một IP thì lượt sau nhận 429 thay vì fail-open (D-092), tự hết sau ≤ 2 cửa sổ vì ô lăn (D-098).
  */
 export interface WebhookRateWindow {
   limit: number;

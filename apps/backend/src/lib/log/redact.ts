@@ -277,7 +277,10 @@ const SQL_LITERAL = /'(?:[^']|'')*'/g;
  * viết thường) không phân biệt được với câu văn; (3) câu đứng một mình không có dấu hiệu: `values (…)` (trùng câu văn
  * "Allowed values ('a')"), `copy`/`truncate`/`lock` (không mang giá trị); (4) `E'…\'…'` viết tay đã qua JSON.stringify
  * (`\\'`) bị hiểu sai biên nháy; (5) phần lỗi sau ` - ` của Postgres (vd `invalid input syntax for type integer: "abc"`)
- * giữ nguyên — chỉ qua các mẫu nội dung chung (`Key (…)=(…)`, `Failing row contains (…)` được băm riêng).
+ * giữ nguyên — chỉ qua các mẫu nội dung chung (`Key (…)=(…)`, `Failing row contains (…)` được băm riêng); (6) trong
+ * `Failing row contains (…)` Postgres in giá trị KHÔNG nháy — giá trị text/jsonb chứa dạng biên (`\n    at `, `\n - hint: `,
+ * `\nCaused by:`, `\n[errors N]`) cắt hàng sớm, các cột sau biên giữ nguyên (cần vi phạm CHECK/NOT NULL + dữ liệu cố ý
+ * soạn; review T-151 vòng 4).
  */
 const QIDENT = String.raw`\\{0,7}"[^"\n]{1,128}"`;
 const SQL_IDENT = String.raw`(?:${QIDENT}(?:\.${QIDENT})?|[\w.]{1,128})`;
