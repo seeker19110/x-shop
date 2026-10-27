@@ -459,7 +459,11 @@ Mô hình thật (`apps/backend/src/lib/outbox/breaker.ts`, T-097, OPS-COST-004)
 sao), ngân sách lượt gọi theo ngày UTC ở `rate_limit_counter` (bucket `breaker.budget:<breaker>`). Ngưỡng trong code
 (`OUTBOX_BREAKER_POLICY`, `OUTBOX_RUN_LIMITS` — đổi qua review): mỗi lượt chạy tối đa 100 sự kiện / 50 lượt gọi; 5 sự kiện khác nhau
 lỗi tạm liên tiếp → mở 5 phút; ngân sách ngày `outbox.notify` 3 000, loại khác 10 000 — 80 % log WARN, 90 % bóp còn 5 lượt gọi/lượt
-chạy, vượt 100 % → mở tới 00:00 UTC hôm sau. Breaker mở → mở ngoại lệ này (ưu tiên `high`, owner `owner`, một ngoại lệ đang mở mỗi
+chạy, vượt 100 % → mở tới 00:00 UTC hôm sau. **Ngân sách con** (T-162, `subBudgets`): thông báo do khách tự kích
+(`order.lookup_link`) tối đa 1 000 lượt/ngày NẰM TRONG 3 000 của `outbox.notify` (bucket `breaker.budget:outbox.notify.customer_triggered`);
+vượt → chỉ hoãn loại đó tới 00:00 UTC (không có dòng `job_breaker`, breaker `outbox.notify` không đổi — thư xác nhận/giao hàng vẫn gửi)
+và mở ngoại lệ này với `detail.breaker = 'outbox.notify.customer_triggered'`; thường là lạm dụng tra cứu đơn → kiểm giới hạn tra cứu
+(5 lượt/giờ/SĐT) và nguồn yêu cầu trước khi nâng trần. Breaker mở → mở ngoại lệ này (ưu tiên `high`, owner `owner`, một ngoại lệ đang mở mỗi
 breaker). **Không mất sự kiện**: sự kiện bị hoãn vẫn `pending`/`failed` trong `outbox_event`, `attempts` không đổi, `next_attempt_at`
 = hết nguội. Hết nguội → đúng một lượt thử (half-open); thành công hoặc lỗi vĩnh viễn (dịch vụ đã trả lời, D-111) → đóng, lỗi tạm → mở thêm một kỳ.
 **Lỗi DB khi đọc/ghi breaker hoặc đếm ngân sách → fail-closed**: lượt chạy job lỗi (log của job `x-outbox-dispatch`), không gọi dịch

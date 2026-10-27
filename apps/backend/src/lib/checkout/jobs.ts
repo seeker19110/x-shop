@@ -20,6 +20,7 @@ import {
   breakerKeyOf,
   OUTBOX_BREAKER_POLICY,
   OUTBOX_RUN_LIMITS,
+  subBudgetOf,
   type BreakerTrip,
   type OutboxBreakerPolicy,
   type OutboxRunLimits,
@@ -411,7 +412,7 @@ export async function dispatchOutbox(
     const key = breakerKeyOf(event.type);
     let probe = false;
     if (handler) {
-      const admission = await breaker.admit(key, opts.now ?? clock());
+      const admission = await breaker.admit(key, opts.now ?? clock(), subBudgetOf(policy, event.type));
       if (admission.kind === "defer") {
         await s.deferOutbox(event.id, admission.until);
         summary.deferred.push(event.event_key);

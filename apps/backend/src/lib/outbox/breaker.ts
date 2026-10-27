@@ -10,6 +10,9 @@
  *     thử lại nhiều lần chỉ tính một (đã có backoff/trần lần riêng — một sự kiện hỏng không được chặn cả adapter).
  *  3. Theo NGÂN SÁCH cửa sổ (ngày UTC, đếm ở `rate_limit_counter`): ≥ 80 % → cảnh báo (log một lần), ≥ 90 % → bóp
  *     (mỗi lượt chạy tối đa `throttledCallsPerRun` lượt gọi cho breaker đó), vượt 100 % → `open` tới hết cửa sổ.
+ *  4. NGÂN SÁCH CON (T-162, `subBudgets`): loại sự kiện do KHÁCH tự kích (vd. `order.lookup_link`) có thêm trần riêng
+ *     NẰM TRONG ngân sách breaker cha. Vượt ngân sách con → chỉ hoãn loại đó tới hết cửa sổ (không đổi trạng thái
+ *     breaker cha, thư giao dịch vẫn gửi); trần tổng chi phí không đổi, thư giao dịch luôn còn ≥ cha − con lượt/cửa sổ.
  *
  * Breaker mở (lỗi hoặc ngân sách) → đúng MỘT bản sao thắng câu chuyển trạng thái → mở ngoại lệ vận hành
  * `job_circuit_open` (dispatcher gọi `onTrip`). Sự kiện bị hoãn chỉ dời `next_attempt_at` (không tăng `attempts`) — vẫn
@@ -73,12 +76,29 @@ export interface OutboxBreakerPolicy {
   throttledCallsPerRun: number;
   /** Khi bóp: sự kiện vượt phần được gọi hoãn chừng này (ms). */
   throttleDeferMs: number;
+  /**
+   * Ngân sách con theo LOẠI sự kiện (T-162): lượt gọi của loại này đếm vào ngân sách con `key` VÀ ngân sách breaker cha.
+   * Vượt `limit` → hoãn riêng loại này tới hết cửa sổ; breaker cha không mở. Loại không khai → không có ngân sách con.
+   */
+  subBudgets: Readonly<Record<string, SubBudget>>;
 }
+
+export interface SubBudget {
+  /** Khoá ngân sách con (bucket `breaker.budget:<key>`, phạm vi ngoại lệ `job_circuit_open`) — khác mọi khoá breaker. */
+  key: string;
+  /** Số lượt gọi tối đa mỗi cửa sổ; phải < ngân sách breaker cha (không thì không bảo vệ được thư giao dịch). */
+  limit: number;
+}
+
+/** Ngân sách con của thông báo do khách tự kích (chia chung giữa các loại khai trong `subBudgets` cùng `key`). */
+export const CUSTOMER_TRIGGERED_NOTIFY_KEY = "outbox.notify.customer_triggered";
 
 /**
  * Ngưỡng mặc định (đổi qua review — OPS-COST-004 "cấu hình ngưỡng trong code có review"):
  *  - 5 sự kiện khác nhau lỗi liên tiếp → mở 5 phút; lượt thử half-open giữ 60 giây (= lease nhận sự kiện outbox);
- *  - ngân sách ngày: thông báo khách (email/SMS — trả phí theo tin) 3 000 lượt; bộ xử lý khác 10 000 lượt.
+ *  - ngân sách ngày: thông báo khách (email/SMS — trả phí theo tin) 3 000 lượt; bộ xử lý khác 10 000 lượt;
+ *  - ngân sách con (T-162): thông báo do khách tự kích (`order.lookup_link`) 1 000 lượt TRONG 3 000 của `outbox.notify`
+ *    → thư giao dịch (xác nhận/giao hàng) luôn còn ≥ 2 000 lượt/ngày dù lookup bị lạm dụng.
  */
 export const OUTBOX_BREAKER_POLICY: OutboxBreakerPolicy = {
   failureThreshold: 5,
@@ -91,6 +111,7 @@ export const OUTBOX_BREAKER_POLICY: OutboxBreakerPolicy = {
   throttleRatio: 0.9,
   throttledCallsPerRun: 5,
   throttleDeferMs: 60_000,
+  subBudgets: { "order.lookup_link": { key: CUSTOMER_TRIGGERED_NOTIFY_KEY, limit: 1_000 } },
 };
 
 /** Kiểm chính sách (số nguyên dương, tỉ lệ 0 < cảnh báo ≤ bóp ≤ 1) — sai là lỗi lập trình, ném ngay. */
@@ -113,6 +134,26 @@ export function assertBreakerPolicy(p: OutboxBreakerPolicy, limits: OutboxRunLim
   if (!(p.warnRatio > 0 && p.warnRatio <= p.throttleRatio && p.throttleRatio <= 1)) {
     throw new RangeError("breaker: cần 0 < warnRatio ≤ throttleRatio ≤ 1");
   }
+  const subLimits = new Map<string, { limit: number; parent: string }>();
+  for (const [type, sub] of Object.entries(p.subBudgets)) {
+    if (!Number.isSafeInteger(sub.limit) || sub.limit <= 0) {
+      throw new RangeError(`breaker: subBudgets.${type}.limit phải là số nguyên dương`);
+    }
+    const parent = breakerKeyOf(type);
+    // Khoá con trùng khoá breaker cha → bộ đếm/ngoại lệ của con và cha lẫn nhau.
+    if (sub.key === "" || sub.key === parent) {
+      throw new RangeError(`breaker: subBudgets.${type}.key phải khác khoá breaker ${parent}`);
+    }
+    if (sub.limit >= budgetOf(p, parent)) {
+      throw new RangeError(`breaker: subBudgets.${type}.limit phải nhỏ hơn ngân sách ${parent}`);
+    }
+    // Một khoá con dùng chung cho nhiều loại → cùng trần, cùng breaker cha.
+    const seen = subLimits.get(sub.key);
+    if (seen !== undefined && (seen.limit !== sub.limit || seen.parent !== parent)) {
+      throw new RangeError(`breaker: ngân sách con ${sub.key} khai trần/breaker cha khác nhau`);
+    }
+    subLimits.set(sub.key, { limit: sub.limit, parent });
+  }
 }
 
 assertBreakerPolicy(OUTBOX_BREAKER_POLICY, OUTBOX_RUN_LIMITS);
@@ -127,6 +168,14 @@ export const budgetBucket = (key: string) => `breaker.budget:${key}`;
 export function budgetOf(policy: OutboxBreakerPolicy, key: string): number {
   return policy.budgets[key] ?? policy.defaultBudget;
 }
+
+/** Ngân sách con của loại sự kiện (khoá riêng — loại trùng khoá `Object.prototype` không trúng); không khai → null. */
+export function subBudgetOf(policy: OutboxBreakerPolicy, eventType: string): SubBudget | null {
+  return Object.hasOwn(policy.subBudgets, eventType) ? (policy.subBudgets[eventType] ?? null) : null;
+}
+
+const windowEndOf = (policy: OutboxBreakerPolicy, now: Date) =>
+  new Date(windowStartMs(policy.budgetWindowMs, now.getTime()) + policy.budgetWindowMs);
 
 export type BudgetLevel = "ok" | "warn" | "throttle" | "exhausted";
 
@@ -189,10 +238,19 @@ export class BreakerRun {
     return { kind: "defer", until, reason };
   }
 
-  /** Có được gọi bộ xử lý cho sự kiện của breaker `key` lúc `now` không; không → hoãn tới `until`. */
-  async admit(key: string, now: Date): Promise<Admission> {
+  /**
+   * Có được gọi bộ xử lý cho sự kiện của breaker `key` lúc `now` không; không → hoãn tới `until`. `sub` = ngân sách con
+   * của loại sự kiện (T-162): hết → hoãn riêng loại này, breaker `key` giữ nguyên.
+   */
+  async admit(key: string, now: Date, sub: SubBudget | null = null): Promise<Admission> {
     const known = this.deferUntil.get(key);
     if (known && known.until > now) return { kind: "defer", until: known.until, reason: known.reason };
+    if (sub) {
+      const knownSub = this.deferUntil.get(sub.key);
+      if (knownSub && knownSub.until > now) {
+        return { kind: "defer", until: knownSub.until, reason: knownSub.reason };
+      }
+    }
 
     // Bóp (≥ 90 % ngân sách): xét TRƯỚC khi đụng trạng thái chung — không giữ lượt thử, không đếm thêm ngân sách.
     const used = this.callsByKey.get(key) ?? 0;
@@ -209,6 +267,14 @@ export class BreakerRun {
     if (snap && snap.state !== "closed") {
       const until = snap.state === "open" ? snap.open_until : snap.probe_until;
       if (until && until > now) return this.defer(key, until, snap.state === "open" ? "open" : "probing");
+    }
+    // Ngân sách con xét TRƯỚC khi giữ lượt thử half-open (loại bị hoãn không được chiếm lượt thử của thư giao dịch) và
+    // TRƯỚC khi đếm ngân sách cha (lượt bị từ chối không ăn vào phần của thư giao dịch).
+    if (sub) {
+      const subDefer = await this.admitSub(sub, now);
+      if (subDefer) return subDefer;
+    }
+    if (snap && snap.state !== "closed") {
       probe = await this.store.claimJobBreakerProbe(
         key,
         now,
@@ -229,9 +295,7 @@ export class BreakerRun {
     const limit = budgetOf(this.policy, key);
     const level = budgetLevel(sample.current, limit, this.policy);
     if (level === "exhausted") {
-      const windowEnd = new Date(
-        windowStartMs(this.policy.budgetWindowMs, now.getTime()) + this.policy.budgetWindowMs,
-      );
+      const windowEnd = windowEndOf(this.policy, now);
       const won = await this.store.tripJobBreaker(key, "budget_exhausted", windowEnd, [
         "closed",
         "half_open",
@@ -264,6 +328,39 @@ export class BreakerRun {
     this.callsByKey.set(key, used + 1);
     this.calls += 1;
     return { kind: "call", probe };
+  }
+
+  /**
+   * Đếm một lượt vào ngân sách con; vượt trần → hoãn loại này tới hết cửa sổ (null = được gọi tiếp). KHÔNG đổi trạng
+   * thái breaker. Đếm nguyên tử → đúng một lượt (toàn hệ thống) chạm mốc 80 % (log) và mốc vượt trần (log + ngoại lệ
+   * vận hành `job_circuit_open` phạm vi khoá con) mỗi cửa sổ. Lượt đã đếm mà rồi không gọi (thua lượt thử half-open, ngân
+   * sách cha hết) vẫn tính — sai về phía chặt.
+   */
+  private async admitSub(sub: SubBudget, now: Date): Promise<(Admission & { kind: "defer" }) | null> {
+    const sample = await this.store.hitRateCounter(budgetBucket(sub.key), this.policy.budgetWindowMs, now);
+    if (sample.current > sub.limit) {
+      const windowEnd = windowEndOf(this.policy, now);
+      if (sample.current === sub.limit + 1) {
+        this.hooks.warn(
+          `[breaker] ${sub.key}: hết ngân sách con ${sub.limit} lượt/cửa sổ — hoãn loại này tới ` +
+            `${windowEnd.toISOString()} (breaker cha vẫn gửi)`,
+        );
+        await this.hooks.onTrip({
+          key: sub.key,
+          reason: "budget_exhausted",
+          openUntil: windowEnd,
+          budgetUsed: sample.current,
+          budgetLimit: sub.limit,
+        });
+      }
+      return this.defer(sub.key, windowEnd, "budget_exhausted");
+    }
+    if (sample.current === Math.ceil(this.policy.warnRatio * sub.limit)) {
+      this.hooks.warn(
+        `[breaker] ${sub.key}: đã dùng ${sample.current}/${sub.limit} lượt ngân sách con (cảnh báo)`,
+      );
+    }
+    return null;
   }
 
   /**

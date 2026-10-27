@@ -5,8 +5,11 @@ import {
   budgetBucket,
   breakerKeyOf,
   budgetLevel,
+  budgetOf,
+  CUSTOMER_TRIGGERED_NOTIFY_KEY,
   OUTBOX_BREAKER_POLICY,
   OUTBOX_RUN_LIMITS,
+  subBudgetOf,
   type OutboxBreakerPolicy,
 } from "../breaker";
 import { validateOutboxPayload } from "../payload";
@@ -31,6 +34,8 @@ const POLICY: OutboxBreakerPolicy = {
   defaultBudget: 1_000,
   throttledCallsPerRun: 2,
   throttleDeferMs: 30_000,
+  // Ngân sách con (T-162) thử riêng ở khối cuối — tại đây tắt để các ca trên đo đúng breaker cha.
+  subBudgets: {},
 };
 
 const ids = (n: number, prefix = "e") =>
@@ -567,5 +572,206 @@ describe("hàm thuần + kiểm chính sách", () => {
     await expect(
       dispatchOutbox(fakeOutboxDb([]).container, { runLimits: { maxIterations: 1, maxCalls: Number.NaN } }),
     ).rejects.toThrow(RangeError);
+  });
+});
+
+describe("ngân sách con cho thông báo do khách tự kích (T-162)", () => {
+  const NOTIFY = "outbox.notify";
+  const SUB = CUSTOMER_TRIGGERED_NOTIFY_KEY;
+  /** Cha 10 lượt/ngày; lookup tối đa 3 trong đó → thư giao dịch luôn còn ≥ 7. Không bóp trong lượt (đo trần thuần). */
+  const SUB_POLICY: OutboxBreakerPolicy = {
+    ...POLICY,
+    budgets: { [NOTIFY]: 10 },
+    throttledCallsPerRun: 100,
+    subBudgets: { "order.lookup_link": { key: SUB, limit: 3 } },
+  };
+  const NEXT_DAY = new Date("2026-10-28T00:00:00.000Z");
+  const DAY_START = Date.parse("2026-10-27T00:00:00.000Z");
+  const payload = (n: number) => ({ order_id: `order_${n}` });
+  /** `a..` = lookup (nhận trước), `z..` = thư giao dịch. */
+  const lookups = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `a${String(i + 1).padStart(2, "0")}`,
+      type: "order.lookup_link",
+      payload: payload(i + 1),
+    }));
+  const confirmed = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `z${String(i + 1).padStart(2, "0")}`,
+      type: "order.confirmed",
+      payload: payload(100 + i),
+    }));
+
+  function notifier(mode: () => "ok" | "fail" = () => "ok") {
+    const calls: string[] = [];
+    const handler: OutboxHandler = async (_c, e) => {
+      calls.push(e.id);
+      if (mode() === "fail") throw Object.assign(new Error("ESP 503"), { status: 503 });
+    };
+    return {
+      calls,
+      handlers: { "order.lookup_link": handler, "order.confirmed": handler } as Record<string, OutboxHandler>,
+    };
+  }
+  const runSub = (
+    db: ReturnType<typeof fakeOutboxDb>,
+    now: Date,
+    handlers: Record<string, OutboxHandler>,
+    policy = SUB_POLICY,
+  ) => dispatchOutbox(db.container, { now, handlers, random: () => 0, breakerPolicy: policy });
+  const counter = (db: ReturnType<typeof fakeOutboxDb>, key: string) =>
+    db.counters.get(`${budgetBucket(key)}@${DAY_START}`) ?? 0;
+
+  it("lookup đốt hết ngân sách (nhiều lượt chạy) → order.confirmed vẫn gửi; breaker notify không mở", async () => {
+    // Đối chứng: không có ngân sách con thì 12 lookup ăn hết 10 lượt của `outbox.notify` → breaker mở tới 00:00 UTC
+    // và order.confirmed bị hoãn (review T-097 🟢2).
+    const db = fakeOutboxDb(lookups(12));
+    const h = notifier();
+    for (let k = 0; k < 4; k++) await runSub(db, at(k * 60_000), h.handlers);
+    expect(h.calls).toEqual(["a01", "a02", "a03"]);
+
+    db.add({ id: "z01", type: "order.confirmed", payload: payload(100), next_attempt_at: at(300_000) });
+    const r = await runSub(db, at(300_000), h.handlers);
+    expect(r.sent).toEqual(["order.confirmed:z01"]);
+    expect(h.calls).toEqual(["a01", "a02", "a03", "z01"]);
+    expect(db.breakers.get(NOTIFY)?.state ?? "closed").toBe("closed");
+    // Lookup vượt trần hoãn tới hết cửa sổ, vẫn trong outbox, attempts không đổi.
+    const waiting = db.outbox.filter((x) => x.state !== "sent");
+    expect(waiting).toHaveLength(9);
+    for (const row of waiting) {
+      expect(row).toMatchObject({
+        type: "order.lookup_link",
+        state: "pending",
+        attempts: 0,
+        next_attempt_at: NEXT_DAY,
+      });
+    }
+    // Lượt bị từ chối không ăn vào ngân sách cha: 3 lookup + 1 thư giao dịch.
+    expect(counter(db, NOTIFY)).toBe(4);
+  });
+
+  it("cùng một lượt chạy: lookup vượt trần hoãn tới 00:00 UTC, thư giao dịch gửi; một ngoại lệ + log cho khoá con", async () => {
+    const db = fakeOutboxDb([...lookups(8), ...confirmed(2)]);
+    const h = notifier();
+    const r = await runSub(db, T0, h.handlers);
+    expect(r.sent).toEqual([
+      "order.lookup_link:a01",
+      "order.lookup_link:a02",
+      "order.lookup_link:a03",
+      "order.confirmed:z01",
+      "order.confirmed:z02",
+    ]);
+    expect(r.deferred).toEqual(["a04", "a05", "a06", "a07", "a08"].map((id) => `order.lookup_link:${id}`));
+    expect(db.breakers.has(NOTIFY)).toBe(false);
+    expect(db.breakers.has(SUB)).toBe(false); // ngân sách con không có trạng thái breaker
+    const ex = breakerExceptions(db);
+    expect(ex).toHaveLength(1);
+    expect(ex[0]!.detail).toMatchObject({
+      breaker: SUB,
+      reason: "budget_exhausted",
+      budget_limit: 3,
+      budget_used: 4,
+      open_until: NEXT_DAY.toISOString(),
+    });
+    const warns = db.logs.filter((l) => l.level === "warn" && l.message.includes(SUB));
+    expect(warns.filter((l) => l.message.includes("hết ngân sách con"))).toHaveLength(1);
+    expect(warns.filter((l) => l.message.includes("3/3"))).toHaveLength(1); // mốc 80 % của 3 = lượt thứ 3
+    // Hạn hoãn đã biết trong lượt → các lookup sau không đếm thêm: 3 gọi + 1 lần chạm trần.
+    expect(counter(db, SUB)).toBe(4);
+  });
+
+  it("sang cửa sổ mới: lookup đã hoãn gửi tiếp (trong trần mới), không mất sự kiện", async () => {
+    const db = fakeOutboxDb(lookups(5));
+    const h = notifier();
+    await runSub(db, T0, h.handlers);
+    expect(h.calls).toHaveLength(3);
+    const r = await runSub(db, NEXT_DAY, h.handlers);
+    expect(r.sent).toEqual(["order.lookup_link:a04", "order.lookup_link:a05"]);
+    expect(db.outbox.every((x) => x.state === "sent")).toBe(true);
+    expect(new Set(h.calls).size).toBe(5);
+  });
+
+  it("breaker cha mở (adapter hỏng) → lookup cũng hoãn: ngân sách con không vượt rào breaker, không bị đếm", async () => {
+    const db = fakeOutboxDb([...confirmed(3), { id: "zz9", type: "order.lookup_link", payload: payload(9) }]);
+    const h = notifier(() => "fail");
+    const r = await runSub(db, T0, h.handlers);
+    expect(h.calls).toEqual(["z01", "z02", "z03"]);
+    expect(r.deferred).toEqual(["order.lookup_link:zz9"]);
+    expect(db.breakers.get(NOTIFY)!.state).toBe("open");
+    expect(counter(db, SUB)).toBe(0);
+  });
+
+  it("half-open: lookup đã hết ngân sách con KHÔNG chiếm lượt thử — thư giao dịch nhận lượt thử và đóng breaker", async () => {
+    const db = fakeOutboxDb(confirmed(3));
+    let mode: "ok" | "fail" = "fail";
+    const h = notifier(() => mode);
+    await runSub(db, T0, h.handlers);
+    expect(db.breakers.get(NOTIFY)!.state).toBe("open");
+    // Ngân sách con của ngày đã hết (lượt chạy khác đã đốt); lookup đến hạn TRƯỚC các thư giao dịch.
+    db.counters.set(`${budgetBucket(SUB)}@${DAY_START}`, 3);
+    db.add({ id: "a01", type: "order.lookup_link", payload: payload(1), next_attempt_at: at(0) });
+    mode = "ok";
+    h.calls.length = 0;
+    const r = await runSub(db, at(60_000), h.handlers);
+    expect(r.deferred).toEqual(["order.lookup_link:a01"]);
+    expect(h.calls).toEqual(["z01", "z02", "z03"]);
+    expect(db.breakers.get(NOTIFY)).toMatchObject({ state: "closed", consecutive_failures: 0 });
+  });
+
+  it("hai dispatcher song song: tổng lookup gọi đúng bằng trần con, một ngoại lệ, thư giao dịch gửi hết", async () => {
+    const db = fakeOutboxDb([...lookups(10), ...confirmed(4)]);
+    const h = notifier();
+    const [r1, r2] = await Promise.all([runSub(db, T0, h.handlers), runSub(db, T0, h.handlers)]);
+    expect(h.calls.filter((id) => id.startsWith("a"))).toHaveLength(3);
+    expect(new Set(h.calls).size).toBe(h.calls.length);
+    expect([...r1.sent, ...r2.sent].filter((k) => k.startsWith("order.confirmed")).sort()).toEqual(
+      ["z01", "z02", "z03", "z04"].map((id) => `order.confirmed:${id}`),
+    );
+    expect([...r1.deferred, ...r2.deferred]).toHaveLength(7);
+    expect(breakerExceptions(db)).toHaveLength(1);
+    expect(db.logs.filter((l) => l.level === "warn" && l.message.includes("hết ngân sách con"))).toHaveLength(
+      1,
+    );
+    expect(db.breakers.has(NOTIFY)).toBe(false);
+    expectNoLoss(db, h.calls);
+  });
+
+  it("ngân sách cha hết vì thư giao dịch → lookup cũng dừng (trần tổng chi phí giữ nguyên)", async () => {
+    const policy = { ...SUB_POLICY, budgets: { [NOTIFY]: 4 } };
+    const db = fakeOutboxDb([...confirmed(5), { id: "zz9", type: "order.lookup_link", payload: payload(9) }]);
+    const h = notifier();
+    const r = await runSub(db, T0, h.handlers, policy);
+    expect(h.calls).toEqual(["z01", "z02", "z03", "z04"]);
+    expect(r.deferred).toEqual(["order.confirmed:z05", "order.lookup_link:zz9"]);
+    expect(db.breakers.get(NOTIFY)).toMatchObject({ state: "open", trip_reason: "budget_exhausted" });
+  });
+
+  it("mặc định production: order.lookup_link có ngân sách con nhỏ hơn notify; thư giao dịch không có", () => {
+    const sub = subBudgetOf(OUTBOX_BREAKER_POLICY, "order.lookup_link");
+    expect(sub).toEqual({ key: SUB, limit: 1_000 });
+    expect(sub!.limit).toBeLessThan(budgetOf(OUTBOX_BREAKER_POLICY, breakerKeyOf("order.lookup_link")));
+    for (const t of ["order.confirmed", "order.placed_pending", "shipment.shipped", "payment.native_sync"]) {
+      expect(subBudgetOf(OUTBOX_BREAKER_POLICY, t)).toBeNull();
+    }
+    for (const t of ["constructor", "__proto__", "toString"]) {
+      expect(subBudgetOf(OUTBOX_BREAKER_POLICY, t)).toBeNull();
+    }
+  });
+
+  it("chính sách ngân sách con sai → ném", () => {
+    const bad = (subBudgets: OutboxBreakerPolicy["subBudgets"]) => () =>
+      assertBreakerPolicy({ ...SUB_POLICY, subBudgets }, OUTBOX_RUN_LIMITS);
+    expect(bad(SUB_POLICY.subBudgets)).not.toThrow();
+    expect(bad({ "order.lookup_link": { key: SUB, limit: 0 } })).toThrow(RangeError);
+    expect(bad({ "order.lookup_link": { key: SUB, limit: 2.5 } })).toThrow(RangeError);
+    expect(bad({ "order.lookup_link": { key: SUB, limit: 10 } })).toThrow(RangeError); // = ngân sách cha
+    expect(bad({ "order.lookup_link": { key: NOTIFY, limit: 3 } })).toThrow(RangeError);
+    expect(bad({ "order.lookup_link": { key: "", limit: 3 } })).toThrow(RangeError);
+    expect(
+      bad({
+        "order.lookup_link": { key: SUB, limit: 3 },
+        "order.placed_pending": { key: SUB, limit: 4 },
+      }),
+    ).toThrow(RangeError);
   });
 });
