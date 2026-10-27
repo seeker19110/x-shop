@@ -109,6 +109,26 @@ describe("computeQuote — ảnh chụp khuyến mãi (T-134)", () => {
     expect(part.shippingPromotion).toMatchObject({ kind: "fixed", amount: 50_000, discountTotal: 30_000 });
   });
 
+  it("mã ship cố định nhỏ hơn phí: phí 30 000, mã 10 000 → ảnh chụp giảm 10 000 (không phải cả phí)", () => {
+    const q = must({
+      ...base,
+      shippingDiscount: { code: "S10", promotionId: "ps", kind: "fixed", amount: 10_000 },
+    });
+    expect(q.shippingPromotion).toEqual({
+      promotionId: "ps",
+      code: "S10",
+      scope: "shipping",
+      kind: "fixed",
+      basisPoints: null,
+      amount: 10_000,
+      minSubtotal: null,
+      maxAmount: null,
+      discountTotal: 10_000,
+    });
+    expect(q.shippingDiscountTotal).toBe(10_000);
+    expect(q.shippingTotal).toBe(20_000);
+  });
+
   it("ảnh chụp là bản sao: sửa đối tượng mã sau khi tính không đổi breakdown đã có", () => {
     const d: OrderDiscount = { code: "GIAM10", promotionId: "p", kind: "percent", basisPoints: 1000 };
     const s: ShippingDiscount = { code: "S", kind: "fixed", amount: 10_000 };
@@ -126,10 +146,19 @@ describe("computeQuote — ảnh chụp khuyến mãi (T-134)", () => {
     expect(JSON.parse(JSON.stringify(q))).toEqual(q);
   });
 
-  it("điều kiện sai kiểu (đơn tối thiểu âm/không nguyên) → MoneyError, không áp mã sai", () => {
-    for (const minSubtotal of [-1, 1.5, Number.NaN]) {
+  it("điều kiện sai kiểu (đơn tối thiểu âm/không nguyên, kể cả lớn hơn tiền hàng) → MoneyError, không áp mã sai", () => {
+    // 2 000 000,5 > tiền hàng 1 300 000: phải là lỗi cấu hình, không phải DISCOUNT_NOT_APPLICABLE.
+    for (const minSubtotal of [-1, 1.5, Number.NaN, 2_000_000.5]) {
       expect(() =>
         computeQuote({ ...base, orderDiscount: { code: "M", kind: "fixed", amount: 1, minSubtotal } }),
+      ).toThrow(MoneyError);
+    }
+    for (const maxAmount of [-1, 1.5, Number.NaN]) {
+      expect(() =>
+        computeQuote({
+          ...base,
+          orderDiscount: { code: "X", kind: "percent", basisPoints: 1000, maxAmount },
+        }),
       ).toThrow(MoneyError);
     }
   });
@@ -140,7 +169,13 @@ describe("computeQuote — ảnh chụp khuyến mãi (T-134)", () => {
         fc.integer({ min: 0, max: 10_000 }),
         fc.option(fc.integer({ min: 0, max: 5_000_000 })),
         fc.integer({ min: 0, max: 100_000 }),
-        (bp, max, fee) => {
+        fc.option(fc.integer({ min: 0, max: 100_000 })),
+        (bp, max, fee, shipAmount) => {
+          // shipAmount null → mã ship `free`; có số → mã ship cố định (nhỏ hơn, bằng hoặc lớn hơn phí).
+          const shippingDiscount: ShippingDiscount =
+            shipAmount === null
+              ? { code: "S", kind: "free" }
+              : { code: "S", kind: "fixed", amount: shipAmount };
           const q = must({
             ...base,
             shippingFee: fee,
@@ -150,11 +185,14 @@ describe("computeQuote — ảnh chụp khuyến mãi (T-134)", () => {
               basisPoints: bp,
               ...(max !== null && { maxAmount: max }),
             },
-            shippingDiscount: { code: "S", kind: "free" },
+            shippingDiscount,
           });
+          const shipOff = shipAmount === null ? fee : Math.min(shipAmount, fee);
           return (
             q.orderPromotion?.discountTotal === q.orderDiscountTotal &&
             q.shippingPromotion?.discountTotal === q.shippingDiscountTotal &&
+            q.shippingPromotion.discountTotal === shipOff &&
+            q.shippingTotal === fee - shipOff &&
             q.orderPromotion?.maxAmount === max
           );
         },

@@ -88,10 +88,13 @@ export interface QuoteBreakdown {
   shippingDiscountCode: string | null;
   shippingTotal: number;
   total: number;
-  /** Ảnh chụp mã cấp đơn (T-134); `null` = không áp mã. Quote lưu trước T-134 không có khoá này. */
-  orderPromotion: PromotionSnapshot | null;
-  /** Ảnh chụp mã vận chuyển (T-134); `null` = không áp mã. */
-  shippingPromotion: PromotionSnapshot | null;
+  /**
+   * Ảnh chụp mã cấp đơn (T-134); `null` = không áp mã. Tuỳ chọn trong kiểu: quote/đơn lưu trước T-134 không có khoá
+   * này (`computeQuote` luôn điền).
+   */
+  orderPromotion?: PromotionSnapshot | null;
+  /** Ảnh chụp mã vận chuyển (T-134); `null` = không áp mã. Tuỳ chọn như `orderPromotion`. */
+  shippingPromotion?: PromotionSnapshot | null;
 }
 
 export type QuoteError = "CART_EMPTY" | "LIMIT" | "VALIDATION" | "DISCOUNT_NOT_APPLICABLE";
@@ -99,6 +102,7 @@ export type QuoteError = "CART_EMPTY" | "LIMIT" | "VALIDATION" | "DISCOUNT_NOT_A
 const optionalVnd = (v: number | undefined, label: string): number | null =>
   v === undefined ? null : assertNonNegativeVnd(v, label);
 
+/** Chỉ gọi SAU `orderDiscountAmount` — giá trị/điều kiện đã được kiểm ở đó, ở đây chỉ chép. */
 function orderPromotionSnapshot(d: OrderDiscount, discountTotal: number): PromotionSnapshot {
   return {
     promotionId: d.promotionId ?? null,
@@ -107,8 +111,8 @@ function orderPromotionSnapshot(d: OrderDiscount, discountTotal: number): Promot
     kind: d.kind,
     basisPoints: d.kind === "percent" ? d.basisPoints : null,
     amount: d.kind === "fixed" ? d.amount : null,
-    minSubtotal: optionalVnd(d.minSubtotal, "minSubtotal"),
-    maxAmount: d.kind === "percent" ? optionalVnd(d.maxAmount, "maxAmount") : null,
+    minSubtotal: d.minSubtotal ?? null,
+    maxAmount: d.kind === "percent" ? (d.maxAmount ?? null) : null,
     discountTotal,
   };
 }

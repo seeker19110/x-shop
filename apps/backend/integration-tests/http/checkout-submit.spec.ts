@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { createCustomerAccountWorkflow, createPromotionsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { listWards, vnpay } from "@x-shop/domain";
@@ -766,6 +766,31 @@ medusaIntegrationTestRunner({
         };
       const accessOf = (res: Res) => (res.data as unknown as { order_access: string }).order_access;
 
+      /** Điều chỉnh giảm giá đã ghi vào đơn native (dòng hàng + phương thức giao). */
+      async function nativeAdjustments(orderId: string) {
+        type Adj = { promotion_id?: string | null; amount?: unknown } | null;
+        const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
+          entity: "order",
+          fields: [
+            "id",
+            "items.adjustments.promotion_id",
+            "items.adjustments.amount",
+            "shipping_methods.adjustments.promotion_id",
+            "shipping_methods.adjustments.amount",
+          ],
+          filters: { id: orderId },
+        });
+        const order = data[0] as {
+          items?: Array<{ adjustments?: Adj[] | null } | null> | null;
+          shipping_methods?: Array<{ adjustments?: Adj[] | null } | null> | null;
+        };
+        const flat = (rows: Array<{ adjustments?: Adj[] | null } | null> | null | undefined) =>
+          (rows ?? [])
+            .flatMap((r) => r?.adjustments ?? [])
+            .flatMap((x) => (x ? [{ promotion_id: x.promotion_id ?? null, amount: Number(x.amount) }] : []));
+        return { items: flat(order.items), shipping: flat(order.shipping_methods) };
+      }
+
       /** Mọi thứ đơn và đối soát đọc: order_finance, xem đơn của khách, số tiền thu (payment_attempt), đơn native. */
       async function orderState(orderId: string, displayRef: string, access: string) {
         const fin = await finOf(orderId);
@@ -889,6 +914,8 @@ medusaIntegrationTestRunner({
           maxAmount: null,
           discountTotal: 30_000,
         });
+        const shipAdj = await nativeAdjustments(ship.data.order.id);
+        expect(shipAdj).toEqual({ items: [], shipping: [{ promotion_id: freeId, amount: 30_000 }] });
       });
 
       it("mã hết hạn giữa quote và submit → 422 DISCOUNT_NOT_APPLICABLE, không đơn, không giữ lượt", async () => {
@@ -938,40 +965,69 @@ medusaIntegrationTestRunner({
         });
       });
 
-      it("đồng thời: hai tab submit trong lúc admin sửa mã → đúng một đơn, ảnh chụp khớp số tiền đã thu", async () => {
+      it("đồng thời: hai tab submit, admin sửa mã giữa prepare và chốt → một đơn, giữ điều khoản lúc prepare, tiền thu khớp", async () => {
         const promoId = await createPromo("HAITAB", { type: "percentage", target_type: "order", value: 10 });
         const cartId = await createCart([["Đen/M", 2]]);
         const q = await quoteOk(cartId, { payment_method: "vnpay", discount_code: "HAITAB" });
-        const [a, b] = await Promise.all([
-          submit(submitBody(q), newKey()),
-          submit(submitBody(q), newKey()),
-          promotions().updatePromotions({ id: promoId, application_method: { value: 30 } }),
-        ]);
-        // Hai tab cùng phiên bản giỏ → cùng một attempt, cùng kết cục.
-        expect(a!.status).toBe(b!.status);
-        let final = a!;
-        if (a!.status === 409) {
-          expect(a!.data.code).toBe("DISCOUNT_CHANGED");
-          expect(await countOrders(container)).toBe(0);
-          final = await submit(submitBody(a!.data.quote));
+        // Hook `orderPrepared` chạy sau prepare + tạo đơn + order_finance, trước khi chốt: giữ submit ở đó 3 s.
+        slowBeforeFinalize.set(cartId, 3_000);
+        try {
+          const tabs = Promise.all([submit(submitBody(q), newKey()), submit(submitBody(q), newKey())]);
+          let prepared = false;
+          for (let i = 0; i < 200 && !prepared; i++) {
+            prepared = (await service().listOrderFinances({ cart_id: cartId })).length > 0;
+            if (!prepared) await new Promise((r) => setTimeout(r, 25));
+          }
+          expect(prepared).toBe(true);
+          // Chắc chắn đúng cửa sổ: prepare đã đọc mã 10 %, đơn chưa chốt.
+          await promotions().updatePromotions({ id: promoId, application_method: { value: 30 } });
+          const [a, b] = await tabs;
+          expect([a!.status, b!.status]).toEqual([200, 200]);
+          expect(a!.data.checkout_attempt_id).toBe(b!.data.checkout_attempt_id);
+          expect(a!.data.order.id).toBe(b!.data.order.id);
+          expect(await countOrders(container)).toBe(1);
+
+          const orderId = a!.data.order.id;
+          const snap = await quoteOf(orderId);
+          expect(snap.orderPromotion).toMatchObject({
+            promotionId: promoId,
+            basisPoints: 1000,
+            discountTotal: 140_000,
+          });
+          expect(snap).toMatchObject({ orderDiscountTotal: 140_000, total: 1_290_000 });
+          const payments = await service().listPaymentAttempts({ order_id: orderId });
+          expect(payments.map((p) => Number(p.amount))).toEqual([1_290_000]);
+          const native = await container.resolve(Modules.ORDER).retrieveOrder(orderId);
+          expect(Number(native.total)).toBe(1_290_000);
+          const usage = await service().listCouponUsages({ promotion_code: "HAITAB" });
+          expect(usage.filter((u) => u.state === "held").map((u) => u.order_id)).toEqual([orderId]);
+        } finally {
+          slowBeforeFinalize.delete(cartId);
         }
-        expect(final.status).toBe(200);
-        expect(await countOrders(container)).toBe(1);
-        const snap = await quoteOf(final.data.order.id);
-        const promo = snap.orderPromotion as {
-          basisPoints: number;
-          discountTotal: number;
-          promotionId: string;
-        };
-        expect(promo.promotionId).toBe(promoId);
-        expect([1000, 3000]).toContain(promo.basisPoints);
-        // Không trộn điều khoản: số giảm = đúng % đã chụp của 1 400 000; tiền thu = tổng quote.
-        expect(promo.discountTotal).toBe((1_400_000 * promo.basisPoints) / 10_000);
-        expect(snap.orderDiscountTotal).toBe(promo.discountTotal);
-        const payments = await service().listPaymentAttempts({ order_id: final.data.order.id });
-        expect(payments.map((p) => Number(p.amount))).toEqual([snap.total]);
-        const usage = await service().listCouponUsages({ promotion_code: "HAITAB" });
-        expect(usage.filter((u) => u.state === "held")).toHaveLength(1);
+      });
+
+      it("xoá rồi tạo lại cùng mã, cùng giá trị giữa quote và submit → 200; ảnh chụp, coupon_usage, điều chỉnh native mang id mới", async () => {
+        const oldId = await createPromo("TAOLAI", { type: "percentage", target_type: "order", value: 10 });
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId, { discount_code: "TAOLAI" });
+        await promotions().deletePromotions(oldId);
+        const newId = await createPromo("TAOLAI", { type: "percentage", target_type: "order", value: 10 });
+        expect(newId).not.toBe(oldId);
+
+        // Mã + số giảm như quote đã xác nhận → không DISCOUNT_CHANGED (D-109); đơn chụp khuyến mãi lúc submit.
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(200);
+        const snap = await quoteOf(res.data.order.id);
+        expect(snap.orderPromotion).toMatchObject({
+          promotionId: newId,
+          code: "TAOLAI",
+          discountTotal: 70_000,
+        });
+        const usage = await service().listCouponUsages({ promotion_code: "TAOLAI" });
+        expect(usage.map((u) => u.promotion_id)).toEqual([newId]);
+        const adj = await nativeAdjustments(res.data.order.id);
+        expect(adj.items).toEqual([{ promotion_id: newId, amount: 70_000 }]);
+        expect(adj.shipping).toEqual([]);
       });
     });
 
