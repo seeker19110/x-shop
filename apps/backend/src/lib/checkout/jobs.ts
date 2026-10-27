@@ -308,7 +308,7 @@ export async function dispatchOutbox(
     await s.markOutboxFailed(event.id, message, null);
     // Thông báo khách hỏng → ngoại lệ riêng cho người theo dõi gửi tin (AT18); đơn không bị ảnh hưởng.
     const kind = isNotificationEvent(event.type) ? "notification_failed" : "outbox_dead";
-    await s.openOpsException({
+    const exception = {
       kind,
       dedupe_key: `${kind}:${event.event_key}`,
       order_id: event.aggregate_id.startsWith("order_") ? event.aggregate_id : null,
@@ -320,7 +320,14 @@ export async function dispatchOutbox(
         attempts: event.attempts + 1,
         last_error: message.slice(0, 500),
       },
-    });
+    } as const;
+    if (event.type === CATALOG_REVALIDATE_EVENT) {
+      // T-142: webhook revalidate chết hàng loạt khi storefront lệch khoá/hỏng → MỘT ngoại lệ đang mở cho loại này, ưu
+      // tiên thường (dữ liệu vẫn tươi lại theo TTL), không mỗi dòng một ngoại lệ high (D-107, phạm vi `type`).
+      await s.openOpsExceptionIfNoneActive({ ...exception, priority: "normal", active_scope: ["type"] });
+    } else {
+      await s.openOpsException(exception);
+    }
     summary.dead.push(event.event_key);
   };
 

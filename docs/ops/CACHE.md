@@ -60,25 +60,41 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
   read model để danh sách/tìm kiếm nạp lại đọc được bản mới (PDP đọc nguồn trực tiếp). Giá khuyến mãi hết hạn (job mỗi phút
   `markExpiredPrices`) đi cùng đường.
 - **Không chặn ghi backend:** workflow đã commit trước khi sự kiện chạy; lỗi ghi outbox chỉ log (storefront dựa TTL); lỗi
-  gửi nằm trong outbox (retry backoff, quá 8 lần hoặc 4xx → `dead` + ngoại lệ `outbox_dead`).
+  gửi nằm trong outbox (retry backoff, quá 8 lần hoặc 4xx → `dead`). Dòng `catalog.revalidate` chết mở MỘT ngoại lệ
+  `outbox_dead` đang mở cho loại này (`openOpsExceptionIfNoneActive`, phạm vi `type`, ưu tiên `normal` — dữ liệu vẫn tươi
+  lại theo TTL), không mỗi dòng một ngoại lệ; loại sự kiện khác giữ hành vi cũ.
+- **Không chặn khe outbox-dispatch dùng chung (D-081):** mỗi POST có hạn 2 giây; storefront không trả lời (timeout/từ chối
+  kết nối) → ngắt 30 giây trong tiến trình: mọi lần gửi catalog sau đó thất bại NGAY (tạm thời, hẹn lại sau phần ngắt còn
+  lại), nên một lượt dispatcher chỉ mất tối đa một timeout cho cả loạt dòng catalog; 4xx/5xx trả về nhanh, không ngắt.
 - **Gộp + trần tần suất** (`CATALOG_REVALIDATE_POLICY`): cửa sổ 2 giây; mỗi (sản phẩm, cửa sổ) đúng một dòng outbox (khoá sự
   kiện chứa mốc cửa sổ, idempotent); quá 20 sản phẩm trong một cửa sổ → một dòng "cả catalog". Cuối cửa sổ tiến trình gửi
-  MỘT webhook gộp các dòng rồi đánh dấu `sent`; gửi lỗi/tiến trình chết → dòng đến hạn sau 10 giây và job `outbox-dispatch`
-  gửi từng dòng.
+  MỘT webhook gộp các dòng rồi đánh dấu `sent` — chỉ các dòng có trong bản chụp lúc gửi; dòng ghi xong giữa lúc gửi được gửi
+  bằng lượt riêng ngay sau đó (không bao giờ bị đánh dấu `sent` bởi webhook không mang tag của nó). Gửi lỗi/tiến trình chết →
+  dòng đến hạn sau 10 giây và job `outbox-dispatch` gửi từng dòng.
 - **Webhook:** `POST <CATALOG_REVALIDATE_URLS | STOREFRONT_URL/api/revalidate>` thân `{ id, tags }`, header
   `x-xshop-timestamp`, `x-xshop-nonce`, `x-xshop-signature: v1=<HMAC-SHA256(khoá, "v1:<ts>:<nonce>:<thân thô>")>`. Khoá
-  `CATALOG_REVALIDATE_SECRET` chung hai phía (docs/ops/ENV.md). Storefront: chữ ký sai/thiếu/lệch giờ > 300 giây → 401;
-  nonce đã dùng → 409; thân sai → 400; > 16 KiB → 413; chưa cấu hình khoá → 503. Gọi lại cùng nội dung với nonce mới (retry)
-  → 200 lần nữa (revalidate idempotent).
-- **Giới hạn đã biết:** cache dữ liệu của Next nằm trong từng tiến trình storefront → chạy nhiều bản thì liệt kê URL từng bản
-  trong `CATALOG_REVALIDATE_URLS` (backend gửi tới mọi URL). Bộ nhớ nonce cũng theo tiến trình: phát lại sang bản khác chỉ gây
-  một lần revalidate thừa (vô hại). Đổi handle: tag tính theo handle hiện tại → URL handle cũ còn bản cũ tới TTL. API công khai
-  `/api/catalog/*` sau CDN không có purge — vẫn theo ngưỡng 420 giây ở mục dưới (chỉ là gợi ý/số đếm).
-- **Đường lùi (D-070):** bỏ `CATALOG_REVALIDATE_SECRET` ở backend → không ghi outbox, storefront về thuần TTL.
-- **Test:** backend `lib/catalog/__tests__/revalidate.unit.spec.ts` (gộp, trần, đồng thời, ký, phân loại lỗi),
-  `integration-tests/http/catalog-revalidate.spec.ts` (sửa giá → webhook đã ký; storefront 500/401 → ghi vẫn thành công,
-  outbox giữ/dead; gộp); storefront `app/api/revalidate/revalidate-route.test.ts` (401/409/400/413/503, đồng thời phát lại);
-  E2E `e2e/catalog-revalidate.spec.ts` (hệ thật, Next 16 thật).
+  `CATALOG_REVALIDATE_SECRET` chung hai phía (docs/ops/ENV.md). Storefront: thiếu header chữ ký → 401 không đọc thân; chữ ký
+  sai/lệch giờ > 300 giây → 401; nonce đã dùng → 409; thân sai → 400; > 16 KiB → 413 (đọc luồng có trần, kể cả thân chunked
+  không `Content-Length`); chưa cấu hình khoá → 503. Gọi lại cùng nội dung với nonce mới (retry) → 200 lần nữa (revalidate
+  idempotent).
+- **Trước khi chạy nhiều bản storefront (bắt buộc):** cache dữ liệu của Next nằm trong từng tiến trình → phải liệt kê URL
+  nội bộ của TỪNG bản trong `CATALOG_REVALIDATE_URLS` (backend gửi tới mọi URL) hoặc chuyển sang cache handler dùng chung;
+  gửi qua LB chỉ làm mới một bản.
+- **Giới hạn đã biết:** bộ nhớ nonce chỉ nằm trong RAM của từng tiến trình: request bị phát lại sang bản khác, hoặc tới chính
+  bản đó sau khi restart (còn trong cửa sổ 300 giây), vẫn được nhận — hậu quả chỉ là một lần revalidate thừa (không đổi dữ
+  liệu). Đổi handle: tag tính theo handle hiện tại → URL handle cũ còn bản cũ tới TTL. `catalog:list` được làm mới ở mọi cửa
+  sổ có thay đổi, kể cả thay đổi chỉ do giữ hàng (reservation lúc checkout) — lúc đông đơn, cache danh sách thực chất còn
+  ~2 giây (backend đọc read model, rẻ); chỉ gắn `catalog:list` khi dòng read model thật sự đổi là việc sau nếu đo thấy tải.
+  API công khai `/api/catalog/*` sau CDN không có purge — vẫn theo ngưỡng 420 giây ở mục dưới (chỉ là gợi ý/số đếm).
+- **Bật/tắt:** production BẮT BUỘC có `CATALOG_REVALIDATE_SECRET`; đường lùi (D-070) là khai tường minh
+  `CATALOG_REVALIDATE_ENABLED=false` → không ghi outbox, storefront về thuần TTL, backend in cảnh báo lúc khởi động. Dev/test
+  vắng khoá = tắt.
+- **Test:** backend `lib/catalog/__tests__/revalidate.unit.spec.ts` (gộp, trần, đồng thời, race gửi gộp ↔ ghi outbox,
+  storefront treo không chặn dispatcher, ngắt, ngoại lệ dead, env production, ký, phân loại lỗi),
+  `indexer-revalidate-order.unit.spec.ts` (read model trước, outbox sau), `integration-tests/http/catalog-revalidate.spec.ts`
+  (sửa giá → webhook đã ký; storefront 500/401 → ghi vẫn thành công, outbox giữ/dead + một ngoại lệ; gộp); storefront
+  `app/api/revalidate/revalidate-route.test.ts` (401/409/400/413/503, đồng thời phát lại, thân chunked); E2E
+  `e2e/catalog-revalidate.spec.ts` (hệ thật, Next 16 thật).
 
 ## Trang chủ (ISR)
 

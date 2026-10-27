@@ -43,6 +43,8 @@ const production = {
   GHN_BASE_URL: "https://ghn.example.vn/shiip/public-api",
   GHN_TOKEN: "ghn-token-0123456789abcdef",
   GHN_SHOP_ID: "123456",
+  // T-142: production bắt buộc khoá webhook revalidate (trừ khi CATALOG_REVALIDATE_ENABLED=false).
+  CATALOG_REVALIDATE_SECRET: "revalidate-0123456789abcdef0123456789",
 };
 
 const problemsOf = (source: Record<string, string | undefined>) => {
@@ -184,7 +186,13 @@ describe("parseEnv — production", () => {
 
   it("vắng tất cả → liệt kê đủ mọi biến bắt buộc (VNPAY bật mặc định)", () => {
     expect(variablesOf({ NODE_ENV: "production", DATABASE_URL: DB }).sort()).toEqual(
-      [...PRODUCTION_REQUIRED, ...VNPAY_REQUIRED, "VNPAY_MODE", "GHN_MODE"].sort(),
+      [
+        ...PRODUCTION_REQUIRED,
+        ...VNPAY_REQUIRED,
+        "VNPAY_MODE",
+        "GHN_MODE",
+        "CATALOG_REVALIDATE_SECRET",
+      ].sort(),
     );
   });
 

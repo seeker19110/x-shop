@@ -48,6 +48,9 @@ export type OpsExceptionKind = (typeof OPS_EXCEPTION_KINDS)[number];
  */
 export const OPS_EXCEPTION_ACTIVE_SCOPES: { readonly [K in OpsExceptionKind]?: readonly string[] } = {
   catalog_index_mismatch: [],
+  // T-142: chỉ dòng outbox `catalog.revalidate` chết đi qua helper (một ngoại lệ đang mở mỗi loại sự kiện); loại khác vẫn
+  // mở mỗi sự kiện một ngoại lệ qua `openOpsException`.
+  outbox_dead: ["type"],
   catalog_compensation_failed: ["product_id"],
 };
 

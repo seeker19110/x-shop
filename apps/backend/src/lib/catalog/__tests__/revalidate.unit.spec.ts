@@ -1,10 +1,12 @@
+import { createServer, type Server, type Socket } from "node:net";
+import type { AddressInfo } from "node:net";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { catalogRevalidate as protocol } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../../modules/checkout";
 import type { OutboxClaim } from "../../../modules/checkout/service";
-import { DEFAULT_OUTBOX_HANDLERS } from "../../checkout/jobs";
-import { parseEnv, SECRET_ENV_KEYS } from "../../env";
+import { DEFAULT_OUTBOX_HANDLERS, dispatchOutbox } from "../../checkout/jobs";
+import { envWarnings, loadEnvOrExit, parseEnv, SECRET_ENV_KEYS, type ExitHooks } from "../../env";
 import { resetShutdownStateForTest, shutdownState } from "../../lifecycle/shutdown";
 import { validateOutboxPayload } from "../../outbox/payload";
 import { retryInfoOf } from "../../outbox/retry";
@@ -19,6 +21,7 @@ import {
   resetRevalidateStateForTests,
   revalidateEventKey,
   RevalidateHttpError,
+  RevalidateUnavailableError,
   sendRevalidation,
   tagsForProducts,
   windowStartMs,
@@ -547,5 +550,369 @@ describe("cấu hình env (backend)", () => {
         "CATALOG_REVALIDATE_URLS",
       );
     }
+  });
+});
+
+/* ------------------------------------------------------------------ review T-142 */
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Container giả với INSERT/POST có độ trễ thật (ms) — để lượt xả và lượt gửi gộp xen kẽ nhau. */
+function racySetup(handles: Record<string, string>, insertMs: number) {
+  const sent: string[] = [];
+  const outbox = {
+    insertOutbox: jest.fn(async () => {
+      await sleep(insertMs);
+    }),
+    markOutboxSentByKey: jest.fn(async (key: string) => {
+      sent.push(key);
+    }),
+  };
+  const product = {
+    listProducts: jest.fn(async (f: { id: string[] }) =>
+      f.id.flatMap((id) => (handles[id] === undefined ? [] : [{ id, handle: handles[id] }])),
+    ),
+  };
+  const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() };
+  const container = {
+    resolve: (k: string) =>
+      k === CHECKOUT_MODULE
+        ? outbox
+        : k === Modules.PRODUCT
+          ? product
+          : k === ContainerRegistrationKeys.LOGGER
+            ? logger
+            : null,
+  } as unknown as MedusaContainer;
+  return { container, sent };
+}
+
+function slowFetch(ms: number) {
+  const tags: string[][] = [];
+  const fn = (async (_u: string, init: RequestInit) => {
+    await sleep(ms);
+    tags.push((JSON.parse(String(init.body)) as { tags: string[] }).tags);
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+  return { tags, fn };
+}
+
+describe("race lượt gửi gộp ↔ lượt xả đang ghi outbox (review T-142 🔴1)", () => {
+  const T = new Date("2026-10-27T03:00:01.990Z");
+  const S = windowStartMs(T.getTime());
+
+  it("dòng ghi xong GIỮA lượt gửi gộp không bị đánh dấu sent bởi webhook thiếu tag của nó; lượt gửi riêng mang tag", async () => {
+    const s = racySetup({ prod_A: "ao-a", prod_B: "ao-b" }, 1);
+    const f = slowFetch(10);
+    await enqueueCatalogRevalidation(
+      s.container,
+      { productIds: ["prod_A"] },
+      { config: CONFIG, now: T, schedule: false },
+    );
+    const late = enqueueCatalogRevalidation(
+      s.container,
+      { productIds: ["prod_B"] },
+      { config: CONFIG, now: new Date(T.getTime() + 5), schedule: false },
+    );
+    expect(await flushRevalidationWindow(s.container, S, { config: CONFIG, fetch: f.fn })).toBe(true);
+    await late;
+    expect(f.tags).toEqual([["catalog:list", "product:ao-a"]]);
+    expect(s.sent).toEqual([revalidateEventKey(S, "prod_A")]); // prod_B chưa được gửi → chưa sent
+    // Dòng đến muộn nằm ở cửa sổ mới cùng mốc → lượt gửi riêng mang đúng tag rồi mới sent.
+    expect(await flushRevalidationWindow(s.container, S, { config: CONFIG, fetch: f.fn })).toBe(true);
+    expect(f.tags[1]).toEqual(["catalog:list", "product:ao-b"]);
+    expect(s.sent).toEqual([revalidateEventKey(S, "prod_A"), revalidateEventKey(S, "prod_B")]);
+  });
+
+  it("lô > trần ghi xong giữa lượt gửi: dòng `cả catalog` chỉ sent sau webhook mang tag `catalog`", async () => {
+    const many = Array.from({ length: 30 }, (_, i) => `prod_M${i}`);
+    const s = racySetup({ prod_A: "ao-a" }, 1);
+    const f = slowFetch(10);
+    await enqueueCatalogRevalidation(
+      s.container,
+      { productIds: ["prod_A"] },
+      { config: CONFIG, now: T, schedule: false },
+    );
+    const late = enqueueCatalogRevalidation(
+      s.container,
+      { productIds: many },
+      { config: CONFIG, now: new Date(T.getTime() + 5), schedule: false },
+    );
+    await flushRevalidationWindow(s.container, S, { config: CONFIG, fetch: f.fn });
+    await late;
+    expect(s.sent).not.toContain(revalidateEventKey(S, null));
+    await flushRevalidationWindow(s.container, S, { config: CONFIG, fetch: f.fn });
+    expect(f.tags[1]).toEqual(["catalog"]);
+    expect(s.sent).toContain(revalidateEventKey(S, null));
+  });
+
+  it("có hẹn giờ: dòng đến muộn tự được gửi bằng lượt riêng ngay sau đó (không đợi dispatcher)", async () => {
+    const s = racySetup({ prod_A: "ao-a", prod_B: "ao-b" }, 1);
+    const f = slowFetch(10);
+    await enqueueCatalogRevalidation(
+      s.container,
+      { productIds: ["prod_A"] },
+      { config: CONFIG, now: T, schedule: false },
+    );
+    const late = enqueueCatalogRevalidation(
+      s.container,
+      { productIds: ["prod_B"] },
+      { config: CONFIG, now: new Date(T.getTime() + 5), fetch: f.fn },
+    );
+    await flushRevalidationWindow(s.container, S, { config: CONFIG, fetch: f.fn });
+    await late;
+    await sleep(60); // mốc cửa sổ đã qua → hẹn 0 ms
+    expect(f.tags).toEqual([
+      ["catalog:list", "product:ao-a"],
+      ["catalog:list", "product:ao-b"],
+    ]);
+    expect(s.sent).toEqual([revalidateEventKey(S, "prod_A"), revalidateEventKey(S, "prod_B")]);
+  });
+});
+
+describe("storefront treo không chặn khe outbox-dispatch dùng chung (review T-142 🔴2, D-081)", () => {
+  const saved = { ...process.env };
+  let server: Server;
+  const sockets: Socket[] = [];
+  let port = 0;
+  beforeAll(async () => {
+    server = createServer((sock) => sockets.push(sock)); // nhận kết nối rồi im lặng
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    port = (server.address() as AddressInfo).port;
+  });
+  afterAll(async () => {
+    for (const sock of sockets) sock.destroy();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+    resetRevalidateStateForTests();
+  });
+
+  const claim = (i: number): OutboxClaim => ({
+    id: `obx_${i}`,
+    event_key: `${CATALOG_REVALIDATE_EVENT}:p:1:prod_${i}`,
+    aggregate_id: `prod_${i}`,
+    type: CATALOG_REVALIDATE_EVENT,
+    payload: { scope: "product", product_id: `prod_${i}` },
+    attempts: 0,
+  });
+
+  it("3 dòng catalog trước 1 sự kiện khác: sự kiện khác chạy sau ≤ một timeout, không phải 3 × timeout", async () => {
+    process.env.DATABASE_URL ??= "postgres://xshop:xshop@localhost:5432/xshop";
+    process.env.CATALOG_REVALIDATE_SECRET = SECRET;
+    process.env.CATALOG_REVALIDATE_URLS = `http://127.0.0.1:${port}/api/revalidate`;
+    resetRevalidateStateForTests();
+    const queue: OutboxClaim[] = [
+      claim(1),
+      claim(2),
+      claim(3),
+      {
+        id: "obx_9",
+        event_key: "other:1",
+        aggregate_id: "x_1",
+        type: "review.other",
+        payload: {},
+        attempts: 0,
+      },
+    ];
+    const svc = {
+      claimDueOutbox: jest.fn(async () => queue.shift() ?? null),
+      markOutboxSent: jest.fn(async () => undefined),
+      markOutboxFailed: jest.fn(async () => undefined),
+      openOpsException: jest.fn(async () => true),
+      openOpsExceptionIfNoneActive: jest.fn(async () => true),
+    };
+    const s = setup({ handles: { prod_1: "a", prod_2: "b", prod_3: "c" } });
+    const container = {
+      resolve: (k: string) => (k === CHECKOUT_MODULE ? svc : s.container.resolve(k)),
+    } as unknown as MedusaContainer;
+    const t0 = Date.now();
+    let otherAt = -1;
+    const summary = await dispatchOutbox(container, {
+      handlers: {
+        "review.other": async () => {
+          otherAt = Date.now() - t0;
+        },
+      },
+    });
+    expect(otherAt).toBeGreaterThanOrEqual(0);
+    expect(otherAt).toBeLessThan(CATALOG_REVALIDATE_POLICY.requestTimeoutMs + 1_000);
+    expect(summary.retried).toHaveLength(3); // tạm thời → hẹn lại, không dead
+    expect(summary.sent).toEqual(["other:1"]);
+    expect(sockets).toHaveLength(1); // chỉ dòng đầu chạm mạng; hai dòng sau bị ngắt ngay
+    // Dòng bị ngắt hẹn lại ít nhất phần ngắt còn lại (không thử lại dồn dập).
+    const delays = (svc.markOutboxFailed.mock.calls as unknown as [string, string, Date][])
+      .slice(1)
+      .map(([, , at]) => at.getTime() - Date.now());
+    expect(delays).toHaveLength(2);
+    for (const d of delays) expect(d).toBeGreaterThan(CATALOG_REVALIDATE_POLICY.unavailableCooldownMs / 2);
+  }, 30_000);
+});
+
+describe("ngắt khi storefront không trả lời", () => {
+  it("lỗi mạng mở ngắt (lần sau lỗi tạm ngay, không gọi mạng); 5xx/4xx không mở ngắt; thành công đóng", async () => {
+    const down = fakeFetch(() => new TypeError("fetch failed"));
+    await expect(
+      sendRevalidation(CONFIG, { id: "e", tags: ["catalog"] }, { fetch: down.fetch }),
+    ).rejects.toThrow("sf-a.test");
+    const next = fakeFetch();
+    const e = await sendRevalidation(CONFIG, { id: "e", tags: ["catalog"] }, { fetch: next.fetch }).catch(
+      (x: unknown) => x,
+    );
+    expect(e).toBeInstanceOf(RevalidateUnavailableError);
+    expect(retryInfoOf(e).permanent).toBe(false);
+    expect(retryInfoOf(e).retryAfterMs).toBeGreaterThan(0);
+    expect(next.calls).toHaveLength(0);
+
+    resetRevalidateStateForTests();
+    for (const status of [503, 401]) {
+      await sendRevalidation(
+        CONFIG,
+        { id: "e", tags: ["catalog"] },
+        { fetch: fakeFetch(() => status).fetch },
+      ).catch(() => undefined);
+    }
+    const ok = fakeFetch();
+    await sendRevalidation(CONFIG, { id: "e", tags: ["catalog"] }, { fetch: ok.fetch });
+    expect(ok.calls).toHaveLength(1);
+  });
+});
+
+describe("dòng catalog.revalidate chết → MỘT ngoại lệ đang mở, ưu tiên thường (review T-142 🟠2)", () => {
+  it("catalog: openOpsExceptionIfNoneActive(scope type, normal); loại khác giữ openOpsException mỗi sự kiện, high", async () => {
+    const queue: OutboxClaim[] = [
+      {
+        id: "obx_1",
+        event_key: `${CATALOG_REVALIDATE_EVENT}:p:1:prod_1`,
+        aggregate_id: "prod_1",
+        type: CATALOG_REVALIDATE_EVENT,
+        payload: { scope: "product", product_id: "prod_1" },
+        attempts: 0,
+      },
+      {
+        id: "obx_2",
+        event_key: "other:1",
+        aggregate_id: "x_1",
+        type: "review.other",
+        payload: {},
+        attempts: 0,
+      },
+    ];
+    const svc = {
+      claimDueOutbox: jest.fn(async () => queue.shift() ?? null),
+      markOutboxSent: jest.fn(async () => undefined),
+      markOutboxFailed: jest.fn(async () => undefined),
+      openOpsException: jest.fn(async () => true),
+      openOpsExceptionIfNoneActive: jest.fn(async () => true),
+    };
+    const container = {
+      resolve: (k: string) => (k === CHECKOUT_MODULE ? svc : null),
+    } as unknown as MedusaContainer;
+    const perm = async () => {
+      throw new RevalidateHttpError("401", 401, null);
+    };
+    const summary = await dispatchOutbox(container, {
+      handlers: { [CATALOG_REVALIDATE_EVENT]: perm, "review.other": perm },
+    });
+    expect(summary.dead).toEqual([`${CATALOG_REVALIDATE_EVENT}:p:1:prod_1`, "other:1"]);
+    expect(svc.openOpsExceptionIfNoneActive).toHaveBeenCalledTimes(1);
+    expect(svc.openOpsExceptionIfNoneActive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "outbox_dead",
+        priority: "normal",
+        active_scope: ["type"],
+        detail: expect.objectContaining({ type: CATALOG_REVALIDATE_EVENT, dead_reason: "permanent_error" }),
+      }),
+    );
+    expect(svc.openOpsException).toHaveBeenCalledTimes(1);
+    expect(svc.openOpsException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "outbox_dead",
+        priority: "high",
+        detail: expect.objectContaining({ type: "review.other" }),
+      }),
+    );
+  });
+});
+
+describe("cấu hình env production (review T-142 🟠3)", () => {
+  const prod: Record<string, string> = {
+    NODE_ENV: "production",
+    DATABASE_URL: "postgres://u:p@db.example.vn:5432/xshop",
+    REDIS_URL: "rediss://default:p@cache.example.vn:6380",
+    JWT_SECRET: "jwt-0123456789abcdef0123456789abcdef",
+    COOKIE_SECRET: "cookie-0123456789abcdef0123456789abcd",
+    AUTH_MFA_ENCRYPTION_KEY: "mfa-0123456789abcdef0123456789abcdef0",
+    ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
+    XS_TRUSTED_PROXIES: "10.0.0.0/8",
+    STOREFRONT_URL: "https://shop.example.vn",
+    PRIVATE_UPLOAD_DIR: "/var/lib/xshop/private-uploads",
+    STORE_CORS: "https://shop.example.vn",
+    ADMIN_CORS: "https://admin.example.vn",
+    AUTH_CORS: "https://admin.example.vn",
+    VNPAY_ENABLED: "false",
+    GHN_MODE: "live",
+    GHN_BASE_URL: "https://ghn.example.vn/shiip/public-api",
+    GHN_TOKEN: "ghn-token-0123456789abcdef",
+    GHN_SHOP_ID: "123456",
+  };
+  const problemsOf = (extra: Record<string, string>) => {
+    const r = parseEnv({ ...prod, ...extra });
+    return r.ok ? [] : r.problems;
+  };
+
+  it("thiếu khoá → lỗi khởi động nêu tên biến + cách tắt tường minh", () => {
+    const p = problemsOf({});
+    expect(p.map((x) => x.variable)).toEqual(["CATALOG_REVALIDATE_SECRET"]);
+    expect(p[0]!.reason).toContain("CATALOG_REVALIDATE_ENABLED=false");
+  });
+
+  it("có khoá → bật, URL mặc định https từ STOREFRONT_URL; không cảnh báo", () => {
+    const r = parseEnv({ ...prod, CATALOG_REVALIDATE_SECRET: SECRET });
+    expect(r.ok && r.env.catalogRevalidate?.urls).toEqual(["https://shop.example.vn/api/revalidate"]);
+    expect(r.ok && envWarnings(r.env)).toEqual([]);
+  });
+
+  it("URLS không https ở production → từ chối; toàn https → nhận", () => {
+    const bad = problemsOf({
+      CATALOG_REVALIDATE_SECRET: SECRET,
+      CATALOG_REVALIDATE_URLS: "https://a/x,http://b/x",
+    });
+    expect(bad.map((x) => x.variable)).toEqual(["CATALOG_REVALIDATE_URLS"]);
+    const good = problemsOf({
+      CATALOG_REVALIDATE_SECRET: SECRET,
+      CATALOG_REVALIDATE_URLS: "https://a/x,https://b/x",
+    });
+    expect(good).toEqual([]);
+  });
+
+  it("tắt tường minh → khởi động được, catalogRevalidate null, cảnh báo lúc khởi động không chứa bí mật", () => {
+    const writes: string[] = [];
+    const hooks: ExitHooks = {
+      writeError: (m) => {
+        writes.push(m);
+      },
+      exit: (code) => {
+        throw new Error(`exit ${code}`);
+      },
+    };
+    const env = loadEnvOrExit(
+      { ...prod, CATALOG_REVALIDATE_ENABLED: "false", CATALOG_REVALIDATE_SECRET: SECRET },
+      hooks,
+    );
+    expect(env.catalogRevalidate).toBeNull();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain("CATALOG_REVALIDATE_ENABLED=false");
+    expect(writes[0]).not.toContain(SECRET);
+  });
+
+  it("giá trị ENABLED lạ → lỗi; dev/test vắng khoá vẫn tắt, không cảnh báo", () => {
+    expect(problemsOf({ CATALOG_REVALIDATE_ENABLED: "no" }).map((x) => x.variable)).toContain(
+      "CATALOG_REVALIDATE_ENABLED",
+    );
+    const dev = parseEnv({ DATABASE_URL: prod.DATABASE_URL! });
+    expect(dev.ok && dev.env.catalogRevalidate).toBeNull();
+    expect(dev.ok && envWarnings(dev.env)).toEqual([]);
   });
 });

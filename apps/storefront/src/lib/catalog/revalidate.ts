@@ -5,7 +5,8 @@ import { secondsToMs } from "../units";
  * Nhận webhook vô hiệu hoá cache catalog từ backend (T-142, D-070, BE-CACHE-007) — route `app/api/revalidate/route.ts`.
  * Giao thức (chuỗi ký, header, tag) ở `@x-shop/domain` `catalogRevalidate`, dùng chung với backend.
  *
- * Thứ tự kiểm: cấu hình → cỡ thân → chữ ký + mốc thời gian (trên thân THÔ) → nonce chưa dùng → schema thân → revalidate.
+ * Thứ tự kiểm: cấu hình → đủ header chữ ký → cỡ thân (đọc luồng có trần) → chữ ký + mốc thời gian (trên thân THÔ) →
+ * nonce chưa dùng → schema thân → revalidate.
  * Nonce chỉ được ghi nhớ SAU khi chữ ký đúng: kẻ không có khoá không làm đầy được bộ nhớ nonce.
  *
  * Bộ nhớ nonce nằm trong tiến trình: chặn phát lại tới CHÍNH bản này trong cửa sổ lệch giờ; phát lại sang bản storefront
@@ -72,7 +73,33 @@ export interface RevalidateDeps {
 const problem = (status: number, code: string, headers: Record<string, string> = {}): Response =>
   Response.json({ code }, { status, headers: { "Cache-Control": "no-store", ...headers } });
 
-const utf8Length = (s: string): number => new TextEncoder().encode(s).length;
+/**
+ * Đọc thân theo luồng, dừng ngay khi vượt `max` byte (`null`) — không tin `Content-Length` (thân chunked không có header
+ * này; review T-142: trước đây đọc hết 64 MiB rồi mới 413).
+ */
+async function readCapped(req: Request, max: number): Promise<string | null> {
+  if (req.body === null) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    all.set(c, offset);
+    offset += c.byteLength;
+  }
+  return new TextDecoder().decode(all);
+}
 
 /** Thân hợp lệ: `{ id, tags }`, 1..REVALIDATE_MAX_TAGS tag đúng dạng giao thức. */
 function parseBody(text: string): { id: string; tags: string[] } | null {
@@ -96,22 +123,23 @@ function parseBody(text: string): { id: string; tags: string[] } | null {
  */
 export async function handleRevalidate(req: Request, deps: RevalidateDeps): Promise<Response> {
   if (deps.secret === undefined) return problem(503, "REVALIDATE_DISABLED");
+  const signed = {
+    timestamp: req.headers.get(protocol.REVALIDATE_HEADERS.timestamp),
+    nonce: req.headers.get(protocol.REVALIDATE_HEADERS.nonce),
+    signature: req.headers.get(protocol.REVALIDATE_HEADERS.signature),
+  };
+  // Không đủ header chữ ký → từ chối TRƯỚC khi đọc thân (request rác không tốn băng thông/bộ nhớ).
+  if (signed.timestamp === null || signed.nonce === null || signed.signature === null) {
+    return problem(401, "INVALID_SIGNATURE");
+  }
   const declared = Number(req.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declared) && declared > protocol.REVALIDATE_MAX_BODY_BYTES)
+  if (Number.isFinite(declared) && declared > protocol.REVALIDATE_MAX_BODY_BYTES) {
     return problem(413, "TOO_LARGE");
-  const body = await req.text();
-  if (utf8Length(body) > protocol.REVALIDATE_MAX_BODY_BYTES) return problem(413, "TOO_LARGE");
+  }
+  const body = await readCapped(req, protocol.REVALIDATE_MAX_BODY_BYTES);
+  if (body === null) return problem(413, "TOO_LARGE");
   const now = (deps.now ?? Date.now)();
-  const verdict = protocol.verifyRevalidate(
-    deps.secret,
-    {
-      timestamp: req.headers.get(protocol.REVALIDATE_HEADERS.timestamp),
-      nonce: req.headers.get(protocol.REVALIDATE_HEADERS.nonce),
-      signature: req.headers.get(protocol.REVALIDATE_HEADERS.signature),
-    },
-    body,
-    now,
-  );
+  const verdict = protocol.verifyRevalidate(deps.secret, signed, body, now);
   if (!verdict.ok) return problem(401, "INVALID_SIGNATURE");
   const seen = deps.nonces.checkAndRemember(verdict.nonce, verdict.timestamp, now);
   if (seen === "replay") return problem(409, "REPLAYED");

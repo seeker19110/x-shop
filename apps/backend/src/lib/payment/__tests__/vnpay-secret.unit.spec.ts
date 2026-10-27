@@ -245,6 +245,7 @@ describe("env VNPAY_HASH_SECRET_PREVIOUS (zod)", () => {
       GHN_BASE_URL: "https://ghn.example.vn/api",
       GHN_TOKEN: "ghn-token-0123456789",
       GHN_SHOP_ID: "123456",
+      CATALOG_REVALIDATE_SECRET: "revalidate-0123456789abcdef0123456789", // T-142: bắt buộc ở production
     };
     expect(parseEnv(production).ok).toBe(true);
     expect(parseEnv({ ...production, VNPAY_HASH_SECRET_PREVIOUS: PREVIOUS }).ok).toBe(true);

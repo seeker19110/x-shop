@@ -158,6 +158,48 @@ describe("handleRevalidate — bị từ chối", () => {
     expect(revalidate).not.toHaveBeenCalled();
   });
 
+  /** Thân chunked (không Content-Length) đếm số byte đã bị kéo khỏi luồng. */
+  function endless(totalBytes: number) {
+    const CHUNK = 64 * 1024;
+    const state = { pulled: 0 };
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (state.pulled >= totalBytes) return c.close();
+        state.pulled += CHUNK;
+        c.enqueue(new Uint8Array(CHUNK).fill(0x61));
+      },
+    });
+    return { body, state };
+  }
+
+  it("thân chunked không Content-Length quá trần → 413 sau khi đọc ~trần, không đọc hết (review T-142)", async () => {
+    const { d } = deps();
+    const total = 64 * 1024 * 1024;
+    const { body, state } = endless(total);
+    const req = signed(null, { body: "" });
+    const chunked = new Request(req.url, {
+      method: "POST",
+      headers: req.headers,
+      body,
+      duplex: "half",
+    } as RequestInit);
+    expect(chunked.headers.get("content-length")).toBeNull();
+    expect((await handleRevalidate(chunked, d)).status).toBe(413);
+    expect(state.pulled).toBeLessThanOrEqual(protocol.REVALIDATE_MAX_BODY_BYTES + 3 * 64 * 1024);
+  });
+
+  it("không có header chữ ký → 401 mà KHÔNG đọc thân", async () => {
+    const { d } = deps();
+    const { body, state } = endless(64 * 1024 * 1024);
+    const req = new Request("http://sf.test/api/revalidate", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit);
+    expect((await handleRevalidate(req, d)).status).toBe(401);
+    expect(state.pulled).toBeLessThanOrEqual(2 * 64 * 1024); // chỉ phần luồng tự nạp trước, không đọc thêm
+  });
+
   it("thân quá lớn → 413 (theo content-length khai báo hoặc số byte thật)", async () => {
     const { d } = deps();
     const big = JSON.stringify({

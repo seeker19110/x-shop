@@ -103,13 +103,16 @@ medusaIntegrationTestRunner({
       });
     };
     const db = () => container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
-    /** Dòng outbox revalidate của sản phẩm + dòng "cả catalog" (cũng phủ sản phẩm) tạo từ `since`. */
-    const rowsFor = async (productId: string, since: Date) =>
+    /**
+     * Dòng outbox revalidate của sản phẩm tạo từ `since`; `withCatalog` thêm dòng "cả catalog" (cũng phủ sản phẩm, nhưng có
+     * thể do nơi khác ghi — ca kiểm đúng dòng CỦA ca dùng `withCatalog = false`, review T-142 🟢4).
+     */
+    const rowsFor = async (productId: string, since: Date, withCatalog = true) =>
       (
         await db().raw(
           `SELECT event_key, state, payload FROM outbox_event
-           WHERE type = ? AND aggregate_id IN (?, 'catalog') AND created_at >= ? ORDER BY created_at`,
-          [CATALOG_REVALIDATE_EVENT, productId, since],
+           WHERE type = ? AND aggregate_id IN (?, ?) AND created_at >= ? ORDER BY created_at`,
+          [CATALOG_REVALIDATE_EVENT, productId, withCatalog ? "catalog" : productId, since],
         )
       ).rows as { event_key: string; state: string; payload: Record<string, unknown> }[];
     /** Webhook từ `since` làm mới PDP của sản phẩm: tag `product:<handle>` hoặc `catalog` (vượt trần → cả catalog). */
@@ -184,8 +187,9 @@ medusaIntegrationTestRunner({
         () => withTag(t0),
         (r) => r.length > 0,
       );
-      const pending = await rowsFor(pid, since);
+      const pending = await rowsFor(pid, since, false);
       expect(pending.length).toBeGreaterThan(0);
+      expect(pending.every((r) => r.event_key.endsWith(`:${pid}`))).toBe(true);
       expect(pending.every((r) => r.state === "pending")).toBe(true);
 
       sf.state.status = 200;
@@ -194,7 +198,7 @@ medusaIntegrationTestRunner({
       const summary = await dispatchOutbox(container, { now: new Date(Date.now() + 60_000) });
       expect(summary.sent).toEqual(expect.arrayContaining(pending.map((r) => r.event_key)));
       expect(withTag(t0).length).toBeGreaterThan(before);
-      expect((await rowsFor(pid, since)).every((r) => r.state === "sent")).toBe(true);
+      expect((await rowsFor(pid, since, false)).every((r) => r.state === "sent")).toBe(true);
     });
 
     it("storefront từ chối chữ ký (401) → dispatcher đưa dòng vào dead ngay (không retry vô ích), ghi backend không ảnh hưởng", async () => {
@@ -209,9 +213,20 @@ medusaIntegrationTestRunner({
         (r) => r.length > 0,
       );
       const summary = await dispatchOutbox(container, { now: new Date(Date.now() + 60_000) });
-      const keys = (await rowsFor(pid, since)).map((r) => r.event_key);
+      const keys = (await rowsFor(pid, since, false)).map((r) => r.event_key);
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.every((k) => k.endsWith(`:${pid}`))).toBe(true);
       expect(summary.dead).toEqual(expect.arrayContaining(keys));
-      expect((await rowsFor(pid, since)).every((r) => r.state === "dead")).toBe(true);
+      expect((await rowsFor(pid, since, false)).every((r) => r.state === "dead")).toBe(true);
+      // Một ngoại lệ đang mở cho loại sự kiện này (không mỗi dòng một cái), ưu tiên thường (review T-142 🟠2).
+      const active = (
+        await db().raw(
+          `SELECT priority FROM ops_exception WHERE kind = 'outbox_dead' AND state IN ('open', 'in_progress')
+             AND detail->>'type' = ? AND deleted_at IS NULL`,
+          [CATALOG_REVALIDATE_EVENT],
+        )
+      ).rows as { priority: string }[];
+      expect(active).toEqual([{ priority: "normal" }]);
     });
 
     it("gộp: 8 lần sửa giá liên tiếp → mỗi cửa sổ một dòng + một webhook (ít hơn số lần sửa), giá cuối đúng", async () => {

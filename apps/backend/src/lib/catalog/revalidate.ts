@@ -33,8 +33,14 @@ export const CATALOG_REVALIDATE_POLICY = {
   maxProductsPerWindow: 20,
   /** Dòng outbox đến hạn cho dispatcher sau cuối cửa sổ + khoảng này (lượt gửi gộp chạy trước, đánh dấu sent). */
   dispatchGraceMs: 10_000,
-  /** Hạn một lần POST tới storefront. */
-  requestTimeoutMs: 5_000,
+  /** Hạn một lần POST tới storefront — ngắn vì bộ xử lý chạy trong khe outbox-dispatch dùng chung (D-081). */
+  requestTimeoutMs: 2_000,
+  /**
+   * Storefront không trả lời (timeout/lỗi kết nối) → trong khoảng này mọi lần gửi của tiến trình thất bại NGAY (tạm thời,
+   * hẹn lại sau phần còn lại), không chờ mạng: một lượt dispatcher chỉ mất tối đa một `requestTimeoutMs` cho cả loạt dòng
+   * catalog, sự kiện khác (thanh toán, thông báo) không xếp hàng sau chúng.
+   */
+  unavailableCooldownMs: 30_000,
   /** Trần chờ theo `Retry-After` của storefront. */
   maxRetryAfterMs: 3600_000,
 } as const;
@@ -93,7 +99,21 @@ interface OpenWindow extends WindowState {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Cửa sổ ĐANG MỞ theo mốc. Lượt gửi gộp gỡ cửa sổ khỏi map (đồng bộ, trước mọi `await`) rồi làm việc trên bản chụp; dòng
+ * ghi xong SAU đó (lượt xả có `await insertOutbox` vắt qua lúc gửi) được ghi nhận vào cửa sổ MỚI cùng mốc với lượt gửi
+ * riêng — không bao giờ bị đánh dấu `sent` bởi webhook không mang tag của nó (review T-142).
+ */
 const windows = new Map<number, OpenWindow>();
+
+function windowFor(start: number): OpenWindow {
+  let w = windows.get(start);
+  if (!w) {
+    w = { productIds: new Set(), all: false, keys: new Set(), timer: null };
+    windows.set(start, w);
+  }
+  return w;
+}
 
 export interface EnqueueOptions {
   now?: Date;
@@ -119,22 +139,33 @@ export async function enqueueCatalogRevalidation(
   const { windowMs, dispatchGraceMs } = CATALOG_REVALIDATE_POLICY;
   const nowMs = (opts.now ?? new Date()).getTime();
   const start = windowStartMs(nowMs, windowMs);
-  let win = windows.get(start);
-  if (!win) {
-    win = { productIds: new Set(), all: false, keys: new Set(), timer: null };
-    windows.set(start, win);
-  }
-  const plan = planWindow(win, target);
+  const plan = planWindow(windowFor(start), target);
   const outbox = container.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
   const dueAt = new Date(start + windowMs + dispatchGraceMs);
   const written: string[] = [];
+  /** Ghi nhận SAU khi dòng đã ghi, vào cửa sổ đang mở của mốc này (lấy lại sau `await` — có thể đã được gửi). */
+  const record = (key: string, productId: string | null) => {
+    const w = windowFor(start);
+    if (productId === null) w.all = true;
+    else w.productIds.add(productId);
+    w.keys.add(key);
+    written.push(key);
+    if (opts.schedule !== false && w.timer === null) {
+      const fetchImpl = opts.fetch;
+      w.timer = setTimeout(
+        () => {
+          void flushRevalidationWindow(container, start, { config, fetch: fetchImpl });
+        },
+        Math.max(0, start + windowMs - Date.now()),
+      );
+      w.timer.unref?.();
+    }
+  };
   try {
     if (plan.all) {
       const key = revalidateEventKey(start, null);
       await outbox.insertOutbox(key, "catalog", CATALOG_REVALIDATE_EVENT, { scope: "all" }, undefined, dueAt);
-      win.all = true;
-      win.keys.add(key);
-      written.push(key);
+      record(key, null);
     }
     for (const id of plan.productIds) {
       const key = revalidateEventKey(start, id);
@@ -146,23 +177,12 @@ export async function enqueueCatalogRevalidation(
         undefined,
         dueAt,
       );
-      // Ghi nhận SAU khi dòng đã ghi: lỗi giữa chừng thì lần sau trong cửa sổ ghi lại (không tưởng là đã có).
-      win.productIds.add(id);
-      win.keys.add(key);
-      written.push(key);
+      // Lỗi giữa chừng → sản phẩm chưa ghi không được ghi nhận, lần sau trong cửa sổ ghi lại.
+      record(key, id);
     }
   } finally {
-    if (win.keys.size === 0) windows.delete(start);
-    else if (opts.schedule !== false && win.timer === null) {
-      const fetchImpl = opts.fetch;
-      win.timer = setTimeout(
-        () => {
-          void flushRevalidationWindow(container, start, { config, fetch: fetchImpl });
-        },
-        Math.max(0, start + windowMs - Date.now()),
-      );
-      win.timer.unref?.();
-    }
+    const w = windows.get(start);
+    if (w && w.keys.size === 0 && w.timer === null) windows.delete(start);
   }
   return written;
 }
@@ -213,6 +233,17 @@ export class RevalidateHttpError extends Error {
   }
 }
 
+/** Mốc (Date.now) tới đó storefront coi như không trả lời — xem `unavailableCooldownMs`. Theo tiến trình. */
+let unavailableUntil = 0;
+
+/** Ngắt gửi khi storefront không trả lời: lỗi tạm thời (không `status`), `retryAfterMs` = thời gian ngắt còn lại. */
+export class RevalidateUnavailableError extends Error {
+  override readonly name = "RevalidateUnavailableError";
+  constructor(readonly retryAfterMs: number) {
+    super(`[catalog-revalidate] Storefront không trả lời gần đây — tạm ngưng gửi ${retryAfterMs} ms`);
+  }
+}
+
 export interface SendDeps {
   fetch?: typeof fetch;
   now?: Date;
@@ -237,6 +268,8 @@ export async function sendRevalidation(
   input: { id: string; tags: string[] },
   deps: SendDeps = {},
 ): Promise<void> {
+  const remaining = unavailableUntil - Date.now();
+  if (remaining > 0) throw new RevalidateUnavailableError(remaining);
   const fetchImpl = deps.fetch ?? fetch;
   const now = deps.now ?? new Date();
   const makeNonce = deps.nonce ?? (() => randomBytes(18).toString("base64url"));
@@ -277,6 +310,10 @@ export async function sendRevalidation(
     }),
   );
   const errors = results.flatMap((r) => (r.status === "rejected" ? [r.reason as Error] : []));
+  // Chỉ lỗi KHÔNG có phản hồi (timeout, từ chối kết nối) mới ngắt: 4xx/5xx trả về nhanh, không giữ khe dispatcher.
+  if (errors.some((e) => !(e instanceof RevalidateHttpError))) {
+    unavailableUntil = Date.now() + CATALOG_REVALIDATE_POLICY.unavailableCooldownMs;
+  } else if (errors.length === 0) unavailableUntil = 0;
   if (errors.length === 0) return;
   throw errors.find((e) => !(e instanceof RevalidateHttpError) || isTransientStatus(e.status)) ?? errors[0];
 }
@@ -290,21 +327,24 @@ export async function flushRevalidationWindow(
   start: number,
   deps: SendDeps & { config?: RevalidateConfig | null } = {},
 ): Promise<boolean> {
+  // Gỡ + chụp ĐỒNG BỘ (trước mọi await): chỉ các khoá trong bản chụp được đánh dấu sent, và tag dựng từ đúng bản chụp đó.
   const win = windows.get(start);
   windows.delete(start);
+  if (win?.timer) clearTimeout(win.timer);
   if (!win || win.keys.size === 0 || isDraining()) return false;
+  const snap = { keys: [...win.keys], productIds: [...win.productIds], all: win.all };
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
   try {
     const config = deps.config === undefined ? getRevalidateConfig() : deps.config;
     if (config === null) return false;
-    const tags = win.all ? [protocol.CATALOG_TAG] : await tagsForProducts(container, [...win.productIds]);
+    const tags = snap.all ? [protocol.CATALOG_TAG] : await tagsForProducts(container, snap.productIds);
     await sendRevalidation(config, { id: `${CATALOG_REVALIDATE_EVENT}:w:${start}`, tags }, deps);
     const outbox = container.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
-    for (const key of win.keys) await outbox.markOutboxSentByKey(key);
+    for (const key of snap.keys) await outbox.markOutboxSentByKey(key);
     return true;
   } catch (e) {
     logger.warn(
-      `[catalog-revalidate] Gửi gộp cửa sổ lỗi, ${win.keys.size} sự kiện chờ outbox-dispatch: ${(e as Error).message}`,
+      `[catalog-revalidate] Gửi gộp cửa sổ lỗi, ${snap.keys.length} sự kiện chờ outbox-dispatch: ${(e as Error).message}`,
     );
     return false;
   }
@@ -334,4 +374,5 @@ export function resetRevalidateStateForTests(): void {
   for (const w of windows.values()) if (w.timer) clearTimeout(w.timer);
   windows.clear();
   cachedConfig = null;
+  unavailableUntil = 0;
 }

@@ -48,14 +48,16 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # gốc dùng thật được chuẩn hoá từ URL đã parse (scheme/host viết thường, bỏ cổng mặc định).
 STOREFRONT_URL=https://shop.example.vn
 # Webhook vô hiệu hoá cache catalog → storefront (T-142, D-070; docs/ops/CACHE.md). BÍ MẬT, ≥ 32 ký tự ngẫu nhiên (sinh:
-# openssl rand -base64 48), PHẢI TRÙNG CATALOG_REVALIDATE_SECRET của storefront. Vắng = tắt: không ghi outbox, storefront
-# chỉ hết hạn theo TTL 60 giây (đường lùi của D-070). Đổi khoá: đặt cùng giá trị mới ở storefront rồi backend (webhook gửi
-# trong lúc lệch khoá bị 401 → outbox `dead` + ngoại lệ `outbox_dead`; dữ liệu vẫn tươi lại sau TTL).
-# CATALOG_REVALIDATE_SECRET=
-# Đích webhook: danh sách ≤ 8 URL http(s) cách dấu phẩy, không thông tin đăng nhập/query/fragment; chỉ đặt khi đã đặt khoá.
-# Vắng = `<STOREFRONT_URL>/api/revalidate`. Chạy NHIỀU bản storefront → liệt kê URL nội bộ của TỪNG bản (cache dữ liệu của
+# openssl rand -base64 48), PHẢI TRÙNG CATALOG_REVALIDATE_SECRET của storefront. Production BẮT BUỘC (thiếu → in tên biến,
+# thoát mã 1) trừ khi tắt tường minh CATALOG_REVALIDATE_ENABLED=false (đường lùi D-070: không ghi outbox, storefront chỉ hết
+# hạn theo TTL 60 giây, backend in CẢNH BÁO lúc khởi động). Dev/test vắng khoá = tắt. Đổi khoá: RUNBOOK §9 (webhook gửi
+# trong lúc lệch khoá bị 401 → outbox `dead` + MỘT ngoại lệ `outbox_dead` đang mở; dữ liệu vẫn tươi lại sau TTL).
+# CATALOG_REVALIDATE_ENABLED=true
+CATALOG_REVALIDATE_SECRET=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-revalidate
+# Đích webhook: danh sách ≤ 8 URL http(s) cách dấu phẩy (production: https), không thông tin đăng nhập/query/fragment; chỉ
+# đặt khi đã đặt khoá. Vắng = `<STOREFRONT_URL>/api/revalidate`. Chạy NHIỀU bản storefront → liệt kê URL nội bộ của TỪNG bản (cache dữ liệu của
 # Next nằm trong từng tiến trình; gửi qua LB chỉ tới một bản).
-# CATALOG_REVALIDATE_URLS=http://storefront-1:3000/api/revalidate,http://storefront-2:3000/api/revalidate
+# CATALOG_REVALIDATE_URLS=https://sf-1.internal.example.vn/api/revalidate,https://sf-2.internal.example.vn/api/revalidate
 # Thư mục file PRIVATE của File Module (T-141, BE-FILE-005): xuất khách hàng/đơn (PII), xuất tồn/sản phẩm, chunk nhập sản
 # phẩm. Phải RỜI thư mục công khai `static/` (Express phục vụ `/static`) — không trùng, không nằm trong, không chứa nó; không
 # ký tự điều khiển. Production BẮT BUỘC, đường dẫn tuyệt đối trên volume bền, chỉ user chạy backend đọc/ghi được (vd.
