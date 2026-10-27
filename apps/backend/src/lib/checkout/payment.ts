@@ -7,7 +7,7 @@ import {
 import { payloadHash, vnpay, isNonEmpty } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
-import { verifyNotificationWithRotation } from "../payment/vnpay-secrets";
+import { verifyNotificationWithRotation, type SecretUsed } from "../payment/vnpay-secrets";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG, getVnpayConfig } from "./config";
 import { readCheckoutError } from "./errors";
@@ -43,6 +43,28 @@ export function flattenQuery(query: Record<string, unknown>): Record<string, str
   return out;
 }
 
+/**
+ * Xác minh bằng khoá TRƯỚC → cảnh báo có cấu trúc (khoá=`previous`, nguồn, mã giao dịch) để vận hành biết còn lưu lượng
+ * dùng khoá cũ (RUNBOOK §9 bước 4). KHÔNG ghi khoá/chữ ký. Lỗi logger không được làm hỏng xử lý thanh toán.
+ */
+export function warnIfPreviousSecret(
+  container: MedusaContainer,
+  secretUsed: SecretUsed | undefined,
+  source: NotificationSource,
+  txnRef: string | undefined,
+): void {
+  if (secretUsed !== "previous") return;
+  try {
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .warn(
+        `[payment] vnpay_secret_previous_used source=${source} txn_ref=${isNonEmpty(txnRef) ? txnRef.slice(0, 64) : "-"} — xác minh bằng VNPAY_HASH_SECRET_PREVIOUS (khoá trước)`,
+      );
+  } catch {
+    // log hỏng không chặn IPN
+  }
+}
+
 /** IPN GET từ VNPAY: xác minh → inbox → xử lý → phản hồi `{RspCode, Message}`. */
 export async function handleVnpayIpn(
   container: MedusaContainer,
@@ -74,6 +96,7 @@ export async function handleVnpayIpn(
     });
     return response;
   }
+  warnIfPreviousSecret(container, verified.secretUsed, "ipn", query.vnp_TxnRef);
   return processVerified(container, verified.value, "ipn", sanitize(query));
 }
 

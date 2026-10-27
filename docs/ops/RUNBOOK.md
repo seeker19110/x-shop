@@ -256,6 +256,14 @@ pnpm --filter @x-shop/storefront start
 Production thiếu/sai biến → backend thoát mã 1 và in TÊN biến (không in giá trị): đọc log khởi động trước khi chuyển lưu lượng. Chạy ≥ 2
 instance server thì `REDIS_URL` bắt buộc (§3.2.1). Không deploy khi đang có sự cố thanh toán (§1).
 
+### 8.2a Reverse proxy cho luồng mời admin qua dashboard (T-138, D-075)
+
+Link mời admin mở dashboard ở `/app` với `invite_token` trong query; trang đăng ký của dashboard gọi API cùng origin. Reverse proxy phải:
+- giữ nguyên header `Host` (không viết lại) — kiểm tra origin/URL mời dựa vào đó;
+- phục vụ dashboard (`/app`) CÙNG origin với backend (cùng scheme + host + cổng);
+- không đặt `Referrer-Policy` làm mất query cho đường `/app` (`no-referrer`, `origin` bị cấm; giữ mặc định trình duyệt hoặc `same-origin`/`strict-origin-when-cross-origin`);
+- nếu buộc phải khác origin: làm trang mời riêng, tự gửi `invite_token` tới backend (không dựa vào query/Referer của dashboard).
+
 ### 8.3 Kiểm sau deploy (smoke) và theo dõi
 
 - Tay (chưa có job tự động — WF-REL-007 còn mở): `curl -fsS "$MEDUSA_BACKEND_URL/x/health"`; mở trang chủ và một trang sản phẩm; tạo giỏ và gọi
@@ -274,7 +282,7 @@ xuất: 12 tháng cho khoá ký, và NGAY khi nghi lộ (§10). Hiệu ứng khi
 | `JWT_SECRET`, `COOKIE_SECRET` | phiên admin hiện có hết hiệu lực — đăng nhập lại | đổi → restart server+worker; hai biến phải khác nhau |
 | `ORDER_LOOKUP_SECRET` | mọi liên kết tra cứu và phiên xem đơn của khách đang có mất hiệu lực (khách tra cứu lại) | đổi → restart; không ảnh hưởng đơn/dữ liệu |
 | `AUTH_MFA_ENCRYPTION_KEY` | TOTP đã đăng ký không giải mã được — mọi admin đăng ký lại TOTP (`docs/ops/ENV.md`). Lệnh re-encrypt giữ nguyên TOTP: không có trong repo (Medusa có hay không: chưa xác minh) | đặt khoá mới → từng admin đăng ký lại TOTP; trong lúc đó quyền nhạy cảm (hoàn tiền, quản lý user…) không dùng được |
-| `VNPAY_HASH_SECRET` | chữ ký IPN/return/querydr đổi theo khoá cổng; IPN ký bằng khoá mới tới TRƯỚC khi env đổi bị từ chối chữ ký | đổi ở cổng merchant VNPAY, rồi đặt `VNPAY_HASH_SECRET`=khoá mới + `VNPAY_HASH_SECRET_PREVIOUS`=khoá cũ → restart (backend nhận cả hai khi xác minh, ký bằng khoá mới — T-099); IPN/querydr còn ký bằng khoá cũ vẫn qua. Hết cửa sổ (đề xuất ≥ 24 giờ; chính sách gửi lại IPN của VNPAY: chưa xác minh) thì bỏ `VNPAY_HASH_SECRET_PREVIOUS`, restart. Khoảng giữa đổi ở cổng và restart: querydr bù cho `payment_attempt` mở, xem `ops_exception` `webhook_rejected` (§1). VNPAY có cho hai khoá song song phía cổng không: (chưa xác minh) |
+| `VNPAY_HASH_SECRET` | chữ ký IPN/return/querydr đổi theo khoá cổng; IPN ký bằng khoá mới tới TRƯỚC khi env đổi bị từ chối chữ ký | **Thứ tự không hở** (backend ký bằng `VNPAY_HASH_SECRET` = current, xác minh cả current lẫn `VNPAY_HASH_SECRET_PREVIOUS`, T-099): (1) `VNPAY_HASH_SECRET`=khoá cũ, `VNPAY_HASH_SECRET_PREVIOUS`=khoá MỚI → restart (đã nhận được chữ ký khoá mới, vẫn ký bằng khoá cũ); (2) đổi khoá ở cổng merchant VNPAY; (3) `VNPAY_HASH_SECRET`=khoá mới, `VNPAY_HASH_SECRET_PREVIOUS`=khoá cũ → restart (ký bằng khoá mới, IPN/querydr còn ký khoá cũ vẫn qua); (4) theo dõi log `vnpay_secret_previous_used` (cảnh báo mỗi lần xác minh bằng khoá trước, không chứa khoá/chữ ký; T-139) về 0 liên tục ≥ 24 giờ (chính sách gửi lại IPN của VNPAY: chưa xác minh) rồi bỏ `VNPAY_HASH_SECRET_PREVIOUS`, restart. Lưu ý: ở bước 1 log này xuất hiện khi VNPAY đã ký khoá mới; chỉ dùng làm tín hiệu thu hồi sau bước 3. Hiện log chỉ ghi ở IPN (return/querydr chưa có). Querydr bù cho `payment_attempt` mở, xem `ops_exception` `webhook_rejected` (§1). VNPAY có cho hai khoá song song phía cổng không: (chưa xác minh) |
 | `GHN_TOKEN` (+ `GHN_SHOP_ID` nếu đổi shop) | gọi GHN thất bại tới khi khớp | tạo token mới ở GHN → đổi env → restart worker+server; vận đơn timeout xử lý như §2; callback GHN không chữ ký nên không bị ảnh hưởng |
 | Mật khẩu trong `DATABASE_URL`, `REDIS_URL` | kết nối mới thất bại tới khi restart | tạo vai trò/mật khẩu mới → cập nhật env → restart → thu hồi cái cũ |
 | Khoá email/SMS provider | thông báo không gửi (rơi vào `outbox_event` `failed`, thử lại — §12) | thủ tục theo nhà cung cấp thật (xem `docs/privacy/processors.md`) |
