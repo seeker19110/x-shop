@@ -593,3 +593,17 @@
 - Chọn: Giữ 429 + Retry-After (bộ đếm như nhau cho mọi email nên không lộ tồn tại); duyệt ngưỡng 3/5/20/15 phút và sàn 250 ms
 - Lý do (tiêu chí chất lượng cuối): (1) không lộ tài khoản (đếm theo email nhập, không theo tồn tại); (4) người dùng thật biết phải chờ thay vì mất email âm thầm; thống nhất với login/register
 - Đường lùi: Đổi sang 201 im lặng trong resetPasswordGuard nếu đo thấy kênh phụ
+
+### D-085 · 2026-10-27T06:28:35+00:00 · T-143 🟠-2: bộ đếm rate limit tăng cả lượt đã bị 429 → một IP khoá hộ reset/đăng nhập của email bất kỳ và kéo dài quá cửa sổ
+
+- Phương án: (1) Kẹp bộ đếm ở limit+1 cho mọi scope (không kéo dài khoá); reset: ngưỡng theo identity chỉ áp trong việc nền cho identity có thật, vượt thì bỏ âm thầm; giữ 429 theo IP và email+IP · (2) Giữ như hiện tại
+- Chọn: Kẹp bộ đếm ở limit+1 cho mọi scope (không kéo dài khoá); reset: ngưỡng theo identity chỉ áp trong việc nền cho identity có thật, vượt thì bỏ âm thầm; giữ 429 theo IP và email+IP
+- Lý do (tiêu chí chất lượng cuối): (1) giảm DoS khoá tài khoản do kẻ tấn công điều khiển mà vẫn chặn dò/brute force; (4) admin thật không bị khoá kéo dài
+- Đường lùi: Bỏ kẹp nếu đo thấy brute force lọt
+
+### D-086 · 2026-10-27T06:28:36+00:00 · T-143 🟠-1: dò email qua độ trễ request đồng thời do workflow reset chạy cùng tiến trình
+
+- Phương án: (1) Giới hạn/bỏ metadata, khởi chạy workflow sau độ trễ ngẫu nhiên đều (0–5 s) ngoài thời điểm request; ghi rủi ro còn lại (đo loopback, ≤5 lượt/email/15 phút) · (2) Hàng đợi job ở tiến trình worker riêng
+- Chọn: Giới hạn/bỏ metadata, khởi chạy workflow sau độ trễ ngẫu nhiên đều (0–5 s) ngoài thời điểm request; ghi rủi ro còn lại (đo loopback, ≤5 lượt/email/15 phút)
+- Lý do (tiêu chí chất lượng cuối): (1) phá tương quan thời gian với request đối chứng; (3) không thêm hạ tầng job mới; dự án chưa gửi thư reset (chưa có subscriber) nên rủi ro thực hiện tại thấp
+- Đường lùi: Chuyển sang job worker khi bật gửi thư reset
