@@ -35,6 +35,8 @@ export const OPS_EXCEPTION_KINDS = [
   "refund_request",
   /** Read model catalog dựng lệch: SKU có giá niêm yết mà không ra giá bán (D-040) — bảng cũ được giữ. */
   "catalog_index_mismatch",
+  /** Bù trừ `set-product-fashion` lỗi (D-095): sản phẩm có thể lệch thuộc tính/bảng size/số đo — chỉ id + mã lỗi. */
+  "catalog_compensation_failed",
 ] as const;
 export const OPS_EXCEPTION_STATES = ["open", "in_progress", "resolved"] as const;
 export const OPS_PRIORITIES = ["low", "normal", "high", "urgent"] as const;

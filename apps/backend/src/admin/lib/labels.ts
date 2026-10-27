@@ -32,6 +32,7 @@ export const DISCREPANCY_KIND_LABELS: Record<string, string> = {
   late_payment: "Thanh toán muộn",
   overpayment: "Thanh toán dư",
   catalog_index_mismatch: "Chỉ mục danh mục lệch giá",
+  catalog_compensation_failed: "Hoàn tác dữ liệu sản phẩm lỗi",
 };
 export const kindLabel = (c: string) => lookup(DISCREPANCY_KIND_LABELS, c);
 

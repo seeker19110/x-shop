@@ -3,14 +3,17 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import Redis from "ioredis";
+import { kindLabel } from "../../src/admin/lib/labels";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "../../src/lib/catalog/constants";
 import { loadProductSources } from "../../src/lib/catalog/product-source";
+import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import { FASHION_MODULE } from "../../src/modules/fashion";
 import type FashionModuleService from "../../src/modules/fashion/service";
 import { DEMO_PRODUCTS } from "../../src/scripts/catalog-demo-data";
 import seedCatalog from "../../src/scripts/seed-catalog";
 import {
   type MeasurementSnapshot,
+  openCompensationException,
   productFashionLockKey,
   recreateMeasurements,
   type SetProductFashionInput,
@@ -905,6 +908,343 @@ medusaIntegrationTestRunner({
             expect(line).toBeDefined();
             expect(line).toContain(`product_id=${id}`);
             expect(lines.filter((l) => LEAK.test(l))).toEqual([]);
+          });
+
+          describe("bù trừ lỗi → ngoại lệ vận hành catalog_compensation_failed (T-156, D-095)", () => {
+            const KIND = "catalog_compensation_failed";
+            const pgc = () => container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+            /** Trigger PG thật: khôi phục chất liệu về `cotton` (bản gốc của polo seed) lỗi. */
+            const ATTR_TRIGGER = [
+              `create or replace function t156_boom() returns trigger language plpgsql as $$
+               begin if new.material = 'cotton' then raise exception 'boom restore'; end if; return new; end $$;
+               create trigger t156_boom before update on fashion_product_attributes
+                 for each row execute function t156_boom();`,
+              "drop trigger if exists t156_boom on fashion_product_attributes; drop function if exists t156_boom();",
+            ] as const;
+            /** Giá trị thuộc tính/số đo của polo seed, câu SQL, message thô của PG — không được có trong detail. */
+            const VALUE_LEAK =
+              /cotton|\blua\b|Việt Nam|\b(170|173|180|91|94|77|78|95|99)\b|insert|update|values|Failing row|boom/i;
+            const ATTR_COLS = [
+              "kind",
+              "material",
+              "material_label",
+              "composition",
+              "stretch",
+              "fit",
+              "care",
+              "origin",
+              "image_exception_by",
+              "image_exception_reason",
+            ] as const;
+
+            type Row = { id: string; state: string; priority: string; detail: Record<string, unknown> };
+            async function exceptions(): Promise<Row[]> {
+              const { rows } = (await pgc().raw(
+                `select id, state, priority, detail from ops_exception
+                  where kind = ? and deleted_at is null order by created_at, id`,
+                [KIND],
+              )) as { rows: Row[] };
+              return rows;
+            }
+            async function attrRow(attributesId: string) {
+              const { rows } = (await pgc().raw(
+                `select ${ATTR_COLS.map((c) => `"${c}"`).join(", ")} from fashion_product_attributes where id = ?`,
+                [attributesId],
+              )) as { rows: Record<string, string | null>[] };
+              return rows[0]!;
+            }
+            /** Đưa thuộc tính về bản gốc (bù trừ lượt trước đã lỗi nên còn giá trị mới) — để lượt sau lỗi y như lượt đầu. */
+            async function putAttrRow(attributesId: string, row: Record<string, string | null>) {
+              await pgc().raw(
+                `update fashion_product_attributes set ${ATTR_COLS.map((c) => `"${c}" = ?`).join(", ")} where id = ?`,
+                [...ATTR_COLS.map((c) => row[c] ?? null), attributesId],
+              );
+            }
+
+            it("khôi phục thuộc tính lỗi → đúng 1 ngoại lệ, detail chỉ id + mã lỗi; lặp lại không trùng; xử lý xong mà tái diễn thì mở lại", async () => {
+              const { id, attributesId } = await seededPolo();
+              const original = await attrRow(attributesId);
+              expect(await exceptions()).toEqual([]);
+
+              const first = await runWithTrigger(...ATTR_TRIGGER);
+              expect(status(first.err)).toBe(400);
+              const rows = await exceptions();
+              expect(rows).toHaveLength(1);
+              expect(rows[0]).toMatchObject({ state: "open", priority: "high" });
+              expect(Object.keys(rows[0]!.detail).sort()).toEqual([
+                "attributes_id",
+                "created",
+                "error",
+                "product_id",
+                "step",
+              ]);
+              expect(rows[0]!.detail).toMatchObject({
+                step: "attributes",
+                product_id: id,
+                attributes_id: attributesId,
+                created: "false",
+              });
+              expect(String(rows[0]!.detail.error)).toContain("code=P0001");
+              expect(JSON.stringify(rows[0]!.detail)).not.toMatch(VALUE_LEAK);
+
+              // Lỗi lặp lại y hệt → vẫn đúng 1 ngoại lệ đang hoạt động (log vẫn ghi lượt thứ hai).
+              await putAttrRow(attributesId, original);
+              const second = await runWithTrigger(...ATTR_TRIGGER);
+              expect(second.lines.some((l) => l.includes("Hoàn tác thuộc tính thời trang lỗi"))).toBe(true);
+              expect((await exceptions()).map((r) => r.id)).toEqual([rows[0]!.id]);
+
+              // Ngoại lệ đã xử lý xong mà lỗi tái diễn → mở ngoại lệ mới.
+              await pgc().raw(`update ops_exception set state = 'resolved' where id = ?`, [rows[0]!.id]);
+              await putAttrRow(attributesId, original);
+              await runWithTrigger(...ATTR_TRIGGER);
+              const after = await exceptions();
+              expect(after).toHaveLength(2);
+              expect(after.filter((r) => r.state === "open")).toHaveLength(1);
+            });
+
+            it("dashboard: kind mới hiện đúng nhãn admin + owner 'owner', lọc được; vai trò không có exception.read → 403", async () => {
+              await runWithTrigger(...ATTR_TRIGGER);
+              const res = await api.get(`/admin/x/reports/exceptions?kind=${KIND}`, { headers: admin });
+              expect(res.status).toBe(200);
+              expect(res.data.items).toEqual([
+                expect.objectContaining({
+                  source: "ops",
+                  kind: KIND,
+                  priority: "high",
+                  state: "open",
+                  owner_role: "owner",
+                }),
+              ]);
+              expect(kindLabel(res.data.items[0].kind)).toBe("Hoàn tác dữ liệu sản phẩm lỗi");
+              expect(JSON.stringify(res.data.items)).not.toMatch(/cotton|Việt Nam|boom|Failing row/i);
+
+              const warehouse = (await adminHeaders(api, container, { roles: ["warehouse"] })).headers;
+              const denied = await api
+                .get(`/admin/x/reports/exceptions?kind=${KIND}`, { headers: warehouse })
+                .catch((e: unknown) => e);
+              expect(status(denied)).toBe(403);
+              expect(JSON.stringify(body(denied))).not.toContain(KIND);
+            });
+
+            it("gắn lại bảng size lỗi → ngoại lệ bước size_chart, chỉ id", async () => {
+              const { rows: tables } = (await pgc().raw(
+                `select c.table_name from information_schema.columns c
+                   where c.table_schema = 'public' and c.column_name = 'size_chart_id'
+                     and c.table_name like '%product%' and c.table_name not like 'fashion\\_%'`,
+              )) as { rows: { table_name: string }[] };
+              const table = tables[0]!.table_name;
+              const { err, id } = await runWithTrigger(
+                `create or replace function t156_boom2() returns trigger language plpgsql as $$
+                 begin if new.deleted_at is null then raise exception 'boom relink'; end if; return new; end $$;
+                 create trigger t156_boom2 before insert or update on "${table}"
+                   for each row execute function t156_boom2();`,
+                `drop trigger if exists t156_boom2 on "${table}"; drop function if exists t156_boom2();`,
+              );
+              expect(status(err)).toBe(400);
+              const rows = await exceptions();
+              expect(rows).toHaveLength(1);
+              expect(Object.keys(rows[0]!.detail).sort()).toEqual([
+                "error",
+                "from",
+                "product_id",
+                "step",
+                "to",
+              ]);
+              expect(rows[0]!.detail).toMatchObject({ step: "size_chart", product_id: id, from: null });
+              expect(String(rows[0]!.detail.to)).toMatch(/^[A-Za-z0-9_]+$/);
+              expect(String(rows[0]!.detail.error)).toContain("code=P0001");
+              expect(JSON.stringify(rows[0]!.detail)).not.toMatch(VALUE_LEAK);
+            });
+
+            it("bù trừ số đo lỗi (CHECK thật chặn tạo lại bản cũ) → ngoại lệ bước measurements, không số đo", async () => {
+              const { err, id, attributesId } = await runWithTrigger(
+                `alter table fashion_model_measurement add constraint t156_chk check (height_cm <> 180) not valid;`,
+                "alter table fashion_model_measurement drop constraint if exists t156_chk;",
+                {
+                  ...BODY,
+                  model_measurements: [{ image_set: "moi", height_cm: 173, chest_cm: 91, size_worn: "m" }],
+                },
+              );
+              expect(status(err)).toBeGreaterThanOrEqual(400);
+              const rows = await exceptions();
+              expect(rows).toHaveLength(1);
+              expect(Object.keys(rows[0]!.detail).sort()).toEqual([
+                "attributes_id",
+                "error",
+                "product_id",
+                "step",
+              ]);
+              expect(rows[0]!.detail).toMatchObject({
+                step: "measurements",
+                product_id: id,
+                attributes_id: attributesId,
+              });
+              expect(String(rows[0]!.detail.error)).toContain("code=23514");
+              expect(String(rows[0]!.detail.error)).toContain("constraint=t156_chk");
+              expect(JSON.stringify(rows[0]!.detail)).not.toMatch(VALUE_LEAK);
+            });
+
+            it("tự hoàn tác trong bước số đo lỗi (tạo mới lỗi, tạo lại bản cũ cũng lỗi) → ngoại lệ bước measurements", async () => {
+              const { id, attributesId } = await seededPolo();
+              const [old] = await measurementRows(attributesId);
+              const { err } = await runWithTrigger(
+                `create or replace function t156_boom3() returns trigger language plpgsql as $$
+                 begin
+                   if new.image_set = 'moi' or new.id = '${String(old!.id)}' then raise exception 'boom %', tg_op; end if;
+                   return new;
+                 end $$;
+                 create trigger t156_boom3 before insert on fashion_model_measurement
+                   for each row execute function t156_boom3();`,
+                "drop trigger if exists t156_boom3 on fashion_model_measurement; drop function if exists t156_boom3();",
+                {
+                  attributes: { kind: "apparel", material: "cotton" },
+                  model_measurements: [{ image_set: "moi", height_cm: 173, size_worn: "m" }],
+                },
+              );
+              expect(status(err)).toBe(500);
+              const rows = await exceptions();
+              expect(rows).toHaveLength(1);
+              expect(rows[0]!.detail).toMatchObject({
+                step: "measurements",
+                product_id: id,
+                attributes_id: attributesId,
+              });
+              expect(String(rows[0]!.detail.error)).toContain("code=P0001");
+              expect(JSON.stringify(rows[0]!.detail)).not.toMatch(VALUE_LEAK);
+            });
+
+            it("mở ngoại lệ lỗi → không che lỗi bù trừ gốc: API như cũ, lỗi bù trừ vẫn là lỗi gốc, log lỗi mở an toàn", async () => {
+              const { id, attributesId } = await seededPolo();
+              const original = await attrRow(attributesId);
+              // Đối chứng: cùng ca, mở ngoại lệ chạy bình thường.
+              const baseline = await runWithTrigger(...ATTR_TRIGGER);
+              const [opened] = await exceptions();
+              await pgc().raw(`update ops_exception set state = 'resolved' where id = ?`, [opened!.id]);
+              await putAttrRow(attributesId, original);
+
+              const checkout = container.resolve(CHECKOUT_MODULE) as unknown as Record<string, unknown>;
+              const orig = checkout.openOpsExceptionIfNoneActive;
+              let calls = 0;
+              checkout.openOpsExceptionIfNoneActive = async () => {
+                calls++;
+                throw Object.assign(new Error(`insert into "ops_exception" values ('cotton') - boom`), {
+                  code: "57014",
+                });
+              };
+              let r: Awaited<ReturnType<typeof runWithTrigger>>;
+              let errors: string[];
+              try {
+                r = await runWithTrigger(...ATTR_TRIGGER);
+                // Chạy thẳng workflow để thấy lỗi bù trừ engine ghi nhận (`run.errors`/HTTP chỉ có lỗi INVOKE).
+                await putAttrRow(attributesId, original);
+                await pgc().raw(ATTR_TRIGGER[0]);
+                try {
+                  const run = await setProductFashionWorkflow(container).run({
+                    input: { product_id: id, ...BODY } as SetProductFashionInput,
+                    throwOnError: false,
+                  });
+                  type TxError = { action?: string; handlerType?: string; error?: unknown };
+                  errors = (run.transaction as unknown as { getErrors(): TxError[] })
+                    .getErrors()
+                    .filter((x) => x.handlerType === "compensate")
+                    .map(
+                      (x) => `${x.action}: ${String((x.error as Error)?.message ?? JSON.stringify(x.error))}`,
+                    );
+                } finally {
+                  await pgc().raw(ATTR_TRIGGER[1]);
+                }
+              } finally {
+                checkout.openOpsExceptionIfNoneActive = orig;
+              }
+              expect(calls).toBe(2);
+              expect(status(r.err)).toBe(status(baseline.err));
+              const noTrace = (x: Record<string, unknown>) => ({ ...x, trace_id: undefined });
+              expect(noTrace(body(r.err))).toEqual(noTrace(body(baseline.err)));
+              expect(errors).toEqual(
+                expect.arrayContaining([
+                  expect.stringMatching(/Hoàn tác thuộc tính thời trang lỗi: .*code=P0001/),
+                ]),
+              );
+              expect(errors.filter((m) => /57014|ops_exception|cotton|boom/.test(m))).toEqual([]);
+              const compLine = r.lines.find((l) => l.includes("Hoàn tác thuộc tính thời trang lỗi"));
+              expect(compLine).toContain("code=P0001");
+              const openLine = r.lines.find((l) => l.includes(`Không mở được ngoại lệ ${KIND}`));
+              expect(openLine).toContain("bước attributes");
+              expect(openLine).toContain("code=57014");
+              expect(r.lines.filter((l) => /cotton|insert into|boom/i.test(l))).toEqual([]);
+              expect((await exceptions()).map((x) => [x.id, x.state])).toEqual([[opened!.id, "resolved"]]);
+            });
+
+            it("nhiều sản phẩm lỗi bù trừ cùng lúc → đúng 1 ngoại lệ đang mở (khoá tuần tự hoá INSERT … WHERE NOT EXISTS)", async () => {
+              const counts: number[] = [];
+              for (let round = 0; round < 5; round++) {
+                await pgc().raw(`delete from ops_exception where kind = ?`, [KIND]);
+                await Promise.all(
+                  Array.from({ length: 10 }, (_, i) =>
+                    openCompensationException(
+                      container,
+                      "attributes",
+                      { product_id: `prod_t156_${round}_${i}`, attributes_id: null },
+                      Object.assign(new Error("boom"), { code: "P0001" }),
+                    ),
+                  ),
+                );
+                counts.push((await exceptions()).length);
+              }
+              expect(counts).toEqual([1, 1, 1, 1, 1]);
+            });
+
+            it("Redis lỗi khi lấy khoá mở ngoại lệ → vẫn mở (không mất dấu), log cảnh báo", async () => {
+              const locking = container.resolve(Modules.LOCKING) as unknown as Record<string, unknown>;
+              const logger = container.resolve(ContainerRegistrationKeys.LOGGER) as unknown as Record<
+                string,
+                (...args: unknown[]) => unknown
+              >;
+              const origAcquire = locking.acquire;
+              const origWarn = logger.warn!;
+              const warns: string[] = [];
+              locking.acquire = async () => {
+                throw new Error("ECONNRESET giả lập");
+              };
+              logger.warn = (...args: unknown[]) => {
+                warns.push(args.map(String).join(" "));
+                return origWarn.apply(logger, args);
+              };
+              try {
+                await openCompensationException(
+                  container,
+                  "size_chart",
+                  { product_id: "prod_t156_redis", from: null, to: null },
+                  Object.assign(new Error("boom"), { code: "P0001" }),
+                );
+              } finally {
+                locking.acquire = origAcquire;
+                logger.warn = origWarn;
+              }
+              const rows = await exceptions();
+              expect(rows).toHaveLength(1);
+              expect(rows[0]!.detail).toMatchObject({ step: "size_chart", product_id: "prod_t156_redis" });
+              expect(warns.some((w) => w.includes("Không lấy được khoá mở ngoại lệ"))).toBe(true);
+            });
+
+            it("hai lượt song song cùng sản phẩm, bù trừ lỗi → không treo (khoá sản phẩm → khoá ngoại lệ), 1 ngoại lệ đang mở", async () => {
+              const { id } = await seededPolo();
+              await pgc().raw(ATTR_TRIGGER[0]);
+              let results: unknown[];
+              try {
+                results = await Promise.all(
+                  [0, 1].map(() =>
+                    api
+                      .post(`/admin/x/products/${id}/fashion`, BODY, { headers: admin })
+                      .catch((e: unknown) => e),
+                  ),
+                );
+              } finally {
+                await pgc().raw(ATTR_TRIGGER[1]);
+              }
+              for (const res of results) expect([400, 409]).toContain(status(res));
+              expect((await exceptions()).filter((r) => r.state === "open")).toHaveLength(1);
+            });
           });
         });
 

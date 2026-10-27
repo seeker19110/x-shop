@@ -4,6 +4,7 @@ import { checkCsvFile } from "../csv-file";
 import { formatAge, formatInstant, formatVnd } from "../format";
 import { checkInspection, type InspectDraft } from "../inspect";
 import { periodFromDays } from "../period";
+import { kindLabel } from "../labels";
 import { isNonEmpty } from "../presence";
 import { describeProblem, normalizeRowErrors, rowErrorsOf, toApiError } from "../problem";
 
@@ -243,5 +244,14 @@ describe("buildQuery / checkCsvFile", () => {
     expect(checkCsvFile({ name: "a.csv", size: 0 }, max)).toContain("rỗng");
     expect(checkCsvFile({ name: "a.xlsx", size: 10 }, max)).toContain("đuôi");
     expect(checkCsvFile({ name: "csv", size: 10 }, max)).toContain("đuôi");
+  });
+});
+
+describe("kindLabel (dashboard ngoại lệ)", () => {
+  it("kind ngoại lệ catalog có nhãn tiếng Việt; mã lạ/rỗng hiện nguyên mã", () => {
+    expect(kindLabel("catalog_compensation_failed")).toBe("Hoàn tác dữ liệu sản phẩm lỗi");
+    expect(kindLabel("catalog_index_mismatch")).toBe("Chỉ mục danh mục lệch giá");
+    expect(kindLabel("ma_la")).toBe("ma_la");
+    expect(kindLabel("")).toBe("");
   });
 });

@@ -11,7 +11,9 @@ import {
 import { emitEventStep } from "@medusajs/medusa/core-flows";
 import { CATALOG_PRODUCTS_CHANGED } from "../../lib/catalog/constants";
 import { assertPublishable } from "../../lib/catalog/publish-readiness";
-import { acquireOrdered, releaseOwnedQuietly } from "../../lib/checkout/locks";
+import { acquireOrdered, releaseOwnedQuietly, withOwnedLock } from "../../lib/checkout/locks";
+import { CHECKOUT_MODULE } from "../../modules/checkout";
+import type CheckoutModuleService from "../../modules/checkout/service";
 import { FASHION_MODULE } from "../../modules/fashion";
 import type FashionModuleService from "../../modules/fashion/service";
 import type { ProductFashionInput } from "../../modules/fashion/validators";
@@ -63,7 +65,12 @@ function attributesPayload(a: AttributesData) {
 
 type AttrCompensation =
   | { created: true; productId: string; attributesId: string }
-  | { created: false; attributesId: string; previous: Record<string, string | null> };
+  | {
+      created: false;
+      productId: string;
+      attributesId: string;
+      previous: Record<string, string | null>;
+    };
 
 const upsertAttributesStep = createStep(
   "x-upsert-fashion-attributes",
@@ -77,7 +84,12 @@ const upsertAttributesStep = createStep(
       const previous = Object.fromEntries(
         ATTRIBUTE_KEYS.map((k) => [k, (prev as Record<string, unknown>)[k] as string | null]),
       );
-      return new StepResponse(attributesId, { created: false, attributesId, previous } as AttrCompensation);
+      return new StepResponse(attributesId, {
+        created: false,
+        productId: input.product_id,
+        attributesId,
+        previous,
+      } as AttrCompensation);
     }
     const created = await fashion.createFashionProductAttributes(payload as never);
     const link = container.resolve(ContainerRegistrationKeys.LINK);
@@ -95,8 +107,9 @@ const upsertAttributesStep = createStep(
     if (!comp) return;
     await compensating(
       container,
+      "attributes",
       "Hoàn tác thuộc tính thời trang",
-      { attributes_id: comp.attributesId, created: String(comp.created) },
+      { product_id: comp.productId, attributes_id: comp.attributesId, created: String(comp.created) },
       async () => {
         const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
         if (comp.created) {
@@ -137,6 +150,7 @@ const setSizeChartStep = createStep(
     if (!comp) return;
     await compensating(
       container,
+      "size_chart",
       "Hoàn tác bảng size",
       { product_id: comp.productId, from: comp.next, to: comp.previous },
       () => relinkSizeChart(container, comp.productId, comp.next, comp.previous),
@@ -299,13 +313,87 @@ function sanitizedError(what: string, e: unknown): MedusaError {
   return new MedusaError(MedusaError.Types.UNEXPECTED_STATE, `${what}: ${safeErrorSummary(e)}`);
 }
 
+/** Kind ngoại lệ vận hành khi bù trừ của workflow này lỗi — sản phẩm có thể lệch trạng thái (D-095). */
+export const CATALOG_COMPENSATION_FAILED_KIND = "catalog_compensation_failed";
+
+/** Bước bù trừ lỗi — mã ổn định ghi vào `detail.step` của ngoại lệ (không phải nhãn hiển thị). */
+export type CompensationStep = "attributes" | "size_chart" | "measurements";
+
 /**
- * Bọc một hàm bù trừ: lỗi → log (`[set-product-fashion] <what> lỗi: <ids>: <safeErrorSummary>`) rồi ném lỗi đã làm sạch.
- * Engine chỉ ném lỗi INVOKE và `logOnError` tắt nên bù trừ lỗi mà không log sẽ để sản phẩm lệch trạng thái mà không
- * dấu vết (T-155). `ids` chỉ gồm id — KHÔNG giá trị thuộc tính/số đo (PII), KHÔNG `e.message` thô (knex chép giá trị bind).
+ * Khoá tuần tự hoá việc mở ngoại lệ `catalog_compensation_failed` giữa các sản phẩm: `openOpsExceptionIfNoneActive`
+ * (INSERT … WHERE NOT EXISTS) yêu cầu người gọi tự tuần tự hoá — khoá theo sản phẩm của workflow không đủ khi hai sản
+ * phẩm cùng lỗi bù trừ một lúc (đo được 10 lời gọi song song → tới 9 ngoại lệ đang mở). Luôn lấy SAU khoá sản phẩm,
+ * không bao giờ ngược lại → không deadlock.
+ */
+const COMPENSATION_EXCEPTION_LOCK = `x-shop:ops-exception:${CATALOG_COMPENSATION_FAILED_KIND}`;
+
+/**
+ * Mở ngoại lệ `catalog_compensation_failed` nếu CHƯA có cái đang mở/đang xử lý cùng kind (lỗi lặp lại không tạo trùng;
+ * xử lý xong mà tái diễn thì mở lại). `detail` CHỈ gồm mã bước, id (sản phẩm/thuộc tính/bảng size) và `safeErrorSummary`
+ * — KHÔNG giá trị thuộc tính/số đo (PII), KHÔNG `e.message` thô. Không lấy được khoá (Redis lỗi/bận quá hạn) → vẫn mở
+ * không khoá (thà có thể trùng còn hơn mất dấu). Mở lỗi → chỉ log (an toàn), KHÔNG ném: người gọi vẫn ném lỗi bù trừ
+ * gốc, lỗi mở ngoại lệ không được che nó.
+ */
+export async function openCompensationException(
+  container: MedusaContainer,
+  step: CompensationStep,
+  ids: Record<string, string | null>,
+  e: unknown,
+): Promise<void> {
+  const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+  const open = () =>
+    container.resolve<CheckoutModuleService>(CHECKOUT_MODULE).openOpsExceptionIfNoneActive({
+      kind: CATALOG_COMPENSATION_FAILED_KIND,
+      dedupe_key: `${CATALOG_COMPENSATION_FAILED_KIND}:${randomUUID()}`,
+      priority: "high",
+      detail: { step, ...ids, error: safeErrorSummary(e) },
+    });
+  let ran = false;
+  try {
+    try {
+      await withOwnedLock(
+        container.resolve(Modules.LOCKING),
+        COMPENSATION_EXCEPTION_LOCK,
+        {
+          waitMs: FASHION_LOCK_WAIT_MS,
+          ttlSeconds: FASHION_LOCK_TTL_SECONDS,
+          scope: "ops-exception",
+          ownerPrefix: "ops-exception",
+          onReleaseError: (err) =>
+            logger.warn(
+              `[set-product-fashion] Nhả khoá ngoại lệ lỗi/quá hạn (lease tự hết): ${safeErrorSummary(err)}`,
+            ),
+        },
+        async () => {
+          ran = true;
+          await open();
+        },
+      );
+    } catch (lockOrOpenError) {
+      if (ran) throw lockOrOpenError;
+      logger.warn(
+        `[set-product-fashion] Không lấy được khoá mở ngoại lệ ${CATALOG_COMPENSATION_FAILED_KIND} — mở không khoá: ` +
+          safeErrorSummary(lockOrOpenError),
+      );
+      await open();
+    }
+  } catch (openError) {
+    logger.error(
+      `[set-product-fashion] Không mở được ngoại lệ ${CATALOG_COMPENSATION_FAILED_KIND} (bước ${step}): ` +
+        safeErrorSummary(openError),
+    );
+  }
+}
+
+/**
+ * Bọc một hàm bù trừ: lỗi → log (`[set-product-fashion] <what> lỗi: <ids>: <safeErrorSummary>`), mở ngoại lệ vận hành
+ * (`openCompensationException`) rồi ném lỗi đã làm sạch. Engine chỉ ném lỗi INVOKE và `logOnError` tắt nên bù trừ lỗi
+ * mà không log sẽ để sản phẩm lệch trạng thái mà không dấu vết (T-155). `ids` chỉ gồm id — KHÔNG giá trị thuộc tính/số
+ * đo (PII), KHÔNG `e.message` thô (knex chép giá trị bind).
  */
 async function compensating(
   container: MedusaContainer,
+  step: CompensationStep,
   what: string,
   ids: Record<string, string | null>,
   fn: () => Promise<void>,
@@ -319,11 +407,13 @@ async function compensating(
           .map(([k, v]) => `${k}=${v ?? "-"}`)
           .join(" ")}: ${safeErrorSummary(e)}`,
     );
+    await openCompensationException(container, step, ids, e);
     throw sanitizedError(`${what} lỗi`, e);
   }
 }
 
 type MeasurementCompensation = {
+  productId: string;
   attributesId: string;
   createdIds: string[];
   previous: MeasurementSnapshot[];
@@ -333,7 +423,9 @@ type MeasurementCompensation = {
  * Hoàn tác bước thay số đo: đưa số đo của `attributes_id` về ĐÚNG bản chụp — xoá mọi bản ghi không có trong bản chụp
  * (gồm cả bản lượt này đã tạo mà không kịp nhận id, vd. lệnh tạo đã commit nhưng client báo lỗi), rồi tạo lại bản thiếu.
  * An toàn vì workflow giữ khoá theo sản phẩm: không lượt nào khác ghi số đo của sản phẩm này trong lúc đó.
- * Lỗi → log (chỉ id, không số đo — PII) rồi ném lỗi đã làm sạch (`sanitizedError`) để workflow báo bù trừ thất bại.
+ * Lỗi → log (chỉ id, không số đo — PII), mở ngoại lệ `catalog_compensation_failed` (chỉ id sản phẩm/thuộc tính + mã
+ * lỗi) rồi ném lỗi đã làm sạch (`sanitizedError`) để workflow báo bù trừ thất bại. Dùng cho cả bù trừ của workflow lẫn
+ * tự hoàn tác trong bước — cả hai lỗi đều để số đo lệch bản chụp.
  */
 async function undoReplaceMeasurements(
   container: MedusaContainer,
@@ -356,6 +448,12 @@ async function undoReplaceMeasurements(
           `created_ids=${comp.createdIds.join(",") || "-"} previous_ids=${comp.previous.map((m) => m.id).join(",") || "-"}: ` +
           safeErrorSummary(e),
       );
+    await openCompensationException(
+      container,
+      "measurements",
+      { product_id: comp.productId, attributes_id: comp.attributesId },
+      e,
+    );
     throw sanitizedError("Hoàn tác số đo người mẫu lỗi", e);
   }
 }
@@ -370,7 +468,11 @@ async function undoReplaceMeasurements(
 const replaceMeasurementsStep = createStep(
   "x-replace-model-measurements",
   async (
-    input: { attributes_id: string; model_measurements: MeasurementInput[] | undefined },
+    input: {
+      product_id: string;
+      attributes_id: string;
+      model_measurements: MeasurementInput[] | undefined;
+    },
     { container },
   ) => {
     if (input.model_measurements === undefined) return new StepResponse(undefined, null);
@@ -383,6 +485,7 @@ const replaceMeasurementsStep = createStep(
         ) as MeasurementSnapshot,
     );
     const comp: MeasurementCompensation = {
+      productId: input.product_id,
       attributesId: input.attributes_id,
       createdIds: [],
       previous: snapshot,
@@ -440,7 +543,11 @@ export const setProductFashionWorkflow = createWorkflow(
     const lock = acquireFashionLockStep({ product_id: input.product_id });
     const attributesId = upsertAttributesStep({ product_id: input.product_id, attributes: input.attributes });
     setSizeChartStep({ product_id: input.product_id, size_chart_id: input.size_chart_id });
-    replaceMeasurementsStep({ attributes_id: attributesId, model_measurements: input.model_measurements });
+    replaceMeasurementsStep({
+      product_id: input.product_id,
+      attributes_id: attributesId,
+      model_measurements: input.model_measurements,
+    });
     assertStillPublishableStep({ product_id: input.product_id });
     const eventData = transform({ input }, ({ input }) => ({ product_ids: [input.product_id] }));
     emitEventStep({ eventName: CATALOG_PRODUCTS_CHANGED, data: eventData });
