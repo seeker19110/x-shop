@@ -1814,6 +1814,38 @@
           "enumItems": [],
           "mappedType": "datetime"
         },
+        "next_check_at": {
+          "name": "next_check_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
+        "hold_check_attempts": {
+          "name": "hold_check_attempts",
+          "type": "integer",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": "0",
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "integer"
+        },
         "cod_confirm_by": {
           "name": "cod_confirm_by",
           "type": "timestamptz",
@@ -2017,6 +2049,11 @@
           "name": "order_finance_version_pos",
           "expression": "version >= 1",
           "definition": "check ((version >= 1))"
+        },
+        {
+          "name": "order_finance_hold_check_attempts_nonneg",
+          "expression": "hold_check_attempts >= 0",
+          "definition": "check ((hold_check_attempts >= 0))"
         }
       ],
       "foreignKeys": {},
