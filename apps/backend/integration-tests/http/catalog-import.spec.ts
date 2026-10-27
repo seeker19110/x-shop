@@ -331,7 +331,9 @@ medusaIntegrationTestRunner({
         expect(denied.status).toBe(403);
         const audit = container.resolve<AuditModuleService>(AUDIT_MODULE);
         const mine = await audit.list({ actor_id: acc.userId }, { limit: 10, offset: 0 });
-        expect(mine.entries.map((e) => e.action)).toEqual(["rbac.denied"]);
+        // Sự kiện xác thực của chính lần đăng nhập tạo tài khoản (auth.login, T-091) không thuộc phạm vi kiểm ở đây.
+        const nonAuth = mine.entries.map((e) => e.action).filter((a) => !a.startsWith("auth."));
+        expect(nonAuth).toEqual(["rbac.denied"]);
       });
     });
 

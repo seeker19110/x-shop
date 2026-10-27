@@ -17,6 +17,7 @@ import {
 } from "../lib/admin-security/guard";
 import { inviteAcceptGuard } from "../lib/admin-security/invite-guard";
 import { registerGate } from "../lib/admin-security/register-gate";
+import { securityAuditTrail } from "../lib/audit/http";
 import { xErrorHandler } from "../lib/errors/error-handler";
 import { requestLogContext } from "../lib/log/http";
 import { csrfGuard } from "../lib/security/csrf";
@@ -54,6 +55,10 @@ export default defineMiddlewares({
     // Ngữ cảnh log (trace_id/span_id) + log truy cập đã che cho MỌI request (T-090, lib/log/http.ts). `matcher: "/"`
     // không `methods` → Medusa xếp vào nhóm global, chạy trước mọi middleware khác của dự án.
     { matcher: "/", middlewares: [requestLogContext] },
+    // Audit sự kiện xác thực + xuất/truy cập dữ liệu nhạy cảm theo bảng route (T-091, lib/audit/http.ts): ghi SAU khi
+    // phản hồi xong, kể cả thất bại/429. Toàn cục → gắn trước rate limit/CSRF nên thấy cả request bị chặn sớm.
+    { matcher: "/auth", middlewares: [securityAuditTrail] },
+    { matcher: "/admin", middlewares: [securityAuditTrail] },
     // Header bảo mật + CSRF cho thao tác ghi dùng cookie (SEC01, SEC05, T-034). Middleware toàn cục (không `methods`)
     // chạy trước middleware theo method; mảng giữ thứ tự → CSRF trước cổng RBAC admin bên dưới.
     // `rejectNulBytes` (T-085): `%00`/U+0000 ở đường dẫn, query, thân → 400 trước khi tới DB (Postgres không nhận NUL).

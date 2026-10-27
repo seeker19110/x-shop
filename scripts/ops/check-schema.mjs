@@ -63,6 +63,9 @@ export const NULLABLE_ALLOW = {
   "audit_log.reason": OPTIONAL_INPUT,
   "audit_log.request_id": "ghi từ job/worker không có request HTTP",
   "audit_log.ip_hash": "ghi từ job/worker không có địa chỉ IP khách",
+  "audit_log.outcome":
+    "dòng ghi trước T-091 không biết kết quả; bảng append-only nên không backfill — dòng mới luôn có (Migration20261027090000)",
+  "audit_log.user_agent": "ghi từ job/worker không có request HTTP, hoặc client không gửi User-Agent",
   "inventory_adjustment.actor_id": SYSTEM_ACTOR,
   "inventory_adjustment.note": OPTIONAL_INPUT,
   "user_role.granted_by":
