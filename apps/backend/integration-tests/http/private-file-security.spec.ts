@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readlinkSync, rmSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
@@ -309,6 +310,49 @@ medusaIntegrationTestRunner({
             expect(r.body).not.toContain("khach-t141");
           }
         }
+      });
+
+      it("client ngắt kết nối sớm (khi request còn ở cổng admin hoặc đang stream) → không rò fd trong thư mục private", async () => {
+        // Review T-141 🟠: `close` của response phát TRƯỚC khi route gắn listener → pipe vào response đã huỷ, Promise treo,
+        // fd mở mãi (tái hiện 3/10). Server test chạy trong cùng process → đếm fd qua /proc/self/fd.
+        const openFdsInto = (dir: string) =>
+          readdirSync("/proc/self/fd").filter((fd) => {
+            try {
+              return readlinkSync(`/proc/self/fd/${fd}`).startsWith(dir);
+            } catch {
+              return false;
+            }
+          }).length;
+        const ok = await get(fileUrl(privateKey), owner.headers);
+        expect(ok.status).toBe(200);
+        const baseline = openFdsInto(PRIVATE_DIR);
+        const delays = [0, 1, 2, 3, 5, 8, 12, 20, 30, 50, 0, 1, 2, 3, 5, 8, 12, 20, 30, 50];
+        for (const d of delays) {
+          await new Promise<void>((done) => {
+            const req = http.request({
+              host: base.hostname,
+              port: Number(base.port),
+              path: fileUrl(privateKey),
+              method: "GET",
+              headers: owner.headers,
+            });
+            req.on("error", () => {});
+            req.on("response", (r) => r.resume());
+            req.end();
+            setTimeout(() => {
+              req.destroy();
+              done();
+            }, d);
+          });
+        }
+        let leaked = openFdsInto(PRIVATE_DIR) - baseline;
+        for (let i = 0; i < 30 && leaked > 0; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          leaked = openFdsInto(PRIVATE_DIR) - baseline;
+        }
+        expect({ leaked, of: delays.length }).toEqual({ leaked: 0, of: delays.length });
+        // Server vẫn phục vụ bình thường sau loạt ngắt kết nối.
+        expect((await get(fileUrl(privateKey), owner.headers)).body).toBe(CSV);
       });
     });
   },

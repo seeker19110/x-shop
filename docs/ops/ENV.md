@@ -56,7 +56,9 @@ STOREFRONT_URL=https://shop.example.vn
 # Đổi thư mục = file cũ không còn tải được (chuyển file sang thư mục mới trước). Server và worker phải thấy CÙNG thư mục
 # (worker ghi file xuất, server phục vụ) — nhiều máy: dùng chung volume hoặc chờ kho S3-compatible (T-154).
 # Nâng cấp từ bản trước T-141: file `static/private-*` cũ VẪN công khai — chuyển sang thư mục này rồi xoá khỏi `static/`.
-# Kiểm đường dẫn theo chữ (không theo symlink): đừng trỏ symlink từ đây vào `static/`.
+# Lúc khởi động provider: chưa có → tạo với quyền 700; có sẵn mà mở quyền group/other → TỪ CHỐI khởi động (không tự chmod —
+# sửa bằng `chmod 700`); kiểm rời `static/` cả sau khi theo symlink (`realpath`). File private ghi ra quyền 600. Thư mục
+# dev cũ tạo trước bản này có thể là 755 → `chmod 700 apps/backend/private-uploads` (hoặc xoá).
 PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # Tùy chọn
 # MEDUSA_BACKEND_URL=http://localhost:9000

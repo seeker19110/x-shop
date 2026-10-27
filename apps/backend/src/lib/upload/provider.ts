@@ -1,8 +1,9 @@
+import { chmod } from "node:fs/promises";
 import path from "node:path";
 import type { FileTypes, LocalFileServiceOptions } from "@medusajs/framework/types";
 import { LocalFileService } from "@medusajs/medusa/file-local";
 import { generateUploadKey, PRIVATE_KEY_PREFIX } from "./key";
-import { privateDirProblem, privateFileUrl } from "./private";
+import { preparePrivateDir, PRIVATE_FILE_MODE, privateFileUrl } from "./private";
 
 /**
  * File provider local của Medusa, bọc lại để tên lưu do server sinh (BE-FILE-003, T-100) và file private nằm ngoài webroot
@@ -16,6 +17,8 @@ import { privateDirProblem, privateFileUrl } from "./private";
  * Ở đây `private_upload_dir` BẮT BUỘC và phải rời thư mục công khai (khởi tạo thất bại nếu không — fail-closed lúc khởi
  * động); URL trả cho file private (upload, stream, presigned download) là route admin có kiểm quyền
  * `GET /admin/x/files/:key` (lib/upload/private.ts), không phải đường dẫn tĩnh. Đọc/xoá theo khoá giữ hành vi gốc.
+ * Thư mục private được tạo lúc khởi tạo với quyền 700 (có sẵn mà mở cho group/other → từ chối), kiểm rời `static/` cả sau
+ * khi theo symlink; file private hạ về quyền 600.
  */
 export class ServerKeyedLocalFileService extends LocalFileService {
   static override identifier = "localfs-server-key";
@@ -32,13 +35,20 @@ export class ServerKeyedLocalFileService extends LocalFileService {
     const uploadDir = options?.upload_dir;
     const publicDir =
       typeof uploadDir === "string" && uploadDir !== "" ? uploadDir : path.join(process.cwd(), "static");
-    const problem = privateDirProblem(publicDir, privateDir);
-    if (problem !== null) throw new Error(`File provider local: private_upload_dir ${problem}`);
-    super(deps, { ...options, private_upload_dir: path.resolve(privateDir) });
+    // Rời static/ theo chữ và theo symlink, tạo với quyền 700, từ chối thư mục mở cho group/other (lib/upload/private.ts).
+    super(deps, { ...options, private_upload_dir: preparePrivateDir(publicDir, privateDir) });
   }
 
   private isPrivateKey(key: string): boolean {
     return key.startsWith(PRIVATE_KEY_PREFIX);
+  }
+
+  /**
+   * File private → quyền 600 sau khi ghi (provider gốc ghi theo umask, thường 644). Thư mục 700 đã chặn user khác; đây là
+   * lớp thứ hai khi thư mục bị nới quyền về sau. Lỗi chmod → thao tác ghi thất bại (không để file quyền rộng mà báo thành công).
+   */
+  private async restrict(key: string): Promise<void> {
+    if (this.isPrivateKey(key)) await chmod(path.join(this.privateUploadDir_, key), PRIVATE_FILE_MODE);
   }
 
   /** URL công khai giữ nguyên; file private → route admin. */
@@ -49,16 +59,25 @@ export class ServerKeyedLocalFileService extends LocalFileService {
   }
 
   override async upload(file: FileTypes.ProviderUploadFileDTO): Promise<FileTypes.ProviderFileResultDTO> {
-    return this.urlFor(await super.upload({ ...file, filename: generateUploadKey(file?.mimeType) }));
+    const res = await super.upload({ ...file, filename: generateUploadKey(file?.mimeType) });
+    await this.restrict(res.key);
+    return this.urlFor(res);
   }
 
   override async getUploadStream(fileData: FileTypes.ProviderUploadStreamDTO) {
     const res = await super.getUploadStream({ ...fileData, filename: generateUploadKey(fileData?.mimeType) });
     if (!this.isPrivateKey(res.fileKey)) return res;
+    // Xuất PII có thể ghi lâu: hạ quyền ngay khi file được mở (nỗ lực sớm); bắt buộc lại khi ghi xong.
+    res.writeStream.once("open", () => {
+      this.restrict(res.fileKey).catch(() => undefined);
+    });
     return {
       ...res,
       url: privateFileUrl(this.backendUrl_, res.fileKey),
-      promise: res.promise.then((done) => this.urlFor(done)),
+      promise: res.promise.then(async (done) => {
+        await this.restrict(done.key);
+        return this.urlFor(done);
+      }),
     };
   }
 

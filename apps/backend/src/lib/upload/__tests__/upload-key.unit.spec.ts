@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -135,8 +135,10 @@ describe("ServerKeyedLocalFileService", () => {
       });
       expectServerKey(res.key, ".png");
       expect(res.url).toBe(`http://localhost:9000/static/${res.key}`);
-      // Không có file nào ngoài thư mục upload; trong thư mục chỉ đúng một file mang khoá vừa trả.
-      expect(await readdir(base)).toEqual(["static"]);
+      // Không có file nào ngoài thư mục upload; trong thư mục chỉ đúng một file mang khoá vừa trả. Thư mục private (tạo lúc
+      // khởi tạo provider — T-141) vẫn rỗng.
+      expect((await readdir(base)).sort()).toEqual(["private", "static"]);
+      expect(await readdir(priv)).toEqual([]);
       expect(await readdir(pub)).toEqual([res.key]);
       expect(await readFile(path.join(pub, res.key))).toEqual(PNG);
     },
@@ -172,7 +174,8 @@ describe("ServerKeyedLocalFileService", () => {
     await expect(
       svc.upload({ filename: "x.png", mimeType: "", content: "", access: "public" }),
     ).rejects.toThrow(/Loại file không được nhận/);
-    expect(await readdir(base)).toEqual([]);
+    expect(await readdir(base)).toEqual(["private"]);
+    expect(await readdir(priv)).toEqual([]);
   });
 
   it("getUploadStream (export CSV của Medusa) cũng dùng khoá server sinh", async () => {
@@ -413,5 +416,88 @@ describe("ServerKeyedLocalFileService — thư mục private tách khỏi webroo
     expect((await readdir(pub)).sort()).toEqual(pub30.map((r) => r.key).sort());
     for (const r of priv30) expect(r.url).toBe(`http://localhost:9000/admin/x/files/${r.key}`);
     for (const r of pub30) expect(r.url).toBe(`http://localhost:9000/static/${r.key}`);
+  });
+
+  // Review T-141 🟢3/🟢4: quyền thư mục/file private và symlink vào static/.
+  const modeOf = async (p: string) => (await stat(p)).mode & 0o777;
+
+  it("thư mục private chưa có → tạo lúc khởi tạo với quyền 700 (cả thư mục cha mới tạo)", async () => {
+    const nested = path.join(priv, "a", "b");
+    make({ upload_dir: pub, private_upload_dir: nested });
+    expect(await modeOf(nested)).toBe(0o700);
+    expect(await modeOf(priv)).toBe(0o700);
+  });
+
+  it.each([0o750, 0o755, 0o705, 0o777, 0o701, 0o710].map((m) => [m.toString(8), m] as const))(
+    "thư mục có sẵn mở quyền group/other (%s) → từ chối khởi tạo, không tự chmod",
+    async (_octal, mode) => {
+      await mkdir(priv, { mode: 0o700 });
+      await chmod(priv, mode);
+      expect(() => make({ upload_dir: pub, private_upload_dir: priv })).toThrow(/group\/other.*chmod 700/);
+      expect(await modeOf(priv)).toBe(mode);
+    },
+  );
+
+  it("thư mục có sẵn quyền 700 → nhận", async () => {
+    await mkdir(priv, { mode: 0o700 });
+    expect(() => make({ upload_dir: pub, private_upload_dir: priv })).not.toThrow();
+  });
+
+  it("đường dẫn private là file, không phải thư mục → từ chối", async () => {
+    await writeFile(priv, "x");
+    expect(() => make({ upload_dir: pub, private_upload_dir: priv })).toThrow();
+  });
+
+  it.each([
+    ["symlink trỏ vào static/", (p: string) => path.join(p, "sub")],
+    ["symlink trỏ đúng static/", (p: string) => p],
+  ])("%s → từ chối (kiểm sau khi theo symlink), không ghi gì vào static", async (_label, targetOf) => {
+    await mkdir(path.join(pub, "sub"), { recursive: true, mode: 0o700 });
+    await chmod(pub, 0o700);
+    await symlink(targetOf(pub), priv);
+    expect(() => make({ upload_dir: pub, private_upload_dir: priv })).toThrow(/sau khi theo symlink/);
+    expect(await readdir(path.join(pub, "sub"))).toEqual([]);
+  });
+
+  it("static/ là symlink tới thư mục chứa private → từ chối", async () => {
+    const real = path.join(base, "real");
+    await mkdir(path.join(real, "private"), { recursive: true, mode: 0o700 });
+    await chmod(real, 0o700);
+    await symlink(path.join(real, "private"), pub); // static → real/private
+    expect(() => make({ upload_dir: pub, private_upload_dir: path.join(real, "private") })).toThrow(
+      /private_upload_dir/,
+    );
+  });
+
+  it("symlink ra ngoài static/ (vd. volume gắn ở chỗ khác) → nhận, ghi vào đích thật", async () => {
+    const vol = path.join(base, "volume");
+    await mkdir(vol, { mode: 0o700 });
+    await symlink(vol, priv);
+    const svc = make({ upload_dir: pub, private_upload_dir: priv });
+    const res = await svc.upload({ filename: "x", mimeType: "text/csv", content: "a\n", access: "private" });
+    expect(await readdir(vol)).toEqual([res.key]);
+  });
+
+  it("file private ghi ra có quyền 600 (upload và stream); file công khai không bị hạ quyền", async () => {
+    const svc = make({ upload_dir: pub, private_upload_dir: priv });
+    const up = await svc.upload({ filename: "x", mimeType: "text/csv", content: "a\n", access: "private" });
+    expect(await modeOf(path.join(priv, up.key))).toBe(0o600);
+    const { writeStream, promise, fileKey } = await svc.getUploadStream({
+      filename: "x.json",
+      mimeType: "application/json",
+      access: "private",
+    });
+    writeStream.end("[]");
+    await promise;
+    expect(await modeOf(path.join(priv, fileKey))).toBe(0o600);
+    const pubRes = await svc.upload({
+      filename: "a.png",
+      mimeType: "image/png",
+      content: PNG.toString("base64"),
+      access: "public",
+    });
+    // Công khai: quyền như một file ghi thường (umask của tiến trình — provider gốc), không qua chmod 600.
+    await writeFile(path.join(base, "doi-chung"), "x");
+    expect(await modeOf(path.join(pub, pubRes.key))).toBe(await modeOf(path.join(base, "doi-chung")));
   });
 });

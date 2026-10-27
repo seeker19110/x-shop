@@ -1,3 +1,4 @@
+import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Permission } from "@x-shop/domain";
 
@@ -36,7 +37,8 @@ export function isSameOrInside(parent: string, child: string): boolean {
 
 /**
  * Hai thư mục phải RỜI nhau: private không trùng, không nằm trong, không chứa thư mục công khai. Trả lý do (không có giá trị
- * đường dẫn) hoặc `null` khi hợp lệ.
+ * đường dẫn) hoặc `null` khi hợp lệ. Kiểm theo chữ — dùng ở env (chưa chạm đĩa); lúc khởi động provider kiểm lại sau khi
+ * theo symlink (`preparePrivateDir`).
  */
 export function privateDirProblem(publicDir: string, privateDir: string): string | null {
   const pub = path.resolve(publicDir);
@@ -44,4 +46,53 @@ export function privateDirProblem(publicDir: string, privateDir: string): string
   if (isSameOrInside(pub, priv)) return "không được trùng hoặc nằm trong thư mục công khai (static)";
   if (isSameOrInside(priv, pub)) return "không được chứa thư mục công khai (static)";
   return null;
+}
+
+/** Quyền thư mục private: chỉ user chạy backend. */
+export const PRIVATE_DIR_MODE = 0o700;
+/** Quyền file private. */
+export const PRIVATE_FILE_MODE = 0o600;
+
+/** `realpath` của tổ tiên gần nhất đang tồn tại + phần còn lại (thư mục công khai có thể chưa được tạo). */
+export function realpathLoose(p: string): string {
+  const abs = path.resolve(p);
+  let head = abs;
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return path.join(realpathSync(head), ...rest);
+    } catch (err) {
+      const parent = path.dirname(head);
+      if ((err as { code?: unknown }).code !== "ENOENT" || parent === head) throw err;
+      rest.unshift(path.basename(head));
+      head = parent;
+    }
+  }
+}
+
+/**
+ * Chuẩn bị thư mục private lúc khởi động provider (fail-closed — lỗi là backend không khởi động):
+ *  1. rời thư mục công khai theo chữ (trước khi tạo gì trên đĩa);
+ *  2. tạo nếu chưa có với quyền 700;
+ *  3. rời thư mục công khai SAU KHI theo symlink (`realpath`) — symlink từ PRIVATE_UPLOAD_DIR vào `static/` bị từ chối;
+ *  4. thư mục có sẵn mà mở cho group/other (bit 077) → từ chối, không tự `chmod` thư mục do người vận hành tạo.
+ * Trả đường dẫn thật để provider ghi/đọc đúng nơi đã kiểm. Thông báo lỗi không chứa đường dẫn.
+ */
+export function preparePrivateDir(publicDir: string, privateDir: string): string {
+  const lexical = privateDirProblem(publicDir, privateDir);
+  if (lexical !== null) throw new Error(`File provider local: private_upload_dir ${lexical}`);
+  mkdirSync(privateDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const real = realpathSync(privateDir);
+  const st = statSync(real);
+  if (!st.isDirectory()) throw new Error("File provider local: private_upload_dir không phải thư mục");
+  const resolved = privateDirProblem(realpathLoose(publicDir), real);
+  if (resolved !== null) {
+    throw new Error(`File provider local: private_upload_dir (sau khi theo symlink) ${resolved}`);
+  }
+  if (process.platform !== "win32" && (st.mode & 0o077) !== 0) {
+    throw new Error(
+      `File provider local: private_upload_dir mở quyền cho group/other (${(st.mode & 0o777).toString(8)}) — chmod 700`,
+    );
+  }
+  return real;
 }

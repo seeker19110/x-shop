@@ -31,12 +31,19 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   const mime = mimeForFileKey(key);
   if (!isPrivateFileKey(key) || mime === null) return notFound(res);
 
+  // Client đã ngắt khi request còn ở cổng admin (session/RBAC/MFA là I/O bất đồng bộ): `close` của response ĐÃ phát — listener
+  // gắn sau sẽ không bao giờ chạy → không mở file (review T-141: rò fd + handler treo).
+  if (res.destroyed) return;
   let stream: Readable;
   try {
     stream = await req.scope.resolve(Modules.FILE).getDownloadStream(key);
   } catch (err) {
     if (isMissing(err)) return notFound(res);
     throw err;
+  }
+  if (res.destroyed) {
+    stream.destroy();
+    return;
   }
 
   res.status(200);
@@ -48,7 +55,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     stream.once("error", (err: Error) => {
       if (res.headersSent) {
         // Lỗi giữa chừng sau khi đã gửi byte: cắt kết nối (client thấy tải hỏng, không nhận file thiếu như file đủ).
-        res.destroy(err);
+        // Không truyền `err` vào destroy — tránh phát `error` trên response mà không ai nghe.
+        res.destroy();
         return resolve();
       }
       res.removeHeader("Content-Disposition");
@@ -63,6 +71,11 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       stream.destroy();
       resolve();
     });
+    // Gắn listener và kiểm trạng thái trong CÙNG một nhịp đồng bộ: `close` phát trước lúc này thì listener trên không chạy.
+    if (res.destroyed) {
+      stream.destroy();
+      return resolve();
+    }
     stream.pipe(res);
   });
 };
