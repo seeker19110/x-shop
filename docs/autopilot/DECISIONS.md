@@ -607,3 +607,31 @@
 - Chọn: Giới hạn/bỏ metadata, khởi chạy workflow sau độ trễ ngẫu nhiên đều (0–5 s) ngoài thời điểm request; ghi rủi ro còn lại (đo loopback, ≤5 lượt/email/15 phút)
 - Lý do (tiêu chí chất lượng cuối): (1) phá tương quan thời gian với request đối chứng; (3) không thêm hạ tầng job mới; dự án chưa gửi thư reset (chưa có subscriber) nên rủi ro thực hiện tại thấp
 - Đường lùi: Chuyển sang job worker khi bật gửi thư reset
+
+### D-087 · 2026-10-27T06:51:08+00:00 · T-143 vòng 2: Retry-After so với cửa sổ; rủi ro R-07; sàn 250 ms và độ trễ nền 0–5 s
+
+- Phương án: (1) Giữ: kiểm Retry-After ≤ khoá tối thiểu của xấp xỉ cửa sổ trượt; R-07 accept; duyệt 250 ms/5 s · (2) Đổi sliding-window sang log thời điểm thật (đụng limiter store/order-lookup); chuyển việc nền sang worker
+- Chọn: Giữ: kiểm Retry-After ≤ khoá tối thiểu của xấp xỉ cửa sổ trượt; R-07 accept; duyệt 250 ms/5 s
+- Lý do (tiêu chí chất lượng cuối): (1) đã đóng lỗi khoá hộ (không kéo dài quá khoá tối thiểu, có test đối chứng); (3) không mở rộng sang limiter dùng chung; email reset chậm ≤5 s chấp nhận được (4)
+- Đường lùi: Đổi sliding-window.ts sang log thời điểm; chuyển việc nền sang job worker khi bật gửi thư reset
+
+### D-088 · 2026-10-27T06:51:08+00:00 · T-093: OUTBOX_POLICY.maxAttempts (blueprint BE-JOB-003 nói mặc định 3–5)
+
+- Phương án: (1) Giữ 8 lần (cửa sổ ~21 phút), BE-JOB-003 để mở kèm lý do · (2) 5 lần base 80 s (lần đầu chậm 40–80 s, ảnh hưởng payment.native_sync) · (3) 5 lần base 10 s (cửa sổ ~2,5 phút, sự cố SMTP ngắn đã vào dead)
+- Chọn: Giữ 8 lần (cửa sổ ~21 phút), BE-JOB-003 để mở kèm lý do
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: không đẩy sự kiện thanh toán/thông báo vào dead vì sự cố tạm ngắn, không làm chậm đồng bộ thanh toán; lỗi vĩnh viễn đã dead ngay nên số lần chỉ áp cho lỗi tạm
+- Đường lùi: Đổi OUTBOX_POLICY (test lặp theo maxAttempts) hoặc tách chính sách theo loại job
+
+### D-089 · 2026-10-27T06:51:08+00:00 · Liên kết tra cứu đơn qua outbox hỏng (producer ghi token, handler cần link) và token thô nằm trong payload (BE-JOB-007)
+
+- Phương án: (1) Không lưu token thô: producer ghi order_id, handler phát hành token lúc gửi (task mới T-149) · (2) Handler dựng URL từ token + env, khai ngoại lệ token trong payload · (3) Producer ghi sẵn link (token vẫn trong payload)
+- Chọn: Không lưu token thô: producer ghi order_id, handler phát hành token lúc gửi (task mới T-149)
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: không có bí mật trong bảng outbox/log; sửa lỗi thật chức năng tra cứu; (3) test được qua order-lookup.spec
+- Đường lùi: Revert T-149; quay về producer ghi link
+
+### D-090 · 2026-10-27T07:02:23+00:00 · T-119: giây trong RFC3339 bắt buộc cả cho CSV đối soát?
+
+- Phương án: (1) Bắt buộc giây ở mọi đầu vào (một helper, đúng RFC 3339 §5.6) · (2) Giây tuỳ chọn riêng cho CSV (đường parse thứ hai)
+- Chọn: Bắt buộc giây ở mọi đầu vào (một helper, đúng RFC 3339 §5.6)
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn, một nguồn sự thật; chưa có dữ liệu/tài liệu nào dùng dạng thiếu giây; lỗi 422 nêu trường + ví dụ nên người nhập biết sửa
+- Đường lùi: Nới regex giây tuỳ chọn trong parseRfc3339 cho CSV
