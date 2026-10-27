@@ -11,7 +11,7 @@ import {
 import { emitEventStep } from "@medusajs/medusa/core-flows";
 import { CATALOG_PRODUCTS_CHANGED } from "../../lib/catalog/constants";
 import { assertPublishable } from "../../lib/catalog/publish-readiness";
-import { acquireOrdered, releaseOwnedQuietly, withOwnedLock } from "../../lib/checkout/locks";
+import { acquireOrdered, releaseOwnedQuietly } from "../../lib/checkout/locks";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { FASHION_MODULE } from "../../modules/fashion";
@@ -320,21 +320,13 @@ export const CATALOG_COMPENSATION_FAILED_KIND = "catalog_compensation_failed";
 export type CompensationStep = "attributes" | "size_chart" | "measurements";
 
 /**
- * Khoá tuần tự hoá việc mở ngoại lệ `catalog_compensation_failed`: `openOpsExceptionIfNoneActive`
- * (INSERT … WHERE NOT EXISTS) yêu cầu người gọi tự tuần tự hoá — khoá theo sản phẩm của workflow không đủ (vd. bước số
- * đo tự hoàn tác lỗi rồi bù trừ của workflow lại lỗi, hoặc lời gọi không qua workflow; đo được 10 lời gọi song song
- * không khoá → tới 9 ngoại lệ đang mở). Một khoá cho cả kind: chỉ giữ trong một INSERT. Luôn lấy SAU khoá sản phẩm,
- * không bao giờ ngược lại → không deadlock.
- */
-const COMPENSATION_EXCEPTION_LOCK = `x-shop:ops-exception:${CATALOG_COMPENSATION_FAILED_KIND}`;
-
-/**
  * Mở ngoại lệ `catalog_compensation_failed` nếu sản phẩm này CHƯA có cái đang mở/đang xử lý (dedupe theo kind +
  * `detail.product_id`, D-101): lỗi lặp lại ở cùng sản phẩm không tạo trùng; sản phẩm khác lỗi có ngoại lệ riêng (đóng
- * ngoại lệ của A không làm mất dấu B); xử lý xong mà tái diễn thì mở lại. `detail` CHỈ gồm mã bước, id (sản phẩm/thuộc
- * tính/bảng size) và `safeErrorSummary` — KHÔNG giá trị thuộc tính/số đo (PII), KHÔNG `e.message` thô. Không lấy được
- * khoá (Redis lỗi/bận quá hạn) → vẫn mở không khoá (thà có thể trùng còn hơn mất dấu). Mở lỗi → chỉ log (an toàn), KHÔNG
- * ném: người gọi vẫn ném lỗi bù trừ gốc, lỗi mở ngoại lệ không được che nó.
+ * ngoại lệ của A không làm mất dấu B); xử lý xong mà tái diễn thì mở lại. `openOpsExceptionIfNoneActive` tự tuần tự hoá
+ * bằng khoá advisory Postgres theo kind + sản phẩm (T-158) — không cần khoá Redis riêng ở đây (Redis lỗi cũng không ảnh
+ * hưởng việc mở). `detail` CHỈ gồm mã bước, id (sản phẩm/thuộc tính/bảng size) và `safeErrorSummary` — KHÔNG giá trị
+ * thuộc tính/số đo (PII), KHÔNG `e.message` thô. Mở lỗi → chỉ log (an toàn), KHÔNG ném: người gọi vẫn ném lỗi bù trừ
+ * gốc, lỗi mở ngoại lệ không được che nó.
  */
 export async function openCompensationException(
   container: MedusaContainer,
@@ -342,49 +334,21 @@ export async function openCompensationException(
   ids: { product_id: string } & Record<string, string | null>,
   e: unknown,
 ): Promise<void> {
-  const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
-  const open = () =>
-    container.resolve<CheckoutModuleService>(CHECKOUT_MODULE).openOpsExceptionIfNoneActive({
+  try {
+    await container.resolve<CheckoutModuleService>(CHECKOUT_MODULE).openOpsExceptionIfNoneActive({
       kind: CATALOG_COMPENSATION_FAILED_KIND,
       dedupe_key: `${CATALOG_COMPENSATION_FAILED_KIND}:${randomUUID()}`,
       priority: "high",
       detail: { step, ...ids, error: safeErrorSummary(e) },
       active_scope: ["product_id"],
     });
-  let ran = false;
-  try {
-    try {
-      await withOwnedLock(
-        container.resolve(Modules.LOCKING),
-        COMPENSATION_EXCEPTION_LOCK,
-        {
-          waitMs: FASHION_LOCK_WAIT_MS,
-          ttlSeconds: FASHION_LOCK_TTL_SECONDS,
-          scope: "ops-exception",
-          ownerPrefix: "ops-exception",
-          onReleaseError: (err) =>
-            logger.warn(
-              `[set-product-fashion] Nhả khoá ngoại lệ lỗi/quá hạn (lease tự hết): ${safeErrorSummary(err)}`,
-            ),
-        },
-        async () => {
-          ran = true;
-          await open();
-        },
-      );
-    } catch (lockOrOpenError) {
-      if (ran) throw lockOrOpenError;
-      logger.warn(
-        `[set-product-fashion] Không lấy được khoá mở ngoại lệ ${CATALOG_COMPENSATION_FAILED_KIND} — mở không khoá: ` +
-          safeErrorSummary(lockOrOpenError),
-      );
-      await open();
-    }
   } catch (openError) {
-    logger.error(
-      `[set-product-fashion] Không mở được ngoại lệ ${CATALOG_COMPENSATION_FAILED_KIND} (bước ${step}): ` +
-        safeErrorSummary(openError),
-    );
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .error(
+        `[set-product-fashion] Không mở được ngoại lệ ${CATALOG_COMPENSATION_FAILED_KIND} (bước ${step}): ` +
+          safeErrorSummary(openError),
+      );
   }
 }
 

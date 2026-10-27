@@ -246,7 +246,8 @@ export const CATALOG_INDEX_MISMATCH_KIND = "catalog_index_mismatch";
 
 /**
  * Mở ngoại lệ `catalog_index_mismatch` nếu CHƯA có cái đang mở/đang xử lý cùng kind (nhiều lượt lỗi liên tiếp chỉ
- * một ngoại lệ; xử lý xong mà lỗi tái diễn thì mở lại). Gọi dưới khoá ghi index nên không tranh nhau.
+ * một ngoại lệ; xử lý xong mà lỗi tái diễn thì mở lại). Helper tự tuần tự hoá theo kind (khoá advisory, T-158) —
+ * không dựa vào khoá ghi index.
  */
 async function openMismatchException(
   container: MedusaContainer,

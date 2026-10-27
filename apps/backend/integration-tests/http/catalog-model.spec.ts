@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows";
@@ -7,6 +8,13 @@ import { kindLabel } from "../../src/admin/lib/labels";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "../../src/lib/catalog/constants";
 import { loadProductSources } from "../../src/lib/catalog/product-source";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
+import type CheckoutModuleService from "../../src/modules/checkout/service";
+import {
+  OPS_EXCEPTION_LOCK_NS,
+  OPS_EXCEPTION_LOCK_TIMEOUT_MS,
+  OPS_EXCEPTION_STATEMENT_TIMEOUT_MS,
+  opsExceptionLockKeys,
+} from "../../src/modules/checkout/service";
 import { OPS_EXCEPTION_KINDS } from "../../src/modules/checkout/models/constants";
 import { FASHION_MODULE } from "../../src/modules/fashion";
 import type FashionModuleService from "../../src/modules/fashion/service";
@@ -1301,21 +1309,13 @@ medusaIntegrationTestRunner({
               expect(sorted(kinds)).toEqual(sorted(OPS_EXCEPTION_KINDS));
             });
 
-            it("Redis lỗi khi lấy khoá mở ngoại lệ → vẫn mở (không mất dấu), log cảnh báo", async () => {
+            it("Redis lỗi → vẫn mở (không mất dấu): mở ngoại lệ không dùng khoá Redis (T-158 — khoá advisory PG)", async () => {
               const locking = container.resolve(Modules.LOCKING) as unknown as Record<string, unknown>;
-              const logger = container.resolve(ContainerRegistrationKeys.LOGGER) as unknown as Record<
-                string,
-                (...args: unknown[]) => unknown
-              >;
               const origAcquire = locking.acquire;
-              const origWarn = logger.warn!;
-              const warns: string[] = [];
+              let acquires = 0;
               locking.acquire = async () => {
+                acquires++;
                 throw new Error("ECONNRESET giả lập");
-              };
-              logger.warn = (...args: unknown[]) => {
-                warns.push(args.map(String).join(" "));
-                return origWarn.apply(logger, args);
               };
               try {
                 await openCompensationException(
@@ -1326,14 +1326,199 @@ medusaIntegrationTestRunner({
                 );
               } finally {
                 locking.acquire = origAcquire;
-                logger.warn = origWarn;
               }
               const rows = await exceptions();
               expect(rows).toHaveLength(1);
-              expect(rows[0]!.detail).toMatchObject({ step: "size_chart", product_id: "prod_t156_redis" });
-              expect(warns.some((w) => w.includes("Không lấy được khoá mở ngoại lệ"))).toBe(true);
+              expect(rows[0]!.detail).toMatchObject({
+                step: "size_chart",
+                product_id: "prod_t156_redis",
+              });
+              expect(acquires).toBe(0);
             });
 
+            describe("openOpsExceptionIfNoneActive tự tuần tự hoá (T-158, D-099)", () => {
+              const MISMATCH = "catalog_index_mismatch";
+              const svc = () => container.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
+              const openScoped = (product_id: string | undefined, tag: string) =>
+                svc().openOpsExceptionIfNoneActive({
+                  kind: KIND,
+                  dedupe_key: `${KIND}:t158-${tag}-${randomUUID()}`,
+                  detail:
+                    product_id === undefined ? { step: "attributes" } : { step: "attributes", product_id },
+                  active_scope: ["product_id"],
+                });
+              const openKind = (tag: string) =>
+                svc().openOpsExceptionIfNoneActive({
+                  kind: MISMATCH,
+                  dedupe_key: `${MISMATCH}:t158-${tag}-${randomUUID()}`,
+                  priority: "high",
+                  detail: { op: "sync", tag },
+                });
+              async function activeOf(kind: string) {
+                const { rows } = (await pgc().raw(
+                  `select id, detail from ops_exception
+                    where kind = ? and state in ('open', 'in_progress') and deleted_at is null order by id`,
+                  [kind],
+                )) as { rows: { id: string; detail: Record<string, unknown> }[] };
+                return rows;
+              }
+              /** Giữ khoá advisory y như helper trong một giao dịch riêng tới khi gọi `release`. */
+              async function holdLock(kind: string, scope: Record<string, string | null> | null) {
+                const keys = opsExceptionLockKeys(kind, scope);
+                const trx = await pgc().transaction();
+                if (keys.scoped === null) {
+                  await trx.raw(`select pg_advisory_xact_lock(hashtext(?), hashtext(?))`, [
+                    OPS_EXCEPTION_LOCK_NS,
+                    keys.kind,
+                  ]);
+                } else {
+                  await trx.raw(`select pg_advisory_xact_lock_shared(hashtext(?), hashtext(?))`, [
+                    OPS_EXCEPTION_LOCK_NS,
+                    keys.kind,
+                  ]);
+                  await trx.raw(`select pg_advisory_xact_lock(hashtext(?), hashtext(?))`, [
+                    OPS_EXCEPTION_LOCK_NS,
+                    keys.scoped,
+                  ]);
+                }
+                return { release: () => trx.commit() };
+              }
+              const PENDING = Symbol("pending");
+              const settledWithin = <T>(p: Promise<T>, ms: number) =>
+                Promise.race([p, new Promise<typeof PENDING>((r) => setTimeout(() => r(PENDING), ms))]);
+
+              it("10 lời gọi song song × 5 vòng, kind không phạm vi (indexer) → đúng 1 ngoại lệ đang mở mỗi vòng", async () => {
+                const perRound: number[][] = [];
+                for (let round = 0; round < 5; round++) {
+                  await pgc().raw(`delete from ops_exception where kind = ?`, [MISMATCH]);
+                  const opened = await Promise.all(
+                    Array.from({ length: 10 }, (_, i) => openKind(`${round}-${i}`)),
+                  );
+                  perRound.push([opened.filter(Boolean).length, (await activeOf(MISMATCH)).length]);
+                }
+                expect(perRound).toEqual(Array.from({ length: 5 }, () => [1, 1]));
+              });
+
+              it("10 lời gọi song song × 5 vòng, kind có phạm vi (fashion) gọi thẳng helper, 2 sản phẩm → đúng 1 mỗi sản phẩm", async () => {
+                const perRound: string[][] = [];
+                for (let round = 0; round < 5; round++) {
+                  await pgc().raw(`delete from ops_exception where kind = ?`, [KIND]);
+                  await Promise.all(
+                    Array.from({ length: 10 }, (_, i) =>
+                      openScoped(`prod_t158_${round}_${i % 2}`, `${round}-${i}`),
+                    ),
+                  );
+                  perRound.push(sorted((await activeOf(KIND)).map((r) => String(r.detail.product_id))));
+                }
+                expect(perRound).toEqual(
+                  Array.from({ length: 5 }, (_, round) => [`prod_t158_${round}_0`, `prod_t158_${round}_1`]),
+                );
+              });
+
+              it("hai phạm vi khác nhau không chờ nhau; cùng phạm vi thì chờ tới khi khoá nhả", async () => {
+                const held = await holdLock(KIND, { product_id: "prod_t158_a" });
+                let sameScope: Promise<boolean> | undefined;
+                let elapsedOther = Number.NaN;
+                let other: boolean | undefined;
+                let pendingSame: unknown;
+                try {
+                  // Khoá của A đang bị giữ vô thời hạn: nếu B phải chờ thì sẽ quá lock_timeout và ném 55P03.
+                  const t0 = Date.now();
+                  other = await openScoped("prod_t158_b", "b");
+                  elapsedOther = Date.now() - t0;
+                  sameScope = openScoped("prod_t158_a", "a");
+                  pendingSame = await settledWithin(sameScope, 500);
+                } finally {
+                  await held.release();
+                }
+                expect(other).toBe(true);
+                expect(elapsedOther).toBeLessThan(OPS_EXCEPTION_LOCK_TIMEOUT_MS / 2);
+                expect(pendingSame).toBe(PENDING);
+                expect(await sameScope).toBe(true);
+                expect(sorted((await activeOf(KIND)).map((r) => String(r.detail.product_id)))).toEqual([
+                  "prod_t158_a",
+                  "prod_t158_b",
+                ]);
+              });
+
+              it("lời gọi không phạm vi cùng kind chờ lời gọi có phạm vi (khoá kind chia sẻ/độc quyền)", async () => {
+                const held = await holdLock(KIND, { product_id: "prod_t158_a" });
+                let unscoped: Promise<boolean> | undefined;
+                let pending: unknown;
+                try {
+                  unscoped = svc().openOpsExceptionIfNoneActive({
+                    kind: KIND,
+                    dedupe_key: `${KIND}:t158-unscoped`,
+                    detail: { step: "attributes", product_id: "prod_t158_z" },
+                  });
+                  pending = await settledWithin(unscoped, 500);
+                } finally {
+                  await held.release();
+                }
+                expect(pending).toBe(PENDING);
+                expect(await unscoped).toBe(true);
+              });
+
+              it("chờ khoá quá lock_timeout → ném 55P03 (không treo), không ghi dòng", async () => {
+                const held = await holdLock(MISMATCH, null);
+                const t0 = Date.now();
+                let err: unknown;
+                try {
+                  err = await openKind("timeout").catch((e: unknown) => e);
+                } finally {
+                  await held.release();
+                }
+                const elapsed = Date.now() - t0;
+                expect((err as { code?: string }).code).toBe("55P03");
+                expect(elapsed).toBeGreaterThanOrEqual(OPS_EXCEPTION_LOCK_TIMEOUT_MS - 200);
+                expect(elapsed).toBeLessThan(OPS_EXCEPTION_STATEMENT_TIMEOUT_MS);
+                expect(await activeOf(MISMATCH)).toEqual([]);
+                // Timeout chỉ trong giao dịch của helper: lời gọi sau (khoá đã nhả) chạy bình thường.
+                expect(await openKind("after")).toBe(true);
+              });
+
+              it("khoá phạm vi thiếu trong detail → ghi null vào detail, lần gọi sau dedupe được (🟢b review T-156)", async () => {
+                expect([await openScoped(undefined, "m1"), await openScoped(undefined, "m2")]).toEqual([
+                  true,
+                  false,
+                ]);
+                const rows = await activeOf(KIND);
+                expect(rows).toHaveLength(1);
+                expect(rows[0]!.detail).toEqual({ step: "attributes", product_id: null });
+                // detail null + active_scope → cùng phạm vi null.
+                expect(
+                  await svc().openOpsExceptionIfNoneActive({
+                    kind: KIND,
+                    dedupe_key: `${KIND}:t158-nulldetail`,
+                    detail: null,
+                    active_scope: ["product_id"],
+                  }),
+                ).toBe(false);
+                // Song song: 10 lời gọi thiếu khoá → vẫn 1.
+                await pgc().raw(`delete from ops_exception where kind = ?`, [KIND]);
+                await Promise.all(Array.from({ length: 10 }, (_, i) => openScoped(undefined, `p${i}`)));
+                expect(await activeOf(KIND)).toHaveLength(1);
+                // Giá trị phạm vi không vô hướng (`@>` = "chứa", không phải "bằng") → lỗi lập trình, không ghi.
+                await expect(
+                  svc().openOpsExceptionIfNoneActive({
+                    kind: KIND,
+                    dedupe_key: `${KIND}:t158-obj`,
+                    detail: { product_id: ["a", "b"] },
+                    active_scope: ["product_id"],
+                  }),
+                ).rejects.toThrow(TypeError);
+                expect(await activeOf(KIND)).toHaveLength(1);
+              });
+
+              it("khoá phạm vi không phụ thuộc thứ tự active_scope", () => {
+                expect(opsExceptionLockKeys(KIND, { b: "1", a: "2" })).toEqual(
+                  opsExceptionLockKeys(KIND, { a: "2", b: "1" }),
+                );
+                expect(opsExceptionLockKeys(KIND, { a: "1" }).scoped).not.toEqual(
+                  opsExceptionLockKeys(KIND, { a: "2" }).scoped,
+                );
+              });
+            });
             it("hai lượt song song cùng sản phẩm, bù trừ lỗi → không treo (khoá sản phẩm → khoá ngoại lệ), 1 ngoại lệ đang mở", async () => {
               const { id } = await seededPolo();
               await pgc().raw(ATTR_TRIGGER[0]);
