@@ -175,8 +175,10 @@ async function processUnderOrderLock(
   }
   try {
     if (!n.success) {
-      // Giao dịch không thành công: attempt → failed (nếu còn mở); đơn giữ nguyên chờ hết hạn/thanh toán lại.
+      // Giao dịch không thành công: attempt → failed (nếu còn mở); đơn giữ nguyên chờ hết hạn/thanh toán lại. Đơn đang
+      // backoff của expire-holds (T-164) → bỏ hẹn: đã có tin chắc chắn, lượt kế tiếp xét ngay (không giữ hàng thêm).
       await s.movePaymentAttempt(attempt.id, "failed", n.transactionNo || null);
+      await s.clearHoldRecheck(attempt.order_id);
       return R.success;
     }
     const outcome = await s.applyCapture({
