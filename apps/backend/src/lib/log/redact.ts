@@ -10,8 +10,10 @@
  *     (số nhà + đường/ngõ/hẻm, hoặc ≥ 2 cấp hành chính phường/xã, quận/huyện, tỉnh/thành phố — có dấu hoặc không dấu).
  *
  * Không thay đổi đầu vào (trả bản sao). Vòng tham chiếu → `[Circular]`; sâu quá `MAX_DEPTH` → `[Truncated]`.
- * Giới hạn đã biết: CMND 9 số KHÔNG che theo nội dung (trùng số tiền VND 9 chữ số) — chỉ che theo tên trường; tên người
- * trong văn bản tự do không phát hiện được bằng mẫu → không đưa họ tên vào thông điệp log.
+ * CMND 9 số chỉ che theo nội dung khi có từ khoá đi kèm (CMND/CMT/chứng minh…; D-066) — 9 chữ số trần trùng số tiền VND.
+ * Địa chỉ IP chỉ che khi đi sau khoá (`client_ip=`, `x-forwarded-for:`…) hoặc theo tên trường (T-136).
+ * Giới hạn đã biết: tên người trong văn bản tự do và IP trần không phát hiện được bằng mẫu → không đưa họ tên/IP vào
+ * thông điệp log (danh sách mẫu: scripts/fixtures/pii-samples.json).
  */
 
 import { createHmac } from "node:crypto";
@@ -40,7 +42,14 @@ function hashOnce(value: string): string {
 }
 const MAX_DEPTH = 10;
 
-const norm = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, "");
+/** Bỏ dấu (NFD + `đ`→`d`) để khoá tiếng Việt có dấu (`mật khẩu`, `họ tên`) chuẩn về `matkhau`, `hoten` (T-136). */
+const norm = (key: string) =>
+  key
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9]/g, "");
 
 /** Khoá chứa một trong các đoạn này (sau chuẩn hoá) là bí mật. */
 const SECRET_KEY_PARTS = [
@@ -65,6 +74,7 @@ const SECRET_KEY_PARTS = [
   "sessionid",
   "encryptionkey",
   "hashsecret",
+  "matkhau",
 ];
 /** Khoá NGẮN chỉ khớp nguyên văn (tránh `pin` ⊂ `shipping`, `pan` ⊂ `company`, `sid` ⊂ `inside`). */
 const SECRET_KEY_EXACT = new Set([
@@ -112,8 +122,15 @@ const PII_KEY_PARTS = [
   "birthday",
   "birthdate",
   "ngaysinh",
+  "clientip",
+  "remoteaddr",
+  "remoteip",
+  "realip",
+  "forwardedfor",
+  "ipaddress",
+  "ipaddr",
 ];
-const PII_KEY_EXACT = new Set(["sdt", "tel", "mobile", "dob", "ten"]);
+const PII_KEY_EXACT = new Set(["sdt", "tel", "mobile", "dob", "ten", "ip"]);
 
 /** `true` nếu giá trị của trường tên `key` phải che toàn bộ. */
 export function isSensitiveKey(key: string): boolean {
@@ -124,7 +141,19 @@ export function isSensitiveKey(key: string): boolean {
 }
 
 const SECRET_PARAM =
-  "password|passwd|pwd|pass|secret|client_secret|token|access_token|refresh_token|id_token|api[_-]?key|apikey|signature|sig|vnp_SecureHash|otp|session(?:_?id)?|sid|code_verifier|authorization|cookie";
+  "password|passwd|pwd|pass|secret|client_secret|token|access_token|refresh_token|id_token|api[_-]?key|apikey|signature|sig|vnp_SecureHash|otp|session(?:_?id)?|sid|code_verifier|authorization|cookie|m[aậ]t[ _-]?kh[aẩ]u";
+
+/**
+ * Nháy quanh khoá/giá trị kể cả dạng đã thoát (`\\"password\\":\\"x\\"` — JSON nằm trong chuỗi rồi `JSON.stringify` lần nữa,
+ * T-136). `ESC_QUOTED`: `\\"` mở → tới nháy kép kế (nháy của cặp đóng; các `\\` đứng trước nó nằm trong phần bị che).
+ */
+const QKEY = String.raw`\\{0,7}["']?`;
+const ESC_QUOTED = String.raw`\\{1,7}"[^"]{0,4096}"?`;
+/** Giữ kiểu nháy của giá trị đã che (`"`, `'`, `\"`, hoặc không nháy). */
+function quoteOf(value: string): string {
+  const m = /^(?:\\{1,7}"|"|')/.exec(value);
+  return m === null ? "" : m[0];
+}
 
 interface Rule {
   re: RegExp;
@@ -157,6 +186,11 @@ function luhn(digits: string): boolean {
   return sum % 10 === 0;
 }
 
+const IPV4 = String.raw`\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?`;
+const IPV6 = String.raw`[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}`;
+const IP_ONE = String.raw`(?:${IPV4}|${IPV6})`;
+const IP_LIST = String.raw`${IP_ONE}(?:\s{0,3},\s{0,3}${IP_ONE}){0,15}`;
+
 /**
  * Thứ tự quan trọng: bí mật có cấu trúc trước, số thẻ/CCCD trước SĐT (SĐT là chuỗi số ngắn hơn).
  * MỌI lượng từ đều có trần (không `+`/`*` mở) → thời gian tuyến tính theo độ dài, không ReDoS trên đầu vào đối nghịch
@@ -183,19 +217,22 @@ const RULES: Rule[] = [
   },
   {
     re: new RegExp(
-      `(["']?)\\b(${SECRET_PARAM})\\1(\\s{0,8}[:=]\\s{0,8})((?:(?:Bearer|Basic|Token)\\s{1,8})?(?:"[^"]{0,4096}"|'[^']{0,4096}'|[^&\\s,;"'}]{1,4096}))`,
+      `(${QKEY})\\b(${SECRET_PARAM})\\1(\\s{0,8}[:=]\\s{0,8})((?:(?:Bearer|Basic|Token)\\s{1,8})?(?:${ESC_QUOTED}|"[^"]{0,4096}"|'[^']{0,4096}'|[^&\\s,;"'}]{1,4096}))`,
       "gi",
     ),
     to: (_m, q, key, sep, value) => {
-      const quote = value.startsWith('"') ? '"' : value.startsWith("'") ? "'" : "";
+      const quote = quoteOf(value);
       return `${q}${key}${q}${sep}${quote}${REDACTED}${quote}`;
     },
   },
   // Trường PII dạng `address=…` / `"address":"…"` trong văn bản (JSON, query, util.inspect).
   {
-    re: /(["']?)\b(address(?:_?[12])?|addr|dia_?chi|street|full_?name|first_?name|last_?name|ho_?ten|phone(?:_?number)?|sdt|email|cccd|cmnd)\1(\s{0,8}[:=]\s{0,8})("[^"]{0,4096}"|'[^']{0,4096}'|[^&,;"'}\n]{1,256})/gi,
+    re: new RegExp(
+      `(${QKEY})\\b(address(?:_?[12])?|addr|dia_?chi|street|full_?name|first_?name|last_?name|ho_?ten|h[oọ][ _-]?t[eê]n|recipient_?name|receiver_?name|customer_?name|phone(?:_?number)?|sdt|email|cccd|cmnd)\\1(\\s{0,8}[:=]\\s{0,8})(${ESC_QUOTED}|"[^"]{0,4096}"|'[^']{0,4096}'|[^&,;"'}\\n]{1,256})`,
+      "gi",
+    ),
     to: (_m, q, key, sep, value) => {
-      const quote = value.startsWith('"') ? '"' : value.startsWith("'") ? "'" : "";
+      const quote = quoteOf(value);
       return `${q}${key}${q}${sep}${quote}${REDACTED}${quote}`;
     },
   },
@@ -225,6 +262,21 @@ const RULES: Rule[] = [
     to: (m) => (luhn(m.replace(/\D/g, "")) ? "[CARD]" : m),
   },
   { re: /(?<![\p{L}\p{N}])0\d{2}(?:[ .-]?\d{3}){3}(?![\p{L}\p{N}])/gu, to: "[CCCD]" },
+  // Địa chỉ IP chỉ che khi đi sau khoá (`client_ip=…`, `"ip":"…"`, `x-forwarded-for: a, b`): IP trần trong văn bản trùng
+  // chuỗi phiên bản/host DB nội bộ (T-136). Danh sách IP (XFF) che hết.
+  {
+    re: new RegExp(
+      `(${QKEY})\\b(client[_-]?ip|remote[_-]?(?:addr(?:ess)?|ip)|real[_-]?ip|x-real-ip|x-forwarded-for|forwarded[_-]?for|ip(?:[_-]?addr(?:ess)?)?)\\1(\\s{0,8}[:=]\\s{0,8})(\\\\{0,7}["']?)${IP_LIST}`,
+      "gi",
+    ),
+    to: (_m, q, key, sep, quote) => `${q}${key}${q}${sep}${quote}[IP]`,
+  },
+  // CMND 9 số chỉ che khi có từ khoá đi kèm (D-066): 9 chữ số trần trùng số tiền VND. Khoảng giữa từ khoá và số ≤ 16 ký tự
+  // không chứa chữ số/xuống dòng ("CMND số", "chứng minh nhân dân số").
+  {
+    re: /\b(cmnd|cmtnd|cmt|chứng minh(?: nhân dân| thư)?|chung minh(?: nhan dan| thu)?)([^\d\n]{0,16})\d{3}[ .-]?\d{3}[ .-]?\d{3}(?!\d)/gi,
+    to: (_m, kw, gap) => `${kw}${gap}[CMND]`,
+  },
   { re: /(?<![\p{L}\p{N}+.])(?:\+84|84|0)(?![.])(?:[ .-]?\d){9,10}(?![\p{N}])/gu, to: "[PHONE]" },
 ];
 

@@ -1,0 +1,362 @@
+{
+  "$comment": "Bộ mẫu PII/bí mật TỔNG HỢP dùng chung cho test khoá bộ che log backend (apps/backend/src/lib/log/redact.ts) và bộ quét track() storefront (apps/storefront/src/lib/analytics/schema.ts) — D-065. Mọi dữ liệu là giả (email example.test, SĐT trong docs/compliance/test-data-policy.md). `parts` nối thành `value` lúc chạy: tách CCCD để file này không chứa chuỗi 12 số liền (scripts/check-fixtures.mjs). `leak` = đoạn không được còn trong đầu ra. `scopes`: nơi mẫu BẮT BUỘC bị che/nhận diện.",
+  "version": 1,
+  "$negativesBackendOnly": "Chuỗi bộ che log backend giữ nguyên nhưng bộ quét track() storefront CÓ CHỦ ĐÍCH chặn (chặt hơn: payload analytics chỉ chứa định danh, một đoạn địa chỉ lẻ cũng là dấu hiệu PII).",
+  "samples": [
+    {
+      "id": "email-plain",
+      "kind": "email",
+      "value": "khach.hang+1@example.test",
+      "leak": ["khach.hang+1"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "email-upper",
+      "kind": "email",
+      "value": "NGUYEN.VAN.AN@Example.TEST",
+      "leak": ["NGUYEN.VAN.AN"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "email-subdomain",
+      "kind": "email",
+      "value": "an_nguyen-02@mail.shop.example.test",
+      "leak": ["an_nguyen-02"],
+      "scopes": ["backend", "storefront"]
+    },
+
+    {
+      "id": "phone-local",
+      "kind": "phone",
+      "value": "0912345678",
+      "leak": ["912345678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "phone-spaces",
+      "kind": "phone",
+      "value": "0912 345 678",
+      "leak": ["912 345 678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "phone-dots",
+      "kind": "phone",
+      "value": "0912.345.678",
+      "leak": ["912.345.678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "phone-dashes",
+      "kind": "phone",
+      "value": "0912-345-678",
+      "leak": ["912-345-678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "phone-plus84",
+      "kind": "phone",
+      "value": "+84 912 345 678",
+      "leak": ["912 345 678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "phone-plus84-compact",
+      "kind": "phone",
+      "value": "+84912345678",
+      "leak": ["912345678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "phone-84",
+      "kind": "phone",
+      "value": "84987654321",
+      "leak": ["987654321"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "phone-landline",
+      "kind": "phone",
+      "value": "021 2345 678",
+      "leak": ["2345 678"],
+      "scopes": ["backend", "storefront"]
+    },
+
+    {
+      "id": "address-street",
+      "kind": "address",
+      "value": "12 Nguyễn Trãi, P. Bến Thành, Q.1, TP.HCM",
+      "leak": ["Nguyễn Trãi", "Bến Thành"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "address-admin",
+      "kind": "address",
+      "value": "Phường Dịch Vọng, Quận Cầu Giấy, Hà Nội",
+      "leak": ["Dịch Vọng", "Cầu Giấy"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "address-ascii",
+      "kind": "address",
+      "value": "so 5 ngo 12 lang ha, phuong lang ha, quan dong da",
+      "leak": ["lang ha", "dong da"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "address-alley",
+      "kind": "address",
+      "value": "25/3 hẻm 102 Lê Văn Sỹ, phường 13, quận 3",
+      "leak": ["Lê Văn Sỹ", "hẻm 102"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "address-village",
+      "kind": "address",
+      "value": "Thôn 3, Xã Tân Lập, Huyện Đan Phượng",
+      "leak": ["Tân Lập", "Đan Phượng"],
+      "scopes": ["backend", "storefront"]
+    },
+
+    {
+      "id": "name-key-camel",
+      "kind": "name",
+      "value": "fullName=\"Nguyễn Văn An\"",
+      "leak": ["Nguyễn Văn An"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "name-key-vi",
+      "kind": "name",
+      "value": "họ tên: Trần Thị Hồng Nhung",
+      "leak": ["Trần Thị Hồng Nhung"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "name-key-vi-ascii",
+      "kind": "name",
+      "value": "ho ten: Le Minh Quan",
+      "leak": ["Le Minh Quan"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "name-key-recipient",
+      "kind": "name",
+      "value": "recipient_name=Đặng Thu Hà",
+      "leak": ["Đặng Thu Hà"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "name-json",
+      "kind": "name",
+      "value": "{\"first_name\":\"Phạm\",\"last_name\":\"Quỳnh Anh\"}",
+      "leak": ["Quỳnh Anh", "Phạm"],
+      "scopes": ["backend"]
+    },
+
+    {
+      "id": "cccd-compact",
+      "kind": "cccd",
+      "parts": ["079", "203", "001", "234"],
+      "prefix": "CCCD ",
+      "leak": ["203001"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "cccd-spaced",
+      "kind": "cccd",
+      "value": "001 099 012 345",
+      "leak": ["099 012", "012 345"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "cccd-dashed",
+      "kind": "cccd",
+      "value": "079-203-001-234",
+      "leak": ["203-001"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "cmnd-kw-cmnd",
+      "kind": "cmnd",
+      "value": "CMND 012345678",
+      "leak": ["012345678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "cmnd-kw-cmt",
+      "kind": "cmnd",
+      "value": "CMT: 123456789",
+      "leak": ["123456789"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "cmnd-kw-long",
+      "kind": "cmnd",
+      "value": "chứng minh nhân dân số 271234567",
+      "leak": ["271234567"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "cmnd-kw-spaced",
+      "kind": "cmnd",
+      "value": "Số CMND: 012 345 678",
+      "leak": ["012 345 678"],
+      "scopes": ["backend", "storefront"]
+    },
+
+    {
+      "id": "card-visa",
+      "kind": "card",
+      "value": "4111 1111 1111 1111",
+      "leak": ["4111 1111", "1111 1111"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "card-visa-compact",
+      "kind": "card",
+      "value": "4111111111111111",
+      "leak": ["4111111111111111"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "card-mastercard",
+      "kind": "card",
+      "value": "5555-5555-5555-4444",
+      "leak": ["5555-5555", "4444"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "card-amex",
+      "kind": "card",
+      "value": "378282246310005",
+      "leak": ["378282246310005"],
+      "scopes": ["backend"]
+    },
+
+    {
+      "id": "token-jwt",
+      "kind": "token",
+      "value": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.c2lnbmF0dXJlMTIzNDU",
+      "leak": ["eyJzdWIiOiIxMjM0NTYifQ", "c2lnbmF0dXJlMTIzNDU"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "token-bearer",
+      "kind": "token",
+      "value": "Authorization: Bearer abc123DEF456ghi789",
+      "leak": ["abc123DEF456ghi789"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "token-query",
+      "kind": "token",
+      "value": "GET /cb?access_token=tok_9f8e7d6c5b4a&x=1",
+      "leak": ["tok_9f8e7d6c5b4a"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "token-api-key",
+      "kind": "token",
+      "value": "sk_live_abcdefghij1234567890",
+      "leak": ["abcdefghij1234567890"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "token-json",
+      "kind": "token",
+      "value": "{\"refresh_token\":\"rt-Zm9vYmFyYmF6\",\"x\":1}",
+      "leak": ["rt-Zm9vYmFyYmF6"],
+      "scopes": ["backend"]
+    },
+
+    {
+      "id": "password-eq",
+      "kind": "password",
+      "value": "password=hunter2xyz",
+      "leak": ["hunter2xyz"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "password-colon",
+      "kind": "password",
+      "value": "password: Tr0ub4dor&3",
+      "leak": ["Tr0ub4dor&3"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "password-quoted",
+      "kind": "password",
+      "value": "{\"password\":\"p@ss word 99\"}",
+      "leak": ["p@ss word 99"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "password-pwd",
+      "kind": "password",
+      "value": "pwd=Zx9!qwerty",
+      "leak": ["Zx9!qwerty"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "password-vi",
+      "kind": "password",
+      "value": "mật khẩu: MatKhau#2026",
+      "leak": ["MatKhau#2026"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "password-vi-ascii",
+      "kind": "password",
+      "value": "mat_khau=Quy3tDinh!",
+      "leak": ["Quy3tDinh!"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "password-url",
+      "kind": "password",
+      "value": "postgres://xshop:matkhau-bi-mat@db:5432/x",
+      "leak": ["matkhau-bi-mat"],
+      "scopes": ["backend"]
+    },
+
+    {
+      "id": "ip-kv",
+      "kind": "ip",
+      "value": "client_ip=203.0.113.45",
+      "leak": ["203.0.113.45"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-header",
+      "kind": "ip",
+      "value": "x-forwarded-for: 198.51.100.23, 10.0.0.1",
+      "leak": ["198.51.100.23"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-v6-kv",
+      "kind": "ip",
+      "value": "remote_addr=2001:db8::1a2b",
+      "leak": ["2001:db8::1a2b"],
+      "scopes": ["backend"]
+    }
+  ],
+  "negatives": [
+    "readiness: không sẵn sàng (database, redis)",
+    "duration 0.123456789",
+    "2026-10-26T10:00:00.000Z",
+    "trace 123e4567-e89b-12d3-a456-426614174000",
+    "order XS-ABC123 total 1500000",
+    "tổng tiền 123456789 đ",
+    "amount=271234567 currency=VND",
+    "ts 1761472800000",
+    "4111111111111112",
+    "ip 10.0.0.12:5432"
+  ],
+  "negativesBackendOnly": ["Thử lại 3 Lần", "quận"],
+  "knownGaps": [
+    "Họ tên viết tự do trong thông điệp (không có khoá `họ tên`/`full_name`…) không nhận ra được bằng mẫu — không đưa họ tên vào thông điệp log.",
+    "IPv4/IPv6 trần trong văn bản (không đi sau khoá ip/client_ip/remote_addr/x-forwarded-for) không che: trùng chuỗi phiên bản và host DB nội bộ."
+  ]
+}
