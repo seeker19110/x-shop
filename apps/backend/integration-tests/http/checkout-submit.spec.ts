@@ -94,23 +94,28 @@ async function leakedLocks(keys: string[]): Promise<string[]> {
     await redis.quit();
   }
 }
-/** GHN giả lập có núm cho T-153: đếm lần báo phí, đổi phí, sập. */
+/** GHN giả lập có núm cho T-153: đếm lần báo phí, đổi phí, đổi mã dịch vụ trả về, sập. */
 class ScriptedGhn extends MockModeGhnClient {
   quoteCalls = 0;
   feeOverride: number | null = null;
+  serviceOverride: string | null = null;
   down = false;
   override async quoteFee(input: Parameters<MockModeGhnClient["quoteFee"]>[0]) {
     this.quoteCalls += 1;
     if (this.down) throw new GhnError("unavailable", "GHN sập (giả lập)", { status: 503 });
     const fee = await super.quoteFee(input);
-    return this.feeOverride === null ? fee : { ...fee, fee: this.feeOverride };
+    return {
+      fee: this.feeOverride ?? fee.fee,
+      service: this.serviceOverride ?? fee.service,
+    };
   }
 }
 
 /**
- * Mô phỏng submit chạy ở bản sao KHÁC bản đã quote: bỏ mọi trạng thái báo phí giữ trong tiến trình. Mã trước T-153 giữ
- * cache phí trong bộ nhớ (`clearShippingFeeCache`) — bản sao khác có cache trống; mã hiện tại không còn trạng thái này
- * (hàm không tồn tại → không làm gì). Cùng file test chạy được trên cả hai để đối chứng đỏ/xanh.
+ * CHỈ để đối chứng với mã trước T-153: mã đó giữ cache phí trong bộ nhớ (`clearShippingFeeCache`), gọi hàm này = submit ở
+ * bản sao có cache trống → test đỏ. Ở mã hiện tại hàm KHÔNG LÀM GÌ (không còn trạng thái báo phí trong tiến trình).
+ * Bằng chứng submit không phụ thuộc tiến trình nằm ở cặp test: "GHN sập → 200, không gọi GHN" (phí lấy từ DB, không từ
+ * hãng hay bộ nhớ) và "`shipping: null` → 503" (bỏ ảnh chụp trong DB thì không còn nguồn nào khác để dùng lại phí).
  */
 async function asOtherReplica(): Promise<void> {
   const clear = (shippingRates as Record<string, unknown>)["clearShippingFeeCache"];
@@ -451,6 +456,29 @@ medusaIntegrationTestRunner({
         expect({ status: res.status, code: res.data.code }).toEqual({ status: 200, code: undefined });
         expect(res.data.order.total).toBe(730_000);
         expect(ghn.quoteCalls).toBe(1);
+      });
+
+      it("hãng trả mã dịch vụ khác cấu hình → phí vẫn dùng lại khi đầu vào không đổi; đơn ghi mã hãng trả", async () => {
+        ghn.serviceOverride = "53320";
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        expect((q as unknown as { shipping_quote: { service: string } }).shipping_quote.service).toBe(
+          "53320",
+        );
+        ghn.down = true;
+
+        const res = await submit(submitBody(q));
+        expect({ status: res.status, code: res.data.code }).toEqual({ status: 200, code: undefined });
+        expect(res.data.order.total).toBe(730_000);
+        expect(ghn.quoteCalls).toBe(1);
+        const { data } = await container.resolve("query").graph({
+          entity: "order",
+          fields: ["id", "shipping_methods.data"],
+          filters: { id: res.data.order.id },
+        });
+        const methods = (data[0] as { shipping_methods: Array<{ data: { service?: string } }> })
+          .shipping_methods;
+        expect(methods.map((m) => m.data.service)).toEqual(["53320"]);
       });
 
       it("đồng thời: GHN sập, hai tab submit song song ở bản sao cache trống → một đơn, đúng phí đã báo", async () => {

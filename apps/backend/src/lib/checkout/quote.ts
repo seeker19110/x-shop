@@ -301,7 +301,8 @@ export function presentQuote(q: {
     ...(q.shipping && {
       shipping_quote: {
         provider: q.shipping.provider,
-        service: q.shipping.service,
+        // Mã dịch vụ hãng trả về (như trước T-153); dịch vụ cấu hình chỉ dùng nội bộ để so khớp.
+        service: q.shipping.providerService,
         weight_grams: q.shipping.weightGrams,
         quoted_at: q.shipping.quotedAt,
         expires_at: q.shipping.expiresAt,

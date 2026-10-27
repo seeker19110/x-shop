@@ -15,7 +15,15 @@ const basis: ShippingFeeBasis = {
   insuranceValue: 700_000,
   service: "ghn-standard",
 };
-const snap: ShippingFeeSnapshot = { ...basis, fee: 30_000, provider: "ghn", quotedAt, expiresAt };
+const snap: ShippingFeeSnapshot = {
+  ...basis,
+  fee: 30_000,
+  provider: "ghn",
+  // Hãng trả mã dịch vụ thật khác mã cấu hình — không được làm hỏng việc dùng lại phí.
+  providerService: "53320",
+  quotedAt,
+  expiresAt,
+};
 const quoted = { snapshot: snap, shippingFee: 30_000, paymentMethod: "cod", expiresAt: new Date(expiresAt) };
 const current = { ...basis, paymentMethod: "cod" };
 const at = (iso: string) => new Date(iso);
@@ -23,6 +31,13 @@ const at = (iso: string) => new Date(iso);
 describe("reusableShippingFee — phí đã báo còn hiệu lực tới submit (T-153)", () => {
   it("còn hạn, đầu vào không đổi → dùng lại đúng ảnh chụp", () => {
     expect(reusableShippingFee(quoted, current, at("2026-10-27T03:01:00.000Z"))).toEqual(snap);
+  });
+
+  it("hãng trả mã dịch vụ khác dịch vụ cấu hình → vẫn dùng lại khi đầu vào không đổi (chỉ so dịch vụ yêu cầu)", () => {
+    expect(snap.providerService).not.toBe(current.service);
+    const reused = reusableShippingFee(quoted, current, at("2026-10-27T03:01:00.000Z"));
+    expect(reused).toEqual(snap);
+    expect(reused?.providerService).toBe("53320");
   });
 
   it("biên hết hạn: now = hạn → hỏi lại; 1 ms trước hạn → dùng lại", () => {
@@ -93,6 +108,7 @@ describe("parseShippingFeeSnapshot", () => {
     ["giá trị khai lẻ", { ...snap, insuranceValue: 1.5 }],
     ["phường rỗng", { ...snap, wardCode: "" }],
     ["thiếu tỉnh", { ...snap, provinceCode: undefined }],
+    ["thiếu mã dịch vụ hãng", { ...snap, providerService: undefined }],
     ["hạn không phải ngày", { ...snap, expiresAt: "mai" }],
     ["thiếu thời điểm báo", { ...snap, quotedAt: undefined }],
   ])("%s → null", (_label, raw) => {

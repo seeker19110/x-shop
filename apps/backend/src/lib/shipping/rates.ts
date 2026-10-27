@@ -55,9 +55,10 @@ export async function quoteShippingFee(
     throw new CheckoutError("SHIPPING_UNAVAILABLE");
   }
   return {
+    // `service` giữ dịch vụ cấu hình (đầu vào định phí, so khớp lúc submit); mã hãng trả về để riêng ở `providerService`.
     ...basis,
     fee: fee.fee,
-    service: fee.service,
+    providerService: fee.service,
     provider: "ghn",
     quotedAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + SHIPPING_CONFIG.feeQuoteTtlMs).toISOString(),

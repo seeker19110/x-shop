@@ -248,7 +248,7 @@ export const prepareCheckoutStep = createStep(
       })),
       breakdown: built.breakdown,
       discount: built.discount,
-      shipping_service: built.shipping.service,
+      shipping_service: built.shipping.providerService,
       requirements,
       location_ids: locationIds,
       inventory_lock_keys: requirements.map((r) => lockKeys.inventoryItem(r.inventory_item_id)),

@@ -3,6 +3,10 @@
 Mỗi lần đổi sổ dữ liệu (`data-map.yaml`, `data-inventory.csv`), bên xử lý, chuyển dữ liệu hoặc DPIA: thêm mục `## YYYY-MM-DD` ở đầu.
 `node scripts/check-data-map.mjs` cảnh báo khi mục mới nhất quá 183 ngày (nhịp rà 6 tháng; mốc luật cụ thể: chưa xác minh).
 
+## 2026-10-27
+
+- T-153: `checkout_quote` thêm `shipping` (PII cơ bản — ảnh chụp báo phí GHN lúc quote: mã tỉnh/phường, khối lượng, giá trị khai, phí, dịch vụ, thời điểm/hạn; mã tỉnh/phường trùng với `checkout_quote.address`). Bên nhận GHN (tính phí), thời hạn `transient-90d` như `checkout_quote.address`. Submit dùng lại phí đã báo thay cho bộ nhớ đệm trong tiến trình (D-096).
+
 ## 2026-10-26
 
 - T-091: `audit_log` thêm `user_agent` (PII cơ bản — cắt ≤ 256 ký tự, che email/SĐT lẫn trong chuỗi) và `outcome` (không PII); `resource_id` chuyển sang PII cơ bản (có thể là id khách/nhân viên hoặc bí danh HMAC `idh_…` của email đăng nhập). Danh mục sự kiện: `docs/security/security-events.md`.

@@ -12,6 +12,7 @@ export interface ShippingFeeBasis {
   wardCode: string;
   weightGrams: number;
   insuranceValue: number;
+  /** Dịch vụ backend YÊU CẦU (cấu hình) — đầu vào định phí, đem so khớp lúc submit. */
   service: string;
 }
 
@@ -19,6 +20,11 @@ export interface ShippingFeeBasis {
 export interface ShippingFeeSnapshot extends ShippingFeeBasis {
   fee: number;
   provider: string;
+  /**
+   * Mã dịch vụ hãng TRẢ VỀ (ghi vào snapshot đơn) — chỉ là kết quả, KHÔNG đem so khớp: hãng trả mã khác `service`
+   * cấu hình thì phí vẫn dùng lại được khi đầu vào không đổi.
+   */
+  providerService: string;
   /** ISO 8601 UTC. */
   quotedAt: string;
   /** ISO 8601 UTC — sau mốc này báo phí hết hiệu lực. */
@@ -38,6 +44,7 @@ export function parseShippingFeeSnapshot(raw: unknown): ShippingFeeSnapshot | nu
     !isNonNegativeInt(r.fee) ||
     !isText(r.provider) ||
     !isText(r.service) ||
+    !isText(r.providerService) ||
     !isText(r.provinceCode) ||
     !isText(r.wardCode) ||
     !isNonNegativeInt(r.weightGrams) ||
@@ -51,6 +58,7 @@ export function parseShippingFeeSnapshot(raw: unknown): ShippingFeeSnapshot | nu
     fee: r.fee,
     provider: r.provider,
     service: r.service,
+    providerService: r.providerService,
     provinceCode: r.provinceCode,
     wardCode: r.wardCode,
     weightGrams: r.weightGrams,
