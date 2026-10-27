@@ -789,3 +789,11 @@
 - Chọn: Không che IP trần (ghi knownGaps); thêm normalize NFC ở đầu redactText và looksLikePii; chấp nhận che mọi trường tên ip
 - Lý do (tiêu chí chất lượng cuối): (1) NFD tiếng Việt làm lọt mẫu địa chỉ/khoá — chuẩn hoá rẻ, tuyến tính; che IP trần gây che nhầm số phiên bản/host nội bộ; IP không cần trong log ứng dụng
 - Đường lùi: Bỏ normalize NFC; thêm luật IPv4 công cộng
+
+### D-113 · 2026-10-27T19:16:07+00:00 · T-154: lưu file upload dùng chung giữa nhiều bản sao backend
+
+- Phương án: (1) Provider S3-compatible (@medusajs/file-s3 2.22.1, MIT), 2 bucket public/private, production bắt buộc FILE_STORAGE=s3 + https; dev/test fallback local có cảnh báo · (2) Giữ provider local trên volume dùng chung (NFS) có ghi ràng buộc triển khai · (3) MinIO trong dev-services
+- Chọn: Provider S3-compatible (@medusajs/file-s3 2.22.1, MIT), 2 bucket public/private, production bắt buộc FILE_STORAGE=s3 + https; dev/test fallback local có cảnh báo
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: volume dùng chung không chứng minh được lúc khởi động và root_squash xung đột kiểm chủ sở hữu D-104; Medusa ghi provider local chỉ cho dev; (2) đường lùi: FILE_STORAGE=local cho dev; (3) MinIO bản cộng đồng đã archived, không còn vá bảo mật (dl.min.io 410, tra 2026-10-27) nên loại; kho tự host đề xuất Garage (AGPL, dịch vụ riêng) hoặc SeaweedFS (Apache-2.0)
+- Đường lùi: FILE_STORAGE=local + một bản sao; gỡ @medusajs/file-s3
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Kho production do chủ dự án chọn: tự host Garage/SeaweedFS hoặc S3/R2 quản lý (cần tài khoản); thêm host ảnh vào remotePatterns/CSP storefront; chuyển file cũ giữ nguyên khoá
