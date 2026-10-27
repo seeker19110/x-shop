@@ -32,6 +32,17 @@ describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
     ["SELECT viết hoa lặp", "SELECT ".repeat(N / 7)],
     ["cụm số + Tên", ", 1 Ab".repeat(N / 6)],
     ["address= lặp", "address=".repeat(N / 8)],
+    ["SQL knex: insert lặp không ' - '", 'insert into "t" '.repeat(N / 16)],
+    ["SQL knex: insert + stack lặp", 'insert into "t" values (1)\n    at x '.repeat(N / 36)],
+    ["SQL knex: update set lặp", 'update "t" set '.repeat(N / 15)],
+    ["SQL knex: ' - ' lặp", `insert into "t" values (${"1 - ".repeat(N / 4)}`],
+    ["SQL knex: select where lặp", 'select a from "t" where '.repeat(N / 24)],
+    ["SQL knex: select không where", `select ${"a ".repeat(N / 4)} from "t"`],
+    ["SQL knex: INSERT INTO HOA lặp", "INSERT INTO t ".repeat(N / 14)],
+    ["SQL knex: insert into trần lặp", "insert into a (".repeat(N / 15)],
+    ["SQL knex: select from trần lặp", "select a from b where ".repeat(N / 22)],
+    ["SQL knex: update trần lặp", "update a set b = ".repeat(N / 17)],
+    ["SQL knex: delete from lặp", 'delete from "t" '.repeat(N / 16)],
   ];
   it.each(cases)("%s → < 50 ms", (_name, input) => {
     redactText(input.slice(0, 100)); // làm nóng regex
@@ -50,11 +61,9 @@ describe("địa chỉ/họ tên trong nháy, SQL, JSON, util.inspect (review T-
       'insert into "customer_address" ("first_name", "last_name", "address_1", "city") values (\'An\', \'Nguyễn\', \'25/3 hẻm 12 Lê Văn Sỹ\', \'Phường 13, Quận 3\') - duplicate key value';
     const out = redactText(msg);
     expect(out).not.toMatch(/An'|Nguyễn|Lê Văn Sỹ|Phường 13/);
-    expect(out).toContain(
-      `values ('${shortHash("An")}', '${shortHash("Nguyễn")}', '${shortHash("25/3 hẻm 12 Lê Văn Sỹ")}', '${shortHash("Phường 13, Quận 3")}')`,
-    );
+    // T-151: cả danh sách giá trị bị bỏ (không chỉ chuỗi) — còn động từ + bảng + lỗi.
+    expect(out).toBe(`insert into "customer_address" ${REDACTED} - duplicate key value`);
     expect(shortHash("An")).toMatch(/^\[h:[0-9a-f]{8}\]$/);
-    expect(out).toContain("duplicate key value");
   });
 
   it("chi tiết ràng buộc Postgres `Key (...)=(...)` → băm ngắn từng giá trị (còn đối chiếu được)", () => {
@@ -110,6 +119,96 @@ describe("địa chỉ/họ tên trong nháy, SQL, JSON, util.inspect (review T-
   it("câu SELECT có literal; thông điệp thường có nháy không bị che nhầm", () => {
     expect(redactText("select * from \"order\" where \"email\" = 'x' and name = 'Lan'")).not.toContain("Lan");
     expect(redactText("không tìm thấy sản phẩm 'ao-thun'")).toBe("không tìm thấy sản phẩm 'ao-thun'");
+  });
+});
+
+describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
+  const INSERT =
+    `insert into "fashion_model_measurement" ("id", "model_id", "height_cm", "bust_cm", "waist_cm", "hip_cm", "note", "extra", "deleted_at") ` +
+    `values ('fmm_01J', 'mdl_01J', 180, 94, 78, 95, 'Nguyễn Văn A - 0912345678', '{"weight":61.5,"k":[1,2]}', null) - boom trigger`;
+
+  it("insert: không còn số/chuỗi/JSON/null; giữ động từ + bảng + lỗi", () => {
+    const out = redactText(INSERT);
+    expect(out).toBe(`insert into "fashion_model_measurement" ${REDACTED} - boom trigger`);
+    expect(out).not.toMatch(/180|94|78|95|61\.5|Nguyễn|0912345678|fmm_01J/);
+  });
+
+  it("update … set … where …: bỏ giá trị và điều kiện", () => {
+    expect(
+      redactText(
+        `update "customer" set "weight_kg" = 61, "note" = 'a - b', "x" = null where "id" = 'c_1' and "age" = 33 - deadlock detected`,
+      ),
+    ).toBe(`update "customer" set ${REDACTED} - deadlock detected`);
+  });
+
+  it("delete from … where …", () => {
+    expect(
+      redactText(`delete from "cart" where "total" = 1500000 and "id" in ('a', 'b') - fk violation`),
+    ).toBe(`delete from "cart" ${REDACTED} - fk violation`);
+  });
+
+  it("select … where có literal: bỏ điều kiện, giữ phần chọn", () => {
+    expect(
+      redactText(
+        `select "o".* from "order" as "o" where "o"."total" = 250000 and "o"."note" is not null limit 1 - timeout`,
+      ),
+    ).toBe(`select "o".* from "order" as "o" ${REDACTED} - timeout`);
+  });
+
+  it("SQL viết thường, định danh không nháy (knex.raw/migration)", () => {
+    expect(redactText("insert into t_m (id, h) values ('x', 180) - boom")).toBe(
+      `insert into t_m ${REDACTED} - boom`,
+    );
+    expect(redactText("update t_m set h = 180, n = null where id = 'x' - boom")).toBe(
+      `update t_m set h ${REDACTED} - boom`,
+    );
+    expect(redactText("delete from t_m where h = 180 - boom")).toBe(
+      `delete from t_m where ${REDACTED} - boom`,
+    );
+    expect(redactText("select * from t_m where h = 180 and w = 61 - boom")).toBe(
+      `select * from t_m ${REDACTED} - boom`,
+    );
+  });
+
+  it("SQL viết hoa không nháy định danh", () => {
+    expect(redactText("INSERT INTO t (a, b) VALUES (1, 2) - boom")).toBe(`INSERT INTO t ${REDACTED} - boom`);
+  });
+
+  it("phần lỗi chứa ' - ': cắt tại ' - ' CUỐI, giá trị trước đó vẫn bỏ", () => {
+    const out = redactText(`insert into "t" ("a") values (777 - 1) - relation x - does not exist`);
+    expect(out).toBe(`insert into "t" ${REDACTED} - does not exist`);
+  });
+
+  it("không có ' - ': bỏ tới hết vùng (an toàn hơn giữ)", () => {
+    expect(redactText(`insert into "t" ("a") values (777)`)).toBe(`insert into "t" ${REDACTED}`);
+  });
+
+  it("giữ tiền tố và stack: `error: insert …` + dòng `at`; câu thứ hai ở Caused by cũng che", () => {
+    const text = `error: insert into "t" ("h") values (180) - boom\n    at parse (/x/y.js:1:1)\nCaused by: error: update "t" set "h" = 94 - again\n    at z (/z.js:2:2)`;
+    expect(redactText(text)).toBe(
+      `error: insert into "t" ${REDACTED} - boom\n    at parse (/x/y.js:1:1)\nCaused by: error: update "t" set ${REDACTED} - again\n    at z (/z.js:2:2)`,
+    );
+  });
+
+  it("Error: message, stack, util.inspect và JSON.stringify đều không còn số đã chèn", () => {
+    const err = new Error(INSERT);
+    err.stack = `error: ${INSERT}\n    at parse (/x/y.js:1:1)`;
+    for (const text of [JSON.stringify(redactLog(err)), inspect(redactLog(err), { depth: 6 })]) {
+      expect(text).not.toMatch(/180|94|78|95|61\.5|Nguyễn|0912345678/);
+      expect(text).toContain("boom trigger");
+    }
+  });
+
+  it("không đụng văn bản thường nhắc update/insert/select/delete", () => {
+    for (const t of [
+      "please update the set of items - done",
+      "insert into the queue - ok",
+      "select the items from the list where possible",
+      "delete from cart failed with 500",
+      "",
+    ]) {
+      expect(redactText(t)).toBe(t);
+    }
   });
 });
 

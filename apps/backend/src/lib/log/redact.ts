@@ -216,6 +216,87 @@ function looksLikeSelect(s: string): boolean {
 /** Tuyến tính (hai nhánh khác ký tự đầu), không trần — chạy SAU khi chuỗi đã bị cắt `MAX_TEXT` nên cặp nháy không lệch. */
 const SQL_LITERAL = /'(?:[^']|'')*'/g;
 
+/**
+ * Câu SQL của knex/pg trong thông điệp lỗi (`<sql đã chèn giá trị> - <lỗi>`, knex `compileSqlOnError`): giá trị bind gồm cả
+ * SỐ (số đo, tiền gắn người), `null`, JSON — mẫu "chuỗi trong nháy" không bắt được. Nên bỏ NGUYÊN danh sách/điều kiện giá
+ * trị: giữ động từ + bảng và phần lỗi sau ` - ` CUỐI trong vùng (trước dòng `    at …` của stack).
+ * Nhận dạng bằng mẫu có trần (định danh có nháy: không phân biệt hoa thường; không nháy: chỉ viết HOA — tránh câu tiếng
+ * Anh "update the set of…"); mọi lượng từ có trần, tìm biên bằng indexOf/search → tuyến tính.
+ */
+const SQL_STMT =
+  /\b(?:insert\s{1,4}into\s{1,4}"[^"\n]{1,128}"|update\s{1,4}"[^"\n]{1,128}"\s{1,4}set(?=\s)|delete\s{1,4}from\s{1,4}"[^"\n]{1,128}")/i;
+const SQL_STMT_UPPER = /\b(?:INSERT INTO \w{1,128}|UPDATE \w{1,128} SET(?=\s)|DELETE FROM \w{1,128})/;
+/** Định danh không nháy, viết thường (`knex.raw`/migration tự viết): đòi thêm dấu hiệu cú pháp SQL để khỏi bắt câu tiếng Anh. */
+const SQL_STMT_BARE =
+  /\b(?:insert\s{1,4}into\s{1,4}[\w.]{1,128}\s{0,4}(?:\(|values\s|select\s|default\s)|update\s{1,4}[\w.]{1,128}\s{1,4}set\s{1,4}\w{1,128}\s{0,4}=|delete\s{1,4}from\s{1,4}[\w.]{1,128}\s{1,4}where\s)/i;
+const SQL_WHERE = /\swhere\s/i;
+/** `select … from bảng_không_nháy where cột = …` viết thường: đòi điều kiện so sánh sau where để khỏi bắt câu tiếng Anh. */
+const SQL_SELECT_BARE =
+  /\sfrom\s{1,4}[\w.]{1,128}\s{1,4}where\s{1,4}[\w."]{1,128}\s{0,4}(?:=|<|>|!=|in\s|like\s|is\s|between\s)/i;
+const STACK_LINE = /\n\s{2,8}at\s/;
+const SQL_VALUES_MARK = "[REDACTED]";
+
+interface Statement {
+  start: number;
+  head: string;
+}
+
+const globalOf = (re: RegExp) => new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+const WRITE_STMT_RES = [SQL_STMT, SQL_STMT_UPPER, SQL_STMT_BARE].map(globalOf);
+const SELECT_START = /\bselect\s/gi;
+const SQL_WHERE_G = globalOf(SQL_WHERE);
+const STACK_LINE_G = globalOf(STACK_LINE);
+
+/** Kết quả khớp kế tiếp của `re` từ `from` (đặt lại `lastIndex` — các regex `g` dùng chung chỉ trong hàm này). */
+function execFrom(re: RegExp, s: string, from: number): RegExpExecArray | null {
+  re.lastIndex = from;
+  return re.exec(s);
+}
+
+/**
+ * Duyệt `s` MỘT lượt (mỗi mẫu quét tới trước, không quét lại từ đầu phần còn lại → tuyến tính kể cả khi có hàng nghìn
+ * câu): bỏ giá trị ở mọi câu SQL ghi/xoá và `select … where …`; trả `s` nguyên vẹn nếu không có câu nào.
+ */
+function scrubSqlValues(s: string): string {
+  const hasSelect = looksLikeSelect(s) || SQL_SELECT_BARE.test(s);
+  // Bộ nhớ đệm khớp kế tiếp của từng mẫu: chỉ tính lại khi vị trí đã nằm trước `pos`.
+  const next: (RegExpExecArray | null | undefined)[] = [];
+  let selNext: RegExpExecArray | null | undefined;
+  let noWhere = false;
+  let out = "";
+  let pos = 0;
+  while (pos < s.length) {
+    let best: Statement | null = null;
+    WRITE_STMT_RES.forEach((re, i) => {
+      let m = next[i];
+      if (m === undefined || (m !== null && m.index < pos)) m = next[i] = execFrom(re, s, pos);
+      if (m !== null && (best === null || m.index < best.start))
+        best = { start: m.index, head: m[0].replace(/[\s(=]+$/, "") };
+    });
+    if (hasSelect && !noWhere) {
+      if (selNext === undefined || (selNext !== null && selNext.index < pos))
+        selNext = execFrom(SELECT_START, s, pos);
+      const cur = best as Statement | null;
+      if (selNext !== null && (cur === null || selNext.index < cur.start)) {
+        const w = execFrom(SQL_WHERE_G, s, selNext.index);
+        if (w === null)
+          noWhere = true; // không còn where nào phía sau → mọi select tiếp theo cũng không có
+        else best = { start: selNext.index, head: s.slice(selNext.index, w.index) };
+      }
+    }
+    const found = best as Statement | null;
+    if (found === null) break;
+    const abs = found.start;
+    const stack = execFrom(STACK_LINE_G, s, abs);
+    const regionEnd = stack === null ? s.length : stack.index;
+    const sep = s.lastIndexOf(" - ", regionEnd - 3);
+    const stmtEnd = sep > abs ? sep : regionEnd;
+    out += `${s.slice(pos, abs)}${found.head} ${SQL_VALUES_MARK}`;
+    pos = Math.max(stmtEnd, abs + found.head.length);
+  }
+  return out + s.slice(pos);
+}
+
 /** Trần độ dài chuỗi đưa vào bộ che/log (đủ cho stack nhiều tầng cause); phần thừa bị cắt và ghi số ký tự bỏ. */
 export const MAX_TEXT = 32_768;
 
@@ -325,6 +406,7 @@ function redactAddress(s: string): string {
 export function redactText(input: string): string {
   let s =
     input.length > MAX_TEXT ? `${input.slice(0, MAX_TEXT)}…[cắt ${input.length - MAX_TEXT} ký tự]` : input;
+  s = scrubSqlValues(s);
   if (SQL_QUOTED.test(s) || SQL_UPPER.test(s) || looksLikeSelect(s)) {
     const memo = new Map<string, string>(); // literal lặp chỉ băm một lần
     s = s.replace(SQL_LITERAL, (lit) => {
