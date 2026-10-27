@@ -740,3 +740,31 @@
 - Chọn: Ghi thêm một lần không khoá trong giao dịch mới (có thể trùng, không mất dấu)
 - Lý do (tiêu chí chất lượng cuối): (1) mất dấu ngoại lệ vận hành tệ hơn trùng (nguyên tắc T-156/D-101); ca hiếm khi DB nghẽn
 - Đường lùi: Bỏ nhánh ghi dự phòng khi 55P03
+
+### D-106 · 2026-10-27T14:40:02+00:00 · T-098: backend start mặc định bind 127.0.0.1 (trước: mọi giao diện); in cấu hình hiệu lực; proxy.ts ném lỗi khi thiếu NEXT_PUBLIC_* ở production
+
+- Phương án: (1) Giữ bind 127.0.0.1 cho cả dev và start, triển khai đặt HOST=0.0.0.0 (ENV.md + RUNBOOK + GO-NO-GO); thêm script print-config dùng formatEffectiveConfig; chấp nhận proxy ném lỗi khi thiếu biến public ở production · (2) Chỉ dev bind 127.0.0.1, start giữ mọi giao diện
+- Chọn: Giữ bind 127.0.0.1 cho cả dev và start, triển khai đặt HOST=0.0.0.0 (ENV.md + RUNBOOK + GO-NO-GO); thêm script print-config dùng formatEffectiveConfig; chấp nhận proxy ném lỗi khi thiếu biến public ở production
+- Lý do (tiêu chí chất lượng cuối): (1) mặc định an toàn BASE-SEC-010; cấu hình thiếu lộ ra ngay lúc khởi động; (3) một script nhỏ đóng BASE-CFG-007
+- Đường lùi: Bỏ -H khỏi script start
+
+### D-107 · 2026-10-27T15:00:40+00:00 · T-158: dạng khoá advisory và hàng rào scope (lệch chữ PLAN hashtext(kind))
+
+- Phương án: (1) 2×int4 (hashtext namespace, hashtext(key)) theo kind hoặc kind+giá trị scope; hàng rào OPS_EXCEPTION_ACTIVE_SCOPES một dạng scope mỗi kind · (2) pg_advisory_xact_lock(hashtext(kind)) như chữ PLAN
+- Chọn: 2×int4 (hashtext namespace, hashtext(key)) theo kind hoặc kind+giá trị scope; hàng rào OPS_EXCEPTION_ACTIVE_SCOPES một dạng scope mỗi kind
+- Lý do (tiêu chí chất lượng cuối): (1) không va khoá bigint objsubid=1 của returns/trigger x_refund; hai sản phẩm không chờ nhau; hàng rào ngăn trộn dạng scope gây dedupe sai
+- Đường lùi: Về khoá bigint theo kind, bỏ hàng rào
+
+### D-108 · 2026-10-27T15:00:40+00:00 · T-147: quyền đọc native sau khi đóng mặc định any_role (catalog cho order/kế toán/CSKH; khách theo order.read; giá theo price.write; route mới trong nhóm đã khai)
+
+- Phương án: (1) Giữ chặt: catalog chỉ owner/catalog_manager/kho; khách theo order.read (T-023); bảng giá theo price.write; thêm test chốt số route GET native (133) để mỗi lần nâng cấp Medusa phải rà · (2) Mở any_role cho catalog; thêm price.read; quyền khách riêng
+- Chọn: Giữ chặt: catalog chỉ owner/catalog_manager/kho; khách theo order.read (T-023); bảng giá theo price.write; thêm test chốt số route GET native (133) để mỗi lần nâng cấp Medusa phải rà
+- Lý do (tiêu chí chất lượng cuối): (1) đóng mặc định, quyền tối thiểu; nới khi có nhu cầu thật có bằng chứng; (3) không đổi ma trận domain trong lát này
+- Đường lùi: Thêm quy tắc 'một trong các quyền' cho catalog read hoặc price.read vào domain
+
+### D-109 · 2026-10-27T15:00:41+00:00 · T-134: mã hết hạn giữa quote/submit trả 422 DISCOUNT_NOT_APPLICABLE hay 409 DISCOUNT_CHANGED; diffQuotes có so cả ảnh chụp điều khoản
+
+- Phương án: (1) Giữ 422 (storefront đã xử lý); diffQuotes giữ so mã + số giảm (khách xác nhận số tiền, không phải điều khoản) · (2) 409 + quote mới; so cả ảnh chụp
+- Chọn: Giữ 422 (storefront đã xử lý); diffQuotes giữ so mã + số giảm (khách xác nhận số tiền, không phải điều khoản)
+- Lý do (tiêu chí chất lượng cuối): (3) không đổi API-CONTRACT/storefront; (4) khách chỉ phải xác nhận lại khi số tiền đổi; (1) ảnh chụp lưu điều khoản tại lúc submit nên đối soát đúng
+- Đường lùi: Đổi lỗi hết hạn sang 409 DISCOUNT_CHANGED, diffQuotes so thêm snapshot
