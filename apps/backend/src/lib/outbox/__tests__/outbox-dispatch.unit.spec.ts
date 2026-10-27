@@ -6,6 +6,7 @@ import { dispatchOutbox, type OutboxHandler } from "../../checkout/jobs";
 import { CheckoutError } from "../../checkout/errors";
 import { GhnError } from "../../shipping/ghn-client";
 import { ShippingError } from "../../shipping/shipments";
+import { fakeOutboxDb } from "./fake-outbox-store";
 
 /**
  * T-093 (review): `dispatchOutbox` với service giả — phân loại lỗi nội bộ đúng (lỗi tạm của dự án không vào dead), và
@@ -22,7 +23,16 @@ function fakeContainer(events: OutboxClaim[]) {
   const failed: Failed[] = [];
   const sent: string[] = [];
   const exceptions: Array<Record<string, unknown>> = [];
+  // Trạng thái breaker/ngân sách (T-097): kho giả riêng, luôn bắt đầu `closed`.
+  const { service: shared } = fakeOutboxDb([]);
   const service = {
+    readJobBreaker: shared.readJobBreaker,
+    claimJobBreakerProbe: shared.claimJobBreakerProbe,
+    recordJobBreakerFailure: shared.recordJobBreakerFailure,
+    recordJobBreakerSuccess: shared.recordJobBreakerSuccess,
+    tripJobBreaker: shared.tripJobBreaker,
+    hitRateCounter: shared.hitRateCounter,
+    openOpsExceptionIfNoneActive: shared.openOpsExceptionIfNoneActive,
     claimDueOutbox: async () => queue.shift() ?? null,
     markOutboxSent: async (id: string) => {
       sent.push(id);

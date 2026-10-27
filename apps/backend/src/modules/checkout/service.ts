@@ -14,6 +14,8 @@ import {
   COUNTED_COUPON_STATES,
   OPS_EXCEPTION_ACTIVE_SCOPES,
   OPS_EXCEPTION_KINDS,
+  type JobBreakerState,
+  type JobBreakerTripReason,
   type OpsExceptionKind,
   type PaymentMethod,
 } from "./models/constants";
@@ -22,6 +24,7 @@ import {
   CheckoutAttempt,
   CheckoutQuote,
   CouponUsage,
+  JobBreaker,
   OpsException,
   OrderAccessRedemption,
   OrderFinance,
@@ -83,6 +86,27 @@ export interface OutboxClaim {
   payload: Record<string, unknown>;
   /** Số lần đã thử TRƯỚC lần này. */
   attempts: number;
+}
+
+/** Trạng thái một circuit breaker job nền (bảng `job_breaker`, T-097). */
+export interface JobBreakerSnapshot {
+  state: JobBreakerState;
+  consecutive_failures: number;
+  open_until: Date | null;
+  probe_until: Date | null;
+  trip_reason: JobBreakerTripReason | null;
+}
+
+const dateOrNull = (v: unknown): Date | null => (v == null ? null : new Date(v as string | Date));
+
+function breakerSnapshot(r: Row): JobBreakerSnapshot {
+  return {
+    state: String(r.state) as JobBreakerState,
+    consecutive_failures: Number(r.consecutive_failures),
+    open_until: dateOrNull(r.open_until),
+    probe_until: dateOrNull(r.probe_until),
+    trip_reason: (r.trip_reason ?? null) as JobBreakerTripReason | null,
+  };
 }
 
 export type CaptureOutcome =
@@ -185,6 +209,7 @@ class CheckoutModuleService extends MedusaService({
   CouponUsage,
   OrderAccessRedemption,
   RateLimitCounter,
+  JobBreaker,
 }) {
   protected readonly repo_: BaseRepositoryLike;
   protected readonly logger_: Pick<Logger, "warn"> | undefined;
@@ -1004,6 +1029,120 @@ class CheckoutModuleService extends MedusaService({
       `UPDATE outbox_event SET state = 'sent', updated_at = now() WHERE event_key = ? AND state IN ('pending', 'failed')`,
       [eventKey],
     );
+  }
+
+  /**
+   * Hoãn sự kiện đã nhận mà KHÔNG thử (breaker mở/bóp, T-097): chỉ dời `next_attempt_at`, không tăng `attempts`, không
+   * đổi trạng thái — sự kiện vẫn nằm trong outbox và được nhận lại khi tới hạn (không mất). Sự kiện đã sang trạng thái
+   * khác (sent/dead) thì không đụng.
+   */
+  async deferOutbox(id: string, until: Date): Promise<void> {
+    await this.exec(
+      `UPDATE outbox_event SET next_attempt_at = ?, updated_at = now()
+       WHERE id = ? AND state IN ('pending', 'failed')`,
+      [until, id],
+    );
+  }
+
+  /* ------------------------------------------------------------ circuit breaker job nền (T-097) */
+
+  /**
+   * Trạng thái breaker `key` (đọc mới, ngoài giao dịch). Không có dòng = `closed`, chưa lỗi lần nào (dòng chỉ được tạo
+   * khi có lỗi/mở). Mọi chuyển trạng thái dưới đây là MỘT câu có điều kiện trạng thái cũ → nhiều bản sao cùng gọi thì
+   * đúng một bản thắng (READ COMMITTED: câu UPDATE chờ khoá dòng rồi xét lại WHERE trên bản mới nhất).
+   */
+  async readJobBreaker(key: string): Promise<JobBreakerSnapshot | null> {
+    const rows = await this.exec(
+      `SELECT state, consecutive_failures, open_until, probe_until, trip_reason
+       FROM job_breaker WHERE breaker_key = ? AND deleted_at IS NULL`,
+      [key],
+    );
+    return rows[0] ? breakerSnapshot(rows[0]) : null;
+  }
+
+  /**
+   * Hết nguội (`open` và `open_until` ≤ now) hoặc lượt thử trước quá hạn (`half_open` và `probe_until` ≤ now) → chuyển
+   * `half_open` với hạn lượt thử `probeUntil`. Trả true = người gọi là lượt thử DUY NHẤT.
+   */
+  async claimJobBreakerProbe(key: string, now: Date, probeUntil: Date): Promise<boolean> {
+    const rows = await this.exec(
+      `UPDATE job_breaker SET state = 'half_open', probe_until = ?, updated_at = now()
+       WHERE breaker_key = ? AND deleted_at IS NULL
+         AND ((state = 'open' AND open_until <= ?) OR (state = 'half_open' AND probe_until <= ?))
+       RETURNING id`,
+      [probeUntil, key, now, now],
+    );
+    return rows.length === 1;
+  }
+
+  /**
+   * Ghi một lỗi tạm của sự kiện `eventId`: tăng số lỗi liên tiếp CHỈ khi khác sự kiện lỗi gần nhất (một sự kiện thử lại
+   * nhiều lần đã có backoff/trần lần riêng — không để một sự kiện hỏng chặn cả adapter). Trả trạng thái SAU khi ghi.
+   */
+  async recordJobBreakerFailure(key: string, eventId: string): Promise<JobBreakerSnapshot> {
+    const rows = await this.exec(
+      `INSERT INTO job_breaker (id, breaker_key, consecutive_failures, last_failed_event_id)
+       VALUES (?, ?, 1, ?)
+       ON CONFLICT (breaker_key) DO UPDATE SET
+         consecutive_failures = job_breaker.consecutive_failures
+           + CASE WHEN job_breaker.last_failed_event_id IS DISTINCT FROM EXCLUDED.last_failed_event_id THEN 1 ELSE 0 END,
+         last_failed_event_id = EXCLUDED.last_failed_event_id,
+         updated_at = now()
+       RETURNING state, consecutive_failures, open_until, probe_until, trip_reason`,
+      [generateEntityId(undefined, "jbr"), key, eventId],
+    );
+    return breakerSnapshot(rows[0]!);
+  }
+
+  /**
+   * Lượt gọi thành công: `half_open` → `closed`; `closed` → xoá đếm lỗi. KHÔNG đụng breaker đang `open` (kết quả về muộn
+   * của lượt nhận trước khi mở — không được đóng sớm breaker đã mở vì hết ngân sách/lỗi). Trả true nếu vừa đóng từ
+   * `half_open`.
+   */
+  async recordJobBreakerSuccess(key: string): Promise<boolean> {
+    const rows = await this.exec(
+      `WITH prev AS (
+         SELECT id, state FROM job_breaker
+         WHERE breaker_key = ? AND deleted_at IS NULL
+           AND (state = 'half_open' OR (state = 'closed' AND (consecutive_failures > 0 OR last_failed_event_id IS NOT NULL)))
+         FOR UPDATE)
+       UPDATE job_breaker b SET state = 'closed', consecutive_failures = 0, last_failed_event_id = NULL,
+              open_until = NULL, probe_until = NULL, updated_at = now()
+       FROM prev WHERE b.id = prev.id AND b.state IN ('closed', 'half_open')
+       RETURNING prev.state AS was`,
+      [key],
+    );
+    return rows[0]?.was === "half_open";
+  }
+
+  /**
+   * Mở breaker tới `openUntil` nếu đang ở một trong `from` (không có dòng = `closed`). Trả true = câu này vừa mở (đúng
+   * một bản sao thắng → đúng một ngoại lệ/log mỗi lần mở).
+   */
+  async tripJobBreaker(
+    key: string,
+    reason: JobBreakerTripReason,
+    openUntil: Date,
+    from: readonly ("closed" | "half_open")[],
+  ): Promise<boolean> {
+    const fromClosed = from.includes("closed");
+    const fromHalfOpen = from.includes("half_open");
+    // Không có dòng = closed: tạo dòng closed trước (không đổi ngữ nghĩa) để câu chuyển trạng thái dưới đây có dòng để khoá.
+    if (fromClosed) {
+      await this.exec(
+        `INSERT INTO job_breaker (id, breaker_key) VALUES (?, ?) ON CONFLICT (breaker_key) DO NOTHING`,
+        [generateEntityId(undefined, "jbr"), key],
+      );
+    }
+    const rows = await this.exec(
+      `UPDATE job_breaker SET state = 'open', open_until = ?, probe_until = NULL, trip_reason = ?,
+              trip_count = trip_count + 1, updated_at = now()
+       WHERE breaker_key = ? AND deleted_at IS NULL
+         AND ((state = 'closed' AND ?::boolean) OR (state = 'half_open' AND ?::boolean))
+       RETURNING id`,
+      [openUntil, reason, key, fromClosed, fromHalfOpen],
+    );
+    return rows.length === 1;
   }
 
   /* ------------------------------------------------------------ đơn sau mua (T-021) */

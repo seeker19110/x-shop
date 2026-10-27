@@ -14,6 +14,16 @@ import { queryAndProcess } from "./recheck";
 import { validateOutboxPayload } from "../outbox/payload";
 import { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs } from "../outbox/policy";
 import { retryInfoOf, type Random } from "../outbox/retry";
+import {
+  assertBreakerPolicy,
+  BreakerRun,
+  breakerKeyOf,
+  OUTBOX_BREAKER_POLICY,
+  OUTBOX_RUN_LIMITS,
+  type BreakerTrip,
+  type OutboxBreakerPolicy,
+  type OutboxRunLimits,
+} from "../outbox/breaker";
 
 /**
  * Hàm xử lý của các job worker (docs/design/checkout-flow.md §6). Tách khỏi `src/jobs/*` để test gọi trực tiếp với
@@ -278,28 +288,83 @@ export interface DispatchSummary {
   sent: string[];
   retried: string[];
   dead: string[];
+  /** Hoãn không thử vì circuit breaker mở/đang thử/bóp (T-097) — vẫn trong outbox, `attempts` không đổi. */
+  deferred: string[];
+  /** Lượt chạy dừng sớm vì chạm trần lượt gọi (`OUTBOX_RUN_LIMITS.maxCalls`); null = không. */
+  stopped: "max_calls" | null;
 }
 
 /** Vì sao sự kiện vào `dead` (ghi vào ngoại lệ — không PII). */
 export type DeadReason = "invalid_payload" | "permanent_error" | "max_attempts";
 
+/** Kind ngoại lệ khi circuit breaker job nền mở (T-097) — một ngoại lệ đang mở mỗi breaker. */
+export const JOB_CIRCUIT_OPEN_KIND = "job_circuit_open";
+
+/**
+ * Breaker vừa mở (bản sao này thắng câu chuyển trạng thái) → ngoại lệ vận hành `job_circuit_open`, dedupe theo breaker
+ * đang mở (`openOpsExceptionIfNoneActive`, phạm vi `breaker`). Chỉ khoá breaker + số liệu — không PII, không thông điệp
+ * lỗi. Mở lỗi → log, không ném (breaker đã mở; ngoại lệ không được làm sập lượt chạy).
+ */
+async function openBreakerException(container: MedusaContainer, trip: BreakerTrip): Promise<void> {
+  try {
+    await service(container).openOpsExceptionIfNoneActive({
+      kind: JOB_CIRCUIT_OPEN_KIND,
+      dedupe_key: `${JOB_CIRCUIT_OPEN_KIND}:${randomUUID()}`,
+      priority: "high",
+      detail: {
+        breaker: trip.key,
+        reason: trip.reason,
+        open_until: trip.openUntil.toISOString(),
+        ...(trip.consecutiveFailures !== undefined && { consecutive_failures: trip.consecutiveFailures }),
+        ...(trip.budgetLimit !== undefined && {
+          budget_used: trip.budgetUsed,
+          budget_limit: trip.budgetLimit,
+        }),
+      },
+      active_scope: ["breaker"],
+    });
+  } catch (e) {
+    logger(container).error(
+      `[breaker] Không mở được ngoại lệ ${JOB_CIRCUIT_OPEN_KIND} cho ${trip.key}: ${e instanceof Error ? e.name : "lỗi"}`,
+    );
+  }
+}
+
+/**
+ * Gửi sự kiện outbox đến hạn. Trần mỗi lượt chạy + circuit breaker chi phí theo adapter (lib/outbox/breaker.ts, T-097):
+ * breaker mở/đang thử/bóp → hoãn sự kiện (`deferOutbox`, không tăng `attempts`), không gọi dịch vụ ngoài. Sự kiện không
+ * có bộ xử lý (chỉ ghi log) không gọi gì bên ngoài nên không qua breaker.
+ */
 export async function dispatchOutbox(
   container: MedusaContainer,
   opts: {
     now?: Date;
+    /** Số vòng tối đa của lượt này — kẹp trong trần `runLimits.maxIterations`. */
     limit?: number;
     handlers?: Record<string, OutboxHandler>;
     /** RNG cho jitter (test tiêm để tất định). */
     random?: Random;
     /** Đồng hồ khi không tiêm `now` (mặc định giờ thật) — test tiêm để mô phỏng lượt chạy dài. */
     clock?: () => Date;
+    /** Chính sách breaker/trần lượt chạy (test tiêm ngưỡng nhỏ); mặc định `OUTBOX_BREAKER_POLICY`/`OUTBOX_RUN_LIMITS`. */
+    breakerPolicy?: OutboxBreakerPolicy;
+    runLimits?: OutboxRunLimits;
   } = {},
 ): Promise<DispatchSummary> {
   const clock = opts.clock ?? (() => new Date());
   const now = opts.now ?? clock();
   const s = service(container);
   const handlers = { ...DEFAULT_OUTBOX_HANDLERS, ...opts.handlers };
-  const summary: DispatchSummary = { sent: [], retried: [], dead: [] };
+  const summary: DispatchSummary = { sent: [], retried: [], dead: [], deferred: [], stopped: null };
+  const policy = opts.breakerPolicy ?? OUTBOX_BREAKER_POLICY;
+  const limits = opts.runLimits ?? OUTBOX_RUN_LIMITS;
+  if (opts.breakerPolicy || opts.runLimits) assertBreakerPolicy(policy, limits);
+  const log = logger(container);
+  const breaker = new BreakerRun(s, policy, {
+    onTrip: (trip) => openBreakerException(container, trip),
+    warn: (m) => log.warn(m),
+    info: (m) => log.info(m),
+  });
 
   const markDead = async (event: OutboxClaim, message: string, reason: DeadReason) => {
     await s.markOutboxFailed(event.id, message, null);
@@ -321,7 +386,14 @@ export async function dispatchOutbox(
     summary.dead.push(event.event_key);
   };
 
-  for (let i = 0; i < (opts.limit ?? 100); i++) {
+  const iterations = Math.min(opts.limit ?? limits.maxIterations, limits.maxIterations);
+  for (let i = 0; i < iterations; i++) {
+    // Trần lượt gọi: xét TRƯỚC khi nhận — không giữ sự kiện nào mà không xử lý.
+    if (breaker.calls >= limits.maxCalls) {
+      summary.stopped = "max_calls";
+      log.info(`[outbox] Chạm trần ${limits.maxCalls} lượt gọi/lượt chạy — phần còn lại chờ lượt sau`);
+      break;
+    }
     const event = await s.claimDueOutbox(now, OUTBOX_POLICY.claimLeaseMs);
     if (!event) break;
     // Payload kiểm khi NHẬN (BE-JOB-007): sai schema là lỗi vĩnh viễn → dead ngay kèm lý do, lượt chạy tiếp tục.
@@ -330,27 +402,44 @@ export async function dispatchOutbox(
       await markDead(event, check.reason, "invalid_payload");
       continue;
     }
+    const handler = handlers[event.type];
+    const key = breakerKeyOf(event.type);
+    if (handler) {
+      const admission = await breaker.admit(key, opts.now ?? clock());
+      if (admission.kind === "defer") {
+        await s.deferOutbox(event.id, admission.until);
+        summary.deferred.push(event.event_key);
+        continue;
+      }
+    }
+    let ok = false;
     try {
-      await (handlers[event.type] ?? logHandler)(container, event, { now: opts.now ?? clock() });
+      await (handler ?? logHandler)(container, event, { now: opts.now ?? clock() });
       await s.markOutboxSent(event.id);
       summary.sent.push(event.event_key);
+      ok = true;
     } catch (e) {
       const failed = event.attempts + 1;
       const message = e instanceof Error ? e.message : String(e);
       const info = retryInfoOf(e);
+      // Hẹn tính từ LÚC LỖI (không phải đầu lượt): lượt dài vẫn chờ đủ Retry-After/backoff. `now` tiêm → mốc cố định.
+      const failedAt = opts.now ?? clock();
       if (info.permanent) {
         // 4xx nghiệp vụ / validate: thử lại không đổi được kết quả → DLQ ngay (BE-JOB-003).
         await markDead(event, message, "permanent_error");
-      } else if (failed >= OUTBOX_POLICY.maxAttempts) {
-        await markDead(event, message, "max_attempts");
       } else {
-        const delay = outboxNextDelayMs(failed, info.retryAfterMs, opts.random);
-        // Hẹn tính từ LÚC LỖI (không phải đầu lượt): lượt dài vẫn chờ đủ Retry-After/backoff. `now` tiêm → mốc cố định.
-        const failedAt = opts.now ?? clock();
-        await s.markOutboxFailed(event.id, message, new Date(failedAt.getTime() + delay));
-        summary.retried.push(event.event_key);
+        if (failed >= OUTBOX_POLICY.maxAttempts) {
+          await markDead(event, message, "max_attempts");
+        } else {
+          const delay = outboxNextDelayMs(failed, info.retryAfterMs, opts.random);
+          await s.markOutboxFailed(event.id, message, new Date(failedAt.getTime() + delay));
+          summary.retried.push(event.event_key);
+        }
+        // Lỗi tạm = tín hiệu sức khoẻ adapter (lỗi vĩnh viễn không — đó là lỗi của riêng sự kiện).
+        if (handler) await breaker.onFailure(key, event.id, failedAt);
       }
     }
+    if (ok && handler) await breaker.onSuccess(key);
   }
   return summary;
 }

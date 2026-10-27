@@ -42,6 +42,8 @@ function mergeDispatch(a: DispatchSummary, b: DispatchSummary): DispatchSummary 
     sent: [...a.sent, ...b.sent],
     retried: [...a.retried, ...b.retried],
     dead: [...a.dead, ...b.dead],
+    deferred: [...a.deferred, ...b.deferred],
+    stopped: a.stopped ?? b.stopped,
   };
 }
 

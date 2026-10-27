@@ -400,3 +400,52 @@ code=55P03`; bản trùng đóng theo bước 5. `detail` chỉ có id + mã l�
    ```
 
    Sản phẩm đó lỗi lại sau khi đóng → ngoại lệ mới được mở; cùng sản phẩm lặp lại nhiều lần → leo thang cho kỹ thuật (§0).
+
+## 14. Ngoại lệ `job_circuit_open` — job nền tạm dừng gọi dịch vụ ngoài (circuit breaker chi phí)
+
+last_drilled: chưa diễn tập (test đơn vị `breaker` + test tích hợp `outbox-breaker`).
+
+Mô hình thật (`apps/backend/src/lib/outbox/breaker.ts`, T-097, OPS-COST-004): dispatcher outbox chia breaker theo adapter
+(`outbox.notify` = mọi thông báo email/SMS; loại khác `outbox.<loại sự kiện>`). Trạng thái ở bảng `job_breaker` (dùng chung mọi bản
+sao), ngân sách lượt gọi theo ngày UTC ở `rate_limit_counter` (bucket `breaker.budget:<breaker>`). Ngưỡng trong code
+(`OUTBOX_BREAKER_POLICY`, `OUTBOX_RUN_LIMITS` — đổi qua review): mỗi lượt chạy tối đa 100 sự kiện / 50 lượt gọi; 5 sự kiện khác nhau
+lỗi tạm liên tiếp → mở 5 phút; ngân sách ngày `outbox.notify` 3 000, loại khác 10 000 — 80 % log WARN, 90 % bóp còn 5 lượt gọi/lượt
+chạy, vượt 100 % → mở tới 00:00 UTC hôm sau. Breaker mở → mở ngoại lệ này (ưu tiên `high`, owner `owner`, một ngoại lệ đang mở mỗi
+breaker). **Không mất sự kiện**: sự kiện bị hoãn vẫn `pending`/`failed` trong `outbox_event`, `attempts` không đổi, `next_attempt_at`
+= hết nguội. Hết nguội → đúng một lượt thử (half-open); thành công → đóng, lỗi → mở thêm một kỳ.
+
+1. Xem breaker và lý do (`detail.reason`: `consecutive_failures` | `budget_exhausted`):
+
+   ```sql
+   SELECT breaker_key, state, trip_reason, consecutive_failures, open_until, probe_until, trip_count, updated_at
+     FROM job_breaker WHERE state <> 'closed' ORDER BY updated_at DESC;
+   SELECT bucket, window_start, count FROM rate_limit_counter WHERE bucket LIKE 'breaker.budget:%' ORDER BY window_start DESC;
+   ```
+
+   Log: `[breaker] <breaker>: … — dừng gọi tới <giờ>`; cảnh báo ngân sách `[breaker] <breaker>: đã dùng N/M lượt ngân sách`.
+2. `consecutive_failures`: kiểm nhà cung cấp (trang trạng thái, khoá API, hạn mức) và `last_error` của sự kiện gần nhất
+   (`SELECT event_key, attempts, last_error FROM outbox_event WHERE state = 'failed' ORDER BY updated_at DESC LIMIT 20;`). Không cần
+   làm gì để mở lại — breaker tự thử khi hết nguội; lỗi kéo dài thì breaker cứ mở lại từng kỳ, sự kiện không vào `dead` vì bị hoãn.
+3. `budget_exhausted`: số lượt gọi bất thường (vòng lặp gửi lại, sự kiện bị sinh hàng loạt) → tìm nguồn trước
+   (`SELECT type, count(*) FROM outbox_event WHERE created_at > now() - interval '1 day' GROUP BY type;`). Lưu lượng thật tăng → nâng
+   ngân sách bằng PR sửa `OUTBOX_BREAKER_POLICY` (có review), không sửa DB.
+4. Đã chắc nguyên nhân hết và cần gửi ngay (không chờ hết nguội): đóng breaker, rồi đưa sự kiện đã hoãn của breaker đó về hạn ngay
+   (không làm bước sau thì chúng được gửi khi tới `next_attempt_at` cũ) —
+
+   ```sql
+   UPDATE job_breaker SET state = 'closed', consecutive_failures = 0, last_failed_event_id = NULL, open_until = NULL,
+          probe_until = NULL, updated_at = now() WHERE breaker_key = '<breaker>';
+   -- outbox.notify: type IN ('order.placed_pending', 'order.confirmed', 'order.lookup_link', 'shipment.shipped')
+   UPDATE outbox_event SET next_attempt_at = now(), updated_at = now()
+    WHERE state IN ('pending', 'failed') AND type IN ('<loại>') AND next_attempt_at > now();
+   ```
+
+   (với `budget_exhausted` thì bộ đếm ngày vẫn còn — lượt gọi kế tiếp sẽ mở lại; chỉ làm khi đã nâng ngân sách).
+5. Đóng ngoại lệ kèm ghi chú nguyên nhân (Admin chưa có nút đóng):
+
+   ```sql
+   UPDATE ops_exception SET state = 'resolved', updated_at = now()
+    WHERE id = '<id>' AND kind = 'job_circuit_open' AND state IN ('open', 'in_progress');
+   ```
+
+   Breaker mở lại sau khi đóng → ngoại lệ mới; lặp lại nhiều lần trong ngày → leo thang cho kỹ thuật (§0).

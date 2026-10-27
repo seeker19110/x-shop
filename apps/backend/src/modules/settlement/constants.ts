@@ -97,6 +97,7 @@ export const EXCEPTION_OWNER_ROLE: Record<string, string> = {
   notification_failed: "order_staff",
   catalog_index_mismatch: "owner",
   catalog_compensation_failed: "owner",
+  job_circuit_open: "owner",
   cod_unsettled: "accountant",
 };
 export const DEFAULT_SETTLEMENT_OWNER_ROLE = "accountant";

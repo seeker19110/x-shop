@@ -37,6 +37,11 @@ export const OPS_EXCEPTION_KINDS = [
   "catalog_index_mismatch",
   /** Bù trừ `set-product-fashion` lỗi (D-095): sản phẩm có thể lệch thuộc tính/bảng size/số đo — chỉ id + mã lỗi. */
   "catalog_compensation_failed",
+  /**
+   * Circuit breaker chi phí của job nền mở (T-097, OPS-COST-004): một adapter/bộ xử lý outbox lỗi liên tiếp hoặc hết ngân
+   * sách lượt gọi trong ngày → dừng gọi dịch vụ ngoài tới hết thời gian nguội; sự kiện hoãn vẫn nằm trong outbox.
+   */
+  "job_circuit_open",
 ] as const;
 export type OpsExceptionKind = (typeof OPS_EXCEPTION_KINDS)[number];
 
@@ -49,7 +54,19 @@ export type OpsExceptionKind = (typeof OPS_EXCEPTION_KINDS)[number];
 export const OPS_EXCEPTION_ACTIVE_SCOPES: { readonly [K in OpsExceptionKind]?: readonly string[] } = {
   catalog_index_mismatch: [],
   catalog_compensation_failed: ["product_id"],
+  /** Mỗi breaker (vd. `notify`) một ngoại lệ đang mở — mở lại khi đã xử lý xong mà breaker lại mở. */
+  job_circuit_open: ["breaker"],
 };
+
+/**
+ * Circuit breaker job nền (T-097): `closed` = gọi bình thường · `open` = không gọi tới `open_until` · `half_open` = hết
+ * nguội, đúng MỘT lượt thử (probe) đang bay tới `probe_until`; thành công → closed, lỗi → open lại.
+ */
+export const JOB_BREAKER_STATES = ["closed", "open", "half_open"] as const;
+export type JobBreakerState = (typeof JOB_BREAKER_STATES)[number];
+/** Lý do mở: lỗi liên tiếp của adapter, hoặc hết ngân sách lượt gọi trong cửa sổ (ngày). */
+export const JOB_BREAKER_TRIP_REASONS = ["consecutive_failures", "budget_exhausted"] as const;
+export type JobBreakerTripReason = (typeof JOB_BREAKER_TRIP_REASONS)[number];
 
 export const OPS_EXCEPTION_STATES = ["open", "in_progress", "resolved"] as const;
 export const OPS_PRIORITIES = ["low", "normal", "high", "urgent"] as const;

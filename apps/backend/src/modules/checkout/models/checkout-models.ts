@@ -2,6 +2,8 @@ import { model } from "@medusajs/framework/utils";
 import {
   ATTEMPT_STATES,
   COUPON_USAGE_STATES,
+  JOB_BREAKER_STATES,
+  JOB_BREAKER_TRIP_REASONS,
   LEDGER_KINDS,
   OPS_EXCEPTION_KINDS,
   OPS_EXCEPTION_STATES,
@@ -345,3 +347,40 @@ export const RateLimitCounter = model
     { name: "IDX_rate_limit_counter_window_start", on: ["window_start"], where: null },
   ])
   .checks([{ name: "rate_limit_counter_count_nonneg", expression: (c) => `${c.count} >= 0` }]);
+
+/**
+ * Circuit breaker chi phí của job nền/outbox (T-097, OPS-COST-004) — trạng thái DÙNG CHUNG mọi bản sao (ARC-RES-005):
+ * mọi chuyển trạng thái là MỘT câu UPDATE có điều kiện trạng thái cũ (lib/outbox/breaker.ts) nên đúng một bản sao
+ * thắng mỗi lần mở/thử. `breaker_key` = adapter/bộ xử lý (`notify`, loại sự kiện…). Ngân sách lượt gọi theo ngày đếm ở
+ * `rate_limit_counter` (bucket `breaker.budget:<key>`), không ở đây.
+ */
+export const JobBreaker = model
+  .define("job_breaker", {
+    id: model.id({ prefix: "jbr" }).primaryKey(),
+    breaker_key: model.text(),
+    state: model.enum([...JOB_BREAKER_STATES]).default("closed"),
+    /** Số sự kiện KHÁC NHAU lỗi tạm liên tiếp (một sự kiện thử lại nhiều lần chỉ tính một — đã có backoff riêng). */
+    consecutive_failures: model.number().default(0),
+    /** Id outbox của lần lỗi gần nhất (chỉ id — không payload) để không đếm lặp cùng sự kiện. */
+    last_failed_event_id: model.text().nullable(),
+    open_until: model.dateTime().nullable(),
+    probe_until: model.dateTime().nullable(),
+    trip_reason: model.enum([...JOB_BREAKER_TRIP_REASONS]).nullable(),
+    trip_count: model.number().default(0),
+  })
+  .indexes([{ name: "IDX_job_breaker_key_unique", on: ["breaker_key"], unique: true, where: null }])
+  .checks([
+    {
+      name: "job_breaker_consecutive_failures_nonneg",
+      expression: (c) => `${c.consecutive_failures} >= 0`,
+    },
+    { name: "job_breaker_trip_count_nonneg", expression: (c) => `${c.trip_count} >= 0` },
+    {
+      name: "job_breaker_open_has_until",
+      expression: (c) => `${c.state} <> 'open' OR ${c.open_until} IS NOT NULL`,
+    },
+    {
+      name: "job_breaker_half_open_has_probe",
+      expression: (c) => `${c.state} <> 'half_open' OR ${c.probe_until} IS NOT NULL`,
+    },
+  ]);
