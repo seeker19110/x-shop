@@ -6,12 +6,12 @@ describe("safeUrl", () => {
     ["https://shop.example/a?b=1#c", "https://shop.example/a?b=1#c"],
     ["http://shop.example/", "http://shop.example/"],
     ["mailto:cskh@shop.example", "mailto:cskh@shop.example"],
-    ["tel:+84901234567", "tel:+84901234567"],
+    ["tel:+84912345678", "tel:+84912345678"],
     ["/san-pham/ao-so-mi", "/san-pham/ao-so-mi"],
     ["/", "/"],
     ["  https://shop.example/  ", "https://shop.example/"],
     ["HTTPS://SHOP.example/x", "https://shop.example/x"],
-    ["MAILTO:a@b.vn", "mailto:a@b.vn"],
+    ["MAILTO:a@example.test", "mailto:a@example.test"],
   ])("cho phép %j", (input, expected) => {
     expect(safeUrl(input)).toBe(expected);
   });

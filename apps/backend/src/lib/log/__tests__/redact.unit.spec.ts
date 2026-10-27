@@ -200,7 +200,7 @@ describe("che theo tên trường", () => {
     const input = {
       order_id: "XS-ABC123",
       headers: { authorization: "Bearer abc", "content-type": "application/json" },
-      customer: { email: "a@b.vn", phone: "0912345678", address: { line: "12 Lê Lợi" } },
+      customer: { email: "a@example.test", phone: "0912345678", address: { line: "12 Lê Lợi" } },
       items: [{ sku: "AO-M", token: "t1" }],
       shipping_address: { ward: "Bến Thành" },
     };
@@ -218,8 +218,8 @@ describe("che theo tên trường", () => {
 
 describe("che theo nội dung — bộ mẫu PII tiếng Việt", () => {
   it.each([
-    ["khach.hang+1@gmail.com", "[EMAIL]"],
-    ["Liên hệ NGUYEN.VAN.A@Example.COM.VN ngay", "Liên hệ [EMAIL] ngay"],
+    ["khach.hang+1@example.com", "[EMAIL]"],
+    ["Liên hệ NGUYEN.VAN.A@Example.COM ngay", "Liên hệ [EMAIL] ngay"],
     ["0912345678", "[PHONE]"],
     ["SĐT 0912 345 678.", "SĐT [PHONE]."],
     ["0912.345.678", "[PHONE]"],
@@ -228,7 +228,7 @@ describe("che theo nội dung — bộ mẫu PII tiếng Việt", () => {
     ["+84912345678", "[PHONE]"],
     ["84912345678", "[PHONE]"],
     ["bàn 024 3826 1234", "bàn [PHONE]"],
-    ["CCCD 001099012345", "CCCD [CCCD]"],
+    ["CCCD 099099012345", "CCCD [CCCD]"],
     ["001 099 012 345", "[CCCD]"],
     ["thẻ 4111 1111 1111 1111", "thẻ [CARD]"],
     ["4111111111111111", "[CARD]"],
@@ -249,9 +249,9 @@ describe("che theo nội dung — bộ mẫu PII tiếng Việt", () => {
 
   it("nhiều loại trong một thông điệp", () => {
     const out = redactText(
-      "Khách khach@x.vn (0987654321, CCCD 079203001234) giao 12 Lê Lợi, Phường Bến Nghé, Quận 1",
+      "Khách khach@example.test (0987654321, CCCD 099203001234) giao 12 Lê Lợi, Phường Bến Nghé, Quận 1",
     );
-    expect(out).not.toMatch(/khach@x\.vn|0987654321|079203001234|Lê Lợi|Bến Nghé/);
+    expect(out).not.toMatch(/khach@x\.vn|0987654321|099203001234|Lê Lợi|Bến Nghé/);
     expect(out).toContain("[EMAIL]");
     expect(out).toContain("[PHONE]");
     expect(out).toContain("[CCCD]");
@@ -311,7 +311,7 @@ describe("cấu trúc", () => {
   });
 
   it("Error, Date, bigint, Map, hàm, symbol, null/undefined/số/boolean", () => {
-    const err = Object.assign(new Error("gửi tới a@b.vn thất bại"), {
+    const err = Object.assign(new Error("gửi tới a@example.test thất bại"), {
       config: { headers: { authorization: "x" } },
     });
     const out = redactLog({
@@ -332,7 +332,7 @@ describe("cấu trúc", () => {
       message: "gửi tới [EMAIL] thất bại",
       config: { headers: { authorization: REDACTED } },
     });
-    expect(String((out.err as { stack: string }).stack)).not.toContain("a@b.vn");
+    expect(String((out.err as { stack: string }).stack)).not.toContain("a@example.test");
     expect(out).toMatchObject({
       at: "2026-10-26T10:00:00.000Z",
       bad: null,

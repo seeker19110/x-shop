@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
@@ -118,9 +118,11 @@ const SRC_DIR = join(__dirname, "../../src");
 function scanGetRoutes(): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
+    // Dirent thay vì statSync rồi readFileSync (CodeQL js/file-system-race): loại file lấy từ cùng một lần đọc thư mục.
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name;
       const p = join(dir, name);
-      if (statSync(p).isDirectory()) walk(p);
+      if (entry.isDirectory()) walk(p);
       else if (name === "route.ts") {
         const rel = relative(API_DIR, dirname(p)).split(sep).join("/");
         const src = readFileSync(p, "utf8");
@@ -152,9 +154,11 @@ const TAKE_NULL_ALLOWED: Record<string, { count: number; why: string }> = {
 function scanTakeNull(): Record<string, number> {
   const out: Record<string, number> = {};
   const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
+    // Dirent thay vì statSync rồi readFileSync (CodeQL js/file-system-race): loại file lấy từ cùng một lần đọc thư mục.
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name;
       const p = join(dir, name);
-      if (statSync(p).isDirectory()) {
+      if (entry.isDirectory()) {
         if (name !== "__tests__" && name !== "admin") walk(p);
       } else if (/\.ts$/.test(name)) {
         const n = (readFileSync(p, "utf8").match(/take:\s*null\s*[,}]/g) ?? []).length;

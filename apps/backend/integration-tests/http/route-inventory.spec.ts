@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
@@ -110,9 +110,11 @@ function inventoryFromScripts(): Inventory {
 function scanRoutes(): Map<string, string> {
   const out = new Map<string, string>();
   const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
+    // Dirent thay vì statSync rồi readFileSync (CodeQL js/file-system-race): loại file lấy từ cùng một lần đọc thư mục.
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name;
       const p = join(dir, name);
-      if (statSync(p).isDirectory()) walk(p);
+      if (entry.isDirectory()) walk(p);
       else if (name === "route.ts") {
         const rel = relative(API_DIR, dirname(p)).split(sep).join("/");
         const path = "/" + rel.replace(/\[([^\]]+)\]/g, "{$1}");

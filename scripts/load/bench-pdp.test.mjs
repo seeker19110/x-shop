@@ -64,11 +64,29 @@ test("publishableKey: ưu tiên biến môi trường, rồi file serve.json; th
   const dir = mkdtempSync(join(tmpdir(), "bench-pdp-"));
   try {
     const file = join(dir, "serve.json");
-    assert.equal(publishableKey({ LOAD_PUBLISHABLE_KEY: "pk_env" }, file), "pk_env");
+    assert.equal(
+      publishableKey(
+        { LOAD_PUBLISHABLE_KEY: "pk_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
+        file,
+      ),
+      "pk_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    );
     assert.throws(() => publishableKey({}, file), /serve\.mjs start/);
-    writeFileSync(file, JSON.stringify({ publishableKey: "pk_file" }));
-    assert.equal(publishableKey({}, file), "pk_file");
-    assert.equal(publishableKey({ LOAD_PUBLISHABLE_KEY: "" }, file), "pk_file", "chuỗi rỗng không tính");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        publishableKey: "pk_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      }),
+    );
+    assert.equal(
+      publishableKey({}, file),
+      "pk_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    );
+    assert.equal(
+      publishableKey({ LOAD_PUBLISHABLE_KEY: "" }, file),
+      "pk_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "chuỗi rỗng không tính",
+    );
     writeFileSync(file, "{");
     assert.throws(() => publishableKey({}, file), /serve\.mjs start/);
     writeFileSync(file, JSON.stringify({ pid: 1 }));
@@ -76,4 +94,9 @@ test("publishableKey: ưu tiên biến môi trường, rồi file serve.json; th
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("publishableKey: giá trị sai định dạng (không phải pk_ + hex) → lỗi, không đưa vào header", () => {
+  assert.throws(() => publishableKey({ LOAD_PUBLISHABLE_KEY: "pk_x\r\nX-Evil: 1" }), /sai định dạng/);
+  assert.throws(() => publishableKey({ LOAD_PUBLISHABLE_KEY: "sk_" + "a".repeat(64) }), /sai định dạng/);
 });

@@ -54,12 +54,19 @@ export function checkResponse(handle, status, body) {
   return null;
 }
 
+/** Khoá publishable của Medusa (`pk_` + hex) — kiểm trước khi đưa giá trị đọc từ file/biến vào header (CodeQL js/file-access-to-http). */
+export function assertPublishableKey(key) {
+  if (typeof key !== "string" || !/^pk_[0-9a-f]{16,128}$/.test(key))
+    throw new Error("publishable key sai định dạng (cần pk_ + hex)");
+  return key;
+}
+
 /** Publishable key: biến LOAD_PUBLISHABLE_KEY, không thì file trạng thái của serve.mjs. */
 export function publishableKey(env = process.env, stateFile = SERVE_STATE) {
-  if (env.LOAD_PUBLISHABLE_KEY) return env.LOAD_PUBLISHABLE_KEY;
+  if (env.LOAD_PUBLISHABLE_KEY) return assertPublishableKey(env.LOAD_PUBLISHABLE_KEY);
   try {
     const key = JSON.parse(readFileSync(stateFile, "utf8")).publishableKey;
-    if (key) return key;
+    if (key) return assertPublishableKey(key);
   } catch {
     /* rơi xuống lỗi dưới */
   }
