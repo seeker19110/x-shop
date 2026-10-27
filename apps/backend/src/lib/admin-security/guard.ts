@@ -236,6 +236,34 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
   };
 }
 
+/**
+ * Chỉ chạy `mw` khi tham số `auth_provider` (Express đã giải mã `%xx`) đúng là `emailpass` — provider mật khẩu duy nhất.
+ * Dùng cho matcher tham số `/auth/:actor_type/:auth_provider`: matcher này cũng khớp route tĩnh `/auth/token/refresh`,
+ * `/auth/mfa/factors`… (không phải đăng nhập); provider khác `emailpass` (kể cả `EMAILPASS`) Auth Module không phân giải
+ * được nên không là kênh đoán mật khẩu.
+ */
+export function emailpassOnly(
+  mw: (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => Promise<void> | void,
+) {
+  return (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) =>
+    req.params.auth_provider === "emailpass" ? mw(req, res, next) : next();
+}
+
+/**
+ * `GET`/`HEAD /auth/:actor_type/emailpass` → 405 (T-138). Route gốc Medusa export cả `GET` = authenticate (dành cho bước
+ * chuyển hướng OAuth); body-parser vẫn đọc thân của GET và CSRF bỏ qua GET ⇒ đoán mật khẩu bằng GET lách rate limit đăng
+ * nhập (chỉ khai POST) và nhận JWT thật. Dashboard/SDK đăng nhập emailpass bằng POST; provider khác (OAuth) không bị chạm.
+ */
+export function rejectEmailpassGet(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
+  if (req.params.auth_provider !== "emailpass") return next();
+  res.setHeader("Allow", "POST");
+  return sendProblem(res, 405, "METHOD_NOT_ALLOWED", "Đăng nhập email/mật khẩu chỉ nhận POST");
+}
+
+/**
+ * Định danh rate limit đăng nhập/đăng ký = email (identity emailpass dùng chung mọi actor: `entity_id = email`) — thất bại
+ * qua `/auth/customer/emailpass`, `/auth/<actor lạ>/emailpass` cộng chung bộ đếm với `/auth/user/emailpass`.
+ */
 export const loginIdentity = (req: MedusaRequest): string | null => {
   const email = (req.body as { email?: unknown } | undefined)?.email;
   return typeof email === "string" ? email.slice(0, 320) : null;

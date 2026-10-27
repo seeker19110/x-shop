@@ -10,9 +10,13 @@ import {
   adminRefreshGuard,
   adminSecurityGuard,
   authRateLimit,
+  emailpassOnly,
   loginIdentity,
   mfaIdentity,
+  rejectEmailpassGet,
 } from "../lib/admin-security/guard";
+import { inviteAcceptGuard } from "../lib/admin-security/invite-guard";
+import { registerGate } from "../lib/admin-security/register-gate";
 import { xErrorHandler } from "../lib/errors/error-handler";
 import { requestLogContext } from "../lib/log/http";
 import { csrfGuard } from "../lib/security/csrf";
@@ -90,10 +94,33 @@ export default defineMiddlewares({
       middlewares: [uploadContentCheck],
     },
     {
-      // Rate limit đăng nhập admin theo (email + IP), email, IP — chỉ chặn quét hàng loạt theo IP (SEC03, T-024).
+      // Rate limit đăng nhập theo (email + IP), email, IP — chỉ chặn quét hàng loạt theo IP (SEC03, T-024). Matcher THAM SỐ
+      // (T-138): identity emailpass dùng chung mọi actor nên `/auth/customer/emailpass`, `/auth/<actor lạ>/emailpass`,
+      // `/auth/%75ser/emailpass` (Express khớp literal trên đường dẫn thô nhưng giải mã tham số) cũng đoán được mật khẩu
+      // admin — mọi actor cộng chung một bộ đếm theo email.
       methods: ["POST"],
-      matcher: "/auth/user/emailpass",
-      middlewares: [authRateLimit("login", loginIdentity)],
+      matcher: "/auth/:actor_type/:auth_provider",
+      middlewares: [emailpassOnly(authRateLimit("login", loginIdentity))],
+    },
+    {
+      // GET (HEAD đi theo GET trong Express) của route đăng nhập gốc cũng chạy authenticate → 405 cho emailpass (T-138).
+      methods: ["GET", "HEAD"],
+      matcher: "/auth/:actor_type/:auth_provider",
+      middlewares: [rejectEmailpassGet],
+    },
+    {
+      // Lời mời admin ràng buộc email + identity (T-138, D-075): accept không đổi được email, không gắn identity khác.
+      methods: ["POST"],
+      matcher: "/admin/invites/accept",
+      middlewares: [inviteAcceptGuard],
+    },
+    {
+      // Đăng ký (BE-AUTH-003, T-138, D-068): rate limit rồi cổng lời mời — chỉ actor `user` + `emailpass` có lời mời hợp lệ
+      // cho đúng email; mọi ca khác (email admin có thật, email lạ, `customer`, actor lạ) cùng một phản hồi 400, không tạo
+      // auth_identity (lib/admin-security/register-gate.ts).
+      methods: ["POST"],
+      matcher: "/auth/:actor_type/:auth_provider/register",
+      middlewares: [authRateLimit("register", loginIdentity), registerGate],
     },
     {
       methods: ["POST"],

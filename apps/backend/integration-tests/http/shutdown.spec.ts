@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import net from "node:net";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { generateJwtToken } from "@medusajs/framework/utils";
 
 jest.setTimeout(420 * 1000);
 
@@ -25,6 +26,7 @@ const { Client } = createRequire(require.resolve("@medusajs/framework"))("pg") a
 const BACKEND_DIR = join(__dirname, "../..");
 const CLI = require.resolve("@medusajs/cli/cli.js", { paths: [BACKEND_DIR] });
 const ADMIN_DB_URL = process.env.DATABASE_URL!;
+const SHUTDOWN_JWT_SECRET = "x-shop-shutdown-test-only-jwt-secret-0123456789";
 const DB_NAME = `xshop_shutdown_${process.pid}`;
 const DB_URL = (() => {
   const u = new URL(ADMIN_DB_URL);
@@ -38,6 +40,8 @@ function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
     DATABASE_URL: DB_URL,
     NODE_ENV: "development",
     DISABLE_MEDUSA_ADMIN: "true",
+    // Bí mật JWT biết trước để test ký được token mời hợp lệ cho tiến trình con (T-138) — CHỈ cho test.
+    JWT_SECRET: SHUTDOWN_JWT_SECRET,
     ...extra,
   };
   // Tuỳ chọn Node của Jest (vm-modules, heap) không dành cho tiến trình Medusa.
@@ -180,7 +184,25 @@ async function startBackend(extra: Record<string, string>): Promise<Backend> {
 async function slowLogin(port: number) {
   const email = `shutdown-${randomUUID()}@x-shop.test`;
   const password = `pw-${randomUUID()}`;
-  const reg = await request(port, "POST", "/auth/user/emailpass/register", { email, password });
+  // Đăng ký `user` chỉ qua cổng khi có token mời hợp lệ đúng email (T-138, D-075) — tiến trình con không chung container
+  // với test nên ghi lời mời thẳng vào DB, token ký bằng bí mật JWT đã đặt cho tiến trình con (như User Module).
+  const inviteId = `invite_shutdown_${randomUUID()}`;
+  const inviteToken = generateJwtToken({ id: inviteId }, { secret: SHUTDOWN_JWT_SECRET, expiresIn: "1h" });
+  const invite = new Client({ connectionString: DB_URL });
+  await invite.connect();
+  try {
+    await invite.query(
+      `INSERT INTO invite (id, email, accepted, token, expires_at) VALUES ($1, $2, false, $3, now() + interval '1 hour')`,
+      [inviteId, email, inviteToken],
+    );
+  } finally {
+    await invite.end();
+  }
+  const reg = await request(port, "POST", "/auth/user/emailpass/register", {
+    email,
+    password,
+    invite_token: inviteToken,
+  });
   expect(reg.status).toBe(200);
   const lock = new Client({ connectionString: DB_URL });
   await lock.connect();
