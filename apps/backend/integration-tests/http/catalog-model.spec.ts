@@ -737,6 +737,81 @@ medusaIntegrationTestRunner({
           });
         });
 
+        describe("bù trừ thuộc tính/bảng size lỗi phải để lại dấu vết (T-155)", () => {
+          /** Gỡ bảng size (SIZE_CHART_MISSING → workflow bù trừ) kèm đổi chất liệu sang giá trị khác bản gốc. */
+          const BODY = { attributes: { kind: "apparel", material: "lua" }, size_chart_id: null };
+          const LEAK = /insert into|update\s+"|values\s*\(|\blua\b|Cotton|Việt Nam|user_[a-z0-9_]+/i;
+
+          async function runWithTrigger(sql: string, drop: string) {
+            const { id, attributesId } = await seededPolo();
+            const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+            const logger = container.resolve(ContainerRegistrationKeys.LOGGER) as unknown as Record<
+              string,
+              (...args: unknown[]) => unknown
+            >;
+            const orig = { error: logger.error!, warn: logger.warn! };
+            const lines: string[] = [];
+            for (const level of ["error", "warn"] as const) {
+              logger[level] = (...args: unknown[]) => {
+                lines.push(
+                  `${level} ${args.map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ""}` : typeof a === "string" ? a : JSON.stringify(a))).join(" ")}`,
+                );
+                return orig[level].apply(logger, args);
+              };
+            }
+            await pg.raw(sql);
+            let err: unknown;
+            try {
+              err = await api
+                .post(`/admin/x/products/${id}/fashion`, BODY, { headers: admin })
+                .catch((e: unknown) => e);
+            } finally {
+              await pg.raw(drop);
+              Object.assign(logger, orig);
+            }
+            return { err, lines, id, attributesId };
+          }
+
+          it("khôi phục thuộc tính lỗi → có log chỉ id + mã lỗi, không giá trị/PII; API vẫn 400", async () => {
+            const { err, lines, attributesId } = await runWithTrigger(
+              `create or replace function t155_boom() returns trigger language plpgsql as $$
+               begin if new.material = 'cotton' then raise exception 'boom restore'; end if; return new; end $$;
+               create trigger t155_boom before update on fashion_product_attributes
+                 for each row execute function t155_boom();`,
+              "drop trigger if exists t155_boom on fashion_product_attributes; drop function if exists t155_boom();",
+            );
+            expect(status(err)).toBe(400);
+            const line = lines.find((l) => l.includes("Hoàn tác thuộc tính thời trang lỗi"));
+            expect(line).toBeDefined();
+            expect(line).toContain(`attributes_id=${attributesId}`);
+            expect(line).toContain("boom restore");
+            expect(lines.filter((l) => LEAK.test(l))).toEqual([]);
+          });
+
+          it("gắn lại bảng size lỗi → có log chỉ id + mã lỗi, không giá trị/PII", async () => {
+            const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+            const { rows } = (await pg.raw(
+              `select c.table_name from information_schema.columns c
+                 where c.table_schema = 'public' and c.column_name = 'size_chart_id'
+                   and c.table_name like '%product%' and c.table_name not like 'fashion\\_%'`,
+            )) as { rows: { table_name: string }[] };
+            expect(rows).toHaveLength(1);
+            const table = rows[0]!.table_name;
+            const { err, lines, id } = await runWithTrigger(
+              `create or replace function t155_boom2() returns trigger language plpgsql as $$
+               begin if new.deleted_at is null then raise exception 'boom relink'; end if; return new; end $$;
+               create trigger t155_boom2 before insert or update on "${table}"
+                 for each row execute function t155_boom2();`,
+              `drop trigger if exists t155_boom2 on "${table}"; drop function if exists t155_boom2();`,
+            );
+            expect(status(err)).toBe(400);
+            const line = lines.find((l) => l.includes("Hoàn tác bảng size lỗi"));
+            expect(line).toBeDefined();
+            expect(line).toContain(`product_id=${id}`);
+            expect(lines.filter((l) => LEAK.test(l))).toEqual([]);
+          });
+        });
+
         describe("khoá theo sản phẩm qua HTTP", () => {
           const BODY = {
             attributes: { kind: "apparel", material: "cotton" },

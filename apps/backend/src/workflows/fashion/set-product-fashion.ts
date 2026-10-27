@@ -93,17 +93,27 @@ const upsertAttributesStep = createStep(
   },
   async (comp, { container }) => {
     if (!comp) return;
-    const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
-    if (comp.created) {
-      const link = container.resolve(ContainerRegistrationKeys.LINK);
-      await link.dismiss({
-        [Modules.PRODUCT]: { product_id: comp.productId },
-        [FASHION_MODULE]: { fashion_product_attributes_id: comp.attributesId },
-      });
-      await fashion.deleteFashionProductAttributes(comp.attributesId);
-    } else {
-      await fashion.updateFashionProductAttributes({ id: comp.attributesId, ...comp.previous } as never);
-    }
+    await compensating(
+      container,
+      "Hoàn tác thuộc tính thời trang",
+      { attributes_id: comp.attributesId, created: String(comp.created) },
+      async () => {
+        const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
+        if (comp.created) {
+          const link = container.resolve(ContainerRegistrationKeys.LINK);
+          await link.dismiss({
+            [Modules.PRODUCT]: { product_id: comp.productId },
+            [FASHION_MODULE]: { fashion_product_attributes_id: comp.attributesId },
+          });
+          await fashion.deleteFashionProductAttributes(comp.attributesId);
+        } else {
+          await fashion.updateFashionProductAttributes({
+            id: comp.attributesId,
+            ...comp.previous,
+          } as never);
+        }
+      },
+    );
   },
 );
 
@@ -125,7 +135,12 @@ const setSizeChartStep = createStep(
   },
   async (comp, { container }) => {
     if (!comp) return;
-    await relinkSizeChart(container, comp.productId, comp.next, comp.previous);
+    await compensating(
+      container,
+      "Hoàn tác bảng size",
+      { product_id: comp.productId, from: comp.next, to: comp.previous },
+      () => relinkSizeChart(container, comp.productId, comp.next, comp.previous),
+    );
   },
 );
 
@@ -269,6 +284,30 @@ function safeErrorSummary(e: unknown): string {
  */
 function sanitizedError(what: string, e: unknown): MedusaError {
   return new MedusaError(MedusaError.Types.UNEXPECTED_STATE, `${what}: ${safeErrorSummary(e)}`);
+}
+
+/**
+ * Bọc một hàm bù trừ: lỗi → log (`[set-product-fashion] <what> lỗi: <ids>: <safeErrorSummary>`) rồi ném lỗi đã làm sạch.
+ * Engine chỉ ném lỗi INVOKE và `logOnError` tắt nên bù trừ lỗi mà không log sẽ để sản phẩm lệch trạng thái mà không
+ * dấu vết (T-155). `ids` chỉ gồm id — KHÔNG giá trị thuộc tính/số đo (PII), KHÔNG `e.message` thô (knex chép giá trị bind).
+ */
+async function compensating(
+  container: MedusaContainer,
+  what: string,
+  ids: Record<string, string | null>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    container.resolve(ContainerRegistrationKeys.LOGGER).error(
+      `[set-product-fashion] ${what} lỗi: ` +
+        `${Object.entries(ids)
+          .map(([k, v]) => `${k}=${v ?? "-"}`)
+          .join(" ")}: ${safeErrorSummary(e)}`,
+    );
+    throw sanitizedError(`${what} lỗi`, e);
+  }
 }
 
 type MeasurementCompensation = {
