@@ -861,8 +861,9 @@ class CheckoutModuleService extends MedusaService({
 
   /**
    * Đơn online còn chờ thanh toán đã quá hạn giữ hàng (biên: now >= hold_expires_at là hết hạn — DATA04) VÀ đã tới hạn
-   * kiểm lại (`next_check_at` NULL hoặc ≤ now — T-164). Sắp theo hạn xét thực tế `COALESCE(next_check_at,
-   * hold_expires_at)`: đơn vừa quá hạn đứng trước đơn đã hỏi rồi bị hẹn lại → đơn chưa rõ kẹt không chặn đầu hàng.
+   * kiểm lại (`next_check_at` NULL hoặc ≤ now — T-164). Xếp theo hạn xét `COALESCE(next_check_at, hold_expires_at)`
+   * (FIFO): đơn mới quá hạn chờ tối đa ⌈số đơn tới hạn trước nó / limit⌉ lượt — đơn đã hỏi rồi bị hẹn lại xếp sau mọi
+   * đơn có hạn xét sớm hơn mốc hẹn của nó, nên đơn chưa rõ kẹt không chặn đầu hàng mãi.
    * Mọi so sánh trên timestamptz (UTC tuyệt đối, không phụ thuộc TimeZone phiên).
    */
   async listExpiredHoldOrderIds(now: Date, limit: number): Promise<string[]> {
@@ -874,6 +875,16 @@ class CheckoutModuleService extends MedusaService({
       [now, now, limit],
     );
     return rows.map((r) => String(r.order_id));
+  }
+
+  /** Tồn đọng đơn quá hạn chưa rõ: còn `awaiting_payment`, quá `hold_expires_at`, đã hỏi ≥ 1 lần (T-164). */
+  async countUnknownHoldBacklog(now: Date): Promise<number> {
+    const rows = await this.exec(
+      `SELECT count(*)::int AS n FROM order_finance
+       WHERE state = 'awaiting_payment' AND hold_expires_at <= ? AND hold_check_attempts >= 1 AND deleted_at IS NULL`,
+      [now],
+    );
+    return Number(rows[0]?.n ?? 0);
   }
 
   /**

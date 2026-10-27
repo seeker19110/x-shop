@@ -27,6 +27,7 @@ import {
   type QueryStatusResult,
   type VnpayGateway,
 } from "../../src/lib/checkout/vnpay-gateway";
+import { HOLD_RECHECK_POLICY } from "../../src/lib/checkout/hold-recheck";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { checkoutClient, DEV_VNPAY, ipn, type Api } from "../helpers/checkout-api";
@@ -42,6 +43,8 @@ jest.setTimeout(300 * 1000);
 
 const R = vnpay.IPN_RESPONSES;
 const MIN = 60_000;
+/** Dung sai lịch kiểm lại (T-164): mốc hẹn = now + delay − SLACK. */
+const SLACK = HOLD_RECHECK_POLICY.slackMs;
 
 /** Gateway lập trình được: kết quả querydr theo txnRef (mặc định "chưa trả"); `down` → lỗi mạng (lỗi tạm của cổng). */
 class ScriptedGateway implements VnpayGateway {
@@ -168,7 +171,7 @@ medusaIntegrationTestRunner({
           expect((await expireHolds(container, { now })).unknown).toEqual([o.orderId]);
           // T-164: cùng thời điểm → đang backoff, không hỏi lại; tới hạn kiểm lại (1 phút) → hỏi lại, vẫn unknown.
           expect(await expireHolds(container, { now })).toMatchObject({ unknown: [], skipped: [] });
-          expect(new Date((await fin(o.orderId)).next_check_at!).getTime()).toBe(now.getTime() + MIN);
+          expect(new Date((await fin(o.orderId)).next_check_at!).getTime()).toBe(now.getTime() + MIN - SLACK);
           expect((await expireHolds(container, { now: new Date(now.getTime() + MIN) })).unknown).toEqual([
             o.orderId,
           ]);
@@ -561,15 +564,15 @@ medusaIntegrationTestRunner({
           all.push({ orderId: extra.orderId, txn: await txnOf(extra.orderId) });
           if (k === 1) {
             await pg().raw(`UPDATE job_breaker SET trip_count = ? WHERE breaker_key = ?`, [all.length, KEY]);
-            // T-164: đơn mới quá hạn đứng trước đơn đã hẹn kiểm lại → đưa o1 về dạng dữ liệu trước T-164
-            // (next_check_at NULL, hạn xét = hold_expires_at cũ nhất) để o1 đứng đầu hàng như kịch bản gốc.
-            await pg().raw(`UPDATE order_finance SET next_check_at = NULL WHERE order_id = ?`, [o1!.orderId]);
           }
+          // T-164: o1 vừa lỗi sẽ được backoff tự đẩy ra khỏi tập tới hạn — kịch bản này cần o1 VẪN tới hạn và đứng đầu
+          // hàng mỗi kỳ (dạng dữ liệu trước T-164: next_check_at NULL, hạn xét = hold_expires_at cũ nhất) để ghim đúng
+          // thuộc tính "đơn vừa lỗi xuống cuối" của probeOrder chứ không nhờ backoff.
+          await pg().raw(`UPDATE order_finance SET next_check_at = NULL WHERE order_id = ?`, [o1!.orderId]);
+          const now = new Date(t0.getTime() + k * 5 * MIN + k);
+          expect((await service().listExpiredHoldOrderIds(now, 100))[0]).toBe(o1!.orderId);
           const n = gateway.seen.length;
-          await expireHolds(container, {
-            now: new Date(t0.getTime() + k * 5 * MIN + k),
-            breakerPolicy: POLICY,
-          });
+          await expireHolds(container, { now, breakerPolicy: POLICY });
           probes.push(gateway.seen[n] ?? "none");
         }
         // Kỳ 1: o1 nhận lượt thử (đơn vừa lỗi trước đó là o2) và lỗi; kỳ 2: o1 xuống cuối → đơn khác thử → đóng.
@@ -634,17 +637,38 @@ medusaIntegrationTestRunner({
         const callsOf = (txn: string) => gateway.seen.filter((t) => t === txn).length;
 
         it("REPRO-B: đơn unknown kẹt đầu hàng (limit 2) không chặn đơn quá hạn mới; querydr không bị đốt mỗi phút", async () => {
+          const warns: string[] = [];
+          const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+          const spy = jest.spyOn(logger, "warn").mockImplementation((m: unknown) => {
+            warns.push(String(m));
+          });
+          try {
+            await reproB(warns);
+          } finally {
+            spy.mockRestore();
+          }
+        });
+
+        const reproB = async (warns: string[]) => {
           const orders = await placeFour();
           const [o1, o2, o3, o4] = orders;
           for (const o of [o1!, o2!]) gateway.results.set(o.txn, R91);
           const t0 = future(16 * MIN);
+          const runs = [];
           for (let k = 0; k < 5; k++) {
-            await expireHolds(container, {
-              now: new Date(t0.getTime() + k * MIN),
-              limit: 2,
-              breakerPolicy: POLICY,
-            });
+            runs.push(
+              await expireHolds(container, {
+                now: new Date(t0.getTime() + k * MIN),
+                limit: 2,
+                breakerPolicy: POLICY,
+                backlogWarnAt: k === 4 ? 2 : undefined,
+              }),
+            );
           }
+          // Ngay lượt t0+1: o1/o2 đã hẹn lại (hạn xét t0+1'−dung sai) xếp SAU o3/o4 (hạn xét = hold_expires_at cũ hơn)
+          // → hai đơn mới được xét trước (ghim thứ tự COALESCE; sắp theo hold_expires_at thì lượt này hỏi lại o1/o2).
+          expect([...runs[1]!.cancelled].sort()).toEqual([o3!.orderId, o4!.orderId].sort());
+          expect(runs[1]!.unknown).toEqual([]);
           // Trước T-164: o3 vẫn awaiting_payment sau 5 lượt, querydr của o3 = 0, của o1/o2 = 5 mỗi đơn.
           for (const o of [o3!, o4!]) {
             expect((await fin(o.orderId)).state).toBe("cancelled");
@@ -659,7 +683,13 @@ medusaIntegrationTestRunner({
             const ex = await service().listOpsExceptions({ order_id: o.orderId, kind: "payment_unknown" });
             expect(ex).toHaveLength(1);
           }
-        });
+          // Tồn đọng đơn chưa rõ: đếm sau mỗi lượt; chạm ngưỡng (tiêm 2 ở lượt cuối) → log WARN (RUNBOOK §1); dưới
+          // ngưỡng mặc định (50) → không WARN.
+          expect(runs.map((r) => r.unknownBacklog)).toEqual([2, 2, 2, 2, 2]);
+          const backlogWarns = warns.filter((m) => m.includes("đơn quá hạn chưa rõ thanh toán"));
+          expect(backlogWarns).toHaveLength(1);
+          expect(backlogWarns[0]).toContain("2 đơn quá hạn chưa rõ thanh toán");
+        };
 
         const dueOf = async (orderId: string) => {
           const f = await fin(orderId);
@@ -680,7 +710,7 @@ medusaIntegrationTestRunner({
             const f = await fin(o.orderId);
             expect(f.hold_check_attempts).toBe(k);
             const due = new Date(f.next_check_at!);
-            delays.push((due.getTime() - now.getTime()) / MIN);
+            delays.push((due.getTime() - now.getTime() + SLACK) / MIN);
             // 1 ms trước hạn → không xét, không gọi querydr.
             const early = await expireHolds(container, {
               now: new Date(due.getTime() - 1),
@@ -690,7 +720,7 @@ medusaIntegrationTestRunner({
             expect(callsOf(txn)).toBe(k);
             now = due; // đúng hạn (biên ≤) → xét
           }
-          expect(delays).toEqual([1, 2, 4, 8, 16, 32, 60, 60, 60]);
+          expect(delays).toEqual([1, 2, 4, 8, 16, 32, 60, 60, 60]); // mỗi mốc trừ dung sai SLACK
           expect((await fin(o.orderId)).state).toBe("awaiting_payment");
           expect(await reserved("Đen/S")).toBe(1);
           expect(
@@ -719,7 +749,7 @@ medusaIntegrationTestRunner({
               o.orderId,
             ]);
             expect((await fin(o.orderId)).hold_check_attempts).toBe(1);
-            expect((await dueOf(o.orderId))!.getTime()).toBe(now.getTime() + MIN);
+            expect((await dueOf(o.orderId))!.getTime()).toBe(now.getTime() + MIN - SLACK);
           }
           expect(callsOf(txn)).toBe(1);
           // Hết nguội (t0+5): lượt thử rơi vào chính đơn này → unknown → attempts 2 (hạn +2 phút).
@@ -729,7 +759,7 @@ medusaIntegrationTestRunner({
           ]);
           expect(callsOf(txn)).toBe(2);
           expect((await fin(o.orderId)).hold_check_attempts).toBe(2);
-          expect((await dueOf(o.orderId))!.getTime()).toBe(t5.getTime() + 2 * MIN);
+          expect((await dueOf(o.orderId))!.getTime()).toBe(t5.getTime() + 2 * MIN - SLACK);
         });
 
         it("IPN đến khi đơn đang backoff: thành công → xác nhận ngay, lượt sau không hỏi/không hủy; thất bại → bỏ hẹn, lượt kế tiếp hủy ngay", async () => {
@@ -783,7 +813,7 @@ medusaIntegrationTestRunner({
           for (const o of orders) {
             expect(callsOf(o.txn)).toBe(1);
             expect((await fin(o.orderId)).hold_check_attempts).toBe(1);
-            expect((await dueOf(o.orderId))!.getTime()).toBe(t0.getTime() + MIN);
+            expect((await dueOf(o.orderId))!.getTime()).toBe(t0.getTime() + MIN - SLACK);
           }
           const [o1] = orders;
           gateway.results.delete(o1!.txn); // o1: VNPAY trả lời "chưa trả"
@@ -842,7 +872,7 @@ medusaIntegrationTestRunner({
           expect((await expireHolds(container, { now, breakerPolicy: POLICY })).unknown).toEqual([o.orderId]);
           expect((await fin(o.orderId)).hold_check_attempts).toBe(4);
           const due = (await dueOf(o.orderId))!;
-          expect(due.getTime() - now.getTime()).toBe(8 * MIN);
+          expect(due.getTime() - now.getTime()).toBe(8 * MIN - SLACK);
           // Biên theo mốc tuyệt đối (timestamptz ↔ Date UTC): due−1ms chưa, due thì có.
           expect(await service().listExpiredHoldOrderIds(new Date(due.getTime() - 1), 100)).not.toContain(
             o.orderId,
@@ -870,7 +900,7 @@ medusaIntegrationTestRunner({
           });
         });
 
-        it("lượt xử lý một đơn ném lỗi → đơn đó hẹn lại (lượt dừng như trước), lượt sau xử lý đơn khác thay vì kẹt ở nó", async () => {
+        it("lỗi ở pha chốt hủy (hủy native xong) → hẹn lại 1 phút KHÔNG tăng số mũ (lượt dừng như trước); lượt sau xử lý đơn khác thay vì kẹt ở nó", async () => {
           const orders = await placeFour();
           const [o1] = orders;
           const svc = service() as unknown as {
@@ -886,8 +916,8 @@ medusaIntegrationTestRunner({
             await expect(expireHolds(container, { now: t0, breakerPolicy: POLICY })).rejects.toThrow(
               "lỗi giả lập khi chốt hủy",
             );
-            expect((await fin(o1!.orderId)).hold_check_attempts).toBe(1);
-            expect((await dueOf(o1!.orderId))!.getTime()).toBe(t0.getTime() + MIN);
+            expect((await fin(o1!.orderId)).hold_check_attempts).toBe(0);
+            expect((await dueOf(o1!.orderId))!.getTime()).toBe(t0.getTime() + MIN - SLACK);
             // Cùng thời điểm: o1 đang hẹn → các đơn còn lại được xử lý (trước T-164: ném lại ở o1 mãi).
             const r = await expireHolds(container, { now: t0, breakerPolicy: POLICY });
             expect([...r.cancelled].sort()).toEqual(
@@ -906,6 +936,52 @@ medusaIntegrationTestRunner({
           });
           expect(r.cancelled).toEqual([o1!.orderId]);
           expect(await reserved(o1!.variant)).toBe(0);
+        });
+
+        it("lỗi trước pha chốt hủy (sau querydr chưa rõ) → backoff tăng số mũ; không hủy, không nhả hàng", async () => {
+          const o = await client.placeOrder([["Trắng/S", 1]], "vnpay");
+          const txn = await txnOf(o.orderId);
+          gateway.results.set(txn, R91);
+          const svc = service() as unknown as { openOpsException: (i: unknown) => Promise<boolean> };
+          const orig = svc.openOpsException;
+          svc.openOpsException = async () => {
+            throw new Error("lỗi giả lập khi mở ngoại lệ");
+          };
+          const t0 = future(16 * MIN);
+          try {
+            await expect(expireHolds(container, { now: t0, breakerPolicy: POLICY })).rejects.toThrow(
+              "lỗi giả lập khi mở ngoại lệ",
+            );
+          } finally {
+            svc.openOpsException = orig;
+          }
+          expect((await fin(o.orderId)).hold_check_attempts).toBe(1);
+          expect((await dueOf(o.orderId))!.getTime()).toBe(t0.getTime() + MIN - SLACK);
+          expect((await fin(o.orderId)).state).toBe("awaiting_payment");
+          expect(await reserved("Trắng/S")).toBe(1);
+        });
+
+        it("dung sai lịch: lượt kế tiếp bắt đầu sớm hơn 60 s vài trăm ms vẫn tới hạn (bước 1 phút không thành 2 phút)", async () => {
+          const o = await client.placeOrder([["Trắng/M", 1]], "vnpay");
+          const txn = await txnOf(o.orderId);
+          gateway.results.set(txn, R91);
+          const t0 = future(16 * MIN);
+          await expireHolds(container, { now: t0, breakerPolicy: POLICY });
+          // Cron "* * * * *": lượt sau có thể bắt đầu ở t0 + 59,6 s (lượt trước bắt đầu trễ 400 ms).
+          const r = await expireHolds(container, {
+            now: new Date(t0.getTime() + MIN - 400),
+            breakerPolicy: POLICY,
+          });
+          expect(r.unknown).toEqual([o.orderId]);
+          expect(callsOf(txn)).toBe(2);
+          // Nhưng không sớm hơn dung sai: t0 + 55 s − 1 ms của lượt kế tiếp chưa tới hạn.
+          const due = (await dueOf(o.orderId))!;
+          const now2 = new Date(t0.getTime() + MIN - 400);
+          expect(due.getTime()).toBe(now2.getTime() + 2 * MIN - SLACK);
+          expect(
+            (await expireHolds(container, { now: new Date(due.getTime() - 1), breakerPolicy: POLICY }))
+              .unknown,
+          ).toEqual([]);
         });
       });
     });

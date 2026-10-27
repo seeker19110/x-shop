@@ -6,7 +6,7 @@ import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import type { JobBreakerSnapshot, OutboxClaim } from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG } from "./config";
-import { HOLD_RECHECK_POLICY, holdRecheckDelayMs } from "./hold-recheck";
+import { HOLD_RECHECK_POLICY, holdRecheckAt, holdRecheckDelayMs } from "./hold-recheck";
 import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
@@ -83,6 +83,11 @@ export interface ExpireSummary {
    */
   deferred: string[];
   skipped: string[];
+  /**
+   * Sau lượt chạy: số đơn quá hạn còn `awaiting_payment` đã hỏi ≥ 1 lần mà chưa rõ (`hold_check_attempts` ≥ 1) — tồn
+   * đọng đang giữ hàng; ≥ `HOLD_RECHECK_POLICY.backlogWarnAt` → log WARN (T-164, RUNBOOK §1).
+   */
+  unknownBacklog: number;
 }
 
 /**
@@ -120,11 +125,20 @@ export async function expireHolds(
     limit?: number;
     /** Chính sách breaker (test tiêm ngưỡng nhỏ); mặc định `OUTBOX_BREAKER_POLICY`. */
     breakerPolicy?: OutboxBreakerPolicy;
+    /** Ngưỡng log WARN tồn đọng đơn chưa rõ (test tiêm); mặc định `HOLD_RECHECK_POLICY.backlogWarnAt`. */
+    backlogWarnAt?: number;
   } = {},
 ): Promise<ExpireSummary> {
   const now = opts.now ?? new Date();
   const s = service(container);
-  const summary: ExpireSummary = { cancelled: [], confirmed: [], unknown: [], deferred: [], skipped: [] };
+  const summary: ExpireSummary = {
+    cancelled: [],
+    confirmed: [],
+    unknown: [],
+    deferred: [],
+    skipped: [],
+    unknownBacklog: 0,
+  };
   const policy = opts.breakerPolicy ?? OUTBOX_BREAKER_POLICY;
   if (opts.breakerPolicy) assertBreakerPolicy(policy, OUTBOX_RUN_LIMITS);
   const log = logger(container);
@@ -145,6 +159,13 @@ export async function expireHolds(
     );
     summary[outcome === "busy" ? "skipped" : outcome].push(orderId);
   }
+  summary.unknownBacklog = await s.countUnknownHoldBacklog(now);
+  const warnAt = opts.backlogWarnAt ?? HOLD_RECHECK_POLICY.backlogWarnAt;
+  if (summary.unknownBacklog >= warnAt) {
+    log.warn(
+      `[expire-holds] ${summary.unknownBacklog} đơn quá hạn chưa rõ thanh toán đang giữ hàng (ngưỡng ${warnAt}) — xem RUNBOOK §1`,
+    );
+  }
   return summary;
 }
 
@@ -164,24 +185,39 @@ async function expireOneWithBackoff(
   try {
     outcome = await expireOne(container, orderId, now, breaker);
   } catch (e) {
-    // Lỗi khi hẹn (vd. DB đang hỏng) không được che lỗi gốc — chỉ log tên lỗi, ném lỗi gốc.
-    await scheduleRecheck(container, orderId, now, "backoff").catch((err: unknown) =>
+    // Lỗi ở pha chốt hủy (kết quả cổng đã rõ, hủy native đã xong) → thử lại sau 1 phút, không tăng số mũ; lỗi khác →
+    // backoff. Lỗi khi hẹn (vd. DB đang hỏng) không được che lỗi gốc — chỉ log tên lỗi, ném lỗi gốc.
+    const commit = e instanceof CancelCommitError;
+    const original = commit ? e.cause : e;
+    await scheduleRecheck(container, orderId, now, commit ? "retry" : "backoff").catch((err: unknown) =>
       logger(container).warn(
         `[expire-holds] Không hẹn kiểm lại được đơn ${orderId}: ${err instanceof Error ? err.name : "lỗi"}`,
       ),
     );
-    throw e;
+    throw original;
   }
   if (outcome === "unknown") await scheduleRecheck(container, orderId, now, "backoff");
-  else if (outcome === "deferred") await scheduleRecheck(container, orderId, now, "defer");
+  else if (outcome === "deferred") await scheduleRecheck(container, orderId, now, "retry");
   return outcome;
 }
 
+/** Lỗi ở pha chốt hủy của `expireOne` (sau `cancelNativeOrder`) — bọc để biết không cần tăng số mũ backoff. */
+class CancelCommitError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("cancel commit failed");
+    this.name = "CancelCommitError";
+  }
+}
+
+/**
+ * Hẹn kiểm lại (T-164): `backoff` → số mũ + 1, chờ `holdRecheckDelayMs`; `retry` (breaker hoãn / lỗi pha chốt hủy) →
+ * giữ số mũ, chờ 1 phút. Mốc = `now + delay − slack` (lib/checkout/hold-recheck.ts).
+ */
 async function scheduleRecheck(
   container: MedusaContainer,
   orderId: string,
   now: Date,
-  mode: "backoff" | "defer",
+  mode: "backoff" | "retry",
 ): Promise<void> {
   const s = service(container);
   const [fin] = await s.listOrderFinances({ order_id: orderId });
@@ -190,7 +226,7 @@ async function scheduleRecheck(
   const attempts = mode === "backoff" ? from + 1 : from;
   const delay = mode === "backoff" ? holdRecheckDelayMs(attempts) : HOLD_RECHECK_POLICY.deferMs;
   await s.scheduleHoldRecheck(orderId, {
-    next_check_at: new Date(now.getTime() + delay),
+    next_check_at: holdRecheckAt(now, delay),
     fromAttempts: from,
     attempts,
   });
@@ -283,7 +319,11 @@ async function expireOne(
   // not_paid | failed | skipped (không còn attempt mở) → hủy. Native trước (idempotent), rồi chốt trạng thái module:
   // chết giữa chừng thì lần chạy sau thấy đơn vẫn awaiting_payment và làm lại an toàn.
   await cancelNativeOrder(container, orderId);
-  return (await s.cancelExpiredOrder(orderId, "HOLD_EXPIRED")) ? "cancelled" : "skipped";
+  try {
+    return (await s.cancelExpiredOrder(orderId, "HOLD_EXPIRED")) ? "cancelled" : "skipped";
+  } catch (e) {
+    throw new CancelCommitError(e);
+  }
 }
 
 /* ---------------------------------------------------------------- reconcile-attempts */

@@ -1,4 +1,4 @@
-import { HOLD_RECHECK_POLICY, holdRecheckDelayMs } from "../hold-recheck";
+import { HOLD_RECHECK_POLICY, holdRecheckAt, holdRecheckDelayMs } from "../hold-recheck";
 
 const MIN = 60_000;
 
@@ -22,5 +22,21 @@ describe("holdRecheckDelayMs (T-164 — backoff kiểm lại đơn quá hạn ch
   it("chính sách tiêm được; luôn là số nguyên ms an toàn", () => {
     expect(holdRecheckDelayMs(3, { baseMs: 1_000, maxMs: 3_000 })).toBe(3_000);
     for (let n = 1; n < 100; n++) expect(Number.isSafeInteger(holdRecheckDelayMs(n))).toBe(true);
+  });
+});
+
+describe("holdRecheckAt (dung sai lịch)", () => {
+  const now = new Date("2026-10-27T23:59:30.000Z");
+  it("mốc = now + delay − 5 s (qua nửa đêm UTC vẫn đúng mốc tuyệt đối)", () => {
+    expect(holdRecheckAt(now, MIN).toISOString()).toBe("2026-10-28T00:00:25.000Z");
+    expect(holdRecheckAt(now, 60 * MIN).getTime() - now.getTime()).toBe(60 * MIN - 5_000);
+  });
+  it("delay ≤ dung sai → vẫn sau now ít nhất 1 ms (không hẹn vào quá khứ)", () => {
+    expect(holdRecheckAt(now, 0).getTime()).toBe(now.getTime() + 1);
+    expect(holdRecheckAt(now, 5_000).getTime()).toBe(now.getTime() + 1);
+  });
+  it("chính sách mặc định: delay nhỏ nhất (base, defer) lớn hơn dung sai", () => {
+    expect(HOLD_RECHECK_POLICY.baseMs).toBeGreaterThan(HOLD_RECHECK_POLICY.slackMs);
+    expect(HOLD_RECHECK_POLICY.deferMs).toBeGreaterThan(HOLD_RECHECK_POLICY.slackMs);
   });
 });

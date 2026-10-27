@@ -11,9 +11,25 @@ export const HOLD_RECHECK_POLICY = {
   baseMs: 60_000,
   /** Trần: đơn chưa rõ lâu vẫn được hỏi ít nhất mỗi giờ (IPN đến lúc nào cũng xử lý ngay, không chờ mốc này). */
   maxMs: 60 * 60_000,
-  /** Đơn bị breaker hoãn: xếp lại cuối hàng, xét lại sau 1 phút. */
+  /** Đơn bị breaker hoãn / lỗi ở pha chốt hủy: xét lại sau 1 phút, không tăng số mũ. */
   deferMs: 60_000,
+  /**
+   * Dung sai lịch: hẹn sớm hơn `slackMs` so với `now + delay`. Lượt kế tiếp của cron 1 phút có thể bắt đầu sớm hơn vài
+   * trăm ms so với 60 s sau lượt trước (`now` lấy lúc bắt đầu lượt) — không trừ thì bước 1 phút thành 2 phút.
+   */
+  slackMs: 5_000,
+  /** Số đơn quá hạn chưa rõ (đã hỏi ≥ 1 lần, còn chờ) từ mức này → log WARN mỗi lượt (RUNBOOK §1). */
+  backlogWarnAt: 50,
 } as const;
+
+/** Mốc kiểm lại: `now + delay − slackMs` (delay > slack theo chính sách nên luôn sau `now`). */
+export function holdRecheckAt(
+  now: Date,
+  delayMs: number,
+  policy: { slackMs: number } = HOLD_RECHECK_POLICY,
+): Date {
+  return new Date(now.getTime() + Math.max(delayMs - policy.slackMs, 1));
+}
 
 /**
  * Khoảng chờ trước lần kiểm thứ `attempt + 1` sau `attempt` lần chưa rõ/lỗi liên tiếp (attempt ≥ 1; < 1 hoặc không
