@@ -105,6 +105,56 @@ test("extractUpSql: import lạ, knex, addSql không phải chuỗi, up() ném l
   for (const [code, re] of bad) assert.match((await extractUpSql(code)).error ?? "", re);
 });
 
+test("extractUpSql: dò môi trường (I2 typeof process, I8 globalThis.setTimeout, nuốt lỗi bằng try/catch) → error", async () => {
+  const cases = [
+    `    if (typeof process !== "undefined") this.addSql(\`alter table "x" drop column "col";\`);\n    else this.addSql(\`select 1;\`);`,
+    `    const real = typeof (globalThis as any).setTimeout === "function";\n    this.addSql(real ? \`drop table "x";\` : \`select 1;\`);`,
+    `    let real = false;\n    try { real = typeof Buffer === "function"; } catch { real = false; }\n    this.addSql(real ? \`drop table "x";\` : \`select 1;\`);`,
+    `    if (process.env.PURGE === "1") this.addSql(\`alter table "x" drop column "col";\`);`,
+  ];
+  for (const up of cases)
+    assert.match((await extractUpSql(src(up))).error ?? "", /đọc global môi trường/, up);
+  // dò ở cấp module (ngoài up) cũng bị bắt
+  const top = src(adds("select 1;"), { head: "const REAL = typeof console;" });
+  assert.match((await extractUpSql(top)).error ?? "", /`console`/);
+  assert.deepEqual(await errRules(src(cases[0])), ["unanalyzable"]);
+});
+
+test("extractUpSql: vòng lặp vô hạn (đồng bộ hay sau await) → error trong vài giây, không treo", async () => {
+  for (const up of ["    while (true) {}", "    await Promise.resolve();\n    for (;;) {}"]) {
+    const t0 = Date.now();
+    assert.match((await extractUpSql(src(up), "m.ts", { timeoutMs: 500 })).error ?? "", /quá 500 ms/);
+    assert.ok(Date.now() - t0 < 3000);
+  }
+  // hẹn giờ mặc định (3 s) — đúng ca I7 qua CLI không treo
+  assert.match((await extractUpSql(src("    while (true) {}"))).error ?? "", /quá 3000 ms/);
+  // up() chờ promise không bao giờ xong → worker hết việc, thoát không kết quả
+  assert.match((await extractUpSql(src("    await new Promise(() => {});"))).error ?? "", /không xong/);
+});
+
+test("extractUpSql: export hai class migration (N3) → error", async () => {
+  const two = `${src(adds("select 1;"))}\nexport class Migration20990101000001 extends Migration {\n  override async up(): Promise<void> {}\n}\n`;
+  assert.match((await extractUpSql(two)).error ?? "", /đúng một class .* \(thấy 2\)/);
+  assert.deepEqual(await errRules(two), ["unanalyzable"]);
+});
+
+test("extractUpSql: bind/alias addSql, await, class trung gian vẫn lấy đúng SQL (I1, I4, I5)", async () => {
+  const r = await extractUpSql(`import { Migration } from "@medusajs/framework/mikro-orm/migrations";
+const later = async () => \`truncate "y";\`;
+abstract class Base extends Migration {
+  protected drop(t: string, c: string) { this.addSql(\`alter table "\${t}" drop column "\${c}";\`); }
+}
+export class Migration20990101000000 extends Base {
+  override async up(): Promise<void> {
+    const a = this.addSql.bind(this);
+    a(\`drop table "z";\`);
+    this.addSql(await later());
+    this.drop("x", "col");
+  }
+}`);
+  assert.deepEqual(r, { sql: ['drop table "z";', 'truncate "y";', 'alter table "x" drop column "col";'] });
+});
+
 /* --------------------------------------------------------------- từng luật (SQL) ------------------------------- */
 
 test("drop-table: bảng có trên base hoặc chưa tạo TRƯỚC đó trong file; miễn bảng mới tạo trước đó", () => {

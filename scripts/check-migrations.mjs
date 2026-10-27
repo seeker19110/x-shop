@@ -15,7 +15,12 @@
 //    class `Migration` giả có `addSql` ghi lại chuỗi — nên nối `+`, `${…}`, `.map().join()`, hằng/hàm phụ đều thấy đúng
 //    SQL; `down()` không chạy. Không phân tích được → đỏ (luật `unanalyzable`): import khác
 //    "@medusajs/framework/mikro-orm/migrations", knex/`getKnex()`/`execute()`, `addSql` nhận giá trị không phải chuỗi,
-//    `up()` ném lỗi; `dynamic-sql`: PL/pgSQL `execute …`/`format('<DDL>…')` (SQL dựng lúc chạy trong DB).
+//    `up()` ném lỗi, đọc global môi trường (`process`, `setTimeout`, `Buffer`, `console`… — chặn rẽ nhánh "đang chạy thật
+//    hay trong bộ kiểm", kể cả qua `typeof`/`globalThis.x`/try-catch), export ≠ 1 class Migration, chạy quá 3 s (vòng lặp
+//    vô hạn — chạy trong worker_threads riêng, quá giờ thì terminate) hay chờ mãi; `dynamic-sql`: PL/pgSQL
+//    `execute …`/`format('<DDL>…')` (SQL dựng lúc chạy trong DB).
+//    `node:vm` KHÔNG cô lập (mã thoát ra tiến trình được, vd `this.addSql.constructor("return process")()`): migration là
+//    mã của repo, cùng mức tin cậy với jest/`medusa db:migrate` trong CI — vm chỉ để lấy SQL, không để chạy mã lạ.
 //    Schema N−1 = bảng/cột/tên ràng buộc & index do các migration trên ref gốc tạo (chạy `up()` của chúng cùng cách).
 //    Luật (theo THỨ TỰ câu lệnh trong `up()`):
 //      drop-table · drop-column · rename-table (kể cả SET SCHEMA) · rename-column · alter-column-type · set-not-null ·
@@ -49,6 +54,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
+import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
 
 const MODULES_DIR = "apps/backend/src/modules";
 export const MIGRATION_FILE =
@@ -170,14 +176,112 @@ class FakeMigration {
   }
 }
 
-const withTimeout = (p, ms) =>
-  Promise.race([
-    p,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`up() quá ${ms} ms`)), ms).unref()),
-  ]);
+/**
+ * Global của Node/web mà mã migration có thể dùng để dò "đang chạy thật hay trong bộ kiểm" rồi rẽ nhánh. Trong context
+ * kiểm, mỗi tên là getter: đọc (kể cả `typeof x`, `globalThis.x`) → ghi nhận rồi ném `unanalyzable` — mã tự `try/catch`
+ * nuốt lỗi thì lần đọc vẫn đã bị ghi nhận nên vẫn đỏ. Mã do `typescript` transpile (CommonJS, ES2022) không dùng tên nào
+ * trong số này (không có helper `__awaiter`); `exports`/`require`/`module` đi qua tham số của hàm bọc.
+ */
+const ENV_GLOBALS = [
+  "process",
+  "Buffer",
+  "global",
+  "console",
+  "require",
+  "module",
+  "exports",
+  "__filename",
+  "__dirname",
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "clearTimeout",
+  "clearInterval",
+  "clearImmediate",
+  "queueMicrotask",
+  "structuredClone",
+  "fetch",
+  "performance",
+  "navigator",
+  "crypto",
+  "TextEncoder",
+  "TextDecoder",
+  "URL",
+  "URLSearchParams",
+  "AbortController",
+  "AbortSignal",
+  "Event",
+  "EventTarget",
+  "MessageChannel",
+  "Blob",
+  "atob",
+  "btoa",
+];
+const RUN_MS = 3000;
+const WORKER_KIND = "check-migrations:extract";
+const envError = (name) =>
+  `up() đọc global môi trường \`${name}\` — rẽ nhánh theo môi trường không phân tích được`;
 
-/** Chạy `up()` của migration (mã TS) với Migration giả. Trả { sql: string[] } hoặc { error }. */
-export async function extractUpSql(src, fileName = "migration.ts") {
+/**
+ * Chạy mã JS (CommonJS) của một migration trong `node:vm` với Migration giả; chạy TRONG worker (xem extractUpSql).
+ * Global môi trường là getter ném lỗi (ENV_GLOBALS); `exports`/`require`/`module` đi qua tham số của hàm bọc.
+ */
+async function runMigrationJs(code, fileName) {
+  const probed = [];
+  const key = `__xm_${randomBytes(6).toString("hex")}`;
+  const mod = { exports: {} };
+  const io = {
+    exports: mod.exports,
+    module: mod,
+    require: (id) => {
+      if (id === MIGRATION_MODULE) return { Migration: FakeMigration };
+      throw new Unanalyzable(`import "${id}" — migration chỉ được import "${MIGRATION_MODULE}"`);
+    },
+  };
+  const sandbox = { [key]: io };
+  for (const name of ENV_GLOBALS)
+    Object.defineProperty(sandbox, name, {
+      get() {
+        probed.push(name);
+        throw new Unanalyzable(envError(name));
+      },
+    });
+  const ctx = vm.createContext(sandbox);
+  try {
+    vm.runInContext(
+      `(function (exports, require, module) {\n${code}\n}).call(undefined, ${key}.exports, ${key}.require, ${key}.module);`,
+      ctx,
+      { filename: fileName },
+    );
+    const classes = Object.values(mod.exports).filter(
+      (v) => typeof v === "function" && v.prototype instanceof FakeMigration,
+    );
+    if (probed.length) return { error: envError(probed[0]) };
+    if (classes.length !== 1)
+      return { error: `cần đúng một class \`extends Migration\` được export (thấy ${classes.length})` };
+    const inst = new classes[0]();
+    if (typeof inst.up !== "function") return { error: "không tìm thấy `up()`" };
+    await inst.up();
+    if (probed.length) return { error: envError(probed[0]) };
+    return { sql: [...inst.__sql] };
+  } catch (e) {
+    if (probed.length) return { error: envError(probed[0]) };
+    if (e instanceof Unanalyzable) return { error: e.message };
+    return { error: `up() lỗi khi trích SQL: ${e?.message ?? e}` };
+  }
+}
+
+/**
+ * Chạy `up()` của migration (mã TS) với Migration giả. Trả { sql: string[] } hoặc { error }.
+ * Transpile ở luồng chính (nạp `typescript` một lần); chạy mã trong một `worker_threads` riêng có hẹn giờ `timeoutMs`:
+ * vòng lặp vô hạn (đồng bộ hay sau `await`) → `terminate()` → `unanalyzable`, không treo bộ kiểm. (Hẹn giờ của
+ * `vm.runInContext` + `microtaskMode: "afterEvaluate"` làm Node 22 abort trong node:test — assert async_id — nên không
+ * dùng.) `up()` chờ thứ không bao giờ xong → worker hết việc và thoát không trả kết quả → cũng `unanalyzable`.
+ * `node:vm` KHÔNG phải ranh giới bảo mật và worker dùng chung tiến trình: mã thoát ra được (vd
+ * `this.addSql.constructor("return process")()` — ca I6 của review). Migration là mã của repo, cùng mức tin cậy với
+ * jest/`medusa db:migrate` chạy trong CI; vm ở đây chỉ để lấy SQL và chặn rẽ nhánh theo môi trường.
+ */
+export async function extractUpSql(src, fileName = "migration.ts", { timeoutMs = RUN_MS } = {}) {
   const ts = typescript();
   let code;
   try {
@@ -188,29 +292,36 @@ export async function extractUpSql(src, fileName = "migration.ts") {
   } catch (e) {
     return { error: `không transpile được: ${e.message}` };
   }
-  const mod = { exports: {} };
-  const req = (id) => {
-    if (id === MIGRATION_MODULE) return { Migration: FakeMigration };
-    throw new Unanalyzable(`import "${id}" — migration chỉ được import "${MIGRATION_MODULE}"`);
-  };
-  try {
-    vm.runInNewContext(
-      code,
-      { module: mod, exports: mod.exports, require: req },
-      { filename: fileName, timeout: 2000 },
+  return new Promise((resolve) => {
+    const worker = new Worker(new URL(import.meta.url), {
+      workerData: { kind: WORKER_KIND, code, fileName },
+    });
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker
+        .terminate()
+        .catch((e) =>
+          console.error(`check-migrations: không dừng được worker trích SQL (${fileName}): ${e.message}`),
+        );
+      resolve(result);
+    };
+    const timer = setTimeout(
+      () => done({ error: `up() chạy quá ${timeoutMs} ms (vòng lặp vô hạn?) — không phân tích được` }),
+      timeoutMs,
     );
-    const classes = Object.values(mod.exports).filter(
-      (v) => typeof v === "function" && v.prototype instanceof FakeMigration,
+    worker.once("message", done);
+    worker.once("error", (e) => done({ error: `up() lỗi khi trích SQL: ${e?.message ?? e}` }));
+    worker.once("exit", () =>
+      done({ error: "up() không xong trong bộ kiểm (chờ thứ ngoài migration) — không phân tích được" }),
     );
-    if (classes.length !== 1)
-      return { error: `cần đúng một class \`extends Migration\` được export (thấy ${classes.length})` };
-    const inst = new classes[0]();
-    if (typeof inst.up !== "function") return { error: "không tìm thấy `up()`" };
-    await withTimeout(Promise.resolve(inst.up()), 5000);
-    return { sql: [...inst.__sql] };
-  } catch (e) {
-    return { error: e instanceof Unanalyzable ? e.message : `up() lỗi khi trích SQL: ${e.message}` };
-  }
+  });
+}
+
+if (!isMainThread && workerData?.kind === WORKER_KIND) {
+  runMigrationJs(workerData.code, workerData.fileName).then((r) => parentPort.postMessage(r));
 }
 
 /** Nội dung mọi chú thích TS của file (AST — chuỗi, template, regex không tính). */
@@ -941,6 +1052,6 @@ export async function main(
   return opts.drift ? checkDrift(root, opts) : checkStatic(root, opts);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainThread && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().then((code) => process.exit(code));
 }

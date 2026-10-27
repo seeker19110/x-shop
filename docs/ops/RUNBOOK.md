@@ -214,7 +214,9 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   bằng `cd apps/backend && npx medusa db:rollback --modules <module>` (hoàn lại lô migration cuối của module; `down()` giữ dữ liệu — xem ghi
   chú trong từng file ở `apps/backend/src/modules/*/migrations/`). Ngược lại → sửa tiến (bản vá) thay vì lùi. Không sửa migration đã áp.
   CI cưỡng chế (T-102, `scripts/check-migrations.mjs`): `pnpm check:migrations` — migration đã có trên nhánh đích giữ nguyên byte;
-  migration mới (SQL thật lấy bằng cách chạy `up()` với `addSql` giả, so với schema do các migration trên nhánh đích tạo) không DROP
+  migration mới (SQL thật lấy bằng cách chạy `up()` với `addSql` giả trong `node:vm` — KHÔNG cô lập, migration là mã repo cùng mức
+  tin cậy với jest trong CI; rẽ nhánh theo môi trường, import lạ, knex, vòng lặp vô hạn → đỏ; so với schema do các migration trên
+  nhánh đích tạo) không DROP
   TABLE/COLUMN, RENAME/SET SCHEMA, đổi kiểu, SET NOT NULL, thêm cột NOT NULL không DEFAULT, TRUNCATE, DELETE không WHERE, drop
   index/ràng buộc đã phát hành mà không tạo lại, trong `up()` — trừ khi file có chú thích
   `// @migration-contract: <lý do, nêu MigrationYYYYMMDDHHMMSS expand>`; SET NOT NULL đi đường `CHECK … NOT VALID` → `VALIDATE` →
