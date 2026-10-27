@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
-import { createCustomerAccountWorkflow } from "@medusajs/medusa/core-flows";
+import { createCustomerAccountWorkflow, createPromotionsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { listWards, vnpay } from "@x-shop/domain";
 import Redis from "ioredis";
@@ -719,6 +719,259 @@ medusaIntegrationTestRunner({
           mutableConfig.replayWaitMs = oldWait;
           slowBeforeFinalize.delete(cartId);
         }
+      });
+    });
+
+    describe("T-134 — ảnh chụp khuyến mãi trong đơn (D-061)", () => {
+      const promotions = () => container.resolve(Modules.PROMOTION);
+
+      /** Mã `standard` thủ công; trả id khuyến mãi. */
+      async function createPromo(
+        code: string,
+        method: {
+          type: "percentage" | "fixed";
+          target_type: "order" | "shipping_methods";
+          value: number;
+        },
+        extra: { limit?: number; campaign_id?: string } = {},
+      ): Promise<string> {
+        const { result } = await createPromotionsWorkflow(container).run({
+          input: {
+            promotionsData: [
+              {
+                code,
+                type: "standard",
+                status: "active",
+                is_automatic: false,
+                ...extra,
+                application_method: { ...method, allocation: "across", currency_code: "vnd" },
+              },
+            ],
+          },
+        });
+        return result[0]!.id;
+      }
+
+      const finOf = async (orderId: string) => {
+        const [fin] = await service().listOrderFinances({ order_id: orderId });
+        return fin!;
+      };
+      const quoteOf = async (orderId: string) =>
+        (await finOf(orderId)).quote as {
+          total: number;
+          orderDiscountTotal: number;
+          shippingDiscountTotal: number;
+          orderPromotion?: Record<string, unknown> | null;
+          shippingPromotion?: Record<string, unknown> | null;
+        };
+      const accessOf = (res: Res) => (res.data as unknown as { order_access: string }).order_access;
+
+      /** Mọi thứ đơn và đối soát đọc: order_finance, xem đơn của khách, số tiền thu (payment_attempt), đơn native. */
+      async function orderState(orderId: string, displayRef: string, access: string) {
+        const fin = await finOf(orderId);
+        const view = await api.get(`/store/x/orders/${displayRef}`, cfg({ "x-order-access": access }));
+        expect(view.status).toBe(200);
+        const payments = await service().listPaymentAttempts({ order_id: orderId });
+        const native = await container.resolve(Modules.ORDER).retrieveOrder(orderId);
+        return {
+          quote: fin.quote,
+          total: Number(fin.total),
+          view: view.data,
+          payment_amounts: payments.map((p) => Number(p.amount)),
+          native_total: Number(native.total),
+        };
+      }
+
+      it("đặt đơn chụp loại + giá trị + điều kiện + phạm vi + mã + id; sửa, tắt rồi xoá mã sau khi đặt → đơn và đối soát không đổi", async () => {
+        const promoId = await createPromo(
+          "GIAM10",
+          { type: "percentage", target_type: "order", value: 10 },
+          { limit: 5 },
+        );
+        const cartId = await createCart([["Đen/M", 2]]);
+        const q = await quoteOk(cartId, { payment_method: "vnpay", discount_code: "giam10" });
+        expect(q).toMatchObject({ subtotal: 1_400_000, discount_total: 140_000, total: 1_290_000 });
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(200);
+        const orderId = res.data.order.id;
+
+        const snap = await quoteOf(orderId);
+        expect(snap.orderPromotion).toEqual({
+          promotionId: promoId,
+          code: "GIAM10",
+          scope: "order",
+          kind: "percent",
+          basisPoints: 1000,
+          amount: null,
+          minSubtotal: null,
+          maxAmount: null,
+          discountTotal: 140_000,
+        });
+        expect(snap.shippingPromotion).toBeNull();
+        const before = await orderState(orderId, res.data.order.display_ref, accessOf(res));
+        expect(before.payment_amounts).toEqual([1_290_000]);
+        expect(before.native_total).toBe(1_290_000);
+
+        // Sửa giá trị + hạn mức: thay đổi có hiệu lực thật với báo giá mới…
+        await promotions().updatePromotions({
+          id: promoId,
+          limit: 100,
+          application_method: { value: 50 },
+        });
+        const other = await quoteOk(await createCart([["Đen/M", 2]]), { discount_code: "GIAM10" });
+        expect(other.discount_total).toBe(700_000);
+        // …nhưng đơn đã đặt giữ nguyên.
+        expect(await orderState(orderId, res.data.order.display_ref, accessOf(res))).toEqual(before);
+
+        await promotions().updatePromotions({ id: promoId, status: "inactive" });
+        expect(await orderState(orderId, res.data.order.display_ref, accessOf(res))).toEqual(before);
+
+        await promotions().deletePromotions(promoId);
+        expect(await promotions().listPromotions({ id: promoId })).toHaveLength(0);
+        expect(await orderState(orderId, res.data.order.display_ref, accessOf(res))).toEqual(before);
+        expect((await quoteOf(orderId)).orderPromotion).toMatchObject({
+          basisPoints: 1000,
+          promotionId: promoId,
+        });
+      });
+
+      it("ca biên: giảm 0, giảm vượt tiền hàng, miễn phí ship → ảnh chụp đúng, tổng không âm, đơn khớp quote", async () => {
+        // Medusa không cho mã phần trăm 0 % (giá trị phải trong (0, 100]) → giảm 0 qua mã cố định 0 đồng.
+        await createPromo("GIAM0", { type: "fixed", target_type: "order", value: 0 });
+        const zeroCart = await createCart([["Đen/M", 1]]);
+        const zq = await quoteOk(zeroCart, { discount_code: "GIAM0" });
+        expect(zq).toMatchObject({ discount_total: 0, total: 730_000 });
+        const zero = await submit(submitBody(zq));
+        expect(zero.status).toBe(200);
+        expect((await quoteOf(zero.data.order.id)).orderPromotion).toMatchObject({
+          code: "GIAM0",
+          kind: "fixed",
+          amount: 0,
+          discountTotal: 0,
+        });
+
+        await createPromo("TO", { type: "fixed", target_type: "order", value: 5_000_000 });
+        const bigCart = await createCart([["Trắng/S", 1]]);
+        const bq = await quoteOk(bigCart, { discount_code: "TO" });
+        expect(bq).toMatchObject({ subtotal: 300_000, discount_total: 300_000, total: 30_000 });
+        const big = await submit(submitBody(bq));
+        expect(big.status).toBe(200);
+        expect(big.data.order.total).toBe(30_000);
+        const bigSnap = await quoteOf(big.data.order.id);
+        expect(bigSnap.orderPromotion).toMatchObject({
+          kind: "fixed",
+          amount: 5_000_000,
+          basisPoints: null,
+          discountTotal: 300_000,
+        });
+        expect(bigSnap.total).toBe(30_000);
+
+        const freeId = await createPromo("FREESHIP", {
+          type: "percentage",
+          target_type: "shipping_methods",
+          value: 100,
+        });
+        const shipCart = await createCart([["Trắng/M", 1]]);
+        const sq = await quoteOk(shipCart, { discount_code: "FREESHIP" });
+        expect(sq).toMatchObject({ discount_total: 0, total: 300_000 });
+        const ship = await submit(submitBody(sq));
+        expect(ship.status).toBe(200);
+        const shipSnap = await quoteOf(ship.data.order.id);
+        expect(shipSnap.orderPromotion).toBeNull();
+        expect(shipSnap.shippingPromotion).toEqual({
+          promotionId: freeId,
+          code: "FREESHIP",
+          scope: "shipping",
+          kind: "free",
+          basisPoints: null,
+          amount: null,
+          minSubtotal: null,
+          maxAmount: null,
+          discountTotal: 30_000,
+        });
+      });
+
+      it("mã hết hạn giữa quote và submit → 422 DISCOUNT_NOT_APPLICABLE, không đơn, không giữ lượt", async () => {
+        const now = Date.now();
+        const campaign = await promotions().createCampaigns({
+          name: "Tuần lễ",
+          campaign_identifier: `tuan-le-${randomUUID()}`,
+          starts_at: new Date(now - 3600_000),
+          ends_at: new Date(now + 3600_000),
+        });
+        await createPromo(
+          "HETHAN",
+          { type: "percentage", target_type: "order", value: 10 },
+          { campaign_id: campaign.id },
+        );
+        const cartId = await createCart([["Đen/S", 1]]);
+        const q = await quoteOk(cartId, { discount_code: "HETHAN" });
+        expect(q.discount_total).toBe(70_000);
+        await promotions().updateCampaigns({ id: campaign.id, ends_at: new Date(Date.now() - 1000) });
+
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(422);
+        expect(res.data).toMatchObject({ code: "DISCOUNT_NOT_APPLICABLE", field: "discount_code" });
+        expect(await countOrders(container)).toBe(0);
+        expect(await service().listCouponUsages({ promotion_code: "HETHAN" })).toHaveLength(0);
+      });
+
+      it("giá trị mã đổi giữa quote và submit → 409 DISCOUNT_CHANGED kèm quote mới; xác nhận thì đơn chụp điều khoản mới", async () => {
+        const promoId = await createPromo("DOI", { type: "percentage", target_type: "order", value: 10 });
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId, { discount_code: "DOI" });
+        expect(q.discount_total).toBe(70_000);
+        await promotions().updatePromotions({ id: promoId, application_method: { value: 20 } });
+
+        const changed = await submit(submitBody(q));
+        expect(changed.status).toBe(409);
+        expect(changed.data.code).toBe("DISCOUNT_CHANGED");
+        expect(changed.data.quote).toMatchObject({ discount_code: "DOI", discount_total: 140_000 });
+        expect(await countOrders(container)).toBe(0);
+
+        const ok = await submit(submitBody(changed.data.quote));
+        expect(ok.status).toBe(200);
+        expect((await quoteOf(ok.data.order.id)).orderPromotion).toMatchObject({
+          promotionId: promoId,
+          basisPoints: 2000,
+          discountTotal: 140_000,
+        });
+      });
+
+      it("đồng thời: hai tab submit trong lúc admin sửa mã → đúng một đơn, ảnh chụp khớp số tiền đã thu", async () => {
+        const promoId = await createPromo("HAITAB", { type: "percentage", target_type: "order", value: 10 });
+        const cartId = await createCart([["Đen/M", 2]]);
+        const q = await quoteOk(cartId, { payment_method: "vnpay", discount_code: "HAITAB" });
+        const [a, b] = await Promise.all([
+          submit(submitBody(q), newKey()),
+          submit(submitBody(q), newKey()),
+          promotions().updatePromotions({ id: promoId, application_method: { value: 30 } }),
+        ]);
+        // Hai tab cùng phiên bản giỏ → cùng một attempt, cùng kết cục.
+        expect(a!.status).toBe(b!.status);
+        let final = a!;
+        if (a!.status === 409) {
+          expect(a!.data.code).toBe("DISCOUNT_CHANGED");
+          expect(await countOrders(container)).toBe(0);
+          final = await submit(submitBody(a!.data.quote));
+        }
+        expect(final.status).toBe(200);
+        expect(await countOrders(container)).toBe(1);
+        const snap = await quoteOf(final.data.order.id);
+        const promo = snap.orderPromotion as {
+          basisPoints: number;
+          discountTotal: number;
+          promotionId: string;
+        };
+        expect(promo.promotionId).toBe(promoId);
+        expect([1000, 3000]).toContain(promo.basisPoints);
+        // Không trộn điều khoản: số giảm = đúng % đã chụp của 1 400 000; tiền thu = tổng quote.
+        expect(promo.discountTotal).toBe((1_400_000 * promo.basisPoints) / 10_000);
+        expect(snap.orderDiscountTotal).toBe(promo.discountTotal);
+        const payments = await service().listPaymentAttempts({ order_id: final.data.order.id });
+        expect(payments.map((p) => Number(p.amount))).toEqual([snap.total]);
+        const usage = await service().listCouponUsages({ promotion_code: "HAITAB" });
+        expect(usage.filter((u) => u.state === "held")).toHaveLength(1);
       });
     });
 

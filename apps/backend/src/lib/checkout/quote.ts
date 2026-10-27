@@ -20,6 +20,8 @@ import { cartWeightGrams } from "./shipping";
  * Báo giá do server tính (S-001, PRICE01): giá HIỆN HÀNH đọc trực tiếp Pricing Module (không cache, không nhận giá từ
  * client, không dùng unit_price đã lưu trong giỏ), mã giảm đọc Promotion Module, phí ship báo từ GHN (`quoteShippingFee`,
  * có hạn, lưu cùng quote để submit dùng lại — `reusableShippingFee`); số học tiền nằm trọn trong `computeQuote` của domain.
+ * Breakdown mang ảnh chụp khuyến mãi (id, mã, loại, giá trị, điều kiện, phạm vi — `orderPromotion`/`shippingPromotion`,
+ * T-134): đơn và đối soát đọc ảnh chụp trong `order_finance.quote`, không đọc lại Promotion Module.
  */
 export interface LoadedDiscount {
   code: string;
@@ -153,17 +155,17 @@ export async function loadDiscount(
     if (am.type === "percentage") {
       const basisPoints = Math.round(value * 100);
       if (basisPoints > 10_000 || Math.abs(basisPoints - value * 100) > 1e-9) throw notApplicable();
-      return { ...base, orderDiscount: { code, kind: "percent", basisPoints } };
+      return { ...base, orderDiscount: { code, promotionId: p.id, kind: "percent", basisPoints } };
     }
     if (am.type === "fixed" && Number.isSafeInteger(value)) {
-      return { ...base, orderDiscount: { code, kind: "fixed", amount: value } };
+      return { ...base, orderDiscount: { code, promotionId: p.id, kind: "fixed", amount: value } };
     }
   }
   if (am.target_type === "shipping_methods") {
     if (am.type === "percentage" && value === 100)
-      return { ...base, shippingDiscount: { code, kind: "free" } };
+      return { ...base, shippingDiscount: { code, promotionId: p.id, kind: "free" } };
     if (am.type === "fixed" && Number.isSafeInteger(value)) {
-      return { ...base, shippingDiscount: { code, kind: "fixed", amount: value } };
+      return { ...base, shippingDiscount: { code, promotionId: p.id, kind: "fixed", amount: value } };
     }
   }
   throw notApplicable("Loại mã giảm giá này chưa được hỗ trợ");
