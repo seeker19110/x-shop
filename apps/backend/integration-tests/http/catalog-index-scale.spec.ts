@@ -169,6 +169,28 @@ medusaIntegrationTestRunner({
       expect((perProduct.rows[0] as { n: number }).n).toBe(PRODUCTS);
     });
 
+    it("T-140: rebuild ghi theo lô cố định — mỗi INSERT ≤ 500 dòng, số INSERT = ⌈dòng/500⌉ (chi phí mỗi câu không lớn theo catalog, xa statement_timeout)", async () => {
+      // Đo 50k SKU (docs/db/connections.md §5): câu dài nhất 60–71 ms (DELETE cả bảng), INSERT ≤ 45 ms/lô. Hàng rào:
+      // gộp ghi thành một câu cho cả catalog (chi phí tăng theo số SKU) sẽ làm đỏ ở đây trước khi chạm 30 s production.
+      const CHUNK_ROWS = 500;
+      const COLUMNS = 25;
+      const inserts: number[] = [];
+      const onQuery = (q: { sql?: string; bindings?: unknown[] }) => {
+        if (/^insert into "catalog_variant_index"/i.test(q.sql ?? ""))
+          inserts.push((q.bindings ?? []).length);
+      };
+      db.on("query", onQuery);
+      try {
+        const result = await rebuildCatalogIndex(container);
+        expect(result.rows).toBe(expectedTotal);
+      } finally {
+        db.removeListener("query", onQuery);
+      }
+      expect(inserts).toHaveLength(Math.ceil(expectedTotal / CHUNK_ROWS));
+      expect(Math.max(...inserts)).toBe(CHUNK_ROWS * COLUMNS);
+      expect(inserts.reduce((a, b) => a + b, 0)).toBe(expectedTotal * COLUMNS);
+    });
+
     it("đồng bộ theo lô lớn (mọi sản phẩm sinh một lần gọi) cũng đủ dòng", async () => {
       await db.raw(`DELETE FROM catalog_variant_index WHERE product_id LIKE 'prod_SCALE%'`);
       const error = jest.spyOn(logger, "error");
