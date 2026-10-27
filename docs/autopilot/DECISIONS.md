@@ -691,3 +691,17 @@
 - Chọn: Tính: giữ trần ghi DB khi bị dội; khi DB treo và > hạn mức lượt đang bay của một IP thì lượt sau 429, tự hết sau ≤ 2 cửa sổ
 - Lý do (tiêu chí chất lượng cuối): (1) không mở vector dội ghi DB; tác động chỉ khi DB treo — lúc đó handler cũng không xử lý được; giống limiter trong tiến trình cũ (300/10 s)
 - Đường lùi: Bỏ đếm ticket chưa có kết quả khỏi effective() trong LocalHitGuard
+
+### D-099 · 2026-10-27T12:26:37+00:00 · openOpsExceptionIfNoneActive không tự tuần tự hoá — race tạo trùng exception khi người gọi không giữ khoá
+
+- Phương án: (1) T-156 giữ khoá ở người gọi; tách T-158: tuần tự hoá trong helper bằng pg_advisory_xact_lock(hashtext(kind)) cho mọi người gọi · (2) Partial unique index (kind) where state active · (3) Giữ mỗi người gọi tự khoá
+- Chọn: T-156 giữ khoá ở người gọi; tách T-158: tuần tự hoá trong helper bằng pg_advisory_xact_lock(hashtext(kind)) cho mọi người gọi
+- Lý do (tiêu chí chất lượng cuối): (1) sửa gốc cho mọi người gọi ở một chỗ; (2) không cần migration làm lỗi khi dữ liệu đã trùng; lát riêng có test race
+- Đường lùi: Bỏ advisory lock trong helper, quay về khoá ở người gọi
+
+### D-100 · 2026-10-27T12:26:37+00:00 · T-141: phân quyền tải file private; 403 vs 404 cho người khác; PRIVATE_UPLOAD_DIR khi có S3
+
+- Phương án: (1) Theo vai trò settings.manage + MFA (chỉ owner xem thông báo xuất); giữ 403 đồng nhất (không lộ tồn tại); quyết PRIVATE_UPLOAD_DIR ở T-154 · (2) Bảng x_private_file gắn người xuất (migration, ảnh hưởng T-154); 404 cho người khác
+- Chọn: Theo vai trò settings.manage + MFA (chỉ owner xem thông báo xuất); giữ 403 đồng nhất (không lộ tồn tại); quyết PRIVATE_UPLOAD_DIR ở T-154
+- Lý do (tiêu chí chất lượng cuối): (1) chặt: chỉ owner có MFA tải file PII, phản hồi đồng nhất không lộ tồn tại; (3) không thêm bảng sở hữu khi File Module chưa có; catalog_manager không tải được xuất sản phẩm là thiếu UX chấp nhận được
+- Đường lùi: Thêm quyền theo loại file (catalog.read cho xuất sản phẩm) hoặc bảng x_private_file
