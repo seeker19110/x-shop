@@ -1,4 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
+import http from "node:http";
+import net from "node:net";
 import { join, relative, sep } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
@@ -11,6 +13,8 @@ import {
 } from "../../src/api/admin/x/permissions";
 import { NATIVE_ADMIN_ROUTES } from "../../src/lib/admin-security/native-permissions";
 import { resolveAdminRule } from "../../src/lib/admin-security/policy";
+import { installAccessLogServerHook, type HttpModuleLike } from "../../src/lib/log/http";
+import { createLogger } from "../../src/lib/log/logger";
 import { AUDIT_MODULE } from "../../src/modules/audit";
 import type AuditModuleService from "../../src/modules/audit/service";
 import { RBAC_MODULE } from "../../src/modules/rbac";
@@ -49,6 +53,47 @@ function scanRouteFiles(): { method: string; path: string; file: string }[] {
   };
   walk(ADMIN_X_DIR);
   return out;
+}
+
+/**
+ * T-145: cài hook server của `medusa start` (instrumentation.ts) lên `http.createServer` TRƯỚC khi runner dựng app — server
+ * test chạy đúng lớp chặn request-target như production. Gỡ ở afterAll (module `node:http` dùng chung giữa các file test).
+ */
+const httpModule = http as unknown as HttpModuleLike;
+const originalCreateServer = httpModule.createServer;
+const accessLog: string[] = [];
+installAccessLogServerHook(
+  createLogger({ service: "test", version: "0", env: "test", write: (l) => accessLog.push(l) }),
+  httpModule,
+);
+afterAll(() => {
+  httpModule.createServer = originalCreateServer;
+});
+
+/** Gửi request-target THÔ qua socket (axios/http.request luôn gửi origin-form). Đọc tới khi server đóng kết nối. */
+function rawRequest(port: number, target: string, headers: Record<string, string>) {
+  return new Promise<{ status: number; text: string; json: Record<string, unknown> }>((resolve, reject) => {
+    const head = Object.entries({ host: `localhost:${port}`, ...headers, connection: "close" })
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("\r\n");
+    const socket = net.connect(port, "127.0.0.1", () =>
+      socket.write(`GET ${target} HTTP/1.1\r\n${head}\r\n\r\n`),
+    );
+    const chunks: Buffer[] = [];
+    socket.on("data", (c: Buffer) => chunks.push(c));
+    socket.on("error", reject);
+    socket.on("close", () => {
+      const text = Buffer.concat(chunks).toString("utf8");
+      const body = text.slice(text.indexOf("\r\n\r\n") + 4);
+      let json: Record<string, unknown> = {};
+      try {
+        json = JSON.parse(body) as Record<string, unknown>;
+      } catch {
+        // thân không phải JSON (chunked/HTML) — test dựa vào `text`
+      }
+      resolve({ status: Number(/^HTTP\/1\.1 (\d{3})/.exec(text)?.[1] ?? 0), text, json });
+    });
+  });
 }
 
 medusaIntegrationTestRunner({
@@ -323,6 +368,106 @@ medusaIntegrationTestRunner({
         ]);
         await expect(grantOwner({ container, args: ["khong-co@x-shop.test"] })).rejects.toThrow();
         await expect(grantOwner({ container, args: [] })).rejects.toThrow();
+      });
+    });
+
+    describe("T-145: request-target dạng URL tuyệt đối / %xx không lách RBAC", () => {
+      const EMAIL = "khach-t145@example.test";
+      const PHONE = "0933222111";
+      let customerId: string;
+      let port: number;
+
+      beforeEach(async () => {
+        port = Number(
+          new URL(String((rawApi as unknown as { defaults: { baseURL: string } }).defaults.baseURL)).port,
+        );
+        const [customer] = await container
+          .resolve(Modules.CUSTOMER)
+          .createCustomers([{ email: EMAIL, phone: PHONE, first_name: "Khach", last_name: "T145" }]);
+        customerId = customer!.id;
+      });
+
+      const leaks = (text: string) => text.includes(EMAIL) || text.includes(PHONE);
+
+      it("support + `GET http://host/admin/customers/<id>` và `/admin/x/audit` → 400 trước Express, không lộ PII; mọi vai trò", async () => {
+        for (const target of [
+          `http://localhost:${port}/admin/customers/${customerId}`,
+          `HTTP://LOCALHOST:${port}/ADMIN/CUSTOMERS/${customerId}`,
+          `http://localhost:${port}/admin/x/audit`,
+          `http://localhost:${port}/admin/x/audit?limit=50`,
+        ]) {
+          for (const role of ["support", "owner"] as const) {
+            const res = await rawRequest(port, target, accounts[role].headers);
+            expect({ role, target, status: res.status, code: res.json.code }).toEqual({
+              role,
+              target,
+              status: 400,
+              code: "INVALID_REQUEST_TARGET",
+            });
+            expect(leaks(res.text)).toBe(false);
+          }
+        }
+        // Lớp server vẫn ghi log truy cập cho request bị chặn (không query, không PII).
+        const rejected = accessLog
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+          .filter((r) => r["http.response.status_code"] === 400 && /^https?:/i.test(String(r["url.path"])));
+        expect(rejected.length).toBeGreaterThanOrEqual(8);
+        expect(accessLog.join("\n")).not.toContain("limit=50");
+      });
+
+      it("luồng thường không đổi: support origin-form → 403 + audit; owner → 200 có dữ liệu khách", async () => {
+        const denied = await rawRequest(port, `/admin/customers/${customerId}`, accounts.support.headers);
+        expect({ status: denied.status, code: denied.json.code }).toEqual({ status: 403, code: "FORBIDDEN" });
+        expect(leaks(denied.text)).toBe(false);
+        expect((await rawRequest(port, "/admin/x/audit", accounts.support.headers)).status).toBe(403);
+        const ok = await call("GET", `/admin/customers/${customerId}`, accounts.owner.headers);
+        expect(ok.status).toBe(200);
+        expect((ok.data.customer as { email: string }).email).toBe(EMAIL);
+        expect((await call("GET", "/admin/x/audit", accounts.owner.headers)).status).toBe(200);
+      });
+
+      it("%61dmin, %63ustomers, `\\`+`#`, `//` không lách: support không bao giờ nhận 200/PII; lần từ chối có audit", async () => {
+        const variants: [string, number][] = [
+          [`/admin/%63ustomers/${customerId}`, 403],
+          [`/admin/%63%75%73%74%6F%6D%65%72%73/${customerId}`, 403],
+          [`/admin\\customers/${customerId}#x`, 403],
+          [`/ADMIN\\Customers/${customerId}#x`, 403],
+          [`/admin/customers/${customerId}%2F`, 403],
+          [`/admin/customers/%zz`, 400],
+          [`/%61dmin/customers/${customerId}`, 404],
+          [`//admin/customers/${customerId}`, 404],
+        ];
+        const actual = [];
+        for (const [target] of variants) {
+          const res = await rawRequest(port, target, accounts.support.headers);
+          actual.push({ target, status: res.status, leak: leaks(res.text) });
+        }
+        expect(actual).toEqual(variants.map(([target, status]) => ({ target, status, leak: false })));
+        const audit = container.resolve<AuditModuleService>(AUDIT_MODULE);
+        const { entries } = await audit.list(
+          { action: "rbac.denied", actor_id: accounts.support.userId },
+          { limit: 20, offset: 0 },
+        );
+        expect(entries.map((e) => e.resource_id)).toContain(
+          `GET /admin/customers/${customerId.toLowerCase()}`,
+        );
+      });
+
+      it("đồng thời: 20 request trộn (tuyệt đối/origin-form) song song → mỗi request đúng kết quả, không lộ PII", async () => {
+        const jobs = Array.from({ length: 20 }, (_, i) =>
+          i % 2 === 0
+            ? rawRequest(
+                port,
+                `http://localhost:${port}/admin/customers/${customerId}`,
+                accounts.support.headers,
+              )
+            : rawRequest(port, `/admin/customers/${customerId}`, accounts.support.headers),
+        );
+        const results = await Promise.all(jobs);
+        expect(results.map((r) => r.status)).toEqual(
+          Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? 400 : 403)),
+        );
+        expect(results.some((r) => leaks(r.text))).toBe(false);
       });
     });
   },

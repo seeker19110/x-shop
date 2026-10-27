@@ -10,7 +10,8 @@ import { installAccessLogServerHook } from "./src/lib/log/http";
  *  - handler lỗi cấp tiến trình (T-088, BASE-ERR-002): `unhandledRejection`/`uncaughtException` → log JSON một dòng + thoát
  *    mã 1;
  *  - tắt êm (T-094, BE-REL-004): SIGTERM → readiness 503 → chờ → chuyển cho handler của Medusa (đóng listener, chờ request/
- *    job dở, đóng pool Postgres/Redis, thoát 0) với trần cứng — src/lib/lifecycle/shutdown.ts.
+ *    job dở, đóng pool Postgres/Redis, thoát 0) với trần cứng — src/lib/lifecycle/shutdown.ts;
+ *  - hook server HTTP (T-090, T-145): log truy cập + từ chối request-target không bắt đầu bằng `/` — src/lib/log/http.ts.
  * Không cài trong test tích hợp (test runner không nạp file này) — Jest tự quản lỗi của nó.
  */
 export function register(): void {
@@ -20,6 +21,7 @@ export function register(): void {
   installGracefulShutdown(env.shutdown, {
     emitLog: (level, message, fields) => logger.emit(level, message, fields),
   });
-  // Log truy cập ở mức server HTTP (T-090) — gồm request bị middleware lõi từ chối sớm; src/lib/log/http.ts.
+  // Log truy cập ở mức server HTTP (T-090) — gồm request bị middleware lõi từ chối sớm — và chặn request-target không phải
+  // origin-form (URL tuyệt đối…) bằng 400 trước Express (T-145); src/lib/log/http.ts.
   installAccessLogServerHook(logger);
 }

@@ -284,6 +284,7 @@ describe("middleware requestLogContext", () => {
     const req = {
       method: "GET",
       originalUrl: url,
+      url,
       requestId,
       scope: { resolve: () => logger },
     };

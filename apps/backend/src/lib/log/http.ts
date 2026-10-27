@@ -13,9 +13,9 @@ import { isAppLogger, newSpanId, runWithLogContext, type AppLogger, type LogCont
  *    token/PII), cắt tối đa `MAX_PATH` ký tự, status, thời gian; không IP, không header, không thân. Bỏ qua probe sức khoẻ.
  *
  * Log truy cập gắn ở MỨC SERVER HTTP: `installAccessLogServerHook()` (instrumentation.ts — Medusa gọi `register()` TRƯỚC
- * `http.createServer` trong `medusa start`) bọc `http.createServer` để `server.prependListener("request")` theo dõi req/res
- * thô → ghi cả request bị middleware lõi Medusa từ chối sớm (401 Admin, thiếu publishable key, URL mã hoá hỏng). Mọi bước
- * bọc try/catch, không ném ra ngoài. Middleware `requestLogContext` khi đó chỉ đặt ngữ cảnh (không ghi trùng); không có
+ * `http.createServer` trong `medusa start`) bọc `http.createServer` và `emit` của server để theo dõi req/res thô TRƯỚC mọi
+ * listener → ghi cả request bị middleware lõi Medusa từ chối sớm (401 Admin, thiếu publishable key, URL mã hoá hỏng). Cùng
+ * chỗ đó chặn request-target không phải origin-form (T-145, 400 trước Express). Mọi bước bọc try/catch, không ném ra ngoài. Middleware `requestLogContext` khi đó chỉ đặt ngữ cảnh (không ghi trùng); không có
  * hook (test tích hợp dựng app không qua `medusa start`) thì middleware tự ghi log truy cập.
  *
  * KHÔNG dùng `traceRequestHandler` của `@medusajs/medusa/commands/start`: gán nó bật nhánh `findExpressRoutePath` của
@@ -100,17 +100,15 @@ export function requestLogContext(req: MedusaRequest, res: MedusaResponse, next:
   runWithLogContext(ctx, () => next());
 }
 
-interface ServerLike {
-  prependListener(event: "request", fn: (req: unknown, res: unknown) => void): unknown;
-}
 export interface HttpModuleLike {
   createServer: (...args: never[]) => unknown;
 }
 
-/** Theo dõi một request thô ở mức server (gọi trước mọi middleware). Không bao giờ ném. */
+/** Theo dõi một request thô ở mức server (gọi trước mọi middleware). Một lần cho mỗi request. Không bao giờ ném. */
 export function trackRawRequest(req: unknown, res: unknown, fallback: AppLogger): void {
   try {
     const marks = req as Record<symbol, unknown>;
+    if (marks[TRACKED] === true) return;
     const span_id = newSpanId();
     marks[SPAN] = span_id;
     marks[TRACKED] = true;
@@ -121,8 +119,95 @@ export function trackRawRequest(req: unknown, res: unknown, fallback: AppLogger)
 }
 
 /**
- * Bọc `http.createServer` (module `node:http` dùng chung — Medusa gọi `http.createServer` của cùng module) để mọi server
- * tạo sau đó có listener `request` đặt ĐẦU. Idempotent; trả `false` nếu đã cài.
+ * Request-target server chấp nhận (T-145): origin-form (`/…`) hoặc `OPTIONS *` (RFC 9112 §3.2). Dạng tuyệt đối
+ * (`http://host/admin/…`, chỉ dành cho proxy) và mọi dạng khác bị từ chối TRƯỚC Express — Express/Medusa định tuyến theo
+ * pathname đã parse nên request-target tuyệt đối từng lách được cổng RBAC/audit khớp chuỗi thô.
+ */
+export function isAcceptedRequestTarget(method: unknown, target: unknown): boolean {
+  if (typeof target !== "string") return false;
+  if (target.startsWith("/")) return true;
+  return target === "*" && typeof method === "string" && method.toUpperCase() === "OPTIONS";
+}
+
+interface RawReq {
+  method?: unknown;
+  url?: unknown;
+  headers?: Record<string, unknown>;
+  requestId?: unknown;
+}
+interface RawRes {
+  statusCode: number;
+  setHeader(name: string, value: string | number): unknown;
+  end(body?: string): unknown;
+  destroy?: () => unknown;
+}
+
+/** 400 problem+json cho request-target bị từ chối; mã tham chiếu theo `x-request-id` hợp lệ như Medusa. Không ném. */
+function rejectRequestTarget(req: RawReq, res: RawRes): void {
+  try {
+    const header = req.headers?.["x-request-id"];
+    if (req.requestId === undefined && typeof header === "string") req.requestId = header;
+    const body = JSON.stringify({
+      type: "about:blank",
+      title: "Request-target không hợp lệ: chỉ nhận đường dẫn bắt đầu bằng '/'",
+      status: 400,
+      code: "INVALID_REQUEST_TARGET",
+      errors: [],
+      trace_id: traceIdOf(req),
+    });
+    res.statusCode = 400;
+    res.setHeader("Content-Type", "application/problem+json; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Length", Buffer.byteLength(body));
+    res.end(body);
+  } catch {
+    try {
+      res.destroy?.();
+    } catch {
+      // không còn cách trả lời — bỏ qua, không làm sập tiến trình
+    }
+  }
+}
+
+/** Sự kiện server mang (req, res) mới tới listener ứng dụng (`checkContinue` thay `request` khi có listener riêng). */
+const REQUEST_EVENTS = new Set<unknown>(["request", "checkContinue"]);
+
+function shouldReject(req: unknown): boolean {
+  if (typeof req !== "object" || req === null) return false;
+  try {
+    const r = req as RawReq;
+    return !isAcceptedRequestTarget(r.method, r.url);
+  } catch {
+    return true; // req đọc không được (getter ném) — đóng an toàn: không chuyển cho ứng dụng
+  }
+}
+
+/**
+ * Bọc `emit` của server: MỌI listener `request` (Express app truyền vào `createServer`, kể cả listener gắn sau) chỉ được
+ * gọi khi request-target hợp lệ; request bị từ chối vẫn được ghi log truy cập rồi trả 400, listener gốc KHÔNG chạy.
+ * `upgrade`/`connect` không đi qua đây (Node chỉ phát `request` cho upgrade khi không có listener `upgrade`).
+ */
+function guardServerRequests(server: unknown, fallback: AppLogger): void {
+  const s = server as { emit?: unknown };
+  if (typeof s.emit !== "function") return;
+  const originalEmit = s.emit as (this: unknown, event: unknown, ...args: unknown[]) => boolean;
+  s.emit = function (this: unknown, event: unknown, ...args: unknown[]): boolean {
+    if (REQUEST_EVENTS.has(event)) {
+      const [req, res] = args;
+      trackRawRequest(req, res, fallback);
+      if (shouldReject(req)) {
+        rejectRequestTarget(req as RawReq, res as RawRes);
+        return true;
+      }
+    }
+    return originalEmit.call(this, event, ...args);
+  };
+}
+
+/**
+ * Bọc `http.createServer` (module `node:http` dùng chung — Medusa/Express gọi `http.createServer` của cùng module) để mọi
+ * server tạo sau đó: (1) theo dõi log truy cập TRƯỚC mọi middleware; (2) từ chối request-target không phải origin-form
+ * (T-145). Idempotent; trả `false` nếu đã cài. Mọi bước try/catch — lỗi trong hook không làm hỏng server.
  */
 export function installAccessLogServerHook(fallback: AppLogger, mod?: HttpModuleLike): boolean {
   try {
@@ -132,9 +217,9 @@ export function installAccessLogServerHook(fallback: AppLogger, mod?: HttpModule
     const wrapped = function (this: unknown, ...args: never[]): unknown {
       const server = original.apply(this, args);
       try {
-        (server as ServerLike).prependListener("request", (req, res) => trackRawRequest(req, res, fallback));
+        guardServerRequests(server, fallback);
       } catch {
-        // server lạ không có prependListener — bỏ qua log truy cập, server vẫn chạy
+        // server lạ — bỏ qua hook, server vẫn chạy
       }
       return server;
     };

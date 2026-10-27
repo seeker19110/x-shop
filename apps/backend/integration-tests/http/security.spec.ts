@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import http from "node:http";
+import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import seedXShop from "../../src/scripts/seed";
 import { API_CSP } from "../../src/lib/security/headers";
@@ -9,6 +10,8 @@ import { UPLOAD_LIMITS } from "../../src/lib/security/upload";
 import { ORDER_RATE_LIMITS } from "../../src/lib/orders/rate-limit";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
+import { AUDIT_MODULE } from "../../src/modules/audit";
+import type AuditModuleService from "../../src/modules/audit/service";
 import { createAdmin, storeHeaders, type AdminAccount } from "../helpers/auth";
 
 jest.setTimeout(300 * 1000);
@@ -687,6 +690,26 @@ medusaIntegrationTestRunner({
           );
           expect(notMultipart.status).toBe(415);
         });
+
+        it("T-145: request-target URL tuyệt đối không lách bước kiểm (server test không có hook của medusa start)", async () => {
+          const abs = await raw(
+            "POST",
+            `http://localhost:${base.port}/admin/uploads`,
+            { ...owner.headers, "content-type": "application/json" },
+            "{}",
+          );
+          expect(abs.status).toBe(415);
+          const presigned = await raw(
+            "POST",
+            `HTTP://LOCALHOST:${base.port}/admin/uploads/presigned-urls`,
+            { ...owner.headers, "content-type": "application/json" },
+            JSON.stringify({ originalname: "a.png", size: 10, mime_type: "image/png", access: "public" }),
+          );
+          expect({ status: presigned.status, code: presigned.json.code }).toEqual({
+            status: 403,
+            code: "UPLOAD_METHOD_DISABLED",
+          });
+        });
       });
 
       it("URL ký trước (client tải thẳng, không kiểm được nội dung) bị tắt → 403", async () => {
@@ -713,6 +736,46 @@ medusaIntegrationTestRunner({
           method: "DELETE",
           headers: owner.headers,
         });
+      });
+    });
+
+    describe("T-145: cổng RBAC theo pathname router thấy (phòng thủ chiều sâu — server test KHÔNG có hook chặn URL tuyệt đối)", () => {
+      const EMAIL = "khach-t145-sec@example.test";
+      const PHONE = "0987654321";
+
+      it("support + `GET http://host/admin/customers/<id>` → 403 + audit (trước: 200 lộ email/SĐT); owner vẫn đọc được", async () => {
+        const container = getContainer();
+        const [customer] = await container
+          .resolve(Modules.CUSTOMER)
+          .createCustomers([{ email: EMAIL, phone: PHONE, first_name: "Khach", last_name: "Sec" }]);
+        const support = await createAdmin(api as never, container, { roles: ["support"] });
+        const abs = `http://localhost:${base.port}/admin/customers/${customer!.id}`;
+        for (const target of [
+          abs,
+          `${abs}?fields=email,phone`,
+          `http://localhost:${base.port}/admin/x/audit`,
+        ]) {
+          const res = await raw("GET", target, support.headers);
+          expect({ target, status: res.status, code: res.json.code }).toEqual({
+            target,
+            status: 403,
+            code: "FORBIDDEN",
+          });
+          expect(res.body.includes(EMAIL) || res.body.includes(PHONE)).toBe(false);
+        }
+        const { entries } = await container
+          .resolve<AuditModuleService>(AUDIT_MODULE)
+          .list({ action: "rbac.denied", actor_id: support.userId }, { limit: 20, offset: 0 });
+        expect(entries.map((e) => e.resource_id)).toEqual(
+          expect.arrayContaining([
+            `GET /admin/customers/${customer!.id.toLowerCase()}`,
+            "GET /admin/x/audit",
+          ]),
+        );
+        // Mã hoá hỏng ở đường dẫn admin → 400 (không đoán quy tắc).
+        expect((await raw("GET", "/admin/customers/%E0%A4%A", support.headers)).json.code).toBe(
+          "INVALID_PATH",
+        );
       });
     });
   },

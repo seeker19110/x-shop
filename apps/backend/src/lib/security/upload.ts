@@ -1,6 +1,7 @@
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { normalizeAdminPath } from "../admin-security/route-match";
 import { sendProblem } from "../http/problem";
+import { INVALID_PATH, requestPath } from "../http/request-path";
 
 /**
  * Kiểm upload ảnh của Admin (`POST /admin/uploads`, multer của Medusa giữ file trong bộ nhớ) — SEC04, T-14:
@@ -93,8 +94,11 @@ export function checkUploadedFile(file: UploadedFile): FileVerdict {
 /** Middleware toàn cục cho `/admin/uploads*` — chạy TRƯỚC multer của route native. */
 export function uploadPrecheck(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
   if (req.method.toUpperCase() !== "POST") return next();
-  // Chuẩn hoá như Express (không phân biệt hoa thường, bỏ `/` cuối) — `/ADMIN/Uploads/` không lách được bước kiểm.
-  const path = normalizeAdminPath(req.originalUrl);
+  // Pathname router thấy (T-145: URL tuyệt đối, `%xx` không lách), chuẩn hoá như Express (không phân biệt hoa thường,
+  // bỏ `/` cuối) — `/ADMIN/Uploads/` không lách được bước kiểm.
+  const decoded = requestPath(req);
+  if (decoded === null) return sendProblem(res, INVALID_PATH.status, INVALID_PATH.code, INVALID_PATH.title);
+  const path = normalizeAdminPath(decoded);
   if (path === "/admin/uploads/presigned-urls") {
     return sendProblem(
       res,

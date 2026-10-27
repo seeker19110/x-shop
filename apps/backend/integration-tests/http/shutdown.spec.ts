@@ -411,6 +411,27 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
       await sleep(200);
       expect({ target, alive: be.child.exitCode === null }).toEqual({ target, alive: true });
     }
+    // T-145: hook server của instrumentation chặn request-target không phải origin-form bằng 400 TRƯỚC Express (kể cả
+    // route admin nhạy cảm), vẫn ghi log truy cập; `OPTIONS *` vẫn đi tiếp tới ứng dụng.
+    for (const target of [
+      "http://127.0.0.1/admin/customers/cus_khong_co",
+      "HTTP://127.0.0.1/admin/x/audit",
+    ]) {
+      expect({ target, status: await raw(target) }).toEqual({ target, status: 400 });
+    }
+    const star = await new Promise<string>((resolve, reject) => {
+      const sock = net.connect(be.port, "127.0.0.1", () =>
+        sock.write("OPTIONS * HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"),
+      );
+      let data = "";
+      sock.on("data", (c: Buffer) => (data += c.toString("latin1")));
+      sock.on("end", () => resolve(data));
+      sock.on("error", reject);
+    });
+    expect(star).not.toContain("INVALID_REQUEST_TARGET");
+    expect(be.output()).toMatch(
+      /"url\.path":"http:\/\/127\.0\.0\.1\/admin\/customers\/cus_khong_co","http\.response\.status_code":400/,
+    );
     expect((await request(be.port, "GET", "/x/readyz")).status).toBe(200);
     expect(be.output()).not.toMatch(/unhandledRejection|uncaughtException/);
     be.child.kill("SIGTERM");

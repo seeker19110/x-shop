@@ -8,9 +8,10 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import { decideDenyAudit, type WindowCounter } from "../audit/deny-throttle";
 import { recordAudit } from "../audit/record";
 import { sendProblem } from "../http/problem";
+import { decodePathSegments, INVALID_PATH, rawRequestPath } from "../http/request-path";
 import { clientIpOf } from "../security/config";
 import { getAdminSessionPolicy, isSensitive } from "./config";
-import { resolveAdminRule, type AdminRule } from "./policy";
+import { isAdminPath, resolveAdminRule, strictestRule, type AdminRule } from "./policy";
 import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
 import { normalizeAdminPath, normalizeMethod } from "./route-match";
 import { checkAndTouchSession, evaluateMfa, mfaCompletedAtMs, type AdminAuthContext } from "./session";
@@ -113,6 +114,28 @@ async function auditDenied(
 }
 
 /**
+ * Quy tắc quyền cho request admin (T-145) — tra từ pathname ROUTER THẤY (`lib/http/request-path.ts`), không từ
+ * `originalUrl` thô (URL tuyệt đối, `\`+`#` từng rơi xuống mặc định `any_role` trong khi Express vẫn tới route nhạy cảm):
+ *  - `path`: đã giải mã `%xx` từng đoạn + chuẩn hoá như Express (hoa/thường, `//`, `/` cuối) — dùng cho quy tắc và audit;
+ *  - path chưa giải mã (đúng chuỗi Express khớp route) khác `path` → áp quy tắc CHẶT HƠN của hai (`strictestRule`).
+ * `null` = không hợp lệ (mã hoá hỏng, không parse được, hoặc không nằm dưới `/admin` dù cổng gắn ở `/admin` — lệch parse)
+ * → nơi gọi trả 400, đóng an toàn.
+ */
+export function adminRuleOf(
+  req: { originalUrl?: unknown; url?: unknown },
+  method: string,
+): { path: string; rule: AdminRule } | null {
+  const raw = rawRequestPath(req);
+  const decoded = raw === null ? null : decodePathSegments(raw);
+  if (raw === null || decoded === null) return null;
+  const path = normalizeAdminPath(decoded);
+  const routed = normalizeAdminPath(raw);
+  if (!isAdminPath(path) || !isAdminPath(routed)) return null;
+  const rule = resolveAdminRule(method, path);
+  return { path, rule: routed === path ? rule : strictestRule(rule, resolveAdminRule(method, routed)) };
+}
+
+/**
  * Cổng bảo mật cho MỌI request `/admin/*` (T-023 + T-024), chạy sau middleware xác thực native của Medusa:
  *  1. route công khai native (invite accept, feature flags) → cho qua;
  *  2. chỉ actor `user` (khoá API bí mật không có vai trò → từ chối);
@@ -123,8 +146,9 @@ async function auditDenied(
 export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
   const method = normalizeMethod(req.method);
   if (method === "OPTIONS") return next();
-  const path = normalizeAdminPath(req.originalUrl);
-  const rule = resolveAdminRule(method, path);
+  const resolved = adminRuleOf(req, method);
+  if (resolved === null) return sendProblem(res, INVALID_PATH.status, INVALID_PATH.code, INVALID_PATH.title);
+  const { path, rule } = resolved;
   if (rule.kind === "public") return next();
 
   const ctx = (req as AuthedRequest).auth_context;
