@@ -530,3 +530,17 @@
 - Chọn: Chỉ nhánh token; dashboard: lấy invite_token từ Referer cùng origin /app/invite?token=… khi thân không có, thiếu thì từ chối; dọn identity chưa gắn actor khi xoá/gửi lại lời mời
 - Lý do (tiêu chí chất lượng cuối): (1) an toàn: không có đường tạo identity admin khi không chứng minh có token mời — đúng tiêu chí T-138; (2)(4) dashboard gốc vẫn dùng được vì nó chạy cùng origin với token trên URL; thiếu Referer → từ chối (đóng an toàn)
 - Đường lùi: Phương án 2 (trang mời riêng) nếu Referer không tin cậy trong môi trường thật
+
+### D-076 · 2026-10-27T02:28:12+00:00 · Rebuild catalog toàn phần giữ khoá 108–113 s ở 50k SKU (T-137 Q2) — thay đổi trong lúc đó trễ quá 60 s §7.4
+
+- Phương án: (1) Dựng dòng ngoài khoá, chỉ giữ khoá lúc replaceAll, rồi xả lại dấu có từ sau mốc bắt đầu rebuild (gộp vào T-140) · (2) Chấp nhận, ghi ngoại lệ RPO/§7.4
+- Chọn: Dựng dòng ngoài khoá, chỉ giữ khoá lúc replaceAll, rồi xả lại dấu có từ sau mốc bắt đầu rebuild (gộp vào T-140)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng mục tiêu độ trễ §7.4 ở quy mô production; không nới yêu cầu
+- Đường lùi: Ghi ngoại lệ nếu đo thấy replaceAll ngoài khoá gây sai lệch
+
+### D-077 · 2026-10-27T02:28:13+00:00 · Cô lập Redis cho test tích hợp chạy đồng thời (T-137 Q1)
+
+- Phương án: (1) globalSetup giành độc quyền Redis DB bằng SET NX EX (T-146) · (2) Redis riêng mỗi worktree · (3) Namespace qua medusa-config
+- Chọn: globalSetup giành độc quyền Redis DB bằng SET NX EX (T-146)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt nhất, chỉ đụng hạ tầng test; namespace không phủ locking-redis/workflows-cleaner
+- Đường lùi: Redis riêng mỗi worktree
