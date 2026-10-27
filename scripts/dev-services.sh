@@ -20,3 +20,8 @@ if command -v redis-server >/dev/null 2>&1; then
 fi
 echo "DATABASE_URL=postgres://$PGUSER_:$PGPASS_@localhost:5432/$PGDB_"
 echo "REDIS_URL=redis://localhost:6379"
+# Kho file (T-154): script KHÔNG dựng kho S3. Dev/test mặc định FILE_STORAGE=local — đĩa máy này, chỉ đúng cho một tiến trình
+# (provider in cảnh báo lúc khởi động). MinIO bản cộng đồng đã ngừng bảo trì (không còn binary); muốn thử kho dùng chung thì
+# dựng kho S3-compatible tự host (RUNBOOK §8.2b) rồi đặt FILE_STORAGE=s3 + S3_* (docs/ops/ENV.md). Ghi ra stderr để stdout chỉ
+# còn các dòng KEY=VALUE.
+echo "Kho file: FILE_STORAGE=local (mặc định dev, một tiến trình). Kho dùng chung: docs/ops/ENV.md (FILE_STORAGE=s3)." >&2

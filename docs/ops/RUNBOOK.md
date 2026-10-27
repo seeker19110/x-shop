@@ -234,6 +234,8 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   được `X-Content-Type-Options: nosniff` cho đường này. Checklist triển khai: reverse proxy/CDN đặt `nosniff` cho
   `/static/*` (và mọi file ảnh); production nên tắt `/static`, ảnh qua file module S3-compatible + CDN. Kiểm sau deploy:
   `curl -sI https://<backend>/static/<file> | grep -i x-content-type-options`.
+- Từ T-154 production bắt buộc `FILE_STORAGE=s3` (§8.2b): ảnh mới nằm ở bucket công khai, URL `<S3_FILE_URL>/<khoá>` — đặt
+  `X-Content-Type-Options: nosniff` và `Content-Type` đúng ở kho/CDN đó; `static/` của backend không còn nhận file mới.
 
 ## 7. Tiền đến sau khi hủy / thu dư
 - `ops_exception late_payment|overpayment`: kế toán xác minh trên cổng → tạo refund (một refund, retry cùng id) → ghi chú khách. Không phục hồi đơn, không giao thay thế khi chưa có xác nhận mới của khách.
@@ -265,7 +267,36 @@ pnpm --filter @x-shop/storefront start
 ```
 
 Production thiếu/sai biến → backend thoát mã 1 và in TÊN biến (không in giá trị): đọc log khởi động trước khi chuyển lưu lượng. Chạy ≥ 2
-instance server thì `REDIS_URL` bắt buộc (§3.2.1). Không deploy khi đang có sự cố thanh toán (§1).
+instance server thì `REDIS_URL` bắt buộc (§3.2.1). File upload/xuất: `FILE_STORAGE=s3` bắt buộc (§8.2b). Không deploy khi đang có sự cố
+thanh toán (§1).
+
+### 8.2b Lưu trữ file dùng chung giữa các bản sao (T-154, ARC-RES-005)
+
+Provider local của Medusa ghi file lên đĩa của từng máy: ảnh upload ở bản sao A không có ở bản sao B, file xuất do worker ghi không tải được
+qua server. Production vì vậy BẮT BUỘC `FILE_STORAGE=s3` (kiểm lúc khởi động: vắng hoặc `local` → thoát mã 1). Biến: `docs/ops/ENV.md`.
+
+Ràng buộc triển khai (chủ dự án làm trước lần deploy đầu có T-154):
+1. **Chọn và dựng kho S3-compatible** (cần máy/tài khoản thật — việc của người). Mặc định tự host: **Garage** (AGPL-3.0, Rust, một binary)
+   hoặc **SeaweedFS** (Apache-2.0); chạy như dịch vụ riêng, không sửa mã của chúng (AGPL chỉ ràng buộc khi sửa/phân phối lại bản sửa).
+   **Không dùng MinIO bản cộng đồng**: repo `minio/minio` ghi "THIS REPOSITORY IS NO LONGER MAINTAINED", bản cộng đồng chỉ còn mã nguồn,
+   `dl.min.io` trả 410 "archived and no longer maintained … no security updates" (kiểm 2026-10-27). Dịch vụ quản lý (S3, R2…) cũng được —
+   cần tài khoản/khoá của chủ dự án.
+2. **Hai bucket**: `S3_BUCKET` (công khai) có policy đọc nặc danh `s3:GetObject` (hoặc website endpoint/CDN); `S3_PRIVATE_BUCKET` KHÔNG có
+   policy công khai/website/CDN. Kiểm sau khi dựng: `curl -sI <S3_ENDPOINT>/<S3_PRIVATE_BUCKET>/x` (không chữ ký) phải 403.
+3. **Một khoá truy cập riêng cho backend**, chỉ quyền `GetObject`/`PutObject`/`DeleteObject` (+ `HeadObject`) trên đúng hai bucket; không
+   quyền quản trị kho. Đặt `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` vào kho bí mật.
+4. **Mọi tiến trình dựng File Module có cùng biến S3**: server (mọi bản sao), worker, `medusa db:migrate`, script `medusa exec`. Không cần
+   volume dùng chung cho file nữa (PRIVATE_UPLOAD_DIR không dùng khi `s3` — đặt kèm là lỗi khởi động).
+5. **TLS**: production đòi `https://` cho `S3_ENDPOINT` và `S3_FILE_URL` (file private mang PII đi qua kết nối này).
+6. **`MEDUSA_BACKEND_URL`** bắt buộc (URL tải file private trong thông báo xuất).
+7. **Storefront**: thêm host của `S3_FILE_URL` vào `images.remotePatterns` (`apps/storefront/next.config.ts`) và CSP `img-src` — hiện chỉ cho
+   `/static/**` của backend (chưa làm trong T-154).
+8. **Chuyển file cũ** (nếu đã chạy local trước đó): chép `static/<khoá>` → bucket công khai, `PRIVATE_UPLOAD_DIR/private-*` → bucket private
+   (cùng tên khoá); URL ảnh đã lưu trong sản phẩm vẫn trỏ `/static/…` cũ — cập nhật hoặc giữ `/static` phục vụ tạm tới khi thay.
+
+Đường lùi: đặt lại biến về bản trước + triển khai lại bản trước T-154 (chỉ được khi một bản sao, vì local không dùng chung); file đã ghi ở
+kho vẫn còn — chép ngược về `static/`/PRIVATE_UPLOAD_DIR theo cùng tên khoá. Sức khoẻ kho chưa nằm trong `/x/health` (chưa làm): kho lỗi →
+upload/xuất/tải file private trả 5xx, phần còn lại của shop chạy bình thường.
 
 ### 8.2a Reverse proxy cho luồng mời admin qua dashboard (T-138, D-075)
 
@@ -296,6 +327,7 @@ xuất: 12 tháng cho khoá ký, và NGAY khi nghi lộ (§10). Hiệu ứng khi
 | `VNPAY_HASH_SECRET` | chữ ký IPN/return/querydr đổi theo khoá cổng; IPN ký bằng khoá mới tới TRƯỚC khi env đổi bị từ chối chữ ký | **Thứ tự không hở** (backend ký bằng `VNPAY_HASH_SECRET` = current, xác minh cả current lẫn `VNPAY_HASH_SECRET_PREVIOUS`, T-099): (1) `VNPAY_HASH_SECRET`=khoá cũ, `VNPAY_HASH_SECRET_PREVIOUS`=khoá MỚI → restart (đã nhận được chữ ký khoá mới, vẫn ký bằng khoá cũ); (2) đổi khoá ở cổng merchant VNPAY; (3) `VNPAY_HASH_SECRET`=khoá mới, `VNPAY_HASH_SECRET_PREVIOUS`=khoá cũ → restart (ký bằng khoá mới, IPN/querydr còn ký khoá cũ vẫn qua); (4) theo dõi log `vnpay_secret_previous_used` (cảnh báo mỗi lần xác minh bằng khoá trước, không chứa khoá/chữ ký; T-139) về 0 liên tục ≥ 24 giờ (chính sách gửi lại IPN của VNPAY: chưa xác minh) rồi bỏ `VNPAY_HASH_SECRET_PREVIOUS`, restart. Lưu ý: ở bước 1 log này xuất hiện khi VNPAY đã ký khoá mới; chỉ dùng làm tín hiệu thu hồi sau bước 3. Hiện log chỉ ghi ở IPN (return/querydr chưa có). Querydr bù cho `payment_attempt` mở, xem `ops_exception` `webhook_rejected` (§1). VNPAY có cho hai khoá song song phía cổng không: (chưa xác minh) |
 | `GHN_TOKEN` (+ `GHN_SHOP_ID` nếu đổi shop) | gọi GHN thất bại tới khi khớp | tạo token mới ở GHN → đổi env → restart worker+server; vận đơn timeout xử lý như §2; callback GHN không chữ ký nên không bị ảnh hưởng |
 | Mật khẩu trong `DATABASE_URL`, `REDIS_URL` | kết nối mới thất bại tới khi restart | tạo vai trò/mật khẩu mới → cập nhật env → restart → thu hồi cái cũ |
+| `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` (T-154) | upload/xuất/tải file private lỗi tới khi khớp; ảnh công khai vẫn đọc được (nặc danh) | tạo khoá mới cùng quyền trên hai bucket ở kho → đổi env mọi tiến trình → restart server+worker → kiểm upload ảnh + tải một file xuất → thu hồi khoá cũ |
 | Khoá email/SMS provider | thông báo không gửi (rơi vào `outbox_event` `failed`, thử lại — §12) | thủ tục theo nhà cung cấp thật (xem `docs/privacy/processors.md`) |
 
 ## 10. Lộ bí mật
@@ -312,6 +344,7 @@ rà log trong khoảng lộ, ghi sự cố, đánh giá nghĩa vụ thông báo 
 | `AUTH_MFA_ENCRYPTION_KEY` | đổi khoá (mọi TOTP đăng ký lại, §9); coi bí mật TOTP đã lộ nếu lộ cả DB | `audit_log` đăng nhập/MFA bất thường |
 | `ORDER_LOOKUP_SECRET` | đổi, restart: mọi liên kết/phiên xem đơn mất hiệu lực | log truy cập `/store/x/orders/*` trong khoảng lộ |
 | `DATABASE_URL` / `REDIS_URL` | đổi mật khẩu, đóng cổng ra ngoài, restart | log truy cập DB của nhà cung cấp hạ tầng; `audit_log` |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (T-154) | thu hồi khoá ở kho S3, tạo khoá mới cùng quyền trên hai bucket, đổi env, restart server+worker (§9) | log truy cập của kho trong khoảng lộ: `GetObject` trên bucket private (file xuất có PII — đánh giá nghĩa vụ thông báo theo `docs/ops/runbooks/data-breach.md`), `PutObject`/`DeleteObject` lạ trên cả hai bucket (ảnh bị thay/xoá) |
 | Khoá email/SMS provider | thu hồi ở nhà cung cấp, tạo khoá mới | lịch sử gửi ở nhà cung cấp so với `outbound_message` |
 
 Sau xử lý: ghi post-mortem vào `docs/ops/incidents/` (sổ sự cố; quy trình ở `docs/ops/INCIDENT-RESPONSE.md`) — nguyên nhân gốc, khoảng lộ, khoá đã xoay, dữ liệu bị chạm, hàng rào mới

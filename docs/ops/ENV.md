@@ -47,14 +47,46 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # khoảng trắng/xuống dòng/tab, `\`, `@`, `?`, `#` bị từ chối lúc khởi động (hay gặp: newline thừa khi tạo từ file/echo);
 # gốc dùng thật được chuẩn hoá từ URL đã parse (scheme/host viết thường, bỏ cổng mặc định).
 STOREFRONT_URL=https://shop.example.vn
+# Kho file của File Module (T-154, ARC-RES-005): local | s3.
+#  - local = đĩa của MÁY ĐANG CHẠY (`static/` công khai + PRIVATE_UPLOAD_DIR). Ảnh upload ở bản sao A KHÔNG có ở bản sao B;
+#    file xuất do worker ghi KHÔNG tải được qua server ở máy khác. Chỉ dev/test một tiến trình — mặc định khi vắng ở dev/test
+#    (provider in cảnh báo lúc khởi động). Production đặt local → backend từ chối khởi động.
+#  - s3 = kho S3-compatible DÙNG CHUNG giữa mọi bản sao (server, worker, script). BẮT BUỘC ở production (vắng → thoát mã 1).
+# Đặt bất kỳ biến S3_* nào mà FILE_STORAGE không phải s3 → lỗi (tránh tưởng đã dùng kho chung trong khi file vẫn ở đĩa máy).
+FILE_STORAGE=s3
+# Hai bucket RỜI nhau, cùng một khoá truy cập (chỉ quyền đọc/ghi/xoá object trên đúng hai bucket này):
+#  - S3_BUCKET (công khai): ảnh sản phẩm/nội dung (`POST /admin/uploads`). Cho đọc NẶC DANH bằng POLICY của bucket
+#    (s3:GetObject cho `*`, hoặc website endpoint/CDN của kho) — provider KHÔNG gửi ACL theo object (AWS mặc định chặn ACL).
+#  - S3_PRIVATE_BUCKET: xuất khách hàng/đơn (PII), xuất tồn/sản phẩm, chunk nhập (T-141). KHÔNG policy đọc nặc danh, KHÔNG
+#    website/CDN; file chỉ tải qua `GET /admin/x/files/<khoá>` (phiên + `settings.manage` + MFA, audit) — URL trả ra luôn là
+#    route này, không URL ký, không URL bucket. Phải khác S3_BUCKET; S3_FILE_URL trỏ vào bucket này → từ chối khởi động.
+# Tên bucket: a-z, 0-9, `.`, `-`, 3–63 ký tự. Khoá object do server sinh (`[private-]<ms>-<ULID><đuôi>`), không có tên client.
+# S3_ENDPOINT: gốc URL kho tự host (không đường dẫn); vắng = AWS S3 theo S3_REGION. Production: https://.
+# S3_REGION: mã vùng (AWS: vd. ap-southeast-1; Cloudflare R2: auto; kho tự host: theo cấu hình kho, vd. garage / us-east-1).
+# S3_FILE_URL: gốc URL CÔNG KHAI của S3_BUCKET mà trình duyệt tải ảnh (CDN, website endpoint, hoặc `<endpoint>/<bucket>`);
+#   http(s), không query/fragment/thông tin đăng nhập, `/` cuối bị bỏ. Production: https://. URL ảnh = `<S3_FILE_URL>/<khoá>`.
+# S3_FORCE_PATH_STYLE: true|false; vắng → true khi có S3_ENDPOINT (kho tự host thường cần), false khi dùng AWS.
+# Production + s3 → MEDUSA_BACKEND_URL BẮT BUỘC (URL tải file private trong thông báo xuất dựng từ đây; thiếu = trỏ localhost).
+# Kho tự host đề xuất (chủ dự án chọn; MinIO bản cộng đồng đã ngừng bảo trì — xem RUNBOOK §8.2b): Garage (AGPL-3.0) hoặc
+# SeaweedFS (Apache-2.0), chạy như DỊCH VỤ RIÊNG, không nhúng/sửa mã.
+S3_ENDPOINT=https://s3.shop.example.vn
+S3_REGION=garage
+S3_BUCKET=xshop-public
+S3_PRIVATE_BUCKET=xshop-private
+S3_FILE_URL=https://media.shop.example.vn
+# Bí mật (che khi in cấu hình). Ký tự in được, không khoảng trắng; ID 3–256, secret 8–256 ký tự. Xoay: RUNBOOK §9.
+S3_ACCESS_KEY_ID=thay-bang-access-key-id
+S3_SECRET_ACCESS_KEY=thay-bang-secret-access-key
+# S3_FORCE_PATH_STYLE=true
 # Thư mục file PRIVATE của File Module (T-141, BE-FILE-005): xuất khách hàng/đơn (PII), xuất tồn/sản phẩm, chunk nhập sản
 # phẩm. Phải RỜI thư mục công khai `static/` (Express phục vụ `/static`) — không trùng, không nằm trong, không chứa nó; không
-# ký tự điều khiển. Production BẮT BUỘC, đường dẫn tuyệt đối trên volume bền, chỉ user chạy backend đọc/ghi được (vd.
-# `install -d -m 700`); vắng (dev/test) = `<cwd>/private-uploads` (đã gitignore). Sai → in tên biến, thoát mã 1. File
+# ký tự điều khiển. CHỈ dùng khi FILE_STORAGE=local (dev/test — T-154): production dùng S3_PRIVATE_BUCKET; đặt biến này
+# kèm FILE_STORAGE=s3 → từ chối khởi động. Vắng (dev/test) = `<cwd>/private-uploads` (đã gitignore). Sai → in tên biến,
+# thoát mã 1. Các ghi chú triển khai volume bên dưới chỉ còn áp cho môi trường một máy chạy local. File
 # private KHÔNG có URL công khai: chỉ tải qua `GET /admin/x/files/<khoá>` (đăng nhập admin + `settings.manage` + MFA, ghi
 # audit `data.accessed`); link trong thông báo xuất của Medusa trỏ về route này. Ảnh sản phẩm vẫn ở `static/` như cũ.
 # Đổi thư mục = file cũ không còn tải được (chuyển file sang thư mục mới trước). Server và worker phải thấy CÙNG thư mục
-# (worker ghi file xuất, server phục vụ) — nhiều máy: dùng chung volume hoặc chờ kho S3-compatible (T-154).
+# (worker ghi file xuất, server phục vụ) — nhiều máy: FILE_STORAGE=s3 (T-154).
 # Nâng cấp từ bản trước T-141: file `static/private-*` cũ VẪN công khai — chuyển sang thư mục này rồi xoá khỏi `static/`.
 # Lúc khởi động provider: chưa có → tạo với quyền 700; có sẵn mà mở quyền group/other, KHÔNG thuộc user chạy backend
 # (euid), hoặc user đó không đọc/ghi/duyệt được → TỪ CHỐI khởi động (không tự chmod/chown — sửa `chmod 700`/`chown`); kiểm
@@ -67,9 +99,10 @@ STOREFRONT_URL=https://shop.example.vn
 # Trỏ biến vào THƯ MỤC CON trong volume (vd. volume gắn ở `/var/lib/xshop`, biến = `/var/lib/xshop/private-uploads`) để
 # provider tự tạo với quyền 700 và đúng chủ. KHÔNG trỏ thẳng vào điểm mount: điểm mount Docker thường thuộc root quyền 755,
 # volume Kubernetes có `fsGroup` mở quyền group (2770/775) → backend từ chối khởi động.
-PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
+# PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads   # chỉ khi FILE_STORAGE=local
+# Gốc URL backend (dashboard, URL route tải file private). Tùy chọn ở dev; BẮT BUỘC khi production + FILE_STORAGE=s3.
+MEDUSA_BACKEND_URL=https://api.shop.example.vn
 # Tùy chọn
-# MEDUSA_BACKEND_URL=http://localhost:9000
 # MEDUSA_WORKER_MODE=shared   # shared | server | worker (production tách server và worker)
 # DISABLE_MEDUSA_ADMIN=false
 # Tắt êm (T-094): SIGTERM → /x/readyz 503 trong DRAIN_DELAY (vẫn phục vụ) → đóng listener, chờ request/job dở, đóng pool
@@ -89,7 +122,8 @@ PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # Che bí mật khi in cấu hình (T-098, BASE-CFG-005): `redactConfig`/`formatEffectiveConfig` (src/lib/env/redact.ts); đối
 # tượng `Env` (và `ghn`, `vnpay` lồng trong đó) tự che khi JSON.stringify/console.log/util.inspect; `{ ...env }` hay
 # Object.entries sao chép GIÁ TRỊ THẬT — nơi dump phải qua `redactConfig`. Trường bí mật rỗng in "(chưa đặt)". Danh sách bí mật `SECRET_ENV_KEYS`: DATABASE_URL, REDIS_URL (có mật
-# khẩu), JWT_SECRET, COOKIE_SECRET, AUTH_MFA_ENCRYPTION_KEY, ORDER_LOOKUP_SECRET, VNPAY_HASH_SECRET(_PREVIOUS), GHN_TOKEN.
+# khẩu), JWT_SECRET, COOKIE_SECRET, AUTH_MFA_ENCRYPTION_KEY, ORDER_LOOKUP_SECRET, VNPAY_HASH_SECRET(_PREVIOUS), GHN_TOKEN,
+# S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY (đối tượng `fileStorage` lồng trong Env cũng tự che).
 # Thêm biến bí mật mới → thêm vào danh sách. Hàng rào test duyệt MỌI khoá của schema (cả biến optional vắng mặt): tên
 # giống bí mật (secret/token/password/…/_KEY) hoặc `*_URL` chưa xếp vào "bí mật" hay danh sách URL đã xác minh không
 # chứa user:pass → test đỏ.
@@ -126,6 +160,18 @@ là hằng cấu hình trong `apps/backend/src/lib/checkout/config.ts` (D-002) �
 (10 phút) và hạn chờ mỗi lời gọi GHN (10 giây) ở `apps/backend/src/lib/shipping/config.ts`.
 
 `medusa build` nạp config nên cần `DATABASE_URL` dù không kết nối — build image truyền URL giả (D-007).
+
+Test tích hợp `upload` (T-154, `apps/backend/integration-tests/http/upload-shared-storage.spec.ts`) mặc định dùng kho S3 giả
+trong tiến trình (CI không cần dịch vụ thêm). Chạy cùng suite với kho thật (bucket đã tạo; bucket công khai cho đọc nặc danh,
+bucket private thì không):
+
+```bash
+XS_TEST_S3_ENDPOINT=http://127.0.0.1:3900 XS_TEST_S3_REGION=garage \
+XS_TEST_S3_ACCESS_KEY_ID=<id> XS_TEST_S3_SECRET_ACCESS_KEY=<secret> \
+XS_TEST_S3_BUCKET=xshop-it-public XS_TEST_S3_PRIVATE_BUCKET=xshop-it-private \
+XS_TEST_S3_FILE_URL=<gốc URL công khai của bucket công khai> \
+pnpm --filter @x-shop/backend test:integration -- upload
+```
 
 ## Storefront (`apps/storefront/.env`)
 ```dotenv
