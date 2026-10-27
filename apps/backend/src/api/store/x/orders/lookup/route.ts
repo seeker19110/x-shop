@@ -19,10 +19,11 @@ export const LOOKUP_ACCEPTED_MESSAGE =
 
 /**
  * POST /store/x/orders/lookup `{ display_ref, phone }` → luôn 202 cùng thông điệp. Mã đơn + SĐT KHÔNG trả dữ liệu đơn;
- * khớp → tạo liên kết một lần (15 phút) và ghi outbox `order.lookup_link` (gửi thật ở T-029). Token không bao giờ nằm
- * trong phản hồi. Giới hạn: 5/giờ/SĐT, 10/giờ/mã đơn, 20/giờ/IP — đếm TRƯỚC khi tra nên 429 không lộ tồn tại.
+ * khớp → ghi outbox `order.lookup_link` (chỉ ID); bộ xử lý thông báo phát hành liên kết một lần (15 phút) lúc gửi
+ * (T-149). Token không bao giờ nằm trong phản hồi hay bảng outbox. Giới hạn: 5/giờ/SĐT, 10/giờ/mã đơn, 20/giờ/IP —
+ * đếm TRƯỚC khi tra nên 429 không lộ tồn tại.
  * Định dạng sai (không phải mã đơn/SĐT di động VN) → 422 VALIDATION (không chạm DB). Không có đơn và sai SĐT chạy CÙNG
- * các bước (`runOrderLookup`: một truy vấn, một so sánh băm hằng thời gian, một lần ký) — chống dò tồn tại qua thời gian.
+ * các bước (`runOrderLookup`: một truy vấn, một so sánh băm hằng thời gian) — chống dò tồn tại qua thời gian.
  */
 export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promise<void> => {
   setPrivate(res);
@@ -39,7 +40,7 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
     await consumeRate(req.scope, "lookupPhone", phone.value, now);
     await consumeRate(req.scope, "lookupRef", ref, now);
 
-    await runOrderLookup(lookupPortsFor(req.scope), ref, phone.value, now);
+    await runOrderLookup(lookupPortsFor(req.scope), ref, phone.value);
     res.status(202).json({ accepted: true, message: LOOKUP_ACCEPTED_MESSAGE });
   } catch (error) {
     handleRouteError(req, res, error);

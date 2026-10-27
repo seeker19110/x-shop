@@ -230,6 +230,7 @@ describe("env VNPAY_HASH_SECRET_PREVIOUS (zod)", () => {
       AUTH_MFA_ENCRYPTION_KEY: "mfa-0123456789abcdef0123456789abcdef0",
       ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
       XS_TRUSTED_PROXIES: "10.0.0.0/8",
+      STOREFRONT_URL: "https://shop.example.vn",
       STORE_CORS: "https://shop.example.vn",
       ADMIN_CORS: "https://admin.example.vn",
       AUTH_CORS: "https://admin.example.vn",

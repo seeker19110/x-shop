@@ -79,7 +79,9 @@ cookie HttpOnly `xs_order_<mã đơn>` ở server; token KHÔNG bao giờ nằm 
   (idempotent). 409 `NOT_CANCELLABLE` (đã có vận đơn / trạng thái kết thúc) · 409 `PAYMENT_PENDING` (cổng chưa trả lời rõ).
   Đơn đã thu tiền → ngoại lệ `refund_request`; hủy native + hoàn thật ở T-027.
 - `POST /store/x/orders/lookup` `{ display_ref, phone }` → luôn 202 `{ accepted: true, message }` cùng thông điệp; khớp → outbox
-  `order.lookup_link` `{ order_id, display_ref, token, expires_at }` (gửi thật ở T-029, URL `/tra-cuu-don/xac-thuc?token=…`).
+  `order.lookup_link` `{ order_id, display_ref }` — chỉ ID (T-149, D-089): bộ xử lý thông báo phát hành token một lần
+  (15 phút, tính từ lúc gửi) và dựng `STOREFRONT_URL` + `/tra-cuu-don/xac-thuc?token=…`; token/link không bao giờ nằm
+  trong outbox (schema `lib/outbox/payload.ts` cấm, kiểm cả lúc ghi lẫn lúc nhận).
   422 `VALIDATION` (`field`: `display_ref|phone`) khi sai định dạng · 429 khi vượt 5/giờ/SĐT, 10/giờ/mã, 20/giờ/IP.
 - `POST /store/x/orders/session` `{ token }` → 200 `{ display_ref, order_access, order_access_expires_at }`; token hết hạn/giả/đã
   dùng → 404. Storefront đổi bằng Server Action (khách bấm nút, không tự đổi khi GET) rồi chuyển tới `/don-hang/:ref`.

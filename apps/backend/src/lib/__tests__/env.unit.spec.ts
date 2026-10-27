@@ -1,5 +1,6 @@
 import {
   DEV_CORS_DEFAULTS,
+  DEV_STOREFRONT_URL,
   GHN_REQUIRED,
   formatEnvProblems,
   loadEnvOrExit,
@@ -25,6 +26,7 @@ const production = {
   AUTH_MFA_ENCRYPTION_KEY: MFA,
   ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
   XS_TRUSTED_PROXIES: "10.0.0.0/8",
+  STOREFRONT_URL: "https://shop.example.vn/",
   STORE_CORS: "https://shop.example.vn",
   ADMIN_CORS: "https://admin.example.vn,http://localhost:9000",
   AUTH_CORS: "https://admin.example.vn,/\\.example\\.vn$/",
@@ -326,6 +328,40 @@ describe("ORDER_LOOKUP_SECRET (T-021)", () => {
     expect(variablesOf({ ...production, ORDER_LOOKUP_SECRET: "ngan-qua" })).toEqual(["ORDER_LOOKUP_SECRET"]);
     expect(variablesOf({ ...production, ORDER_LOOKUP_SECRET: ORDER_LOOKUP_DEV_SECRET })).toEqual([
       "ORDER_LOOKUP_SECRET",
+    ]);
+  });
+});
+
+describe("STOREFRONT_URL (T-149 — gốc liên kết gửi khách)", () => {
+  it("dev/test vắng → localhost:3000; đặt thì bỏ `/` cuối, giữ tiền tố đường dẫn", () => {
+    const dev = parseEnv({ DATABASE_URL: DB });
+    expect(dev.ok && dev.env.storefrontUrl).toBe(DEV_STOREFRONT_URL);
+    const prod = parseEnv(production);
+    expect(prod.ok && prod.env.storefrontUrl).toBe("https://shop.example.vn");
+    const prefixed = parseEnv({ DATABASE_URL: DB, STOREFRONT_URL: "http://localhost:8000/shop//" });
+    expect(prefixed.ok && prefixed.env.storefrontUrl).toBe("http://localhost:8000/shop");
+  });
+
+  it("sai dạng (không phải http(s), có query/fragment/thông tin đăng nhập, không phải URL) → lỗi đúng tên, không lộ giá trị", () => {
+    for (const bad of [
+      "ftp://shop.example.vn",
+      "javascript:alert(1)",
+      "shop.example.vn",
+      "https://shop.example.vn/?a=1",
+      "https://shop.example.vn/?",
+      "https://shop.example.vn/#x",
+      "https://user:mat-khau@shop.example.vn",
+    ]) {
+      const problems = problemsOf({ DATABASE_URL: DB, STOREFRONT_URL: bad });
+      expect(problems.map((p) => p.variable)).toEqual(["STOREFRONT_URL"]);
+      expect(JSON.stringify(problems)).not.toContain("mat-khau");
+    }
+  });
+
+  it("production: bắt buộc và phải https://", () => {
+    expect(variablesOf({ ...production, STOREFRONT_URL: undefined })).toEqual(["STOREFRONT_URL"]);
+    expect(variablesOf({ ...production, STOREFRONT_URL: "http://shop.example.vn" })).toEqual([
+      "STOREFRONT_URL",
     ]);
   });
 });

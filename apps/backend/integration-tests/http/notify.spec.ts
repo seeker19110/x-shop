@@ -65,6 +65,21 @@ medusaIntegrationTestRunner({
       await checkout().insertOutbox(key, orderId, type, { order_id: orderId, ...payload }, undefined, at);
       return { key, at };
     }
+    /**
+     * Ghi THẲNG bằng SQL, bỏ qua kiểm lúc ghi (T-149) — mô phỏng dòng cũ ghi trước khi có kiểm, hoặc ghi lách qua đường
+     * khác: dispatcher vẫn phải chặn khi nhận (lớp thứ hai).
+     */
+    async function enqueueRaw(type: string, orderId: string, payload: Record<string, unknown>) {
+      seq += 1;
+      const key = `t029-${seq}:${type}:${orderId}`;
+      const at = new Date(Date.now() + (60 + seq) * 60_000);
+      await container.resolve(ContainerRegistrationKeys.PG_CONNECTION).raw(
+        `INSERT INTO outbox_event (id, event_key, aggregate_id, type, payload, state, next_attempt_at)
+           VALUES (?, ?, ?, ?, ?::jsonb, 'pending', ?)`,
+        [`obx_raw${seq}`, key, orderId, type, JSON.stringify({ order_id: orderId, ...payload }), at],
+      );
+      return { key, at };
+    }
     const outboxOf = async (key: string) => (await checkout().listOutboxEvents({ event_key: key }))[0]!;
     const messagesOf = (key: string) => notify().listOutboundMessages({ message_key: `notify:${key}:email` });
 
@@ -167,23 +182,29 @@ medusaIntegrationTestRunner({
           await checkout().listOpsExceptions({ kind: "notification_failed" as never, order_id: orderId })
         ).filter((e) => (e.detail as { event_key?: string } | null)?.event_key === key);
 
-      it("payload sai schema (thiếu link, khoá bí mật, object lồng) → dead ở lần nhận đầu kèm lý do, không gửi; lượt vẫn xử lý sự kiện đúng", async () => {
+      it("payload sai schema (token thô, khoá bí mật, object lồng) → dead ở lần nhận đầu kèm lý do, không gửi; lượt vẫn xử lý sự kiện đúng", async () => {
         const o = await client.placeOrder([["Đen/S", 1]], "cod");
-        const noLink = await enqueue("order.lookup_link", o.orderId);
-        const secret = await enqueue("order.confirmed", o.orderId, { password: "mat-khau-bi-mat-123" });
-        const nested = await enqueue("order.placed_pending", o.orderId, { cart: { items: [{ sku: "X" }] } });
+        // Hình dạng cũ của producer tra cứu (trước T-149): token thô trong payload.
+        const rawToken = await enqueueRaw("order.lookup_link", o.orderId, {
+          token: "dG9rZW4tdGh1LW5naGllbQ.bWFjLXRodS1uZ2hpZW0",
+          expires_at: "2026-01-01T00:00:00.000Z",
+        });
+        const secret = await enqueueRaw("order.confirmed", o.orderId, { password: "mat-khau-bi-mat-123" });
+        const nested = await enqueueRaw("order.placed_pending", o.orderId, {
+          cart: { items: [{ sku: "X" }] },
+        });
         const good = await enqueue("order.placed_pending", o.orderId, { payment_method: "cod" });
         const adapter = new ScriptedAdapter("t029-");
         adapter.failing = false;
         setNotificationAdapterForTest(adapter);
 
         const r = await dispatchOutbox(container, { now: good.at });
-        expect(r.dead).toEqual(expect.arrayContaining([noLink.key, secret.key, nested.key]));
+        expect(r.dead).toEqual(expect.arrayContaining([rawToken.key, secret.key, nested.key]));
         expect(r.sent).toContain(good.key);
-        expect(r.retried).not.toEqual(expect.arrayContaining([noLink.key]));
+        expect(r.retried).not.toEqual(expect.arrayContaining([rawToken.key]));
 
         for (const [ev, field] of [
-          [noLink, "link"],
+          [rawToken, "token"],
           [secret, "password"],
           [nested, "cart"],
         ] as const) {
@@ -205,7 +226,7 @@ medusaIntegrationTestRunner({
 
       it("đồng thời: hai dispatcher cùng lúc gặp payload sai → dead đúng một lần, một ngoại lệ", async () => {
         const o = await client.placeOrder([["Trắng/M", 1]], "cod");
-        const bad = await enqueue("order.lookup_link", o.orderId, { link: "ftp://khong-hop-le" });
+        const bad = await enqueueRaw("order.lookup_link", o.orderId, { link: "ftp://khong-hop-le" });
         const [a, b] = await Promise.all([
           dispatchOutbox(container, { now: bad.at }),
           dispatchOutbox(container, { now: bad.at }),
@@ -265,6 +286,70 @@ medusaIntegrationTestRunner({
       });
     });
 
+    describe("T-149 — kiểm payload lúc GHI: producer sai shape lỗi ngay, không đợi tới DLQ", () => {
+      /** Lỗi ném ra (hoặc null nếu không ném). */
+      const errorOf = (p: Promise<unknown>) =>
+        p.then(
+          () => null,
+          (e: unknown) => (e instanceof Error ? e : new Error(String(e))),
+        );
+
+      it("insertOutbox: token thô / link mang token / khoá bí mật / thiếu order_id / object lồng → ném, không ghi dòng nào; lý do không chứa giá trị", async () => {
+        const o = await client.placeOrder([["Đen/S", 1]], "cod");
+        const bad: Array<[string, Record<string, unknown>, string]> = [
+          ["order.lookup_link", { order_id: o.orderId, token: "dG9rZW4.bWFj", expires_at: "x" }, "token"],
+          [
+            "order.lookup_link",
+            { order_id: o.orderId, link: "https://shop.example.vn/tra-cuu-don/xac-thuc?token=dG9rZW4.bWFj" },
+            "link",
+          ],
+          ["order.confirmed", { display_ref: "XS-1" }, "order_id"],
+          ["order.placed_pending", { order_id: o.orderId, cart: { items: [{ sku: "X" }] } }, "cart"],
+          ["test.x", { password: "mat-khau-bi-mat-123" }, "password"],
+        ];
+        for (const [i, [type, payload, field]] of bad.entries()) {
+          const key = `t149-bad-${i}:${type}`;
+          const err = await errorOf(checkout().insertOutbox(key, o.orderId, type, payload));
+          expect(err?.message).toContain("payload không hợp lệ");
+          expect(err?.message).toContain(`${field}:`);
+          expect(err?.message).not.toMatch(/mat-khau-bi-mat-123|dG9rZW4/);
+          expect(await checkout().listOutboxEvents({ event_key: key })).toHaveLength(0);
+        }
+        // Đúng shape → ghi bình thường.
+        const okKey = `t149-ok:order.lookup_link:${o.orderId}`;
+        await checkout().insertOutbox(okKey, o.orderId, "order.lookup_link", { order_id: o.orderId });
+        expect(await checkout().listOutboxEvents({ event_key: okKey })).toHaveLength(1);
+      });
+
+      it("finalizeAttempt: outbox sai shape → ném TRƯỚC khi mở transaction (không đụng attempt/đơn)", async () => {
+        const err = await errorOf(
+          checkout().finalizeAttempt(
+            {
+              attempt_id: "catt_t149",
+              order_id: "order_t149",
+              cart_id: "cart_t149",
+              cart_version: 1,
+              order_state: "placed",
+              hold_expires_at: null,
+              cod_confirm_by: null,
+              outbox: {
+                event_key: "order.placed_pending:order_t149",
+                type: "order.placed_pending",
+                payload: { order_id: "order_t149", payment_method: "bitcoin" },
+              },
+            },
+            {},
+          ),
+        );
+        // Không có kiểm lúc ghi thì lỗi sẽ là "order_finance … không còn ở trạng thái preparing" (từ transaction).
+        expect(err?.message).toContain("payload không hợp lệ");
+        expect(err?.message).toContain("payment_method:");
+        expect(
+          await checkout().listOutboxEvents({ event_key: "order.placed_pending:order_t149" }),
+        ).toHaveLength(0);
+      });
+    });
+
     describe("adapter log mặc định — không gửi thật, không PII trong log", () => {
       it("order.placed / order.confirmed / order.lookup_link / shipment.shipped: log đã che, outbound live=false", async () => {
         const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
@@ -285,11 +370,11 @@ medusaIntegrationTestRunner({
           const cod = await client.placeOrder([["Đen/S", 1]], "cod");
           const vn = await client.placeOrder([["Đen/M", 1]], "vnpay");
           expect((await ipn(api, gateway.mock.pay(vn.paymentUrl, "success"))).data.RspCode).toBe("00");
-          const link = "https://shop.example.vn/don-hang/tra-cuu?t=secret-token-abc123";
           const events = [
             await enqueue("order.placed_pending", cod.orderId, { payment_method: "cod" }),
             await enqueue("order.confirmed", vn.orderId),
-            await enqueue("order.lookup_link", cod.orderId, { link }),
+            // T-149: payload chỉ có ID; bộ xử lý phát hành token + dựng liên kết lúc gửi.
+            await enqueue("order.lookup_link", cod.orderId),
             await enqueue("shipment.shipped", vn.orderId, { provider_order_code: "GHNMOCK000123" }),
           ];
           const last = events[events.length - 1]!.at;
@@ -315,15 +400,11 @@ medusaIntegrationTestRunner({
           const notifyLines = lines.filter((l) => l.includes("[notify:log]"));
           expect(notifyLines.length).toBeGreaterThanOrEqual(4);
           const all = lines.join("\n");
-          for (const pii of [
-            CONTACT.name,
-            CONTACT.email,
-            "0912345678",
-            CONTACT.phone,
-            "secret-token-abc123",
-          ]) {
+          for (const pii of [CONTACT.name, CONTACT.email, "0912345678", CONTACT.phone]) {
             expect(all).not.toContain(pii);
           }
+          // Liên kết/token tra cứu (phát hành lúc gửi) không vào log.
+          expect(all).not.toMatch(/xac-thuc|token=|[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/);
         } finally {
           for (const s of spies) s.mockRestore();
         }

@@ -40,6 +40,11 @@ ORDER_LOOKUP_SECRET=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-order
 # limit (nghẽn toàn site). Request từ chính proxy tin cậy mà không có khách đứng sau (vd. storefront nạp catalog đã cache)
 # được miễn giới hạn theo IP; giới hạn theo giỏ/mã/SĐT vẫn áp. IPv6 được gộp theo /64 khi đếm.
 XS_TRUSTED_PROXIES=10.0.0.0/8
+# Gốc URL storefront để dựng liên kết gửi khách — hiện là liên kết tra cứu đơn `<gốc>/tra-cuu-don/xac-thuc?token=…`
+# (T-149, D-089): token một lần phát hành LÚC GỬI ở bộ xử lý thông báo, không lưu trong outbox. http(s), không query/
+# fragment/thông tin đăng nhập; cho phép tiền tố đường dẫn; `/` cuối bị bỏ. Production BẮT BUỘC và phải https://; vắng
+# (dev/test) = http://localhost:3000 (DEV_STOREFRONT_URL trong env.ts, cổng mặc định của `next dev`).
+STOREFRONT_URL=https://shop.example.vn
 # Tùy chọn
 # MEDUSA_BACKEND_URL=http://localhost:9000
 # MEDUSA_WORKER_MODE=shared   # shared | server | worker (production tách server và worker)

@@ -28,6 +28,7 @@ import {
   RateLimitCounter,
   WebhookInbox,
 } from "./models/checkout-models";
+import { assertOutboxPayload } from "../../lib/outbox/payload";
 import { sampleAt, windowStartMs, type WindowSample } from "../../lib/security/sliding-window";
 
 /** Phần tối thiểu của repository Medusa (MikroOrmBaseRepository) dùng cho câu lệnh nguyên tử. */
@@ -85,6 +86,16 @@ export type CaptureOutcome =
   { duplicate: true } | { duplicate: false; decision: CaptureDecision; state_before: OrderState };
 
 const json = (value: unknown) => JSON.stringify(value ?? null);
+
+/**
+ * JSON payload outbox SAU khi đã kiểm (T-149 — BE-JOB-007): kiểm đúng dạng sẽ lưu và worker sẽ nhận (sau JSON, khoá
+ * `undefined` bị bỏ). Sai shape → ném trước khi chạm DB.
+ */
+function outboxJson(type: string, payload: Record<string, unknown>): string {
+  const body = json(payload);
+  assertOutboxPayload(type, JSON.parse(body));
+  return body;
+}
 
 /**
  * Service của module `checkout`: CRUD sinh từ model DSL (MedusaService) + các thao tác cần NGUYÊN TỬ ở Postgres
@@ -355,6 +366,8 @@ class CheckoutModuleService extends MedusaService({
    * workflow bù trừ phần đã tạo.
    */
   async finalizeAttempt(input: FinalizeAttemptInput, quoteSnapshot: unknown): Promise<void> {
+    // Kiểm payload TRƯỚC khi mở transaction (T-149): sai shape là lỗi lập trình, không đụng attempt/đơn.
+    const outboxPayload = outboxJson(input.outbox.type, input.outbox.payload);
     await this.repo_.transaction(async (em) => {
       const fin = await this.exec(
         `UPDATE order_finance
@@ -395,7 +408,7 @@ class CheckoutModuleService extends MedusaService({
           input.outbox.event_key,
           input.order_id,
           input.outbox.type,
-          json(input.outbox.payload),
+          outboxPayload,
         ],
         em,
       );
@@ -1034,11 +1047,12 @@ class CheckoutModuleService extends MedusaService({
     em?: SqlEntityManager,
     nextAttemptAt: Date | null = null,
   ): Promise<void> {
+    const body = outboxJson(type, payload);
     await this.exec(
       `INSERT INTO outbox_event (id, event_key, aggregate_id, type, payload, state, next_attempt_at)
        VALUES (?, ?, ?, ?, ?::jsonb, 'pending', COALESCE(?, now()))
        ON CONFLICT (event_key) DO NOTHING`,
-      [generateEntityId(undefined, "obx"), eventKey, aggregateId, type, json(payload), nextAttemptAt],
+      [generateEntityId(undefined, "obx"), eventKey, aggregateId, type, body, nextAttemptAt],
       em,
     );
   }

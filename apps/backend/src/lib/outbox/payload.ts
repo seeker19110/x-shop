@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 /**
- * Schema payload sự kiện outbox, kiểm khi worker NHẬN (T-093 — BE-JOB-007). Payload chỉ chứa ID + tham số tối thiểu:
+ * Schema payload sự kiện outbox, kiểm khi worker NHẬN (T-093 — BE-JOB-007) và khi GHI (`insertOutbox`, `finalizeAttempt`
+ * của CheckoutModuleService — T-149: producer sai shape lỗi ngay thay vì chỉ lộ ở DLQ). Payload chỉ chứa ID + tham số
+ * tối thiểu:
  *  - mọi payload: object phẳng, giá trị nguyên thuỷ (chuỗi ≤ 2000 ký tự, số hữu hạn, boolean, null) — không object đã
  *    serialize (dễ lệch phiên bản), ≤ 32 khoá; tên khoá không gợi bí mật (password/secret/token/otp/api key/cookie/thẻ);
  *  - loại đã biết: thêm trường bắt buộc mà bộ xử lý cần (`order_id`…), tiền là số nguyên an toàn ≥ 0.
@@ -66,13 +68,12 @@ const BY_TYPE: Record<string, z.ZodType> = {
     payment_method: z.enum(["cod", "vnpay"]).optional(),
   }),
   "order.confirmed": z.looseObject({ order_id: orderId, display_ref: id.optional() }),
-  // Bộ xử lý (lib/notify) gửi `link` dựng sẵn — URL http(s) tuyệt đối.
+  // T-149 (D-089): chỉ ID — bộ xử lý (lib/notify) phát hành token một lần LÚC GỬI và dựng liên kết từ STOREFRONT_URL.
+  // `link` (URL mang token) bị cấm để token không bao giờ nằm trong bảng outbox; khoá `token` đã bị chặn ở kiểm chung.
   "order.lookup_link": z.looseObject({
     order_id: orderId,
-    link: z
-      .string()
-      .max(MAX_STRING)
-      .regex(/^https?:\/\/[^\s]+$/),
+    display_ref: id.optional(),
+    link: z.never().optional(),
   }),
   "shipment.shipped": z.looseObject({
     order_id: orderId,
@@ -107,4 +108,13 @@ export function validateOutboxPayload(type: string, payload: unknown): PayloadCh
   if (!schema) return { ok: true };
   const typed = schema.safeParse(payload);
   return typed.success ? { ok: true } : { ok: false, reason: describe(typed.error.issues) };
+}
+
+/**
+ * Kiểm lúc GHI (T-149): sai → ném `Error` nêu loại sự kiện + lý do (chỉ đường dẫn trường + mã lỗi, không giá trị). Lỗi
+ * lập trình của producer — transaction đang mở (nếu có) rollback, không có dòng outbox nào được ghi.
+ */
+export function assertOutboxPayload(type: string, payload: unknown): void {
+  const check = validateOutboxPayload(type, payload);
+  if (!check.ok) throw new Error(`[outbox] ${type.slice(0, 64)}: ${check.reason}`);
 }

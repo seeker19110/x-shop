@@ -9,7 +9,15 @@ import {
   type QueryStatusResult,
   type VnpayGateway,
 } from "../../src/lib/checkout/vnpay-gateway";
-import { issueOrderToken, ORDER_ACCESS_CONFIG } from "../../src/lib/orders/access";
+import { dispatchOutbox } from "../../src/lib/checkout/jobs";
+import { parseEnv } from "../../src/lib/env";
+import {
+  setNotificationAdapterForTest,
+  type NotificationAdapter,
+  type OutgoingMessage,
+} from "../../src/lib/notify/adapters";
+import { issueOrderToken, ORDER_ACCESS_CONFIG, readOrderToken } from "../../src/lib/orders/access";
+import { validateOutboxPayload } from "../../src/lib/outbox/payload";
 import {
   DUMMY_LOOKUP_PHONE,
   lookupPortsFor,
@@ -19,6 +27,8 @@ import {
 import { ORDER_RATE_LIMITS } from "../../src/lib/orders/rate-limit";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
+import { NOTIFY_MODULE } from "../../src/modules/notify";
+import type NotifyModuleService from "../../src/modules/notify/service";
 import { checkoutClient, CONTACT, DEV_VNPAY, ipn, type Api, type Res } from "../helpers/checkout-api";
 import {
   createPromotion,
@@ -29,6 +39,38 @@ import {
 } from "../helpers/checkout-fixtures";
 
 jest.setTimeout(300 * 1000);
+
+/**
+ * Adapter thông báo chỉ bắt thư liên kết tra cứu của MỘT đơn (message key `notify:order.lookup_link:<order>:…`) — mọi
+ * thư khác (kể cả do dispatcher nền gửi) bị bỏ qua. `failNext` > 0 → lần gửi đó ném lỗi tạm (SMTP 451) kèm nội dung
+ * thư, mô phỏng thư có thể đã tới khách dù bên gửi báo lỗi.
+ */
+class LookupLinkCatcher implements NotificationAdapter {
+  readonly name = "catcher";
+  readonly live = false;
+  failNext = 0;
+  readonly seen: OutgoingMessage[] = [];
+  constructor(private readonly orderId: string) {}
+  async send(m: OutgoingMessage) {
+    if (!m.messageKey.startsWith(`notify:order.lookup_link:${this.orderId}:`))
+      return { providerMessageId: null };
+    this.seen.push(m);
+    if (this.failNext > 0) {
+      this.failNext -= 1;
+      throw new Error(`SMTP 451 tạm lỗi — thư: ${m.text}`);
+    }
+    return { providerMessageId: `cat-${this.seen.length}` };
+  }
+}
+
+/** Token trong liên kết của thư (null nếu không có). */
+function linkTokenOf(m: OutgoingMessage): string | null {
+  const match = /\/tra-cuu-don\/xac-thuc\?token=([^\s&]+)/.exec(m.text);
+  return match ? decodeURIComponent(match[1]!) : null;
+}
+
+/** Dạng token ký HMAC (`base64url(body).base64url(mac)`) — không được xuất hiện trong bảng outbox. */
+const TOKEN_SHAPE = /[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/;
 
 /** Gateway querydr lập trình được (mặc định "chưa trả"). */
 class ScriptedGateway implements VnpayGateway {
@@ -105,7 +147,11 @@ medusaIntegrationTestRunner({
       setVnpayGatewayForTest(gateway);
       ip = newIp();
     });
-    afterAll(() => setVnpayGatewayForTest(null));
+    afterAll(() => {
+      setVnpayGatewayForTest(null);
+      setNotificationAdapterForTest(null);
+    });
+    afterEach(() => setNotificationAdapterForTest(null));
 
     const fin = async (orderId: string) => (await service().listOrderFinances({ order_id: orderId }))[0]!;
     const nativeStatus = async (orderId: string) =>
@@ -114,6 +160,35 @@ medusaIntegrationTestRunner({
       (await service().listOutboxEvents({ aggregate_id: orderId })).filter(
         (e) => e.type === "order.lookup_link",
       );
+    type OutboxRow = Awaited<ReturnType<typeof lookupLinks>>[number];
+    /**
+     * Chạy dispatcher tới khi mọi sự kiện liên kết tra cứu của đơn thoả `done` (mặc định: rời `pending`). Dispatcher nền
+     * (giờ thật) có thể nhận trước — không sao: adapter bắt thư là toàn cục, chỉ cần chờ trạng thái.
+     */
+    async function settleLookupLinks(
+      orderId: string,
+      opts: { now?: Date; done?: (e: OutboxRow) => boolean } = {},
+    ): Promise<OutboxRow[]> {
+      const done = opts.done ?? ((e: OutboxRow) => e.state !== "pending");
+      for (let i = 0; i < 60; i++) {
+        const events = await lookupLinks(orderId);
+        if (events.length > 0 && events.every(done)) return events;
+        await dispatchOutbox(container, opts.now ? { now: opts.now } : {});
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error("sự kiện liên kết tra cứu không tới trạng thái mong đợi");
+    }
+    /** Tra cứu khớp → gửi thư qua outbox → token trong liên kết của thư. */
+    async function lookupAndReceiveToken(o: { orderId: string; ref: string }): Promise<string> {
+      const catcher = new LookupLinkCatcher(o.orderId);
+      setNotificationAdapterForTest(catcher);
+      expect((await lookup({ display_ref: o.ref, phone: CONTACT.phone })).status).toBe(202);
+      await settleLookupLinks(o.orderId);
+      expect(catcher.seen).toHaveLength(1);
+      const token = linkTokenOf(catcher.seen[0]!);
+      expect(token).toEqual(expect.any(String));
+      return token!;
+    }
 
     describe("phiên đơn từ submit + GET /store/x/orders/:ref", () => {
       it("submit cấp order_access; xem đơn tách 3 trạng thái, timeline, che SĐT, không lộ email; private no-store", async () => {
@@ -347,9 +422,9 @@ medusaIntegrationTestRunner({
         }
         const links = await lookupLinks(o.orderId);
         expect(links).toHaveLength(1);
-        const token = String(links[0]!.payload.token);
-        expect(JSON.stringify(ok.data)).not.toContain(token);
-        expect(links[0]!.payload).toMatchObject({ display_ref: o.ref, expires_at: expect.any(String) });
+        // T-149 (D-089): payload chỉ có ID — token phát hành lúc gửi, không nằm trong outbox cũng như phản hồi.
+        expect(links[0]!.payload).toEqual({ order_id: o.orderId, display_ref: o.ref });
+        expect(JSON.stringify(ok.data)).not.toMatch(TOKEN_SHAPE);
 
         // Định dạng sai → 422 (không chạm DB, không lộ tồn tại).
         expect((await lookup({ display_ref: "abc", phone: "0912345678" })).status).toBe(422);
@@ -372,19 +447,15 @@ medusaIntegrationTestRunner({
             compared.push([stored, given]);
             return real.phoneEquals(stored, given);
           },
-          issueLink: (orderId, now) => {
-            steps.push("issueLink");
-            return real.issueLink(orderId, now);
-          },
-          deliverLink: async (c, link) => {
+          deliverLink: async (c) => {
             steps.push("deliverLink");
-            return real.deliverLink(c, link);
+            return real.deliverLink(c);
           },
         };
         const run = async (ref: string, phone: string) => {
           steps.length = 0;
           compared.length = 0;
-          const matched = await runOrderLookup(recording, ref, phone, new Date());
+          const matched = await runOrderLookup(recording, ref, phone);
           return { matched, steps: [...steps], compared: [...compared] };
         };
 
@@ -392,7 +463,8 @@ medusaIntegrationTestRunner({
         const wrongPhone = await run(o.ref, "0987654321");
         expect(notFound).toEqual({
           matched: false,
-          steps: ["findByRef", "phoneEquals", "issueLink"],
+          // T-149: không còn bước ký — token phát hành lúc gửi (bộ xử lý thông báo), không ở tra cứu.
+          steps: ["findByRef", "phoneEquals"],
           // Không có đơn → vẫn so sánh băm với giá trị giả (không short-circuit).
           compared: [[DUMMY_LOOKUP_PHONE, "0912345678"]],
         });
@@ -417,14 +489,15 @@ medusaIntegrationTestRunner({
         expect(await lookupLinks(o.orderId)).toHaveLength(1);
       });
 
-      it("đồng đều qua HTTP: không có đơn và sai SĐT → cùng số truy vấn, so sánh hằng thời gian, lần ký HMAC; không outbox; cùng phản hồi", async () => {
+      it("đồng đều qua HTTP: không có đơn và sai SĐT → cùng số truy vấn, so sánh hằng thời gian, số lần HMAC; không outbox; cùng phản hồi", async () => {
         const o = await place([["Trắng/M", 1]], "cod");
         const s = service();
         const spies = {
           find: jest.spyOn(s, "listOrderFinances"),
           rate: jest.spyOn(s, "hitRateCounter"),
           outbox: jest.spyOn(s, "insertOutbox"),
-          // So sánh hằng thời gian + ký HMAC: không có đơn vẫn phải so (giá trị giả) và ký như khi sai SĐT.
+          // So sánh hằng thời gian: không có đơn vẫn phải so (giá trị giả) như khi sai SĐT. HMAC: hai nhánh cùng số lần
+          // (T-149 bỏ bước ký token ở tra cứu — có thể là 0).
           compare: jest.spyOn(nodeCrypto, "timingSafeEqual"),
           hmac: jest.spyOn(nodeCrypto, "createHmac"),
         };
@@ -446,7 +519,6 @@ medusaIntegrationTestRunner({
           const wrongPhone = await counted({ display_ref: o.ref, phone: "0987654321" });
           expect(notFound).toMatchObject({ status: 202, find: 1, rate: 3, outbox: 0 });
           expect(notFound.compare).toBeGreaterThanOrEqual(1);
-          expect(notFound.hmac).toBeGreaterThanOrEqual(1);
           expect(wrongPhone).toEqual(notFound);
           const ok = await counted({ display_ref: o.ref, phone: CONTACT.phone });
           expect(ok).toMatchObject({ ...notFound, outbox: 1, hmac: expect.any(Number) });
@@ -499,8 +571,7 @@ medusaIntegrationTestRunner({
 
       it("[api1-bola post /store/x/orders/session] đổi liên kết → phiên đơn; dùng lại/giả/hết hạn/sai loại → 404; hai lần đổi đồng thời chỉ một thành công", async () => {
         const o = await place([["Trắng/S", 1]], "cod");
-        expect((await lookup({ display_ref: o.ref, phone: CONTACT.phone })).status).toBe(202);
-        const token = String((await lookupLinks(o.orderId))[0]!.payload.token);
+        const token = await lookupAndReceiveToken(o);
 
         const [r1, r2] = await Promise.all([session(token), session(token)]);
         const statuses = [r1.status, r2.status].sort();
@@ -521,6 +592,132 @@ medusaIntegrationTestRunner({
           expect(r.status).toBe(404);
           expect(JSON.stringify(r.data)).not.toContain(o.ref);
         }
+      });
+    });
+
+    describe("T-149 (D-089, BE-JOB-007) — thư liên kết tra cứu qua outbox: token phát hành lúc gửi", () => {
+      it("tra cứu khớp → outbox chỉ có ID (không token/link/bí mật) → gửi thành công, liên kết trỏ storefront, token đổi được phiên đơn", async () => {
+        const o = await place([["Đen/M", 1]], "cod");
+        const catcher = new LookupLinkCatcher(o.orderId);
+        setNotificationAdapterForTest(catcher);
+        expect((await lookup({ display_ref: o.ref, phone: CONTACT.phone })).status).toBe(202);
+
+        const [before] = await lookupLinks(o.orderId);
+        expect(before!.payload).toEqual({ order_id: o.orderId, display_ref: o.ref });
+        expect(validateOutboxPayload(before!.type, before!.payload)).toEqual({ ok: true });
+
+        const [ev] = await settleLookupLinks(o.orderId);
+        expect(ev).toMatchObject({ state: "sent", attempts: 0 });
+        expect(catcher.seen).toHaveLength(1);
+        const m = catcher.seen[0]!;
+        expect(m).toMatchObject({ template: "order.lookup_link", channel: "email", to: CONTACT.email });
+        expect(m.messageKey).toBe(`notify:${ev!.event_key}:email`);
+        const env = parseEnv(process.env);
+        if (!env.ok) throw new Error("env test không hợp lệ");
+        const base = env.env.storefrontUrl;
+        expect(base).toMatch(/^https?:\/\/[^/]+/);
+        const token = linkTokenOf(m)!;
+        expect(m.text).toContain(`${base}/tra-cuu-don/xac-thuc?token=${encodeURIComponent(token)}`);
+        const claim = readOrderToken("link", token);
+        expect(claim?.orderId).toBe(o.orderId);
+        // Hạn 15 phút tính từ LÚC GỬI.
+        expect(claim!.expiresAt.getTime() - Date.now()).toBeGreaterThan(
+          ORDER_ACCESS_CONFIG.linkTtlMs - 60_000,
+        );
+
+        // Liên kết dùng được: đổi phiên đơn → xem đơn.
+        const s = await session(token);
+        expect(s.status).toBe(200);
+        expect(s.data.display_ref).toBe(o.ref);
+        expect((await getOrder(o.ref, s.data.order_access)).status).toBe(200);
+
+        // Sau khi gửi, bảng outbox (payload, lỗi) và bản ghi gửi vẫn không chứa token/bí mật nào.
+        const [after] = await lookupLinks(o.orderId);
+        const stored = JSON.stringify({ payload: after!.payload, last_error: after!.last_error });
+        expect(stored).not.toContain(token);
+        expect(stored).not.toMatch(TOKEN_SHAPE);
+        expect(stored).not.toMatch(/token|link|secret|xac-thuc/i);
+        const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+        const { rows } = await pg.raw(
+          `SELECT payload::text AS p FROM outbox_event WHERE type = 'order.lookup_link'`,
+        );
+        for (const r of rows as Array<{ p: string }>) expect(r.p).not.toMatch(TOKEN_SHAPE);
+      });
+
+      it("retry: lần gửi đầu lỗi (thư có thể đã tới) → lần sau phát token MỚI; mỗi token chỉ mở đúng đơn đó, một lần, không thay được token phiên", async () => {
+        const o = await place([["Trắng/M", 1]], "cod");
+        const other = await place([["Đen/S", 1]], "cod");
+        const catcher = new LookupLinkCatcher(o.orderId);
+        catcher.failNext = 1;
+        setNotificationAdapterForTest(catcher);
+        expect((await lookup({ display_ref: o.ref, phone: CONTACT.phone })).status).toBe(202);
+
+        const [failed] = await settleLookupLinks(o.orderId);
+        expect(failed).toMatchObject({ state: "failed", attempts: 1 });
+        expect(catcher.seen).toHaveLength(1);
+        const t1 = linkTokenOf(catcher.seen[0]!)!;
+        // Lỗi ghi lại đã che token (thông điệp lỗi của adapter chứa nguyên thư).
+        expect(failed!.last_error).toContain("SMTP 451");
+        expect(failed!.last_error).not.toContain(t1);
+        expect(failed!.last_error).not.toMatch(TOKEN_SHAPE);
+
+        // Token tất định theo (đơn, giây hết hạn) — chờ qua giây để lần retry phát token khác hẳn.
+        await new Promise((r) => setTimeout(r, 1_100));
+        const [sent] = await settleLookupLinks(o.orderId, {
+          now: new Date(failed!.next_attempt_at),
+          done: (e) => e.state === "sent",
+        });
+        expect(sent).toMatchObject({ state: "sent", attempts: 1 });
+        expect(catcher.seen).toHaveLength(2);
+        expect(catcher.seen[1]!.messageKey).toBe(catcher.seen[0]!.messageKey);
+        const t2 = linkTokenOf(catcher.seen[1]!)!;
+        expect(t2).not.toBe(t1);
+        expect(JSON.stringify(sent!.payload)).not.toMatch(TOKEN_SHAPE);
+
+        // Không mở rộng quyền: cả hai token cùng loại `link`, cùng đơn, không dùng được làm token phiên.
+        for (const t of [t1, t2]) {
+          expect(readOrderToken("link", t)?.orderId).toBe(o.orderId);
+          expect(readOrderToken("access", t)).toBeNull();
+          expect((await getOrder(o.ref, t)).status).toBe(404);
+        }
+        const s1 = await session(t1);
+        const s2 = await session(t2);
+        for (const s of [s1, s2]) {
+          expect(s.status).toBe(200);
+          expect(s.data.display_ref).toBe(o.ref);
+          expect((await getOrder(o.ref, s.data.order_access)).status).toBe(200);
+          // Phiên đổi từ token nào cũng chỉ xem được đúng đơn đó.
+          expect((await getOrder(other.ref, s.data.order_access)).status).toBe(404);
+        }
+        // Mỗi token một lần.
+        expect((await session(t1)).status).toBe(404);
+        expect((await session(t2)).status).toBe(404);
+        const [msg] = await container
+          .resolve<NotifyModuleService>(NOTIFY_MODULE)
+          .listOutboundMessages({ message_key: catcher.seen[0]!.messageKey });
+        expect(msg).toMatchObject({ state: "sent", attempts: 2 });
+      });
+
+      it("đồng thời: hai lần tra cứu khớp cùng lúc → hai sự kiện riêng; hai dispatcher song song gửi mỗi sự kiện đúng một lần", async () => {
+        const o = await place([["Đen/S", 1]], "cod");
+        const catcher = new LookupLinkCatcher(o.orderId);
+        setNotificationAdapterForTest(catcher);
+        const rs = await Promise.all([
+          lookup({ display_ref: o.ref, phone: CONTACT.phone }),
+          lookup({ display_ref: o.ref, phone: "+84912345678" }),
+        ]);
+        for (const r of rs) expect(r.status).toBe(202);
+        const events = await lookupLinks(o.orderId);
+        expect(events).toHaveLength(2);
+        expect(new Set(events.map((e) => e.event_key)).size).toBe(2);
+        for (const e of events) expect(e.payload).toEqual({ order_id: o.orderId, display_ref: o.ref });
+
+        await Promise.all([dispatchOutbox(container), dispatchOutbox(container)]);
+        const settled = await settleLookupLinks(o.orderId);
+        for (const e of settled) expect(e.state).toBe("sent");
+        expect(catcher.seen).toHaveLength(2);
+        expect(new Set(catcher.seen.map((m) => m.messageKey)).size).toBe(2);
+        for (const m of catcher.seen) expect(readOrderToken("link", linkTokenOf(m))?.orderId).toBe(o.orderId);
       });
     });
 

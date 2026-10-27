@@ -1,4 +1,4 @@
-import { isSecretKey, OUTBOX_PAYLOAD_TYPES, validateOutboxPayload } from "../payload";
+import { assertOutboxPayload, isSecretKey, OUTBOX_PAYLOAD_TYPES, validateOutboxPayload } from "../payload";
 
 /** T-093 — BE-JOB-007: schema payload outbox kiểm khi worker nhận; sai → lý do ngắn, không chứa giá trị (PII). */
 describe("validateOutboxPayload", () => {
@@ -18,7 +18,9 @@ describe("validateOutboxPayload", () => {
       ["payment.native_sync", { order_id: ORDER, amount: 499_000 }],
       ["order.cancelled", { order_id: ORDER, reason: "HOLD_EXPIRED", from: "placed", refund_amount: 0 }],
       ["shipment.shipped", { order_id: ORDER, shipment_id: "shp_1", provider_order_code: "GHN1" }],
-      ["order.lookup_link", { order_id: ORDER, link: "https://shop.example.vn/tra-cuu-don/xac-thuc?x=1" }],
+      // T-149: chỉ ID — token/link phát hành lúc gửi.
+      ["order.lookup_link", { order_id: ORDER, display_ref: "XS-1" }],
+      ["order.lookup_link", { order_id: ORDER }],
       // Loại chưa khai schema riêng: chỉ kiểm chung.
       ["test.count", { i: 3 }],
       ["test.fail", {}],
@@ -40,10 +42,25 @@ describe("validateOutboxPayload", () => {
     const r2 = validateOutboxPayload("order.placed_pending", { order_id: "an@example.test" });
     expect(r2.ok).toBe(false);
     expect(JSON.stringify(r2)).not.toContain("an@example.test");
-    expect(validateOutboxPayload("order.lookup_link", { order_id: ORDER }).ok).toBe(false);
+    expect(validateOutboxPayload("order.lookup_link", { display_ref: "XS-1" }).ok).toBe(false);
     expect(
-      validateOutboxPayload("order.lookup_link", { order_id: ORDER, link: "javascript:alert(1)" }).ok,
+      validateOutboxPayload("order.placed_pending", { order_id: ORDER, payment_method: "bitcoin" }).ok,
     ).toBe(false);
+  });
+
+  it("T-149 — order.lookup_link: token thô hoặc link (URL mang token) trong payload → sai, lý do không chứa giá trị", () => {
+    const token = "b3JkZXJfMDFKQUJDLjE3OTMwODkxNzc.VYNAshDkEYz6xG1PqTp-X_NqqTutjaELj96nugj26D8";
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ order_id: ORDER, display_ref: "XS-1", token, expires_at: "2026-10-27T08:19:37.555Z" }, "token:"],
+      [{ order_id: ORDER, link: `https://shop.example.vn/tra-cuu-don/xac-thuc?token=${token}` }, "link:"],
+      [{ order_id: ORDER, link: "javascript:alert(1)" }, "link:"],
+      [{ order_id: ORDER, link: null }, "link:"],
+    ];
+    for (const [payload, field] of cases) {
+      const r = validateOutboxPayload("order.lookup_link", payload);
+      expect(r).toEqual({ ok: false, reason: expect.stringContaining(field) });
+      expect(JSON.stringify(r)).not.toContain(token);
+    }
     expect(
       validateOutboxPayload("order.placed_pending", { order_id: ORDER, payment_method: "bitcoin" }).ok,
     ).toBe(false);
@@ -111,5 +128,23 @@ describe("isSecretKey", () => {
       "tokens_used",
     ])
       expect(isSecretKey(k)).toBe(false);
+  });
+});
+
+describe("assertOutboxPayload (kiểm lúc ghi — T-149)", () => {
+  const ORDER = "order_01JABCDEF0123456789";
+  it("đúng → không ném; sai → ném nêu loại + trường, không nêu giá trị", () => {
+    expect(() => assertOutboxPayload("order.lookup_link", { order_id: ORDER })).not.toThrow();
+    expect(() => assertOutboxPayload("test.fail", {})).not.toThrow();
+    expect(() =>
+      assertOutboxPayload("order.confirmed", { order_id: ORDER, password: "mk-bi-mat-1" }),
+    ).toThrow(/^\[outbox\] order\.confirmed: payload không hợp lệ — password:custom$/);
+    try {
+      assertOutboxPayload("order.placed_pending", { order_id: "an@example.test" });
+      throw new Error("phải ném");
+    } catch (e) {
+      expect((e as Error).message).toContain("order_id:");
+      expect((e as Error).message).not.toContain("an@example.test");
+    }
   });
 });

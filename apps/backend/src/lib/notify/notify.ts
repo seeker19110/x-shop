@@ -6,6 +6,8 @@ import type { OutboxClaim } from "../../modules/checkout/service";
 import { NOTIFY_MODULE } from "../../modules/notify";
 import type NotifyModuleService from "../../modules/notify/service";
 import type { NotifyChannel } from "../../modules/notify/models/outbound-message";
+import { parseEnv } from "../env";
+import { issueOrderToken } from "../orders/access";
 import { getNotificationAdapter, maskRecipient } from "./adapters";
 import { renderTemplate, type TemplateData, type TemplateName } from "./templates";
 import { isNonEmpty } from "@x-shop/domain";
@@ -26,9 +28,14 @@ export function isNotificationEvent(type: string): boolean {
   return (NOTIFICATION_EVENT_TYPES as readonly string[]).includes(type);
 }
 
-/** Che email/SĐT lọt vào thông điệp lỗi trước khi ghi DB/log. */
+/**
+ * Che email/SĐT và token liên kết (adapter có thể nhắc lại nội dung thư trong lỗi — T-149) lọt vào thông điệp lỗi trước
+ * khi ghi DB/log. Token: tham số `token=` và mọi chuỗi dạng token ký HMAC (`base64url.base64url`).
+ */
 export function scrubPii(s: string): string {
   return s
+    .replace(/([?&]token=)[^\s&"'<>]+/gi, "$1***")
+    .replace(/[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g, "***")
     .replace(/[^\s@<>"']+@[^\s@<>"']+/g, "***@***")
     .replace(/\+?\d[\d\s.-]{6,}\d/g, "***")
     .slice(0, 300);
@@ -41,6 +48,22 @@ interface Contact {
 }
 
 export type NotifyOutcome = "sent" | "duplicate" | "skipped";
+
+let cachedStorefrontUrl: string | null = null;
+
+/** Gốc URL storefront (STOREFRONT_URL, đã kiểm lúc khởi động; dev/test vắng → DEV_STOREFRONT_URL). */
+function storefrontUrl(): string {
+  if (isNonEmpty(cachedStorefrontUrl)) return cachedStorefrontUrl;
+  const parsed = parseEnv(process.env);
+  if (!parsed.ok) throw new Error("[notify] cấu hình môi trường không hợp lệ (đã báo khi khởi động)");
+  cachedStorefrontUrl = parsed.env.storefrontUrl;
+  return cachedStorefrontUrl;
+}
+
+/** Liên kết tra cứu đơn (trang storefront `/tra-cuu-don/xac-thuc`, POST01) cho token `link`. */
+export function orderLookupLink(base: string, token: string): string {
+  return `${base.replace(/\/+$/, "")}/tra-cuu-don/xac-thuc?token=${encodeURIComponent(token)}`;
+}
 
 export async function sendNotification(
   container: MedusaContainer,
@@ -109,9 +132,11 @@ export async function notificationHandler(container: MedusaContainer, event: Out
       template = "order.confirmed";
       break;
     case "order.lookup_link":
-      if (typeof event.payload.link !== "string") throw new Error("order.lookup_link thiếu link");
+      // T-149 (D-089): token một lần (15 phút, tính từ LÚC GỬI) phát hành tại đây, chỉ nằm trong thư — outbox chỉ có ID.
+      // Retry phát token mới: token cũ (thư lỗi có thể đã tới) vẫn chỉ mở đúng đơn này, một lần, tới khi hết hạn —
+      // không rộng hơn token mới (cùng loại `link`, cùng đơn, cùng người nhận trên đơn).
       template = "order.lookup_link";
-      extra.link = event.payload.link;
+      extra.link = orderLookupLink(storefrontUrl(), issueOrderToken("link", orderId).token);
       break;
     case "shipment.shipped":
       template = "shipment.shipped";

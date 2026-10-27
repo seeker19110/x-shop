@@ -33,7 +33,12 @@ export const PRODUCTION_REQUIRED = [
   // Storefront luôn đứng trước backend (proxy) → phải khai rõ proxy tin cậy (hoặc `none`); thiếu thì mọi khách dùng
   // chung một IP (của storefront) trong rate limit → nghẽn toàn site (T-034).
   "XS_TRUSTED_PROXIES",
+  // Gốc URL storefront để dựng liên kết gửi khách (liên kết tra cứu đơn — T-149); thiếu thì thư trỏ về localhost.
+  "STOREFRONT_URL",
 ] as const;
+
+/** Storefront khi chạy dev/test mà không đặt STOREFRONT_URL (`next dev` mặc định cổng 3000). */
+export const DEV_STOREFRONT_URL = "http://localhost:3000";
 
 /**
  * Khoá ký token phiên đơn/tra cứu đơn (POST01, T-021). Dev/test vắng → giá trị GIẢ dưới; production bắt buộc ≥ 32 ký tự
@@ -109,6 +114,31 @@ const urlWithProtocol = (protocols: readonly string[], label: string) =>
     { message: `phải là URL ${label} hợp lệ` },
   );
 
+/**
+ * Gốc URL storefront (T-149): http(s), có host, không query/fragment/thông tin đăng nhập — liên kết gửi khách được nối
+ * thêm đường dẫn vào sau (`<gốc>/tra-cuu-don/xac-thuc?token=…`). Cho phép tiền tố đường dẫn (vd. `/shop`).
+ */
+const baseUrl = z.string().refine(
+  (raw) => {
+    try {
+      const u = new URL(raw);
+      return (
+        (u.protocol === "http:" || u.protocol === "https:") &&
+        u.hostname !== "" &&
+        u.search === "" &&
+        u.hash === "" &&
+        !raw.includes("?") &&
+        !raw.includes("#") &&
+        u.username === "" &&
+        u.password === ""
+      );
+    } catch {
+      return false;
+    }
+  },
+  { message: "phải là URL gốc http(s):// (không query, fragment hay thông tin đăng nhập)" },
+);
+
 // Độ dài tối thiểu cũng loại các mặc định công khai ngắn như "supersecret" của Medusa.
 const secret = z
   .string()
@@ -172,6 +202,7 @@ const schema = z
     ADMIN_CORS: optionalText.pipe(corsList.optional()),
     AUTH_CORS: optionalText.pipe(corsList.optional()),
     MEDUSA_BACKEND_URL: optionalText.pipe(urlWithProtocol(["http:", "https:"], "http(s)://").optional()),
+    STOREFRONT_URL: optionalText.pipe(baseUrl.optional()),
     // Proxy tin cậy (LB, storefront) được phép báo IP khách qua X-Forwarded-For. Vắng = không tin header nào (SEC03).
     XS_TRUSTED_PROXIES: optionalText.pipe(
       z
@@ -294,6 +325,10 @@ const schema = z
     } else if (env.GHN_MODE === "mock") {
       ctx.addIssue({ code: "custom", path: ["GHN_MODE"], message: "không được dùng mock ở production" });
     }
+    if (env.STOREFRONT_URL !== undefined && !env.STOREFRONT_URL.startsWith("https://")) {
+      // Liên kết mang token một lần — không gửi qua http thường.
+      ctx.addIssue({ code: "custom", path: ["STOREFRONT_URL"], message: "phải dùng https:// ở production" });
+    }
     if (env.GHN_BASE_URL !== undefined && !env.GHN_BASE_URL.startsWith("https://")) {
       ctx.addIssue({ code: "custom", path: ["GHN_BASE_URL"], message: "phải dùng https:// ở production" });
     }
@@ -367,6 +402,8 @@ const schema = z
         ),
         timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
       },
+      // Bỏ `/` cuối để nối đường dẫn; production đã bắt buộc biến nên mặc định dev không áp ở production.
+      storefrontUrl: (env.STOREFRONT_URL ?? DEV_STOREFRONT_URL).replace(/\/+$/, ""),
       orderLookupSecret:
         env.ORDER_LOOKUP_SECRET ?? (env.NODE_ENV === "production" ? "" : ORDER_LOOKUP_DEV_SECRET),
       vnpay: env.VNPAY_ENABLED
