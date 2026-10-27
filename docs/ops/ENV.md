@@ -79,6 +79,16 @@ PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # SHUTDOWN_TIMEOUT_MS=25000      # [1000, 300000]
 # Log (T-090): JSON một dòng/stdout, đã che bí mật + PII. Ngưỡng: error|warn|info|http|verbose|debug|silly; vắng = info.
 # LOG_LEVEL=info
+# Mặc định an toàn (T-098, BASE-CFG-007, BASE-SEC-010). Bind: scripts `dev`/`start` chạy `medusa … -H ${HOST:-127.0.0.1}` —
+# vắng HOST = chỉ loopback (trước đây Node nghe mọi giao diện). Container/sau LB phải ĐẶT `HOST=0.0.0.0` tường minh (và
+# không publish cổng DB/Redis); tên máy hoặc IP, không kèm cổng (cổng = `-p`). DEBUG: vắng/false/0 = tắt; bật ở dev
+# (true/1/namespace) được; NODE_ENV=production + DEBUG bật → từ chối khởi động.
+# HOST=127.0.0.1
+# DEBUG=false
+# Che bí mật khi in cấu hình (T-098, BASE-CFG-005): `redactConfig`/`formatEffectiveConfig` (src/lib/env/redact.ts); đối
+# tượng `Env` tự che khi JSON.stringify/console.log. Danh sách bí mật `SECRET_ENV_KEYS`: DATABASE_URL, REDIS_URL (có mật
+# khẩu), JWT_SECRET, COOKIE_SECRET, AUTH_MFA_ENCRYPTION_KEY, ORDER_LOOKUP_SECRET, VNPAY_HASH_SECRET(_PREVIOUS), GHN_TOKEN.
+# Thêm biến bí mật mới → thêm vào danh sách (test hàng rào báo đỏ nếu tên giống bí mật mà chưa đăng ký).
 
 # VNPAY (SPEC-payment). Bật mặc định (VNPAY_ENABLED=true). Production + bật → BẮT BUỘC đủ 5 biến dưới, URL phải https,
 # không được dùng khoá giả của dev. Dev/test vắng biến → dùng giá trị GIẢ trong env.ts (VNPAY_DEV_DEFAULTS) — chỉ ký/kiểm
@@ -118,6 +128,9 @@ là hằng cấu hình trong `apps/backend/src/lib/checkout/config.ts` (D-002) �
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 # Publishable key do seed tạo ("Storefront x-shop") — công khai theo thiết kế của Medusa.
 NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=
+# CÔNG KHAI (schema client, T-098): none | beacon; vắng = none. beacon = `track()` gửi sendBeacon tới /api/analytics khi
+# người dùng đã đồng ý. Giá trị khác → getClientEnv() ném lỗi (layout/proxy không lên); `track()` thì coi như none.
+# NEXT_PUBLIC_ANALYTICS_TRANSPORT=none
 # Chỉ server.
 MEDUSA_BACKEND_URL=http://localhost:9000
 # Nguồn dữ liệu catalog: backend | fixtures. Bỏ trống → `backend` nếu MEDUSA_BACKEND_URL được đặt thật,

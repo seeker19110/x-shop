@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import nextConfig from "../../../next.config";
 import { config as proxyConfig, proxy } from "../../proxy";
 import { buildCsp, createNonce, HSTS_VALUE } from "./csp";
+import { resetEnvCacheForTests } from "../env";
 import { allowedHostsOf, checkCsrf } from "./csrf";
 import { forwardedClientIp, trustProxyHeaders } from "./client-ip";
 
@@ -100,7 +101,10 @@ describe("checkCsrf", () => {
 describe("proxy", () => {
   const req = (url: string, init: { method?: string; headers?: Record<string, string> } = {}) =>
     new NextRequest(new URL(url), { method: init.method ?? "GET", headers: init.headers });
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetEnvCacheForTests();
+  });
 
   it("GET trang: CSP có nonce mới mỗi request, cùng nonce chuyển cho Next qua header request; không HSTS ngoài production", () => {
     const a = proxy(req("http://localhost:3000/san-pham/ao"));
@@ -118,6 +122,9 @@ describe("proxy", () => {
 
   it("production: HSTS + upgrade-insecure-requests", () => {
     vi.stubEnv("NODE_ENV", "production");
+    // Production thật bắt buộc biến công khai (FE-BUILD-005): thiếu thì getClientEnv() ném, proxy không chạy tiếp.
+    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://shop.example.vn");
+    vi.stubEnv("NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY", "pk_live_test");
     const res = proxy(req("https://shop.example.vn/"));
     expect(res.headers.get("strict-transport-security")).toBe(HSTS_VALUE);
     expect(res.headers.get("content-security-policy")).toContain("upgrade-insecure-requests");
@@ -157,6 +164,7 @@ describe("proxy", () => {
       ).status,
     ).toBe(200);
     vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://www.example.vn");
+    resetEnvCacheForTests(); // proxy đọc qua getClientEnv() (cache theo tiến trình)
     expect(
       proxy(
         req("http://10.0.0.5:3000/gio-hang", {

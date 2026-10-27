@@ -1,5 +1,6 @@
 // @vitest-environment node
 import {
+  getAnalyticsTransport,
   getClientEnv,
   getServerEnv,
   parseClientEnv,
@@ -7,7 +8,7 @@ import {
   resetEnvCacheForTests,
   resolveDataSource,
   shouldUseDefaults,
-} from "./env";
+} from "./index";
 
 const GOOD_CLIENT = {
   NEXT_PUBLIC_SITE_URL: "https://shop.example.vn/",
@@ -47,7 +48,11 @@ describe("parseClientEnv", () => {
       { ...GOOD_CLIENT, MEDUSA_BACKEND_URL: "http://secret" },
       { useDefaults: false },
     );
-    expect(Object.keys(env).sort()).toEqual(["NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY", "NEXT_PUBLIC_SITE_URL"]);
+    expect(Object.keys(env).sort()).toEqual([
+      "NEXT_PUBLIC_ANALYTICS_TRANSPORT",
+      "NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY",
+      "NEXT_PUBLIC_SITE_URL",
+    ]);
   });
 });
 
@@ -126,5 +131,39 @@ describe("resolveDataSource", () => {
     expect(() =>
       parseServerEnv({ MEDUSA_BACKEND_URL: "http://m:9000", XS_DATA_SOURCE: "x" }, { useDefaults: false }),
     ).toThrow(/XS_DATA_SOURCE/);
+  });
+});
+
+describe("NEXT_PUBLIC_ANALYTICS_TRANSPORT trong schema client (FE-BUILD-005)", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("vắng/rỗng → none; beacon/none hợp lệ", () => {
+    expect(parseClientEnv(GOOD_CLIENT, { useDefaults: false }).NEXT_PUBLIC_ANALYTICS_TRANSPORT).toBe("none");
+    expect(
+      parseClientEnv({ ...GOOD_CLIENT, NEXT_PUBLIC_ANALYTICS_TRANSPORT: "  " }, { useDefaults: false })
+        .NEXT_PUBLIC_ANALYTICS_TRANSPORT,
+    ).toBe("none");
+    expect(
+      parseClientEnv({ ...GOOD_CLIENT, NEXT_PUBLIC_ANALYTICS_TRANSPORT: "beacon" }, { useDefaults: false })
+        .NEXT_PUBLIC_ANALYTICS_TRANSPORT,
+    ).toBe("beacon");
+  });
+
+  it("giá trị sai (kể cả khác hoa/thường) → lỗi nêu tên biến, không đoán", () => {
+    for (const v of ["BEACON", "true", "pixel"]) {
+      expect(() =>
+        parseClientEnv({ ...GOOD_CLIENT, NEXT_PUBLIC_ANALYTICS_TRANSPORT: v }, { useDefaults: false }),
+      ).toThrow(/NEXT_PUBLIC_ANALYTICS_TRANSPORT/);
+    }
+  });
+
+  it("getAnalyticsTransport: không cache, sai/thiếu → none (telemetry không phá trang)", () => {
+    expect(getAnalyticsTransport()).toBe("none");
+    vi.stubEnv("NEXT_PUBLIC_ANALYTICS_TRANSPORT", "beacon");
+    expect(getAnalyticsTransport()).toBe("beacon");
+    vi.stubEnv("NEXT_PUBLIC_ANALYTICS_TRANSPORT", "BEACON");
+    expect(getAnalyticsTransport()).toBe("none");
+    vi.stubEnv("NEXT_PUBLIC_ANALYTICS_TRANSPORT", " ");
+    expect(getAnalyticsTransport()).toBe("none");
   });
 });

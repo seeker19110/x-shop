@@ -1,4 +1,5 @@
 import { findPii, ORDER_EVENTS, SCHEMA_VERSION, type AnalyticsEvent, type AnalyticsPayload } from "./schema";
+import { getAnalyticsTransport } from "../env";
 import { isNonEmpty } from "../presence";
 
 /**
@@ -103,7 +104,7 @@ export function track(payload: AnalyticsPayload): boolean {
     if (event.event === "purchase" && !firstPurchase(event.order_id as string)) return false;
 
     (window.dataLayer ??= []).push(event);
-    if (process.env.NEXT_PUBLIC_ANALYTICS_TRANSPORT === "beacon" && hasAnalyticsConsent()) {
+    if (getAnalyticsTransport() === "beacon" && hasAnalyticsConsent()) {
       navigator.sendBeacon?.(
         ANALYTICS_ENDPOINT,
         new Blob([JSON.stringify(event)], { type: "application/json" }),

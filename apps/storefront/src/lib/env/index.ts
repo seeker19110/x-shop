@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isNonEmpty } from "./presence";
+import { isNonEmpty } from "../presence";
 
 /**
  * Cấu hình môi trường, validate bằng zod, tách server / client.
@@ -24,9 +24,18 @@ const httpUrl = z
   .refine((v) => /^https?:\/\//i.test(v), "phải là URL http(s)")
   .transform((v) => v.replace(/\/+$/, ""));
 
+export const ANALYTICS_TRANSPORTS = ["none", "beacon"] as const;
+export type AnalyticsTransport = (typeof ANALYTICS_TRANSPORTS)[number];
+
+/**
+ * Schema CLIENT: chỉ biến `NEXT_PUBLIC_*` (Next nhúng giá trị vào bundle trình duyệt lúc build — mọi thứ ở đây là CÔNG
+ * KHAI, không bao giờ đặt bí mật). Biến server nằm ở `serverEnvSchema`; test `client-bundle.test.ts` chặn lẫn lộn.
+ */
 export const clientEnvSchema = z.object({
   NEXT_PUBLIC_SITE_URL: httpUrl,
   NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: z.string().trim().min(1, "không được rỗng"),
+  /** `beacon` = `track()` gửi sendBeacon tới /api/analytics khi đã đồng ý; vắng = `none` (chỉ dataLayer). */
+  NEXT_PUBLIC_ANALYTICS_TRANSPORT: z.enum(ANALYTICS_TRANSPORTS).default("none"),
 });
 
 export const DATA_SOURCES = ["backend", "fixtures"] as const;
@@ -114,10 +123,24 @@ export function getClientEnv(): ClientEnv {
     {
       NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
       NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
+      NEXT_PUBLIC_ANALYTICS_TRANSPORT: process.env.NEXT_PUBLIC_ANALYTICS_TRANSPORT,
     },
     { useDefaults: shouldUseDefaults() },
   );
   return clientCache;
+}
+
+/**
+ * Transport analytics, đọc KHÔNG qua cache (đổi được trong test) nhưng vẫn qua schema client. Giá trị sai/thiếu → `none`:
+ * telemetry không được làm hỏng trang (giá trị sai vẫn làm `getClientEnv()` ở layout fail theo FE-BUILD-005).
+ */
+export function getAnalyticsTransport(): AnalyticsTransport {
+  // Tham chiếu tĩnh để Next nhúng giá trị vào bundle client.
+  const raw = process.env.NEXT_PUBLIC_ANALYTICS_TRANSPORT;
+  const r = clientEnvSchema.shape.NEXT_PUBLIC_ANALYTICS_TRANSPORT.safeParse(
+    raw === undefined || raw.trim() === "" ? undefined : raw,
+  );
+  return r.success ? r.data : "none";
 }
 
 export function getServerEnv(): ServerEnv {

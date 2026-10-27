@@ -6,8 +6,8 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "pnpm --filter @x-shop/domain build && medusa build",
-    "start": "medusa start",
-    "dev": "medusa develop",
+    "start": "medusa start -H ${HOST:-127.0.0.1}",
+    "dev": "medusa develop -H ${HOST:-127.0.0.1}",
     "seed": "medusa exec ./src/scripts/seed.ts",
     "seed:catalog": "medusa exec ./src/scripts/seed-catalog.ts",
     "catalog:reindex": "medusa exec ./src/scripts/rebuild-catalog-index.ts",

@@ -1,7 +1,11 @@
+import { isIPv6 } from "node:net";
 import path from "node:path";
 import { z } from "zod";
-import { parseTrustedProxies, TRUSTED_PROXY_KEYWORDS } from "./security/client-ip";
-import { privateDirProblem } from "./upload/private";
+import { parseTrustedProxies, TRUSTED_PROXY_KEYWORDS } from "../security/client-ip";
+import { privateDirProblem } from "../upload/private";
+import { redactConfig } from "./redact";
+
+export { REDACTED, SECRET_ENV_KEYS, formatEffectiveConfig, redactConfig } from "./redact";
 
 /**
  * Cấu hình môi trường của backend, kiểm bằng zod khi nạp `medusa-config.ts` (BASE-CFG-002).
@@ -49,6 +53,15 @@ export const DEV_PRIVATE_UPLOAD_DIRNAME = "private-uploads";
 
 /** Thư mục công khai mà Medusa phục vụ ở `/static` (express-loader: `path.join(rootDir, "static")`). */
 export const publicStaticDir = (cwd: string = process.cwd()): string => path.join(cwd, "static");
+
+/**
+ * Địa chỉ bind mặc định (BASE-SEC-010): loopback. Muốn nhận kết nối từ ngoài máy (container, sau LB) phải đặt `HOST`
+ * tường minh (vd. `0.0.0.0`) — scripts `dev`/`start` của backend truyền `-H ${HOST:-127.0.0.1}` cho Medusa.
+ */
+export const DEFAULT_BIND_HOST = "127.0.0.1";
+
+/** Giá trị DEBUG coi là TẮT (mặc định). Mọi giá trị khác (`true`, `1`, `medusa:*`…) = bật. */
+const DEBUG_OFF = new Set(["", "0", "false", "off", "no"]);
 
 /** Storefront khi chạy dev/test mà không đặt STOREFRONT_URL (`next dev` mặc định cổng 3000). */
 export const DEV_STOREFRONT_URL = "http://localhost:3000";
@@ -204,11 +217,26 @@ const intInRange = (fallback: number, min: number, max: number, unit = "giây") 
       .refine((n) => n >= min && n <= max, { message: `phải là số nguyên ${unit} trong [${min}, ${max}]` }),
   );
 
+/** Tên máy/địa chỉ IP để bind: không khoảng trắng, không ký tự URL (`/`, `:` ngoài IPv6, `@`…). */
+const bindHost = z.string().refine((v) => /^[A-Za-z0-9._-]+$/.test(v) || isIPv6(v), {
+  message: "phải là tên máy hoặc địa chỉ IP (vd. 127.0.0.1, 0.0.0.0, ::1)",
+});
+
 const schema = z
   .object({
     NODE_ENV: z.preprocess(
       (v) => (v === undefined || v === "" ? "development" : v),
       z.enum(NODE_ENVS, { message: `phải là một trong ${NODE_ENVS.join("|")}` }),
+    ),
+    // Bind (BASE-SEC-010): vắng → 127.0.0.1. Scripts dev/start đọc cùng biến này (package.json).
+    HOST: optionalText.pipe(bindHost.optional()),
+    // DEBUG (BASE-CFG-007): vắng = tắt; production không được bật. Chấp nhận cả dạng namespace của thư viện `debug`.
+    DEBUG: z.preprocess(
+      (v) => (typeof v === "string" ? v.trim().toLowerCase() : v),
+      z
+        .string()
+        .optional()
+        .transform((v) => v !== undefined && !DEBUG_OFF.has(v)),
     ),
     DATABASE_URL: z.preprocess(
       (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
@@ -358,6 +386,9 @@ const schema = z
       }
     }
     if (env.NODE_ENV !== "production") return;
+    if (env.DEBUG) {
+      ctx.addIssue({ code: "custom", path: ["DEBUG"], message: "phải tắt khi NODE_ENV=production" });
+    }
     if (env.GHN_MODE === undefined) {
       ctx.addIssue({
         code: "custom",
@@ -426,8 +457,9 @@ const schema = z
   .transform((env) => {
     const pick = <K extends keyof typeof VNPAY_DEV_DEFAULTS>(key: K): string =>
       env[key] ?? (env.NODE_ENV === "production" ? "" : VNPAY_DEV_DEFAULTS[key]);
-    return {
+    const effective = {
       ...env,
+      host: env.HOST ?? DEFAULT_BIND_HOST,
       STORE_CORS: env.STORE_CORS ?? DEV_CORS_DEFAULTS.STORE_CORS,
       ADMIN_CORS: env.ADMIN_CORS ?? DEV_CORS_DEFAULTS.ADMIN_CORS,
       AUTH_CORS: env.AUTH_CORS ?? DEV_CORS_DEFAULTS.AUTH_CORS,
@@ -464,6 +496,15 @@ const schema = z
           }
         : null,
     };
+    // In/dump cấu hình (JSON.stringify, console.log, util.inspect) luôn qua bản đã che bí mật (BASE-CFG-005).
+    // Không liệt kê được nên không lọt vào `{ ...env }`/so sánh; truy cập trường trực tiếp vẫn trả giá trị thật.
+    const masked = (): unknown => redactConfig({ ...effective });
+    Object.defineProperty(effective, "toJSON", { value: masked, enumerable: false });
+    Object.defineProperty(effective, Symbol.for("nodejs.util.inspect.custom"), {
+      value: masked,
+      enumerable: false,
+    });
+    return effective;
   });
 
 export type Env = z.output<typeof schema>;
