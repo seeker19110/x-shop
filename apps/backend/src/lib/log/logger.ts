@@ -88,7 +88,8 @@ const MAX_CAUSE_DEPTH = 32;
 function describeNonError(v: unknown): string {
   if (typeof v === "string") return v;
   try {
-    return JSON.stringify(v) ?? String(v);
+    // Che từng trường trước khi stringify (`\"` làm mẫu SQL/PII không khớp, T-151).
+    return JSON.stringify(redactLog(v)) ?? String(v);
   } catch {
     return String(v);
   }

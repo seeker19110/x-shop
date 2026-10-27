@@ -2,6 +2,7 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import { getHttpResponseFromError } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { zodErrors, type ProblemError } from "../http/problem";
+import { redactLog } from "../log/redact";
 import { traceIdOf } from "./trace";
 
 /**
@@ -184,7 +185,8 @@ export function toHttpProblem(err: unknown, traceId: string): HttpProblem {
 function describeError(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
   try {
-    return JSON.stringify(error) ?? String(error);
+    // Che TỪNG trường trước khi tuần tự hoá: JSON.stringify thoát `"` thành `\"` và làm mẫu SQL/PII không còn khớp (T-151).
+    return JSON.stringify(redactLog(error)) ?? String(error);
   } catch {
     return "lỗi không rõ (không tuần tự hoá được)";
   }

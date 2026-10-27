@@ -42,6 +42,8 @@ describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
     ["SQL knex: insert into trần lặp", "insert into a (".repeat(N / 15)],
     ["SQL knex: select from trần lặp", "select a from b where ".repeat(N / 22)],
     ["SQL knex: update trần lặp", "update a set b = ".repeat(N / 17)],
+    ["SQL knex: INSERT INTO + xuống dòng + at lặp", "INSERT INTO t (a)\n  at ".repeat(N / 21)],
+    ["SQL knex: nháy lẻ + at lặp", "insert into t (a) values ('\n    at ".repeat(N / 35)],
     ["SQL knex: delete from lặp", 'delete from "t" '.repeat(N / 16)],
   ];
   it.each(cases)("%s → < 50 ms", (_name, input) => {
@@ -160,11 +162,9 @@ describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
       `insert into t_m ${REDACTED} - boom`,
     );
     expect(redactText("update t_m set h = 180, n = null where id = 'x' - boom")).toBe(
-      `update t_m set h ${REDACTED} - boom`,
+      `update t_m set ${REDACTED} - boom`,
     );
-    expect(redactText("delete from t_m where h = 180 - boom")).toBe(
-      `delete from t_m where ${REDACTED} - boom`,
-    );
+    expect(redactText("delete from t_m where h = 180 - boom")).toBe(`delete from t_m ${REDACTED} - boom`);
     expect(redactText("select * from t_m where h = 180 and w = 61 - boom")).toBe(
       `select * from t_m ${REDACTED} - boom`,
     );
@@ -197,6 +197,49 @@ describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
       expect(text).not.toMatch(/180|94|78|95|61\.5|Nguyễn|0912345678/);
       expect(text).toContain("boom trigger");
     }
+  });
+
+  it('review 1: object đã JSON.stringify (`\\"` thoát nháy) vẫn nhận ra câu SQL', () => {
+    const err = { message: INSERT, name: "error" };
+    const out = redactText(JSON.stringify(err));
+    expect(out).not.toMatch(/180|9431|Nguyễn|0912345678|fmm_01J/);
+    expect(out).toContain("boom trigger");
+    expect(JSON.stringify(redactLog(err))).not.toMatch(/180|9431|Nguyễn|0912345678/);
+  });
+
+  it("review 2: select không where không nuốt câu sau (Caused by), danh sách chọn có số bị bỏ", () => {
+    const text =
+      `select "id" from "cart" limit 1 - boom\n    at x (/a.js:1:1)\nCaused by: error: insert into "t" ("a") values (9431, 180) - dup\n` +
+      `    at y (/b.js:1:1)\nCaused by: error: delete from "u" where "id" = 5 - z`;
+    const out = redactText(text);
+    expect(out).not.toMatch(/9431|180|"id" = 5/);
+    expect(out).toContain('select "id" from "cart" limit 1 - boom');
+    expect(out).toContain("- dup");
+    expect(out).toContain("- z");
+    expect(redactText(`select 9431 as h from "t" - boom`)).toBe(`select ${REDACTED} from "t" - boom`);
+    expect(redactText(`select "id" from "t" where "n" = 5 - boom`)).toBe(
+      `select "id" from "t" ${REDACTED} - boom`,
+    );
+  });
+
+  it("review 3: `\\n    at` nằm TRONG literal không cắt vùng (không lộ số phía sau)", () => {
+    const out = redactText(`insert into "t" ("a","b","c") values ('a\n    at b', 9431, 180) - boom`);
+    expect(out).toBe(`insert into "t" ${REDACTED} - boom`);
+  });
+
+  it("review 4: giảm báo nhầm — câu văn không bị che; Caused by không dòng at giữ lỗi đầu", () => {
+    for (const t of [
+      "Failed to select products from catalog where price is high - retry later - code 42",
+      'Insert into "orders" failed: unique violation',
+      "select the best from list where possible",
+    ]) {
+      expect(redactText(t)).toBe(t);
+    }
+    expect(
+      redactText(
+        `insert into "t" ("a") values (1) - boom1\nCaused by: error: insert into "t" ("a") values (2) - boom2`,
+      ),
+    ).toBe(`insert into "t" ${REDACTED} - boom1\nCaused by: error: insert into "t" ${REDACTED} - boom2`);
   });
 
   it("không đụng văn bản thường nhắc update/insert/select/delete", () => {
