@@ -649,3 +649,10 @@
 - Chọn: Fail-open + log warn (như rate limit Store; callback vẫn phải qua xác thực chữ ký); E2E: A mặc định (HTTP + job), B chỉ HTTP
 - Lý do (tiêu chí chất lượng cuối): (1) giới hạn tần suất là lớp phụ sau xác thực callback, chặn callback thật khi DB chập chờn làm mất cập nhật vận đơn (tệ hơn); (3) topology E2E khớp triển khai dự kiến (một worker, nhiều server)
 - Đường lùi: Đổi nhánh lỗi của hitRateCounter sang 503; thêm MEDUSA_WORKER_MODE cho B
+
+### D-093 · 2026-10-27T09:41:38+00:00 · T-095 review: ARC-RES-005 chưa đạt (cache phí ship, upload đĩa cục bộ, IPN VNPAY limiter trong tiến trình)
+
+- Phương án: (1) Đóng một phần: merge T-095 (limiter GHN Postgres + E2E hai bản sao), không tick ARC-RES-005, ghi Thiếu → T-152/T-153/T-154 · (2) Mở rộng T-095 làm luôn cả ba việc trước khi merge
+- Chọn: Đóng một phần: merge T-095 (limiter GHN Postgres + E2E hai bản sao), không tick ARC-RES-005, ghi Thiếu → T-152/T-153/T-154
+- Lý do (tiêu chí chất lượng cuối): (2)(3) lát nhỏ, mỗi việc có Gate riêng; phần đã làm đúng và có test; tick blueprint chỉ khi đủ bằng chứng nên không tick sai MUST
+- Đường lùi: Gộp T-152..T-154 vào một lát nếu muốn đóng ARC-RES-005 một lần
