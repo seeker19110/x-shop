@@ -27,8 +27,11 @@ export type LimitScope = "login" | "mfa" | "register" | "reset";
 
 const h = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 40);
 
+export type BucketKind = "ip" | "idip" | "id";
+const ALL_KINDS: readonly BucketKind[] = ["ip", "idip", "id"];
+
 interface Bucket {
-  kind: "ip" | "idip" | "id";
+  kind: BucketKind;
   key: string;
   limit: number;
 }
@@ -54,8 +57,12 @@ const keyTtlSeconds = () => 2 * AUTH_RATE_LIMITS.windowSeconds + 60;
 
 /**
  * Ghi nhận một lần thử tại `now` (tiêm được — test tất định); `allowed=false` khi số hiệu dụng cửa sổ trượt
- * (sliding-window.ts, T-055) của bất kỳ tín hiệu nào vượt ngưỡng (request không được xử lý tiếp). Mọi tín hiệu đều được
- * đếm (giữ chỗ) kể cả khi đã bị chặn; `retryAfterSeconds` = mốc muộn nhất mà mọi tín hiệu bị chặn cho lượt kế tiếp qua.
+ * (sliding-window.ts, T-055) của bất kỳ tín hiệu nào vượt ngưỡng (request không được xử lý tiếp). Tín hiệu được đếm
+ * (giữ chỗ) theo thứ tự IP → (định danh + IP) → định danh, KẸP ở `limit + 1` mỗi cửa sổ (T-143, D-085): một khi đã bị
+ * chặn, gửi thêm không kéo dài thời gian bị chặn (không khoá hộ ai đó lâu hơn khoá tối thiểu); bị chặn ở một tín hiệu thì
+ * các tín hiệu sau chỉ được đọc, không tăng. Lần bị chặn không bao giờ được hoàn (nơi gọi trả 429 ngay) nên kẹp/đọc không
+ * làm lệch `registerSuccess`/`registerRefund`. `retryAfterSeconds` = mốc muộn nhất
+ * mà mọi tín hiệu bị chặn cho lượt kế tiếp qua. `kinds` = chỉ xét các tín hiệu này (mặc định: cả ba).
  * Truyền CÙNG `now` cho `registerSuccess`/`registerRefund` của lần thử này để hoàn đúng cửa sổ đã giữ chỗ.
  */
 export async function registerAttempt(
@@ -64,11 +71,17 @@ export async function registerAttempt(
   identity: string | null,
   ip: string,
   now: Date = new Date(),
+  kinds: readonly BucketKind[] = ALL_KINDS,
 ): Promise<{ allowed: true } | { allowed: false; retryAfterSeconds: number }> {
   const idx = windowIndex(now);
   let retryAfterSeconds = 0;
   for (const b of buckets(scope, identity, ip)) {
-    const counts = await store.incrPeek(windowKey(b, idx), keyTtlSeconds(), windowKey(b, idx - 1));
+    if (!kinds.includes(b.kind)) continue;
+    // Đã bị chặn ở tín hiệu trước → chỉ ĐỌC các tín hiệu sau (trần 0) để tính Retry-After: lần thử không được xử lý thì
+    // không tiêu hạn mức của tín hiệu khác (một IP đã bị chặn không đốt hạn mức theo email của nạn nhân; loạt song song
+    // không để lượt bị chặn chiếm chỗ của lượt hợp lệ).
+    const cap = retryAfterSeconds > 0 ? 0 : b.limit + 1;
+    const counts = await store.incrPeek(windowKey(b, idx), keyTtlSeconds(), windowKey(b, idx - 1), cap);
     const sample = sampleAt(counts, windowMs(), now);
     if (exceedsLimit(sample, b.limit, windowMs())) {
       retryAfterSeconds = Math.max(

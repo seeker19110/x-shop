@@ -220,6 +220,49 @@ describe("rate limit nhiều tín hiệu", () => {
     );
     // Thành công từ một địa chỉ trong /64 xoá thất bại (email+IP) của cả /64 (cùng khoá).
     await registerSuccess(store, "login", "v6@example.test", "2001:db8:1:2::77");
+    for (let i = 0; i < L.perIdentityIp; i++) {
+      expect(
+        (await registerAttempt(store, "login", "v6@example.test", `2001:db8:1:2:a::${i + 1}`)).allowed,
+      ).toBe(true);
+    }
+    expect((await registerAttempt(store, "login", "v6@example.test", "2001:db8:1:2:b::1")).allowed).toBe(
+      false,
+    );
+  });
+
+  it("kẹp bộ đếm (T-143, D-085): loạt 200 lần không kéo dài Retry-After so với khoá tối thiểu (limit + 1 lần)", async () => {
+    const M = AUTH_RATE_LIMITS.windowSeconds * 1000;
+    // Đầu cửa sổ cố định — trường hợp Retry-After dài nhất của xấp xỉ cửa sổ trượt.
+    const now = new Date(Math.floor(Date.now() / M) * M);
+    const lockout = async (n: number) => {
+      const store = new MemoryStore();
+      let last: Awaited<ReturnType<typeof registerAttempt>> = { allowed: true };
+      for (let i = 0; i < n; i++)
+        last = await registerAttempt(store, "reset", "k@example.test", "1.2.3.4", now);
+      expect(last.allowed).toBe(false);
+      return (last as { retryAfterSeconds: number }).retryAfterSeconds;
+    };
+    const L3 = AUTH_RATE_LIMITS.reset.perIdentityIp;
+    const minimal = await lockout(L3 + 1);
+    expect(await lockout(200)).toBe(minimal);
+    // Trần lý thuyết với bộ đếm kẹp ở L+1: hết cửa sổ hiện tại + 2/(L+1) cửa sổ sau.
+    expect(minimal).toBeLessThanOrEqual(Math.ceil((AUTH_RATE_LIMITS.windowSeconds * (L3 + 3)) / (L3 + 1)));
+  });
+
+  it("D-085: IP A đã bị chặn không đốt hạn mức theo email của nạn nhân — nạn nhân ở IP B vẫn được thử", async () => {
+    const store = new MemoryStore();
+    const results = await Promise.all(
+      Array.from({ length: 200 }, (_, i) =>
+        registerAttempt(
+          store,
+          "login",
+          i % 2 ? "VICTIM@example.test" : " victim@example.test ",
+          "203.0.113.9",
+        ),
+      ),
+    );
+    expect(results.filter((r) => r.allowed)).toHaveLength(L.perIdentityIp);
+    expect((await registerAttempt(store, "login", "victim@example.test", "203.0.113.10")).allowed).toBe(true);
   });
 
   it("IPv4 giữ nguyên địa chỉ (T-148): hai IP liền kề không chung bộ đếm IP", async () => {

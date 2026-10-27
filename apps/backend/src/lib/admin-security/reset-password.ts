@@ -1,14 +1,18 @@
-import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
-import type { ConfigModule, MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { performance } from "node:perf_hooks";
+import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
+import type { ConfigModule, IAuthModuleService, MedusaContainer } from "@medusajs/framework/types";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { generateResetPasswordTokenWorkflow } from "@medusajs/medusa/core-flows";
+import { randomInt } from "node:crypto";
+import { sendProblem } from "../http/problem";
+import { isDraining } from "../lifecycle/shutdown";
 import { clientIpOf } from "../security/config";
 import { sendRateLimited, storeOf } from "./guard";
 import { registerAttempt } from "./rate-limit";
+import type { SecurityStore } from "./store";
 
 /**
- * `POST /auth/:actor_type/:auth_provider/reset-password` (T-143, BE-AUTH-003) — yêu cầu email đặt lại mật khẩu.
+ * `POST /auth/:actor_type/:auth_provider/reset-password` (T-143, BE-AUTH-003, D-085, D-086) — yêu cầu email đặt lại mật
+ * khẩu.
  *
  * Route gốc Medusa 2.22.1: chạy `generateResetPasswordTokenWorkflow` (throwOnError: false) rồi `sendStatus(201)` — cùng
  * phản hồi cho email có/không có, nhưng CHỜ workflow xong mới trả: email có identity thì thêm vô hiệu token cũ + ghi token
@@ -16,89 +20,121 @@ import { registerAttempt } from "./rate-limit";
  * vị ~12,5 ms so với ~9 ms (tỷ lệ theo cặp ~1,37×) → dò được email tồn tại. Route cũng không có rate limit → dội thư.
  *
  * Ở đây (middleware chạy SAU validator gốc `ResetPasswordRequest`, thay handler gốc):
- *  1. rate limit theo (email chuẩn hoá + IP), email, IP — IP gộp IPv6 /64 (`ipRateKey`, T-148); KHÔNG hoàn lượt (mọi lượt
- *     đều 201, không có "thành công" để phân biệt) → vượt ngưỡng 429 + `Retry-After`, như cho mọi email;
- *  2. khởi chạy workflow gốc với đúng đầu vào của route gốc (không chờ), trả `201 Created` (đúng thân/kiểu của
- *     `res.sendStatus(201)`) đúng `RESET_RESPONSE_MS` sau khi nhận request — thời gian phản hồi không phụ thuộc email có
- *     tồn tại. Lỗi workflow vẫn bị nuốt như bản gốc (`throwOnError: false`); lỗi bất ngờ chỉ ghi log không PII.
+ *  1. rate limit TRÊN ĐƯỜNG REQUEST chỉ theo IP và (email chuẩn hoá + IP) — IP gộp IPv6 /64 (`ipRateKey`, T-148); không
+ *     hoàn lượt (mọi lượt đều 201); bộ đếm kẹp ở ngưỡng + 1 nên dồn request không kéo dài khoá. KHÔNG có ngưỡng theo email
+ *     trên đường request (D-085): kẻ khác gửi biến thể hoa/thường email nạn nhân từ IP của họ không khoá được nạn nhân;
+ *  2. trả `201 Created` (đúng thân/kiểu của `res.sendStatus(201)`) đúng `RESET_RESPONSE_MS` sau khi nhận request — không
+ *     có việc gì phụ thuộc email trong khoảng đó;
+ *  3. việc nền bắt đầu sau độ trễ ngẫu nhiên đều 0–`RESET_WORK_MAX_DELAY_MS` (D-086, timer `unref`, bỏ khi tiến trình đang
+ *     tắt): tra identity; có thật → ngưỡng theo email (`perIdentity`, chỉ đếm cho identity có thật) → vượt thì bỏ âm thầm,
+ *     còn lại chạy workflow gốc với đúng đầu vào của route gốc. Email lạ → không làm gì thêm (workflow gốc cũng chỉ thất
+ *     bại ở bước tra identity). `metadata` của thân bị BỎ (dashboard chỉ gửi `identifier`, dự án không có subscriber đọc
+ *     nó) — không cho kẻ dò khuếch đại việc nền bằng thân lớn.
+ *
+ * Rủi ro còn lại (docs/ops/THREAT-MODEL.md R-07): việc nền của email có thật vẫn tốn CPU/DB trong cùng tiến trình — request
+ * khác chạy CÙNG LÚC với nó chậm đi đôi chút; độ trễ ngẫu nhiên trải việc đó trên cửa sổ 5 s nên kẻ dò không biết đo lúc
+ * nào, phải lặp rất nhiều lần (và bị rate limit theo IP chặn trước).
  */
 const MAX_IDENTIFIER = 320;
 
-interface ResetBody {
+/** Thời gian phản hồi CỐ ĐỊNH (tính từ lúc middleware nhận request) cho mọi yêu cầu được chấp nhận. */
+export const RESET_RESPONSE_MS = 250;
+/** Trần độ trễ ngẫu nhiên trước khi bắt đầu việc nền (tra identity + workflow). */
+export const RESET_WORK_MAX_DELAY_MS = 5000;
+
+/** Thân hợp lệ chung (không phân biệt lý do) khi không có thân đã validate — không nhường handler gốc (lộ thời gian). */
+export const RESET_INVALID = { status: 400, code: "INVALID_REQUEST", title: "Yêu cầu không hợp lệ" } as const;
+
+interface ResetInput {
   identifier: string;
-  metadata?: Record<string, unknown>;
+  actorType: string;
+  provider: string;
 }
 
-function validatedResetBody(req: MedusaRequest): ResetBody | null {
+function validatedIdentifier(req: MedusaRequest): string | null {
   const body = (req as MedusaRequest & { validatedBody?: unknown }).validatedBody;
   if (typeof body !== "object" || body === null) return null;
-  const { identifier, metadata } = body as { identifier?: unknown; metadata?: unknown };
-  if (typeof identifier !== "string") return null;
-  return {
-    identifier,
-    ...(typeof metadata === "object" &&
-      metadata !== null && { metadata: metadata as Record<string, unknown> }),
-  };
+  const { identifier } = body as { identifier?: unknown };
+  return typeof identifier === "string" ? identifier : null;
 }
 
 /** Định danh rate limit = `identifier` (email) — chuẩn hoá trim + chữ thường trong `rate-limit.ts`. */
 export function resetIdentity(req: MedusaRequest): string | null {
-  const raw =
-    validatedResetBody(req)?.identifier ?? (req.body as { identifier?: unknown } | undefined)?.identifier;
+  const raw = validatedIdentifier(req) ?? (req.body as { identifier?: unknown } | undefined)?.identifier;
   return typeof raw === "string" ? raw.slice(0, MAX_IDENTIFIER) : null;
 }
 
-/** Đúng lời gọi của route gốc (`@medusajs/medusa` 2.22.1 `auth/[actor_type]/[auth_provider]/reset-password`). */
-async function issueResetToken(
+/** Độ trễ ngẫu nhiên đều trong [0, RESET_WORK_MAX_DELAY_MS] (CSPRNG). */
+export const resetWorkDelayMs = (): number => randomInt(0, RESET_WORK_MAX_DELAY_MS + 1);
+
+/**
+ * Việc nền của một yêu cầu đã được chấp nhận. Trả lý do để test kiểm; không ném lỗi ra ngoài nơi gọi.
+ * Đầu vào workflow = đúng lời gọi của route gốc (`@medusajs/medusa` 2.22.1), trừ `metadata` (bỏ — xem đầu file).
+ */
+export async function processResetRequest(
   scope: MedusaContainer,
-  input: { actorType: string; provider: string; body: ResetBody },
-): Promise<void> {
+  store: SecurityStore,
+  input: ResetInput,
+): Promise<"no_identity" | "identity_limited" | "issued"> {
+  const auth = scope.resolve<IAuthModuleService>(Modules.AUTH);
+  const found = await auth.listProviderIdentities(
+    { entity_id: input.identifier, provider: input.provider },
+    { take: 1 },
+  );
+  if (found.length === 0) return "no_identity";
+  // Ngưỡng theo email chỉ cho identity có thật, ngoài đường request: vượt → bỏ âm thầm (phản hồi đã là 201).
+  const quota = await registerAttempt(store, "reset", input.identifier, "", new Date(), ["id"]);
+  if (!quota.allowed) return "identity_limited";
   const { http } = scope.resolve<ConfigModule>(ContainerRegistrationKeys.CONFIG_MODULE).projectConfig;
   await generateResetPasswordTokenWorkflow(scope).run({
     input: {
-      entityId: input.body.identifier,
+      entityId: input.identifier,
       actorType: input.actorType,
       provider: input.provider,
       secret: http.jwtSecret,
       jwtOptions: http.jwtOptions,
-      metadata: input.body.metadata,
+      metadata: {},
     },
-    // Như bản gốc: không ném lỗi — identity không tồn tại không được lộ ra.
+    // Như bản gốc: không ném lỗi.
     throwOnError: false,
   });
+  return "issued";
 }
 
-/**
- * Thời gian phản hồi CỐ ĐỊNH (tính từ lúc middleware nhận request) cho mọi yêu cầu được chấp nhận. Workflow chạy song song
- * và KHÔNG được chờ: phản hồi không phụ thuộc email có tồn tại kể cả khi workflow chậm. Đủ dài để workflow (vài–vài chục
- * ms) xong TRONG khoảng này → việc nền của email có thật không làm chậm request kế tiếp (kênh phụ "probe rồi canary" —
- * trả 201 ngay rồi chạy nền thì request ngay sau chậm hơn ~3 ms khi email tồn tại, đo ở T-143).
- */
-export const RESET_RESPONSE_MS = 250;
+function scheduleResetWork(scope: MedusaContainer, store: SecurityStore, input: ResetInput): void {
+  const timer = setTimeout(() => {
+    if (isDraining()) return;
+    processResetRequest(scope, store, input).catch((e: unknown) => {
+      // Không ghi thông điệp lỗi — có thể chứa email (PII).
+      scope
+        .resolve(ContainerRegistrationKeys.LOGGER)
+        .warn(`[auth] Việc nền đặt lại mật khẩu lỗi: ${e instanceof Error ? e.name : "unknown"}`);
+    });
+  }, resetWorkDelayMs());
+  timer.unref();
+}
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-export async function resetPasswordGuard(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
-  const startedAt = performance.now();
+export async function resetPasswordGuard(req: MedusaRequest, res: MedusaResponse) {
+  const startedAt = Date.now();
+  const store = storeOf(req);
   const ip = clientIpOf(req).ip ?? "unknown";
-  const attempt = await registerAttempt(storeOf(req), "reset", resetIdentity(req), ip);
+  const attempt = await registerAttempt(store, "reset", resetIdentity(req), ip, new Date(), ["ip", "idip"]);
   if (!attempt.allowed) return sendRateLimited(res, attempt.retryAfterSeconds);
 
-  const body = validatedResetBody(req);
-  // Validator gốc không chạy trước (đổi thứ tự middleware khi nâng Medusa) → để route gốc xử lý (vẫn có rate limit).
-  if (body === null) return next();
+  const identifier = validatedIdentifier(req);
+  // Validator gốc không chạy trước (đổi thứ tự middleware khi nâng Medusa) → từ chối an toàn, KHÔNG nhường handler gốc
+  // (handler gốc chờ workflow → lộ thời gian theo email).
+  if (identifier === null) {
+    return sendProblem(res, RESET_INVALID.status, RESET_INVALID.code, RESET_INVALID.title);
+  }
 
-  const scope = req.scope;
-  issueResetToken(scope, {
+  scheduleResetWork(req.scope, store, {
+    identifier,
     actorType: String(req.params.actor_type),
     provider: String(req.params.auth_provider),
-    body,
-  }).catch((e: unknown) => {
-    // Không ghi thông điệp lỗi — có thể chứa email (PII).
-    scope
-      .resolve(ContainerRegistrationKeys.LOGGER)
-      .warn(`[auth] Tạo token đặt lại mật khẩu lỗi: ${e instanceof Error ? e.name : "unknown"}`);
   });
-  await sleep(Math.max(0, RESET_RESPONSE_MS - (performance.now() - startedAt)));
+  await sleep(Math.max(0, RESET_RESPONSE_MS - (Date.now() - startedAt)));
   res.sendStatus(201);
 }

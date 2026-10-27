@@ -129,8 +129,9 @@ export default defineMiddlewares({
       middlewares: [authRateLimit("register", loginIdentity), registerGate],
     },
     {
-      // Yêu cầu đặt lại mật khẩu (T-143): rate limit theo (email + IP), email, IP rồi trả 201 ngay, workflow gốc chạy sau
-      // phản hồi — thời gian không lộ email tồn tại (lib/admin-security/reset-password.ts). Mọi provider (khoá theo email).
+      // Yêu cầu đặt lại mật khẩu (T-143, D-085, D-086): rate limit theo IP và (email + IP), trả 201 sau thời gian cố định;
+      // việc nền (ngưỡng theo email cho identity có thật + workflow gốc) bắt đầu sau độ trễ ngẫu nhiên 0–5 s — thời gian
+      // không lộ email tồn tại (lib/admin-security/reset-password.ts). Mọi provider.
       methods: ["POST"],
       matcher: "/auth/:actor_type/:auth_provider/reset-password",
       middlewares: [resetPasswordGuard],

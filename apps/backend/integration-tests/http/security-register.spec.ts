@@ -6,7 +6,7 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
-import { RESET_RESPONSE_MS } from "../../src/lib/admin-security/reset-password";
+import { RESET_RESPONSE_MS, RESET_WORK_MAX_DELAY_MS } from "../../src/lib/admin-security/reset-password";
 import { cleanupUnlinkedIdentityForInvite } from "../../src/lib/admin-security/invite-guard";
 import { createAdmin, createMfaAdmin, jwtPayload, type MfaAdmin } from "../helpers/auth";
 
@@ -731,20 +731,17 @@ medusaIntegrationTestRunner({
         );
       });
 
-      it("bị từ chối: theo email chuẩn hoá (mọi IP, mọi actor) và theo IP (mọi email); IPv6 xoay trong /64 vẫn chung IP", async () => {
-        const email = unknownEmail();
-        const variants = [email, email.toUpperCase(), ` ${email} `];
-        const paths = [
-          RESET,
-          "/auth/customer/emailpass/reset-password",
-          "/auth/%75ser/emailpass/reset-password",
-        ];
-        for (let i = 0; i < AUTH_RATE_LIMITS.reset.perIdentity; i++) {
-          const r = await post(paths[i % paths.length]!, { identifier: variants[i % variants.length] });
-          expect({ i, status: r.status }).toEqual({ i, status: 201 });
-        }
-        expect429(await post(RESET, { identifier: email }));
+      /** Băm token đặt lại mới nhất của email (đổi mỗi lần workflow phát token mới). */
+      const latestToken = async (email: string) =>
+        (
+          (await container
+            .resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION)("auth_password_reset_token")
+            .where({ entity_id: email })
+            .orderBy("created_at", "desc")
+            .first("token_hash")) as { token_hash: string } | undefined
+        )?.token_hash ?? null;
 
+      it("theo IP (mọi email): IPv6 xoay trong /64 vẫn chung IP → 429 ở `reset.perIp`; /64 khác vẫn 201", async () => {
         const net = newV6Net();
         const n = AUTH_RATE_LIMITS.reset.perIp;
         for (let i = 0; i < n; i++) {
@@ -752,10 +749,57 @@ medusaIntegrationTestRunner({
           expect({ i, status: r.status }).toEqual({ i, status: 201 });
         }
         expect429(await post(RESET, { identifier: unknownEmail() }, { "x-forwarded-for": net(n) }));
-        // /64 khác không bị ảnh hưởng.
         expect(
           (await post(RESET, { identifier: unknownEmail() }, { "x-forwarded-for": newV6Net()(0) })).status,
         ).toBe(201);
+      });
+
+      it("D-085: loạt 200 biến thể email nạn nhân từ IP A không khoá nạn nhân ở IP B; Retry-After của A không dài hơn khoá tối thiểu", async () => {
+        const email = await existingEmail();
+        const attacker = newIp();
+        const variant = (i: number) => (i % 2 ? `  ${email.toUpperCase()} ` : email.toUpperCase());
+        const burst = await Promise.all(
+          Array.from({ length: 200 }, (_, i) =>
+            post(RESET, { identifier: variant(i) }, { "x-forwarded-for": attacker }),
+          ),
+        );
+        expect(burst.filter((r) => r.status === 201)).toHaveLength(AUTH_RATE_LIMITS.reset.perIdentityIp);
+        const after = await post(RESET, { identifier: variant(0) }, { "x-forwarded-for": attacker });
+        expect429(after);
+        // Khoá tối thiểu (limit + 1 lượt) từ IP khác, đo ngay sau — loạt dồn không kéo dài thời gian bị chặn.
+        const fresh = newIp();
+        let minimal: RawRes | undefined;
+        for (let i = 0; i <= AUTH_RATE_LIMITS.reset.perIdentityIp; i++) {
+          minimal = await post(RESET, { identifier: variant(0) }, { "x-forwarded-for": fresh });
+        }
+        expect429(minimal!);
+        expect(Number(after.headers["retry-after"])).toBeLessThanOrEqual(
+          Number(minimal!.headers["retry-after"]) + 2,
+        );
+        // Nạn nhân từ IP của mình: 201 và thật sự nhận token (biến thể không khớp identity → không tiêu hạn mức email).
+        const victim = await post(RESET, { identifier: email }, { "x-forwarded-for": newIp() });
+        expect(victim.status).toBe(201);
+        expect(await eventually(async () => (await resetRows(email)) >= 1)).toBe(true);
+      });
+
+      it("ngưỡng theo email (`perIdentity`) chỉ ở việc nền cho identity có thật: vượt → vẫn 201 nhưng không phát token mới", async () => {
+        const email = await existingEmail();
+        const paths = [
+          RESET,
+          "/auth/customer/emailpass/reset-password",
+          "/auth/%75ser/emailpass/reset-password",
+        ];
+        let last: string | null = null;
+        for (let i = 0; i < AUTH_RATE_LIMITS.reset.perIdentity; i++) {
+          const r = await post(paths[i % paths.length]!, { identifier: email });
+          expect({ i, status: r.status }).toEqual({ i, status: 201 });
+          const prev = last;
+          expect(await eventually(async () => (last = await latestToken(email)) !== prev)).toBe(true);
+        }
+        const over = await post(RESET, { identifier: email });
+        expect(over.status).toBe(201);
+        await new Promise((r) => setTimeout(r, RESET_WORK_MAX_DELAY_MS + 1000));
+        expect(await latestToken(email)).toBe(last);
       });
     });
   },

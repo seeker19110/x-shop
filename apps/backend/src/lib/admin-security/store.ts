@@ -12,10 +12,17 @@ export interface SecurityStore {
   /** Tăng bộ đếm; lần đầu đặt TTL (cửa sổ cố định). Trả giá trị sau khi tăng. */
   incr(key: string, ttlSeconds: number): Promise<number>;
   /**
-   * Tăng `key` (lần đầu đặt TTL) và đọc `peekKey` trong CÙNG một lệnh nguyên tử (Redis MULTI) — bộ đếm cửa sổ hiện tại +
+   * Tăng `key` (lần đầu đặt TTL) và đọc `peekKey` trong CÙNG một thao tác nguyên tử (Redis Lua) — bộ đếm cửa sổ hiện tại +
    * cửa sổ trước cho rate limit cửa sổ trượt (T-055). Trả `{ current: sau khi tăng, previous: 0 nếu không có }`.
+   * `cap` (T-143, D-085): chỉ tăng khi giá trị hiện tại < `cap` — bộ đếm không vượt `cap`, loạt request dồn dập không kéo
+   * dài thời gian bị chặn.
    */
-  incrPeek(key: string, ttlSeconds: number, peekKey: string): Promise<{ current: number; previous: number }>;
+  incrPeek(
+    key: string,
+    ttlSeconds: number,
+    peekKey: string,
+    cap?: number,
+  ): Promise<{ current: number; previous: number }>;
   /** Giảm bộ đếm (không xuống dưới 0). */
   decr(key: string): Promise<void>;
   del(key: string): Promise<void>;
@@ -33,6 +40,20 @@ export interface SecurityStore {
 const NAMESPACE = process.env.XS_SECURITY_KEY_NAMESPACE?.trim();
 export const KEY_PREFIX = isNonEmpty(NAMESPACE) ? `xs:sec:${NAMESPACE}:` : "xs:sec:";
 
+/**
+ * KEYS[1] = bộ đếm cửa sổ hiện tại, KEYS[2] = cửa sổ trước; ARGV[1] = TTL (giây), ARGV[2] = trần. Tăng (và đặt TTL lần
+ * đầu) chỉ khi còn dưới trần; trả {hiện tại, trước}. Một script = nguyên tử (thay MULTI vì có điều kiện).
+ */
+const INCR_PEEK_CAPPED = `
+local c = tonumber(redis.call('GET', KEYS[1]) or '0')
+if c < tonumber(ARGV[2]) then
+  c = redis.call('INCR', KEYS[1])
+  if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+end
+local p = tonumber(redis.call('GET', KEYS[2]) or '0')
+return {c, p}
+`;
+
 class RedisStore implements SecurityStore {
   constructor(private readonly redis: Redis) {}
   async get(key: string) {
@@ -48,16 +69,16 @@ class RedisStore implements SecurityStore {
     ];
     return n;
   }
-  async incrPeek(key: string, ttlSeconds: number, peekKey: string) {
-    const k = KEY_PREFIX + key;
-    const res = (await this.redis
-      .multi()
-      .incr(k)
-      .expire(k, ttlSeconds, "NX")
-      .get(KEY_PREFIX + peekKey)
-      .exec()) as [Error | null, unknown][];
-    for (const [err] of res) if (err) throw err;
-    return { current: Number(res[0]![1]), previous: Number(res[2]![1] ?? 0) || 0 };
+  async incrPeek(key: string, ttlSeconds: number, peekKey: string, cap: number = Number.MAX_SAFE_INTEGER) {
+    const res = (await this.redis.eval(
+      INCR_PEEK_CAPPED,
+      2,
+      KEY_PREFIX + key,
+      KEY_PREFIX + peekKey,
+      String(ttlSeconds),
+      String(cap),
+    )) as [number, number];
+    return { current: Number(res[0]), previous: Number(res[1]) || 0 };
   }
   async decr(key: string) {
     const k = KEY_PREFIX + key;
@@ -100,8 +121,9 @@ export class MemoryStore implements SecurityStore {
     this.data.set(key, { value: String(n), expiresAt: e?.expiresAt ?? Date.now() + ttlSeconds * 1000 });
     return n;
   }
-  async incrPeek(key: string, ttlSeconds: number, peekKey: string) {
-    const current = await this.incr(key, ttlSeconds);
+  async incrPeek(key: string, ttlSeconds: number, peekKey: string, cap: number = Number.MAX_SAFE_INTEGER) {
+    const now = Number(this.live(key)?.value ?? 0) || 0;
+    const current = now < cap ? await this.incr(key, ttlSeconds) : now;
     return { current, previous: Number(this.live(peekKey)?.value ?? 0) || 0 };
   }
   async decr(key: string) {

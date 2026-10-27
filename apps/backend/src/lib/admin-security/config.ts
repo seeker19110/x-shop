@@ -54,7 +54,8 @@ export const AUTH_RATE_LIMITS = {
   // Đăng ký (T-138): lượt hợp lệ chỉ có khi được mời (thành công được hoàn) — mọi lượt bị từ chối là dò/chiếm trước email,
   // nên ngưỡng IP thấp hơn hẳn đăng nhập.
   register: { perIdentityIp: 5, perIdentity: 10, perIp: 20 },
-  // Yêu cầu đặt lại mật khẩu (T-143): luôn 201 nên KHÔNG hoàn lượt nào — mọi lượt đều tính. Mỗi lượt hợp lệ gửi một email
-  // (vô hiệu token cũ) → ngưỡng theo email thấp chống dội thư; theo IP như đăng ký.
+  // Yêu cầu đặt lại mật khẩu (T-143): luôn 201 nên KHÔNG hoàn lượt nào. Trên đường request chỉ áp IP và (email + IP) — 429;
+  // `perIdentity` (chống dội thư vào một email) chỉ áp trong việc nền cho identity CÓ THẬT, vượt thì bỏ âm thầm (D-085:
+  // ngưỡng theo email trên đường request cho phép kẻ khác khoá hộ nạn nhân).
   reset: { perIdentityIp: 3, perIdentity: 5, perIp: 20 },
 } as const;
