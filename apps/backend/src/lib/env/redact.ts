@@ -19,6 +19,9 @@ export const SECRET_ENV_KEYS = [
   "VNPAY_HASH_SECRET_PREVIOUS",
   "GHN_TOKEN",
   "CATALOG_REVALIDATE_SECRET",
+  // Khoá kho file S3 (T-154): ID cũng che — cặp ID/secret lộ một nửa vẫn giúp dò.
+  "S3_ACCESS_KEY_ID",
+  "S3_SECRET_ACCESS_KEY",
 ] as const;
 
 export const SECRET_CONFIG_FIELDS = [
@@ -28,6 +31,11 @@ export const SECRET_CONFIG_FIELDS = [
   "token",
   // catalogRevalidate.secret (T-142)
   "secret",
+  "accessKeyId",
+  "secretAccessKey",
+  // Tuỳ chọn provider S3 (snake_case, lib/upload/config → medusa-config) nếu bị dump qua redactConfig.
+  "access_key_id",
+  "secret_access_key",
 ] as const;
 
 export const REDACTED = "***";

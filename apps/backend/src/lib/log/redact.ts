@@ -10,8 +10,10 @@
  *     (số nhà + đường/ngõ/hẻm, hoặc ≥ 2 cấp hành chính phường/xã, quận/huyện, tỉnh/thành phố — có dấu hoặc không dấu).
  *
  * Không thay đổi đầu vào (trả bản sao). Vòng tham chiếu → `[Circular]`; sâu quá `MAX_DEPTH` → `[Truncated]`.
- * Giới hạn đã biết: CMND 9 số KHÔNG che theo nội dung (trùng số tiền VND 9 chữ số) — chỉ che theo tên trường; tên người
- * trong văn bản tự do không phát hiện được bằng mẫu → không đưa họ tên vào thông điệp log.
+ * CMND 9 số chỉ che theo nội dung khi có từ khoá đi kèm (CMND/CMT/chứng minh…; D-066) — 9 chữ số trần trùng số tiền VND.
+ * Địa chỉ IP chỉ che khi đi sau khoá (`client_ip=`, `x-forwarded-for:`…) hoặc theo tên trường (T-136).
+ * Giới hạn đã biết: tên người trong văn bản tự do và IP trần không phát hiện được bằng mẫu → không đưa họ tên/IP vào
+ * thông điệp log (danh sách mẫu: scripts/fixtures/pii-samples.json).
  */
 
 import { createHmac } from "node:crypto";
@@ -40,7 +42,14 @@ function hashOnce(value: string): string {
 }
 const MAX_DEPTH = 10;
 
-const norm = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, "");
+/** Bỏ dấu (NFD + `đ`→`d`) để khoá tiếng Việt có dấu (`mật khẩu`, `họ tên`) chuẩn về `matkhau`, `hoten` (T-136). */
+const norm = (key: string) =>
+  key
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9]/g, "");
 
 /** Khoá chứa một trong các đoạn này (sau chuẩn hoá) là bí mật. */
 const SECRET_KEY_PARTS = [
@@ -65,6 +74,7 @@ const SECRET_KEY_PARTS = [
   "sessionid",
   "encryptionkey",
   "hashsecret",
+  "matkhau",
 ];
 /** Khoá NGẮN chỉ khớp nguyên văn (tránh `pin` ⊂ `shipping`, `pan` ⊂ `company`, `sid` ⊂ `inside`). */
 const SECRET_KEY_EXACT = new Set([
@@ -108,23 +118,48 @@ const PII_KEY_PARTS = [
   "receivername",
   "customername",
   "hoten",
+  "hovaten",
+  "tennguoinhan",
   "dateofbirth",
   "birthday",
   "birthdate",
   "ngaysinh",
+  "clientip",
+  "remoteaddr",
+  "remoteip",
+  "realip",
+  "forwardedfor",
+  "ipaddress",
+  "ipaddr",
 ];
-const PII_KEY_EXACT = new Set(["sdt", "tel", "mobile", "dob", "ten"]);
+const PII_KEY_EXACT = new Set(["sdt", "tel", "mobile", "dob", "ten", "ip", "ips"]);
+
+/** Khoá kết thúc bằng `ip`/`ip_addr` có tiền tố (`customer_ip`, `user-ip`, `peerIp`, `vnp_IpAddr`): ngăn cách hoặc camelCase. */
+const IP_SUFFIX_KEY = /(?:[_\-. ]|[a-z0-9](?=I[pP](?:Addr|Address)?$))[iI][pP](?:[_\-. ]?[aA]ddr(?:ess)?)?$/;
 
 /** `true` nếu giá trị của trường tên `key` phải che toàn bộ. */
 export function isSensitiveKey(key: string): boolean {
   const k = norm(key);
   if (k === "") return false;
   if (SECRET_KEY_EXACT.has(k) || PII_KEY_EXACT.has(k)) return true;
+  if (IP_SUFFIX_KEY.test(key)) return true;
   return SECRET_KEY_PARTS.some((p) => k.includes(p)) || PII_KEY_PARTS.some((p) => k.includes(p));
 }
 
 const SECRET_PARAM =
-  "password|passwd|pwd|pass|secret|client_secret|token|access_token|refresh_token|id_token|api[_-]?key|apikey|signature|sig|vnp_SecureHash|otp|session(?:_?id)?|sid|code_verifier|authorization|cookie";
+  "password|passwd|pwd|pass|secret|client_secret|token|access_token|refresh_token|id_token|api[_-]?key|apikey|signature|sig|vnp_SecureHash|otp|session(?:_?id)?|sid|code_verifier|authorization|cookie|m[aậ]t[ _-]?kh[aẩ]u(?: m[oớ]i| c[uũ]| hi[eệ]n t[aạ]i)?";
+
+/**
+ * Nháy quanh khoá/giá trị kể cả dạng đã thoát (`\\"password\\":\\"x\\"` — JSON nằm trong chuỗi rồi `JSON.stringify` lần nữa,
+ * T-136). `ESC_QUOTED`: `\\"` mở → tới nháy kép kế (nháy của cặp đóng; các `\\` đứng trước nó nằm trong phần bị che).
+ */
+const QKEY = String.raw`\\{0,7}["']?`;
+const ESC_QUOTED = String.raw`\\{1,7}"[^"]{0,4096}"?`;
+/** Giữ kiểu nháy của giá trị đã che (`"`, `'`, `\"`, hoặc không nháy). */
+function quoteOf(value: string): string {
+  const m = /^(?:\\{1,7}"|"|')/.exec(value);
+  return m === null ? "" : m[0];
+}
 
 interface Rule {
   re: RegExp;
@@ -157,6 +192,15 @@ function luhn(digits: string): boolean {
   return sum % 10 === 0;
 }
 
+const IPV4 = String.raw`\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?`;
+const IPV6 = String.raw`[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{0,4}){2,7}`;
+/** IPv4 nhúng trong IPv6 (`::ffff:203.0.113.9`): phải thử trước IPV6 (nuốt `203` như nhóm hex rồi dừng ở `.`). */
+const IPV6_V4 = String.raw`[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{0,4}){1,6}:\d{1,3}(?:\.\d{1,3}){3}`;
+const IP_ONE = String.raw`(?:${IPV6_V4}|${IPV4}|${IPV6})`;
+/** Phần tử cách nhau bằng `,` (kể cả mảng JSON `["a","b"]`, nháy thoát). */
+const IP_SEP = String.raw`(?:\\{0,7}["'])?\s{0,3},\s{0,3}(?:\\{0,7}["'])?`;
+const IP_LIST = String.raw`${IP_ONE}(?:${IP_SEP}${IP_ONE}){0,15}`;
+
 /**
  * Thứ tự quan trọng: bí mật có cấu trúc trước, số thẻ/CCCD trước SĐT (SĐT là chuỗi số ngắn hơn).
  * MỌI lượng từ đều có trần (không `+`/`*` mở) → thời gian tuyến tính theo độ dài, không ReDoS trên đầu vào đối nghịch
@@ -183,19 +227,22 @@ const RULES: Rule[] = [
   },
   {
     re: new RegExp(
-      `(["']?)\\b(${SECRET_PARAM})\\1(\\s{0,8}[:=]\\s{0,8})((?:(?:Bearer|Basic|Token)\\s{1,8})?(?:"[^"]{0,4096}"|'[^']{0,4096}'|[^&\\s,;"'}]{1,4096}))`,
+      `(${QKEY})\\b((?:[a-z]{1,16}[_-]){0,2}(?:${SECRET_PARAM}))\\1(\\s{0,8}[:=]\\s{0,8})((?:(?:Bearer|Basic|Token)\\s{1,8})?(?:${ESC_QUOTED}|"[^"]{0,4096}"|'[^']{0,4096}'|[^&\\s,;"'}]{1,4096}))`,
       "gi",
     ),
     to: (_m, q, key, sep, value) => {
-      const quote = value.startsWith('"') ? '"' : value.startsWith("'") ? "'" : "";
+      const quote = quoteOf(value);
       return `${q}${key}${q}${sep}${quote}${REDACTED}${quote}`;
     },
   },
   // Trường PII dạng `address=…` / `"address":"…"` trong văn bản (JSON, query, util.inspect).
   {
-    re: /(["']?)\b(address(?:_?[12])?|addr|dia_?chi|street|full_?name|first_?name|last_?name|ho_?ten|phone(?:_?number)?|sdt|email|cccd|cmnd)\1(\s{0,8}[:=]\s{0,8})("[^"]{0,4096}"|'[^']{0,4096}'|[^&,;"'}\n]{1,256})/gi,
+    re: new RegExp(
+      `(${QKEY})(?<![A-Za-z0-9_])(address(?:_?[12])?|addr|[dđ][iị]a[ _-]?ch[iỉ]|street|full_?name|first_?name|last_?name|ho_?ten|h[oọ](?:[ _-]v[aà])?[ _-]?t[eê]n|t[eê]n[ _-]?ng[uư][oờơ]i[ _-]?nh[aậ]n|recipient_?name|receiver_?name|customer_?name|phone(?:_?number)?|sdt|email|cccd|cmnd)\\1(\\s{0,8}[:=]\\s{0,8})(${ESC_QUOTED}|"[^"]{0,4096}"|'[^']{0,4096}'|[^&,;"'}\\n]{1,256})`,
+      "gi",
+    ),
     to: (_m, q, key, sep, value) => {
-      const quote = value.startsWith('"') ? '"' : value.startsWith("'") ? "'" : "";
+      const quote = quoteOf(value);
       return `${q}${key}${q}${sep}${quote}${REDACTED}${quote}`;
     },
   },
@@ -225,6 +272,33 @@ const RULES: Rule[] = [
     to: (m) => (luhn(m.replace(/\D/g, "")) ? "[CARD]" : m),
   },
   { re: /(?<![\p{L}\p{N}])0\d{2}(?:[ .-]?\d{3}){3}(?![\p{L}\p{N}])/gu, to: "[CCCD]" },
+  // Địa chỉ IP chỉ che khi đi sau khoá (`client_ip=…`, `"ip":"…"`, `x-forwarded-for: a, b`): IP trần trong văn bản trùng
+  // chuỗi phiên bản/host DB nội bộ (T-136). Danh sách IP (XFF) che hết.
+  {
+    re: new RegExp(
+      // Khoá có thể có tiền tố ngăn bằng `_`/`-` (`vnp_IpAddr`, `customer_ip`, `x_forwarded_for`); giá trị có thể là mảng JSON.
+      `(${QKEY})\\b((?:[a-z0-9]{1,16}[_-]){0,2}(?:client[_-]?ip|remote[_-]?(?:addr(?:ess)?|ip)|real[_-]?ip|forwarded[_-]?for|ip(?:[_-]?addr(?:ess)?)?))\\1(\\s{0,8}[:=]\\s{0,8})(\\[?\\s{0,3}\\\\{0,7}["']?)${IP_LIST}`,
+      "gi",
+    ),
+    to: (_m, q, key, sep, quote) => `${q}${key}${q}${sep}${quote}[IP]`,
+  },
+  // Khoá IP camelCase trong văn bản (`"userIp":"…"`, `peerIp=`, `vnpIpAddr=`): luật trên không phân biệt hoa thường nên không
+  // thể nhận `Ip` viết hoa giữa khoá mà vẫn bỏ qua `skip=`; luật này phân biệt hoa thường (không cờ `i`).
+  {
+    re: new RegExp(
+      `(${QKEY})\\b([a-z][a-z0-9]{0,15}(?:Ip|IP)(?:Addr(?:ess)?)?|xForwardedFor)\\1(\\s{0,8}[:=]\\s{0,8})(\\[?\\s{0,3}\\\\{0,7}["']?)${IP_LIST}`,
+      "g",
+    ),
+    to: (_m, q, key, sep, quote) => `${q}${key}${q}${sep}${quote}[IP]`,
+  },
+  // CMND 9 số chỉ che khi có từ khoá đi kèm (D-066): 9 chữ số trần trùng số tiền VND. Khoảng giữa từ khoá và số ≤ 16 ký tự
+  // không chứa chữ số/xuống dòng ("CMND số", "chứng minh nhân dân số").
+  {
+    // `cmt` đứng một mình dễ trùng "[cmt] refund 250000000" → chỉ nhận khi liền sau là ngăn cách (+ "số/là"); "chứng minh"
+    // trần ("chứng minh được lỗi ở đơn 123…") không phải từ khoá — cần "nhân dân"/"thư".
+    re: /\b((?:cmnd|cmtnd|chứng minh nhân dân|chứng minh thư|chung minh nhan dan|chung minh thu)[^\d\n]{0,16}|cmt[\s:.#-]{1,4}(?:(?:số|so|là|la)[\s:.#-]{1,4})?)\d{3}[ .-]?\d{3}[ .-]?\d{3}(?!\d)/gi,
+    to: (_m, kw) => `${kw}[CMND]`,
+  },
   { re: /(?<![\p{L}\p{N}+.])(?:\+84|84|0)(?![.])(?:[ .-]?\d){9,10}(?![\p{N}])/gu, to: "[PHONE]" },
 ];
 
@@ -605,8 +679,14 @@ function redactAddress(s: string): string {
 
 /** Che bí mật/PII trong một chuỗi. */
 export function redactText(input: string): string {
-  let s =
-    input.length > MAX_TEXT ? `${input.slice(0, MAX_TEXT)}…[cắt ${input.length - MAX_TEXT} ký tự]` : input;
+  // Chuẩn hoá NFKC (D-112; gồm NFC): chữ có dấu tách (NFD), NBSP, chữ số/`＠` toàn chiều rộng không được làm các mẫu trượt.
+  // ĐÁNH ĐỔI ĐÃ CHẤP NHẬN: log lưu dạng NFKC nên cả chữ không phải PII cũng đổi (`ﬁ`→`fi`, `½`→`1⁄2`, `™`→`TM`, katakana
+  // nửa chiều rộng→toàn chiều rộng).
+  // Cắt → chuẩn hoá → cắt lại: NFKC có thể nở chuỗi (ký tự tương thích → nhiều ký tự), đầu ra không vượt `MAX_TEXT` + dấu cắt.
+  // N trong dấu cắt = phần bỏ trước chuẩn hoá (UTF-16 của đầu vào) + phần bỏ sau chuẩn hoá (ký tự sau NFKC).
+  let s = (input.length > MAX_TEXT ? input.slice(0, MAX_TEXT) : input).normalize("NFKC");
+  const dropped = Math.max(0, input.length - MAX_TEXT) + Math.max(0, s.length - MAX_TEXT);
+  if (dropped > 0) s = `${s.slice(0, MAX_TEXT)}…[cắt ${dropped} ký tự]`;
   s = hashFailingRows(scrubSqlValues(s));
   if (SQL_QUOTED.test(s) || SQL_UPPER.test(s) || looksLikeSelect(s)) {
     const memo = new Map<string, string>(); // literal lặp chỉ băm một lần

@@ -136,9 +136,25 @@ jobs:
       - name: Fixture không PII thật — `node scripts/check-fixtures.mjs` (QA-DATA-002)
         run: node scripts/check-fixtures.mjs
       - name: Test của các script kiểm kiến trúc/dữ liệu
-        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test
+        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test && pnpm check:migrations:test
       - name: Schema module tuỳ biến (FK ON DELETE/index, NOT NULL, CHECK) — `pnpm check:schema` (DB-MODEL-004)
         run: pnpm check:schema
+      # x-shop (T-102): migration đã có trên nhánh đích giữ nguyên byte (blob hash git) + migration mới không phá huỷ trong
+      # up() (DROP/RENAME/đổi kiểu/SET NOT NULL/TRUNCATE/DELETE không WHERE) trừ khi có cờ `@migration-contract` nêu
+      # migration expand đã phát hành. Cần lịch sử nhánh đích: checkout ở trên đã `fetch-depth: 0`; thiếu ref → bước đỏ.
+      # Ref gốc: PR → nhánh đích; push → commit trước push (`event.before`; all-zero khi tạo nhánh → HEAD~1);
+      # workflow_dispatch → HEAD~1. Không dùng origin/<nhánh> cho push/dispatch vì nó trùng HEAD (không kiểm gì).
+      - name: Migration cũ bất biến + expand/contract — `pnpm check:migrations` (DB-MIG-003, DB-MIG-008, OPS-DEPLOY-003)
+        env:
+          MIGRATIONS_BASE_REF: >-
+            ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref)
+            || (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+            && github.event.before) || 'HEAD~1' }}
+        run: pnpm check:migrations
+      # Drift (DB-MIG-001): DB riêng dùng một lần trên Postgres của job → db:migrate → `medusa db:generate` mọi module có
+      # model DML; sinh ra migration/snapshot mới = model lệch migration → đỏ.
+      - name: Drift model ↔ migration — `pnpm check:migrations:drift` (DB-MIG-001)
+        run: pnpm check:migrations:drift
       - name: Route dữ liệu cá nhân có test BOLA/BFLA — `pnpm check:authz` (QA-INT-006)
         run: pnpm check:authz
       - name: Chuỗi UI tiếng Việt có dấu — `pnpm check:vi-diacritics` (UX-CONTENT-001)

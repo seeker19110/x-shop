@@ -782,3 +782,46 @@
 - Chọn: Giữ ngưỡng mặc định (notify 3000/ngày, khác 10000; 5 lỗi → nguội 5 phút; trần 100 vòng/50 lượt); tách T-161 cho expireHolds (ảnh hưởng nhả giữ hàng); lỗi vĩnh viễn của lượt thử half-open = dịch vụ đã trả lời → đóng breaker; ngân sách theo ngày UTC
 - Lý do (tiêu chí chất lượng cuối): (1) UTC theo luật dự án; đóng khi dịch vụ đã trả lời tránh treo half-open; expireHolds liên quan tồn kho nên lát riêng có test; ngưỡng chỉnh được ở một hằng
 - Đường lùi: Sửa OUTBOX_BREAKER_POLICY; coi lỗi vĩnh viễn half-open là trung lập
+
+### D-112 · 2026-10-27T18:11:24+00:00 · T-136: IP trần trong văn bản tự do; chuẩn hoá Unicode trước redact; khoá ip bị che theo tên
+
+- Phương án: (1) Không che IP trần (ghi knownGaps); thêm normalize NFC ở đầu redactText và looksLikePii; chấp nhận che mọi trường tên ip · (2) Che IPv4 công cộng trong văn bản; không chuẩn hoá Unicode
+- Chọn: Không che IP trần (ghi knownGaps); thêm normalize NFC ở đầu redactText và looksLikePii; chấp nhận che mọi trường tên ip
+- Lý do (tiêu chí chất lượng cuối): (1) NFD tiếng Việt làm lọt mẫu địa chỉ/khoá — chuẩn hoá rẻ, tuyến tính; che IP trần gây che nhầm số phiên bản/host nội bộ; IP không cần trong log ứng dụng
+- Đường lùi: Bỏ normalize NFC; thêm luật IPv4 công cộng
+
+### D-113 · 2026-10-27T19:16:07+00:00 · T-154: lưu file upload dùng chung giữa nhiều bản sao backend
+
+- Phương án: (1) Provider S3-compatible (@medusajs/file-s3 2.22.1, MIT), 2 bucket public/private, production bắt buộc FILE_STORAGE=s3 + https; dev/test fallback local có cảnh báo · (2) Giữ provider local trên volume dùng chung (NFS) có ghi ràng buộc triển khai · (3) MinIO trong dev-services
+- Chọn: Provider S3-compatible (@medusajs/file-s3 2.22.1, MIT), 2 bucket public/private, production bắt buộc FILE_STORAGE=s3 + https; dev/test fallback local có cảnh báo
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: volume dùng chung không chứng minh được lúc khởi động và root_squash xung đột kiểm chủ sở hữu D-104; Medusa ghi provider local chỉ cho dev; (2) đường lùi: FILE_STORAGE=local cho dev; (3) MinIO bản cộng đồng đã archived, không còn vá bảo mật (dl.min.io 410, tra 2026-10-27) nên loại; kho tự host đề xuất Garage (AGPL, dịch vụ riêng) hoặc SeaweedFS (Apache-2.0)
+- Đường lùi: FILE_STORAGE=local + một bản sao; gỡ @medusajs/file-s3
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Kho production do chủ dự án chọn: tự host Garage/SeaweedFS hoặc S3/R2 quản lý (cần tài khoản); thêm host ảnh vào remotePatterns/CSP storefront; chuyển file cũ giữ nguyên khoá
+
+### D-114 · 2026-10-27T19:30:06+00:00 · T-102: SET NOT NULL và drop unique index/constraint trong check-migrations
+
+- Phương án: (1) Chặn SET NOT NULL (miễn khi cột thêm kèm DEFAULT/bảng mới trong cùng file); chặn add column NOT NULL không DEFAULT; chặn drop index/constraint có tên do migration trên base tạo mà không tạo lại trong cùng file · (2) SET NOT NULL chỉ cảnh báo; không luật cho drop index
+- Chọn: Chặn SET NOT NULL (miễn khi cột thêm kèm DEFAULT/bảng mới trong cùng file); chặn add column NOT NULL không DEFAULT; chặn drop index/constraint có tên do migration trên base tạo mà không tạo lại trong cùng file
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: autopilot chỉ đọc exit code nên cảnh báo = cho qua; N−1 INSERT không biết cột mới vỡ NOT NULL; ~20 ON CONFLICT phụ thuộc unique index; lọc theo tên trên base tránh báo nhầm 22 drop phòng thủ; lối thoát có lý do: cờ contract/ALLOW
+- Đường lùi: Đổi luật thành cảnh báo trong check-migrations.mjs
+
+### D-115 · 2026-10-27T19:30:07+00:00 · T-102: vế OPS-DEPLOY-003 'test suite bản N−1 trên schema N' không có trong diff
+
+- Phương án: (1) Tách task mới T-163 (CI chạy test tích hợp của base trên schema của HEAD); T-102 chỉ đóng DB-MIG-001/003/008 phần CI · (2) Mở rộng T-102 làm luôn
+- Chọn: Tách task mới T-163 (CI chạy test tích hợp của base trên schema của HEAD); T-102 chỉ đóng DB-MIG-001/003/008 phần CI
+- Lý do (tiêu chí chất lượng cuối): (3) lát nhỏ, đảo ngược được; job gate đã ~26/30 phút nên cần đo/thiết kế job riêng; T-102 đã đủ lớn
+- Đường lùi: Gộp T-163 vào T-102
+
+### D-116 · 2026-10-27T20:10:56+00:00 · T-161: đơn quá hạn khi breaker querydr mở; ngân sách querydr; trần lookup
+
+- Phương án: (1) Giữ như unknown (không hủy khi chưa xác minh), ngân sách querydr 144000/ngày, lookup 1000 trong 3000 · (2) Bỏ qua không đổi trạng thái; ngân sách mặc định 10000 · (3) Hủy sau hạn cứng rồi hoàn qua late_payment
+- Chọn: Giữ như unknown (không hủy khi chưa xác minh), ngân sách querydr 144000/ngày, lookup 1000 trong 3000
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: hủy chưa xác minh biến IPN lạc thành hoàn tiền, trái RUNBOOK §1; querydr không tính phí theo lượt, ngân sách 10000 bị nghẽn đầu hàng đốt hết sau ~100 phút rồi đóng băng hủy cả ngày; lookup cần ≥9 cặp mã đơn+SĐT thật mới đốt hết 1000 (rate limit 5/giờ/SĐT)
+- Đường lùi: Sửa OUTBOX_BREAKER_POLICY / subBudgets
+
+### D-117 · 2026-10-27T20:10:56+00:00 · T-142: CATALOG_REVALIDATE_URLS ở production
+
+- Phương án: (1) Chỉ https (URL nội bộ từng bản storefront cần TLS) · (2) Cho phép http với host mạng riêng/loopback (HMAC giữ toàn vẹn)
+- Chọn: Chỉ https (URL nội bộ từng bản storefront cần TLS)
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn: phân loại mạng riêng dễ sai (DNS, IPv6, proxy), thân webhook lộ danh sách sản phẩm đổi; (2) đường lùi rẻ nếu vận hành không dựng được TLS
+- Đường lùi: Nới schema env cho http + host private

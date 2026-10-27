@@ -1,5 +1,6 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
-import { countOrders } from "./db.mjs";
+import type { Locator, Page } from "@playwright/test";
+import { countOrdersFor } from "./cleanup.mjs";
+import { expect, test } from "./fixtures";
 import { ORDER_REF, expectFocusVisible, expectNoA11yViolations, tabTo } from "./helpers";
 
 /**
@@ -8,13 +9,6 @@ import { ORDER_REF, expectFocusVisible, expectNoA11yViolations, tabTo } from "./
  * `check`/`selectOption` bị cấm trong file này. Mỗi chặng kiểm chỉ báo focus nhìn thấy được và không bẫy focus
  * (`tabTo` đếm số lần Tab, quá trần là lỗi). Chạy ở project desktop (bộ lọc dạng sidebar; project mobile loại spec này qua testIgnore).
  */
-
-const KEYBOARD_BUYER = {
-  name: "Trần Văn Bình",
-  phone: "0987654321",
-  email: "ban.phim.e2e@example.com",
-  addressLine: "45 Phố Huế, tầng 2, căn 201",
-};
 
 /** Tab tới `target` rồi Enter (liên kết/nút). */
 async function activate(page: Page, target: Locator, label: string): Promise<void> {
@@ -84,9 +78,12 @@ test.describe("UX-A11Y-003 — chỉ bàn phím", () => {
     await expect(guide).toBeFocused();
   });
 
-  test("luồng mua COD chỉ bằng bàn phím: tìm → lọc → PDP → giỏ → checkout → xác nhận", async ({ page }) => {
+  test("luồng mua COD chỉ bằng bàn phím: tìm → lọc → PDP → giỏ → checkout → xác nhận", async ({
+    page,
+    buyer,
+  }) => {
     test.setTimeout(180_000);
-    const before = await countOrders();
+    expect(await countOrdersFor(buyer.email)).toBe(0);
 
     // 1. Trang chủ → "Tìm kiếm" (liên kết biểu tượng ở header).
     await page.goto("/");
@@ -138,9 +135,9 @@ test.describe("UX-A11Y-003 — chỉ bàn phím", () => {
     await expect(page).toHaveURL(/\/thanh-toan$/);
 
     // 7. Điền checkout: ô nhập bằng gõ phím; <select> bằng gõ chữ/mũi tên; radio bằng Space.
-    await typeInto(page, page.getByLabel("Họ và tên"), KEYBOARD_BUYER.name, "Họ và tên");
-    await typeInto(page, page.getByLabel("Số điện thoại"), KEYBOARD_BUYER.phone, "Số điện thoại");
-    await typeInto(page, page.getByLabel("Email"), KEYBOARD_BUYER.email, "Email");
+    await typeInto(page, page.getByLabel("Họ và tên"), buyer.name, "Họ và tên");
+    await typeInto(page, page.getByLabel("Số điện thoại"), buyer.phone, "Số điện thoại");
+    await typeInto(page, page.getByLabel("Email"), buyer.email, "Email");
     const province = page.getByLabel("Tỉnh/thành phố");
     await tabTo(page, province, "Tỉnh/thành phố");
     await page.keyboard.press("ArrowDown"); // lựa chọn đầu tiên sau placeholder: Thành phố Hà Nội
@@ -150,12 +147,7 @@ test.describe("UX-A11Y-003 — chỉ bàn phím", () => {
     await tabTo(page, ward, "Phường/xã");
     await page.keyboard.press("ArrowDown");
     await expect(ward).not.toHaveValue("");
-    await typeInto(
-      page,
-      page.getByLabel("Số nhà, tên đường"),
-      KEYBOARD_BUYER.addressLine,
-      "Số nhà, tên đường",
-    );
+    await typeInto(page, page.getByLabel("Số nhà, tên đường"), buyer.addressLine, "Số nhà, tên đường");
     const cod = page.getByRole("radio", { name: "Thanh toán khi nhận hàng (COD)" });
     await tabTo(page, cod, "radio COD");
     await page.keyboard.press("Space");
@@ -174,7 +166,7 @@ test.describe("UX-A11Y-003 — chỉ bàn phím", () => {
     await expect(page.getByRole("heading", { level: 1 })).toContainText(ref ?? "");
     await expect(page.getByText("Đã nhận đơn — chờ xác nhận")).toBeVisible();
     await expectNoA11yViolations(page, "bàn phím — trang đơn");
-    expect(await countOrders()).toBe(before + 1);
+    expect(await countOrdersFor(buyer.email)).toBe(1);
 
     // Trang xác nhận vẫn đi Tab được (không bẫy) tới liên kết cuối chân trang.
     await tabTo(page, page.locator("footer a").last(), "chân trang trang đơn", { max: 150 });

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { newBuyer, cleanupBuyer, type Buyer } from "./fixtures";
 import {
   A11Y_TAGS,
   addAvailableVariantToCart,
@@ -66,12 +67,21 @@ async function auditScreen(page: Page, name: string): Promise<void> {
 
 test.describe.serial("AT25 — axe + reflow 320 px trên 6 màn cốt lõi", () => {
   let page: Page;
+  // Khách riêng của cả chuỗi (6 màn dùng chung một phiên/giỏ/đơn); dọn ở afterAll — afterAll chạy cả khi test đỏ.
+  const buyer: Buyer = newBuyer("a11y");
 
   test.beforeAll(async ({ browser }) => {
     page = await (await browser.newContext({ viewport: DESKTOP })).newPage();
   });
   test.afterAll(async () => {
-    await page.context().close();
+    // `page` có thể chưa gán (beforeAll lỗi) — khi đó vẫn dọn theo email của buyer.
+    const context = typeof page === "undefined" ? undefined : page.context();
+    const cookies = (await context?.cookies().catch(() => [])) ?? [];
+    await context?.close().catch(() => undefined);
+    await cleanupBuyer(
+      buyer,
+      cookies.filter((c) => c.name === "xs_cart" && c.value).map((c) => c.value),
+    );
   });
 
   test("1. trang chủ", async () => {
@@ -106,7 +116,7 @@ test.describe.serial("AT25 — axe + reflow 320 px trên 6 màn cốt lõi", () 
   });
 
   test("6. trang đơn", async () => {
-    await fillCheckout(page, "cod");
+    await fillCheckout(page, "cod", buyer);
     await placeCodOrder(page);
     await expect(page.getByText("Đã nhận đơn — chờ xác nhận")).toBeVisible();
     await auditScreen(page, "trang đơn");

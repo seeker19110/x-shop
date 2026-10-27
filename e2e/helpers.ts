@@ -1,13 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** SĐT di động hợp lệ dùng cho mọi đơn E2E (không phải số thật của ai). */
-export const BUYER = {
-  name: "Nguyễn Thị Ánh Tuyết",
-  phone: "0912345678",
-  email: "khach.e2e@example.com",
-  addressLine: "12 Phố Điện Biên Phủ, tòa A, căn 305",
-};
+import type { Buyer } from "./fixtures";
 
 export const ORDER_REF = /XS-[A-Z0-9]{4,12}/;
 
@@ -69,15 +63,15 @@ export async function openCheckoutFromCart(page: Page): Promise<void> {
 }
 
 /** Điền liên hệ + địa chỉ 2 cấp (tỉnh → phường/xã) + chọn phương thức; chờ báo giá của server có tổng tiền. */
-export async function fillCheckout(page: Page, payment: "cod" | "vnpay"): Promise<void> {
-  await page.getByLabel("Họ và tên").fill(BUYER.name);
-  await page.getByLabel("Số điện thoại").fill(BUYER.phone);
-  await page.getByLabel("Email").fill(BUYER.email);
+export async function fillCheckout(page: Page, payment: "cod" | "vnpay", buyer: Buyer): Promise<void> {
+  await page.getByLabel("Họ và tên").fill(buyer.name);
+  await page.getByLabel("Số điện thoại").fill(buyer.phone);
+  await page.getByLabel("Email").fill(buyer.email);
   await page.getByLabel("Tỉnh/thành phố").selectOption({ label: "Thành phố Hà Nội" });
   const ward = page.getByLabel("Phường/xã");
   await expect(ward).toBeEnabled();
   await ward.selectOption({ index: 1 });
-  await page.getByLabel("Số nhà, tên đường").fill(BUYER.addressLine);
+  await page.getByLabel("Số nhà, tên đường").fill(buyer.addressLine);
   const label = payment === "cod" ? "Thanh toán khi nhận hàng (COD)" : "Thanh toán online qua VNPAY";
   await page.getByRole("radio", { name: label }).check();
   await waitForQuote(page);
@@ -97,6 +91,7 @@ export async function waitForQuote(page: Page): Promise<void> {
 export async function guestJourneyToFilledCheckout(
   page: Page,
   payment: "cod" | "vnpay",
+  buyer: Buyer,
   onStep: (label: string) => Promise<void> = async () => {},
 ): Promise<void> {
   await openFirstProductFromHome(page);
@@ -107,7 +102,7 @@ export async function guestJourneyToFilledCheckout(
   await onStep("giỏ hàng");
   await openCheckoutFromCart(page);
   await onStep("checkout trống");
-  await fillCheckout(page, payment);
+  await fillCheckout(page, payment, buyer);
   await onStep(`checkout đã điền (${payment})`);
 }
 
@@ -176,6 +171,9 @@ export const A11Y_TAGS = ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"];
  * phải thật sự chạy luật. `label` nêu rõ màn/bước khi đỏ.
  */
 export async function expectNoA11yViolations(page: Page, label: string): Promise<void> {
+  // Điều kiện sẵn sàng (không phải nới timeout): Next stream <title> sau phần thân; máy tải nặng thì axe chạy trước khi
+  // tiêu đề tới → luật `document-title` đỏ giả. Chờ tiêu đề có nội dung rồi mới quét — tiêu đề rỗng thật vẫn đỏ.
+  await expect(page, `axe (${label}): trang không có <title>`).toHaveTitle(/\S/);
   const results = await new AxeBuilder({ page }).withTags(A11Y_TAGS).analyze();
   expect(results.passes.length, `axe (${label}): không có luật nào chạy`).toBeGreaterThan(10);
   const report = results.violations.map(

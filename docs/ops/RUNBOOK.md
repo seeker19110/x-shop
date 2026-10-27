@@ -44,6 +44,9 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
 ## 1. Cổng thanh toán lỗi (VNPAY không phản hồi, IPN không về)
 - Dấu hiệu: `payment_attempt` ở `pending`/`unknown` tăng; cảnh báo "đã nhận dấu hiệu thanh toán nhưng chưa xử lý > 5 phút".
 - Kiểm tra: log `webhook_inbox` (verified, result); job `expire-holds` có chạy; gọi `querydr` thủ công cho vài `txn_ref`.
+- Breaker `vnpay.querydr` (T-161, §14): VNPAY lỗi tạm liên tiếp → job `expire-holds` ngừng gọi querydr, mở ngoại lệ `job_circuit_open`
+  (`detail.breaker = 'vnpay.querydr'`); đơn quá hạn được giữ như `unknown` (`payment_unknown` lý do `breaker_*`), tự hỏi lại khi
+  breaker đóng. IPN không đi qua breaker — vẫn xác nhận đơn bình thường.
 - Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (cờ cấu hình) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
 - Xác nhận: không còn attempt `unknown` quá hạn chưa có owner trong `ops_exception`.
 
@@ -213,6 +216,15 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   migration chưa tương thích ngược, KHÔNG lùi ứng dụng khi chưa kiểm: chỉ lùi migration khi chưa có dữ liệu mới ghi vào cấu trúc mới,
   bằng `cd apps/backend && npx medusa db:rollback --modules <module>` (hoàn lại lô migration cuối của module; `down()` giữ dữ liệu — xem ghi
   chú trong từng file ở `apps/backend/src/modules/*/migrations/`). Ngược lại → sửa tiến (bản vá) thay vì lùi. Không sửa migration đã áp.
+  CI cưỡng chế (T-102, `scripts/check-migrations.mjs`): `pnpm check:migrations` — migration đã có trên nhánh đích giữ nguyên byte;
+  migration mới (SQL thật lấy bằng cách chạy `up()` với `addSql` giả trong `node:vm` — KHÔNG cô lập, migration là mã repo cùng mức
+  tin cậy với jest trong CI; rẽ nhánh theo môi trường, import lạ, knex, vòng lặp vô hạn → đỏ; so với schema do các migration trên
+  nhánh đích tạo) không DROP
+  TABLE/COLUMN, RENAME/SET SCHEMA, đổi kiểu, SET NOT NULL, thêm cột NOT NULL không DEFAULT, TRUNCATE, DELETE không WHERE, drop
+  index/ràng buộc đã phát hành mà không tạo lại, trong `up()` — trừ khi file có chú thích
+  `// @migration-contract: <lý do, nêu MigrationYYYYMMDDHHMMSS expand>`; SET NOT NULL đi đường `CHECK … NOT VALID` → `VALIDATE` →
+  `SET NOT NULL` ở migration contract sau. `pnpm check:migrations:drift` (cần Postgres) — model DML khớp migration
+  (`medusa db:generate` không sinh gì, không module nào lỗi). Chạy test bản N−1 trên schema N: chưa có (T-163).
 - **Ngưỡng quyết định lùi (đề xuất, chủ dự án duyệt — chưa có hạ tầng đo tự động):** trong 30 phút sau deploy, lùi nếu một trong:
   smoke §8.3 đỏ · tỷ lệ 5xx của `/store/x/*` > 2% trong 5 phút liên tiếp · p95 `POST /store/x/checkout/submit` vượt 2× số đo ở
   `docs/ops/perf/` trong 10 phút · có đơn đã đặt nhưng thiếu `order_finance`/`payment_attempt` (đối chiếu truy vấn §3.3.3). Người quyết
@@ -225,6 +237,8 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   được `X-Content-Type-Options: nosniff` cho đường này. Checklist triển khai: reverse proxy/CDN đặt `nosniff` cho
   `/static/*` (và mọi file ảnh); production nên tắt `/static`, ảnh qua file module S3-compatible + CDN. Kiểm sau deploy:
   `curl -sI https://<backend>/static/<file> | grep -i x-content-type-options`.
+- Từ T-154 production bắt buộc `FILE_STORAGE=s3` (§8.2b): ảnh mới nằm ở bucket công khai, URL `<S3_FILE_URL>/<khoá>` — đặt
+  `X-Content-Type-Options: nosniff` và `Content-Type` đúng ở kho/CDN đó; `static/` của backend không còn nhận file mới.
 
 ## 7. Tiền đến sau khi hủy / thu dư
 - `ops_exception late_payment|overpayment`: kế toán xác minh trên cổng → tạo refund (một refund, retry cùng id) → ghi chú khách. Không phục hồi đơn, không giao thay thế khi chưa có xác nhận mới của khách.
@@ -256,7 +270,43 @@ pnpm --filter @x-shop/storefront start
 ```
 
 Production thiếu/sai biến → backend thoát mã 1 và in TÊN biến (không in giá trị): đọc log khởi động trước khi chuyển lưu lượng. Chạy ≥ 2
-instance server thì `REDIS_URL` bắt buộc (§3.2.1). Không deploy khi đang có sự cố thanh toán (§1).
+instance server thì `REDIS_URL` bắt buộc (§3.2.1). File upload/xuất: `FILE_STORAGE=s3` bắt buộc (§8.2b). Không deploy khi đang có sự cố
+thanh toán (§1).
+
+### 8.2b Lưu trữ file dùng chung giữa các bản sao (T-154, ARC-RES-005)
+
+Provider local của Medusa ghi file lên đĩa của từng máy: ảnh upload ở bản sao A không có ở bản sao B, file xuất do worker ghi không tải được
+qua server. Production vì vậy BẮT BUỘC `FILE_STORAGE=s3` (kiểm lúc khởi động: vắng hoặc `local` → thoát mã 1). Biến: `docs/ops/ENV.md`.
+
+Ràng buộc triển khai (chủ dự án làm trước lần deploy đầu có T-154):
+1. **Chọn và dựng kho S3-compatible** (cần máy/tài khoản thật — việc của người). Mặc định tự host: **Garage** (AGPL-3.0, Rust, một binary)
+   hoặc **SeaweedFS** (Apache-2.0); chạy như dịch vụ riêng, không sửa mã của chúng (AGPL chỉ ràng buộc khi sửa/phân phối lại bản sửa).
+   **Không dùng MinIO bản cộng đồng**: repo `minio/minio` ghi "THIS REPOSITORY IS NO LONGER MAINTAINED", bản cộng đồng chỉ còn mã nguồn,
+   `dl.min.io` trả 410 "archived and no longer maintained … no security updates" (kiểm 2026-10-27). Dịch vụ quản lý (S3, R2…) cũng được —
+   cần tài khoản/khoá của chủ dự án.
+2. **Hai bucket**: `S3_BUCKET` (công khai) có policy đọc nặc danh `s3:GetObject` (hoặc website endpoint/CDN); `S3_PRIVATE_BUCKET` KHÔNG có
+   policy công khai/website/CDN. Kiểm sau khi dựng: `curl -sI <S3_ENDPOINT>/<S3_PRIVATE_BUCKET>/x` (không chữ ký) phải 403.
+3. **Một khoá truy cập riêng cho backend**, chỉ quyền `s3:GetObject`/`s3:PutObject`/`s3:DeleteObject` trên object và `s3:ListBucket` trên
+   CẢ HAI bucket; không quyền quản trị kho. Thiếu `s3:ListBucket` thì AWS trả 403 (không phải 404) cho khoá không tồn tại → route tải file
+   private trả 500 thay vì 404 (backend log "Kho S3 từ chối đọc (403) khoá hợp lệ…"). Đặt `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` vào kho bí mật.
+4. **Mọi tiến trình dựng File Module có cùng biến S3**: server (mọi bản sao), worker, `medusa db:migrate`, script `medusa exec`. Không cần
+   volume dùng chung cho file nữa (PRIVATE_UPLOAD_DIR không dùng khi `s3` — đặt kèm là lỗi khởi động).
+5. **TLS**: production đòi `https://` cho `S3_ENDPOINT` và `S3_FILE_URL` (file private mang PII đi qua kết nối này).
+6. **`MEDUSA_BACKEND_URL`** bắt buộc, https (URL tải file private trong thông báo xuất).
+7. **Storefront**: đặt `XS_MEDIA_URL` = `S3_FILE_URL` (https ở production) TRƯỚC `next build` — `images.remotePatterns` được đóng vào bản build
+   (`apps/storefront/src/lib/env/media.ts`); đổi host ảnh = build lại storefront. Host này phải phân giải ra IP công khai (bộ chặn SSRF của
+   `next/image` bật ở production). CSP `img-src` không cần nới: ảnh đi qua `/_next/image` cùng origin.
+8. **Chuyển file cũ** (nếu đã chạy local trước đó): chép `static/<khoá>` → bucket công khai, `PRIVATE_UPLOAD_DIR/private-*` → bucket private
+   (cùng tên khoá); URL ảnh đã lưu trong sản phẩm vẫn trỏ `/static/…` cũ — cập nhật hoặc giữ `/static` phục vụ tạm tới khi thay.
+
+Đường lùi: đặt lại biến về bản trước + triển khai lại bản trước T-154 (chỉ được khi một bản sao, vì local không dùng chung); file đã ghi ở
+kho vẫn còn — chép ngược về `static/`/PRIVATE_UPLOAD_DIR theo cùng tên khoá. Sức khoẻ kho chưa nằm trong `/x/health` (chưa làm): kho lỗi →
+upload/xuất/tải file private trả 5xx, phần còn lại của shop chạy bình thường. Mọi lời gọi kho có hạn tường minh (`S3_TIMEOUTS` trong
+`apps/backend/src/lib/infra/timeouts.ts`: kết nối 5 s, request 30 s, socket im lặng 30 s; SDK thử lại 3 lần) — kho treo không làm treo request.
+
+Bằng chứng: test tích hợp `upload` mặc định chạy trên kho S3 GIẢ trong tiến trình (`integration-tests/helpers/fake-s3.ts` — không multipart,
+không kiểm chữ ký SigV4, không policy/ACL thật). Chưa đủ để coi BE-FILE-004/ARC-RES-005 đã đạt: chạy lại suite với kho thật đã dựng ở bước 1
+(`XS_TEST_S3_ENDPOINT…`, `docs/ops/ENV.md`) và lưu kết quả trước khi tick.
 
 ### 8.2a Reverse proxy cho luồng mời admin qua dashboard (T-138, D-075)
 
@@ -288,6 +338,7 @@ xuất: 12 tháng cho khoá ký, và NGAY khi nghi lộ (§10). Hiệu ứng khi
 | `GHN_TOKEN` (+ `GHN_SHOP_ID` nếu đổi shop) | gọi GHN thất bại tới khi khớp | tạo token mới ở GHN → đổi env → restart worker+server; vận đơn timeout xử lý như §2; callback GHN không chữ ký nên không bị ảnh hưởng |
 | `CATALOG_REVALIDATE_SECRET` (backend + storefront, T-142) | webhook vô hiệu hoá cache catalog bị 401 trong lúc hai phía lệch khoá → outbox `dead` + MỘT ngoại lệ `outbox_dead` đang mở (ưu tiên thường); giá/tồn trên storefront tươi lại theo TTL 60 giây | đặt khoá mới ở storefront → restart storefront → đặt ở backend → restart server+worker; ngoại lệ `outbox_dead` loại `catalog.revalidate` trong khoảng lệch: đóng, không redrive (dữ liệu đã tươi theo TTL; lần gửi thành công đầu tiên sau lỗi tạm tự gửi bù tag `catalog`). Production: `CATALOG_REVALIDATE_URLS` chỉ nhận https (D-117) — URL nội bộ từng bản storefront cần TLS |
 | Mật khẩu trong `DATABASE_URL`, `REDIS_URL` | kết nối mới thất bại tới khi restart | tạo vai trò/mật khẩu mới → cập nhật env → restart → thu hồi cái cũ |
+| `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` (T-154) | upload/xuất/tải file private lỗi tới khi khớp; ảnh công khai vẫn đọc được (nặc danh) | tạo khoá mới cùng quyền trên hai bucket ở kho → đổi env mọi tiến trình → restart server+worker → kiểm upload ảnh + tải một file xuất → thu hồi khoá cũ |
 | Khoá email/SMS provider | thông báo không gửi (rơi vào `outbox_event` `failed`, thử lại — §12) | thủ tục theo nhà cung cấp thật (xem `docs/privacy/processors.md`) |
 
 ## 10. Lộ bí mật
@@ -305,6 +356,7 @@ rà log trong khoảng lộ, ghi sự cố, đánh giá nghĩa vụ thông báo 
 | `ORDER_LOOKUP_SECRET` | đổi, restart: mọi liên kết/phiên xem đơn mất hiệu lực | log truy cập `/store/x/orders/*` trong khoảng lộ |
 | `CATALOG_REVALIDATE_SECRET` | xoay như §9. Kẻ có khoá chỉ ép storefront nạp lại cache catalog (tải thêm lên backend, không đổi dữ liệu) | log truy cập `POST /api/revalidate` của storefront (tần suất bất thường) |
 | `DATABASE_URL` / `REDIS_URL` | đổi mật khẩu, đóng cổng ra ngoài, restart | log truy cập DB của nhà cung cấp hạ tầng; `audit_log` |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (T-154) | thu hồi khoá ở kho S3, tạo khoá mới cùng quyền trên hai bucket, đổi env, restart server+worker (§9) | log truy cập của kho trong khoảng lộ: `GetObject` trên bucket private (file xuất có PII — đánh giá nghĩa vụ thông báo theo `docs/ops/runbooks/data-breach.md`), `PutObject`/`DeleteObject` lạ trên cả hai bucket (ảnh bị thay/xoá) |
 | Khoá email/SMS provider | thu hồi ở nhà cung cấp, tạo khoá mới | lịch sử gửi ở nhà cung cấp so với `outbound_message` |
 
 Sau xử lý: ghi post-mortem vào `docs/ops/incidents/` (sổ sự cố; quy trình ở `docs/ops/INCIDENT-RESPONSE.md`) — nguyên nhân gốc, khoảng lộ, khoá đã xoay, dữ liệu bị chạm, hàng rào mới
@@ -402,3 +454,80 @@ code=55P03`; bản trùng đóng theo bước 5. `detail` chỉ có id + mã l�
    ```
 
    Sản phẩm đó lỗi lại sau khi đóng → ngoại lệ mới được mở; cùng sản phẩm lặp lại nhiều lần → leo thang cho kỹ thuật (§0).
+
+## 14. Ngoại lệ `job_circuit_open` — job nền tạm dừng gọi dịch vụ ngoài (circuit breaker chi phí)
+
+last_drilled: chưa diễn tập (test đơn vị `breaker` + test tích hợp `outbox-breaker`).
+
+Mô hình thật (`apps/backend/src/lib/outbox/breaker.ts`, T-097, OPS-COST-004): dispatcher outbox chia breaker theo adapter
+(`outbox.notify` = mọi thông báo email/SMS; loại khác `outbox.<loại sự kiện>`); job `x-expire-holds` có breaker `vnpay.querydr` cho lời
+gọi VNPAY querydr (T-161) — lỗi tạm = timeout/mạng/adapter ném/HTTP 5xx·408·429 (mỗi đơn tính một); khi breaker không cho gọi, đơn
+quá hạn giữ hàng KHÔNG bị hủy mà xử lý như `unknown` (giữ hàng, attempt `unknown`, ngoại lệ `payment_unknown` với `detail.reason` =
+`breaker_open` | `breaker_probing` | `breaker_throttled` | `breaker_budget_exhausted`, xem §1) và được hỏi lại ở lượt chạy sau khi
+breaker đóng; lượt thử half-open xoay vòng giữa các đơn quá hạn (theo `trip_count`, đơn vừa lỗi — `last_failed_event_id` — luôn xuống cuối) nên một đơn lỗi ổn định không giữ breaker mở mãi;
+ngân sách ngày 144 000 = trần vật lý của lịch chạy nên chỉ mở vì lỗi. Trạng thái ở bảng `job_breaker` (dùng chung mọi bản
+sao), ngân sách lượt gọi theo ngày UTC ở `rate_limit_counter` (bucket `breaker.budget:<breaker>`). Ngưỡng trong code
+(`OUTBOX_BREAKER_POLICY`, `OUTBOX_RUN_LIMITS` — đổi qua review): mỗi lượt chạy tối đa 100 sự kiện / 50 lượt gọi; 5 sự kiện khác nhau
+lỗi tạm liên tiếp → mở 5 phút; ngân sách ngày `outbox.notify` 3 000, loại khác 10 000 — 80 % log WARN, 90 % bóp còn 5 lượt gọi/lượt
+chạy, vượt 100 % → mở tới 00:00 UTC hôm sau. **Ngân sách con** (T-162, `subBudgets`): thông báo do khách tự kích
+(`order.lookup_link`) tối đa 1 000 lượt/ngày NẰM TRONG 3 000 của `outbox.notify` (bucket `breaker.budget:outbox.notify.customer_triggered`);
+vượt → chỉ hoãn loại đó tới 00:00 UTC (không có dòng `job_breaker`, breaker `outbox.notify` không đổi — thư xác nhận/giao hàng vẫn gửi)
+và mở ngoại lệ này với `detail.breaker = 'outbox.notify.customer_triggered'`; thường là lạm dụng tra cứu đơn → kiểm giới hạn tra cứu
+(5 lượt/giờ/SĐT) và nguồn yêu cầu trước khi nâng trần. Breaker mở → mở ngoại lệ này (ưu tiên `high`, owner `owner`, một ngoại lệ đang mở mỗi
+breaker). **Không mất sự kiện**: sự kiện bị hoãn vẫn `pending`/`failed` trong `outbox_event`, `attempts` không đổi, `next_attempt_at`
+= hết nguội. Hết nguội → đúng một lượt thử (half-open); thành công hoặc lỗi vĩnh viễn (dịch vụ đã trả lời, D-111) → đóng, lỗi tạm → mở thêm một kỳ.
+**Lỗi DB khi đọc/ghi breaker hoặc đếm ngân sách → fail-closed**: lượt chạy job lỗi (chỉ có log lỗi của job `x-outbox-dispatch`
+hoặc `x-expire-holds` — KHÔNG có ngoại lệ vận hành), không gọi dịch vụ ngoài; outbox: sự kiện đang xét giữ lease nhận 60 giây rồi được
+nhận lại (không tăng `attempts`); expire-holds: không querydr, không hủy — đơn vẫn `awaiting_payment` quá hạn, giữ hàng tới lượt chạy
+sau; nếu đã nhận lượt thử thì breaker ở `half_open` tới `probe_until` rồi bản sao khác thử. Không cần thao tác tay — xử lý sự cố DB
+trước.
+
+1. Xem breaker và lý do (`detail.reason`: `consecutive_failures` | `budget_exhausted`):
+
+   ```sql
+   SELECT breaker_key, state, trip_reason, consecutive_failures, open_until, probe_until, trip_count, updated_at
+     FROM job_breaker WHERE state <> 'closed' ORDER BY updated_at DESC;
+   SELECT bucket, window_start, count FROM rate_limit_counter WHERE bucket LIKE 'breaker.budget:%' ORDER BY window_start DESC;
+   ```
+
+   Log: `[breaker] <breaker>: … — dừng gọi tới <giờ>`; cảnh báo ngân sách `[breaker] <breaker>: đã dùng N/M lượt ngân sách`.
+2. `consecutive_failures`: kiểm nhà cung cấp (trang trạng thái, khoá API, hạn mức) và `last_error` của sự kiện gần nhất
+   (`SELECT event_key, attempts, last_error FROM outbox_event WHERE state = 'failed' ORDER BY updated_at DESC LIMIT 20;`). Không cần
+   làm gì để mở lại — breaker tự thử khi hết nguội; lỗi kéo dài thì breaker cứ mở lại từng kỳ, sự kiện không vào `dead` vì bị hoãn.
+3. `budget_exhausted`: số lượt gọi bất thường (vòng lặp gửi lại, sự kiện bị sinh hàng loạt) → tìm nguồn trước
+   (`SELECT type, count(*) FROM outbox_event WHERE created_at > now() - interval '1 day' GROUP BY type;`). Lưu lượng thật tăng → nâng
+   ngân sách bằng PR sửa `OUTBOX_BREAKER_POLICY` (có review), không sửa DB.
+4. Đã chắc nguyên nhân hết và cần gửi ngay (không chờ hết nguội): đóng breaker, rồi đưa sự kiện đã hoãn của breaker đó về hạn ngay
+   (không làm bước sau thì chúng được gửi khi tới `next_attempt_at` cũ). **Không kéo sự kiện đang được giữ lease**: không có cột
+   lease riêng — lúc nhận, dispatcher đặt `next_attempt_at = now + 60 s` (`OUTBOX_POLICY.claimLeaseMs`), và gửi thông báo KHÔNG
+   chống gửi đôi khi hai bản cùng gửi một lúc (`outbound_message` đang `sending` vẫn cho giữ chỗ lại). Vì vậy chỉ kéo sự kiện có
+   `next_attempt_at` xa hơn một lease (chắc chắn không phải lease đang chạy); phần còn lại tự tới hạn trong ≤ 60 giây —
+
+   ```sql
+   UPDATE job_breaker SET state = 'closed', consecutive_failures = 0, last_failed_event_id = NULL, open_until = NULL,
+          probe_until = NULL, updated_at = now() WHERE breaker_key = '<breaker>';
+   -- outbox.notify: type IN ('order.placed_pending', 'order.confirmed', 'order.lookup_link', 'shipment.shipped')
+   UPDATE outbox_event SET next_attempt_at = now(), updated_at = now()
+    WHERE state IN ('pending', 'failed') AND type IN ('<loại>') AND next_attempt_at > now() + interval '60 seconds';
+   ```
+
+   (với `budget_exhausted` thì bộ đếm ngày vẫn còn — lượt gọi kế tiếp sẽ mở lại; chỉ làm khi đã nâng ngân sách).
+5. Riêng `detail.breaker = 'vnpay.querydr'` (job `x-expire-holds`): đơn bị hoãn có ngoại lệ `payment_unknown` lý do `breaker_*`;
+   đơn lỗi thật có lý do `timeout`/`network`/`http_5xx`/`adapter_error:…` —
+
+   ```sql
+   SELECT detail->>'reason' AS reason, count(*) FROM ops_exception
+    WHERE kind = 'payment_unknown' AND state IN ('open', 'in_progress') AND detail->>'source' = 'expire-holds' GROUP BY 1;
+   ```
+
+   KHÔNG hủy tay các đơn này (§1). Cổng đã hồi phục (querydr thủ công cho vài `txn_ref` trả lời bình thường) → đóng breaker bằng câu
+   `UPDATE job_breaker …` ở bước 4 với `breaker_key = 'vnpay.querydr'` (không có bước kéo outbox); lượt `x-expire-holds` kế tiếp
+   (≤ 1 phút) hỏi lại và xác nhận/hủy đúng từng đơn. Sau đó đóng các `payment_unknown` lý do `breaker_*` của đơn đã có kết cục.
+6. Đóng ngoại lệ kèm ghi chú nguyên nhân (Admin chưa có nút đóng):
+
+   ```sql
+   UPDATE ops_exception SET state = 'resolved', updated_at = now()
+    WHERE id = '<id>' AND kind = 'job_circuit_open' AND state IN ('open', 'in_progress');
+   ```
+
+   Breaker mở lại sau khi đóng → ngoại lệ mới; lặp lại nhiều lần trong ngày → leo thang cho kỹ thuật (§0).

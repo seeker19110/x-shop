@@ -37,7 +37,15 @@ export function extensionForMime(mimeType: unknown): string | null {
 /** ULID Crockford base32, 26 ký tự. */
 export const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
-/** Tiền tố khoá file private của provider local Medusa (`delete`/`getAsBuffer`… chọn thư mục theo tiền tố này). */
+/** Nhóm đuôi trong allowlist dạng regex (`\.jpg|\.png|…`). */
+const EXTENSION_ALTERNATION = Object.values(UPLOAD_MIME_EXTENSIONS)
+  .map((ext) => ext.replace(".", "\\."))
+  .join("|");
+
+/**
+ * Tiền tố khoá file private: provider local Medusa (`delete`/`getAsBuffer`… chọn thư mục theo tiền tố này) và provider S3
+ * của dự án (chọn bucket private theo tiền tố này — T-154).
+ */
 export const PRIVATE_KEY_PREFIX = "private-";
 
 /**
@@ -46,9 +54,7 @@ export const PRIVATE_KEY_PREFIX = "private-";
  * private; 80 bit ngẫu nhiên của ULID làm khoá không đoán được. Mọi chuỗi khác (kể cả khoá file công khai) → không hợp lệ.
  */
 export const PRIVATE_FILE_KEY_PATTERN = new RegExp(
-  `^${PRIVATE_KEY_PREFIX}\\d{13}-[0-9A-HJKMNP-TV-Z]{26}(?:${Object.values(UPLOAD_MIME_EXTENSIONS)
-    .map((ext) => ext.replace(".", "\\."))
-    .join("|")})$`,
+  `^${PRIVATE_KEY_PREFIX}\\d{13}-[0-9A-HJKMNP-TV-Z]{26}(?:${EXTENSION_ALTERNATION})$`,
 );
 
 export function isPrivateFileKey(key: unknown): key is string {
@@ -66,10 +72,22 @@ export function mimeForFileKey(key: unknown): string | null {
 }
 
 /**
- * Sinh tên lưu `<ULID><đuôi>` cho file có loại `mimeType`. Không nhận tên gốc làm tham số — không thể vô tình dùng.
+ * Khoá file CÔNG KHAI do provider sinh (T-100, T-154): `<Date.now() 13 chữ số>-<ULID><đuôi trong allowlist>` — cùng dạng
+ * cho provider local (`static/`) và S3 (bucket công khai). Không bao giờ bắt đầu bằng `private-`.
+ */
+export const PUBLIC_FILE_KEY_PATTERN = new RegExp(
+  `^\\d{13}-[0-9A-HJKMNP-TV-Z]{26}(?:${EXTENSION_ALTERNATION})$`,
+);
+
+export function isPublicFileKey(key: unknown): key is string {
+  return typeof key === "string" && PUBLIC_FILE_KEY_PATTERN.test(key);
+}
+
+/**
+ * Đuôi chuẩn của MIME trong allowlist, hoặc ném lỗi — dùng ở MỌI provider trước khi ghi.
  * @throws MedusaError INVALID_DATA khi MIME ngoài allowlist (gồm rỗng).
  */
-export function generateUploadKey(mimeType: unknown, newId: () => string = () => generateEntityId()): string {
+export function requireUploadExtension(mimeType: unknown): string {
   const ext = extensionForMime(mimeType);
   if (ext === null) {
     throw new MedusaError(
@@ -77,6 +95,15 @@ export function generateUploadKey(mimeType: unknown, newId: () => string = () =>
       `Loại file không được nhận khi lưu: chỉ ${Object.keys(UPLOAD_MIME_EXTENSIONS).join("|")}`,
     );
   }
+  return ext;
+}
+
+/**
+ * Sinh tên lưu `<ULID><đuôi>` cho file có loại `mimeType`. Không nhận tên gốc làm tham số — không thể vô tình dùng.
+ * @throws MedusaError INVALID_DATA khi MIME ngoài allowlist (gồm rỗng).
+ */
+export function generateUploadKey(mimeType: unknown, newId: () => string = () => generateEntityId()): string {
+  const ext = requireUploadExtension(mimeType);
   const id = newId();
   if (!ULID_PATTERN.test(id)) {
     throw new MedusaError(

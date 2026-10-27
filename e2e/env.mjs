@@ -7,7 +7,20 @@
  * `backendB` (9101, chỉ nhận HTTP — như production tách server/worker), cùng DB + Redis DB 7. Storefront và cổng VNPAY
  * giả lập gọi backend qua bộ cân bằng tải round-robin `backendLb` (9110, e2e/lb.mjs, không sticky session).
  */
-export const PORTS = { backend: 9100, backendB: 9101, backendLb: 9110, storefront: 3100, mockVnpay: 3300 };
+/**
+ * `E2E_PORT_OFFSET` (mặc định 0) dịch toàn bộ cổng — để chạy hai bộ E2E cùng lúc trên một máy (cùng với `E2E_DB_NAME`
+ * và `E2E_REDIS_DB`) mà không giẫm cổng/DB/Redis của nhau.
+ */
+const OFFSET = Number(process.env.E2E_PORT_OFFSET ?? 0);
+if (!Number.isInteger(OFFSET) || OFFSET < 0 || OFFSET > 20000)
+  throw new Error("E2E_PORT_OFFSET không hợp lệ");
+export const PORTS = {
+  backend: 9100 + OFFSET,
+  backendB: 9101 + OFFSET,
+  backendLb: 9110 + OFFSET,
+  storefront: 3100 + OFFSET,
+  mockVnpay: 3300 + OFFSET,
+};
 
 export const URLS = {
   backend: `http://localhost:${PORTS.backend}`,
@@ -19,11 +32,18 @@ export const URLS = {
 
 const PG_BASE = process.env.E2E_PG_BASE_URL ?? "postgres://xshop:xshop@localhost:5432";
 export const E2E_DB_NAME = process.env.E2E_DB_NAME ?? "xshop_e2e";
+// Hàng rào: run.mjs DROP DB + flushdb Redis — chỉ cho phép tên DB E2E và Redis DB 1..15 (không bao giờ DB dev `xshop`/Redis 0).
+export const E2E_DB_NAME_PATTERN = /^xshop_e2e[a-z0-9_]*$/;
+if (!E2E_DB_NAME_PATTERN.test(E2E_DB_NAME))
+  throw new Error(`E2E_DB_NAME "${E2E_DB_NAME}" không hợp lệ: phải khớp ${E2E_DB_NAME_PATTERN}`);
+const REDIS_DB = process.env.E2E_REDIS_DB ?? "7";
+if (!/^(?:[1-9]|1[0-5])$/.test(REDIS_DB))
+  throw new Error(`E2E_REDIS_DB "${REDIS_DB}" không hợp lệ: phải là số nguyên 1..15 (0 là DB của dev)`);
 export const ADMIN_DB_URL = `${PG_BASE}/postgres`;
 export const DATABASE_URL = `${PG_BASE}/${E2E_DB_NAME}`;
-// DB số 7 riêng cho E2E (khóa, cache, hàng đợi) — không đụng DB 0 của dev.
+// DB số 7 (mặc định, đổi bằng E2E_REDIS_DB) riêng cho E2E (khóa, cache, hàng đợi) — không đụng DB 0 của dev.
 const REDIS_BASE = process.env.E2E_REDIS_BASE_URL ?? "redis://localhost:6379";
-export const REDIS_URL = `${REDIS_BASE}/7`;
+export const REDIS_URL = `${REDIS_BASE}/${REDIS_DB}`;
 
 export const VNPAY = {
   tmnCode: "E2ETEST",

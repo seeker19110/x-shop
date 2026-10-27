@@ -19,7 +19,7 @@
  * null` do Medusa đặt theo yêu cầu của BullMQ).
  *
  * HTTP ra vendor: VNPAY querydr `CHECKOUT_CONFIG.queryTimeoutMs`, GHN `SHIPPING_CONFIG.requestTimeoutMs` (AbortSignal.timeout
- * phủ cả đọc thân); Admin UI → backend `ADMIN_FETCH_TIMEOUT_MS` (src/admin/lib/api.ts).
+ * phủ cả đọc thân); Admin UI → backend `ADMIN_FETCH_TIMEOUT_MS` (src/admin/lib/api.ts); kho file S3 `S3_TIMEOUTS` (dưới).
  */
 
 export const DB_TIMEOUTS = {
@@ -39,6 +39,41 @@ export const REDIS_TIMEOUTS = {
   connectTimeoutMs: 5_000,
   commandTimeoutMs: 5_000,
 } as const;
+
+/**
+ * Kho file S3-compatible (T-154, lib/upload/s3) — `requestHandler` của AWS SDK v3 (`@smithy/node-http-handler` 4.12.1: mặc
+ * định MỌI hạn là 0 = không giới hạn → kho treo làm upload/tải/xoá treo vô hạn):
+ *  - `connectionTimeout`: mở TCP(+TLS) tới kho;
+ *  - `requestTimeout` + `throwOnRequestTimeout`: từ lúc gửi tới khi có header phản hồi (gồm cả đẩy thân request — một part
+ *    multipart ≤ 5 MiB hoặc một ảnh ≤ 5 MiB); không bật `throwOnRequestTimeout` thì SDK chỉ log cảnh báo;
+ *  - `socketTimeout`: socket im lặng quá chừng này → huỷ.
+ * SDK thử lại lỗi tạm thời (gồm timeout) theo mặc định 3 lần → trường hợp xấu nhất ≈ 3 × (connect + request).
+ */
+export const S3_TIMEOUTS = {
+  connectTimeoutMs: 5_000,
+  requestTimeoutMs: 30_000,
+  socketIdleTimeoutMs: 30_000,
+} as const;
+
+export type S3Timeouts = { [K in keyof typeof S3_TIMEOUTS]: number };
+
+export interface S3RequestHandlerOptions {
+  connectionTimeout: number;
+  requestTimeout: number;
+  socketTimeout: number;
+  throwOnRequestTimeout: true;
+}
+
+/** `requestHandler` cho S3Client; `override` chỉ dùng trong test (server treo, hạn ngắn). */
+export function s3RequestHandlerOptions(override: Partial<S3Timeouts> = {}): S3RequestHandlerOptions {
+  const t = { ...S3_TIMEOUTS, ...override };
+  return {
+    connectionTimeout: t.connectTimeoutMs,
+    requestTimeout: t.requestTimeoutMs,
+    socketTimeout: t.socketIdleTimeoutMs,
+    throwOnRequestTimeout: true,
+  };
+}
 
 export interface DatabaseEnv {
   DATABASE_URL: string;

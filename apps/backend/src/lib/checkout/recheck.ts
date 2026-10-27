@@ -12,14 +12,39 @@ const service = (c: MedusaContainer) => c.resolve<CheckoutModuleService>(CHECKOU
 export type QueryCheck = { outcome: vnpay.QueryOutcome | "skipped"; reason: string };
 
 /**
+ * Cổng của lời gọi querydr (T-161 — circuit breaker): `admit()` xét NGAY TRƯỚC lời gọi (sau mọi điều kiện tiên quyết —
+ * không tốn lượt cho đơn không cần hỏi); trả lý do từ chối (vd. `breaker_open`, `breaker_throttled`) → KHÔNG gọi VNPAY,
+ * kết quả `deferred` mang đúng lý do đó; `null` → gọi. `settle(raw)` nhận kết quả thô ngay sau lời gọi, TRƯỚC khi xử lý
+ * (lỗi xử lý về sau không che tín hiệu sức khoẻ của cổng).
+ */
+export interface QueryGate {
+  admit(): Promise<string | null>;
+  settle(raw: QueryStatusResult): Promise<void>;
+}
+
+/** Không gọi querydr vì cổng từ chối (breaker mở/đang thử/bóp) — trạng thái tiền CHƯA RÕ, không được coi là "chưa trả". */
+export type DeferredQuery = { outcome: "deferred"; reason: string };
+
+/**
  * Hỏi VNPAY (querydr) trạng thái attempt đang mở của đơn rồi đi CÙNG đường xử lý với IPN (inbox nguồn `query`).
  * `paid`/`failed` → xử lý như IPN; `not_paid`/`unknown` → không đổi gì (AT08: tra cứu không tự đổi trạng thái tiền).
+ * Có `gate` → có thể trả `deferred` (không gọi).
  */
 export async function queryAndProcess(
   container: MedusaContainer,
   orderId: string,
-  opts: { orderLockHeld?: boolean } = {},
-): Promise<QueryCheck & { raw?: QueryStatusResult }> {
+  opts: { orderLockHeld?: boolean; gate: QueryGate },
+): Promise<(QueryCheck & { raw?: QueryStatusResult }) | DeferredQuery>;
+export async function queryAndProcess(
+  container: MedusaContainer,
+  orderId: string,
+  opts?: { orderLockHeld?: boolean },
+): Promise<QueryCheck & { raw?: QueryStatusResult }>;
+export async function queryAndProcess(
+  container: MedusaContainer,
+  orderId: string,
+  opts: { orderLockHeld?: boolean; gate?: QueryGate } = {},
+): Promise<(QueryCheck & { raw?: QueryStatusResult }) | DeferredQuery> {
   const s = service(container);
   const cfg = getVnpayConfig();
   const gateway = getVnpayGateway();
@@ -31,6 +56,8 @@ export async function queryAndProcess(
     { order: { created_at: "DESC" } },
   );
   if (!pa) return { outcome: "skipped", reason: "no_open_payment" };
+  const refused = opts.gate ? await opts.gate.admit() : null;
+  if (refused !== null) return { outcome: "deferred", reason: refused };
   let raw: QueryStatusResult;
   try {
     raw = await gateway.queryStatus({
@@ -42,6 +69,7 @@ export async function queryAndProcess(
   } catch (e) {
     raw = { outcome: "unknown", transactionNo: null, reason: `adapter_error:${(e as Error).message}` };
   }
+  if (opts.gate) await opts.gate.settle(raw);
   if (raw.outcome === "paid" || raw.outcome === "failed") {
     const n = notificationFromQuery(cfg, pa.txn_ref, pa.amount, raw.outcome, raw.transactionNo);
     await processVerified(

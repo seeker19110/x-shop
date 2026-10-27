@@ -8,7 +8,9 @@ import { PRIVATE_FILE_PERMISSION } from "../../../../../lib/upload/private";
 
 /**
  * GET /admin/x/files/:key — tải file private (T-141, BE-FILE-005): xuất khách hàng/đơn/tồn/sản phẩm, chunk nhập. File nằm
- * trong PRIVATE_UPLOAD_DIR (ngoài `static/`), KHÔNG có URL công khai; link trong thông báo xuất của Medusa trỏ về đây.
+ * trong kho private của File Module — bucket S3_PRIVATE_BUCKET (FILE_STORAGE=s3, bắt buộc ở production — T-154) hoặc
+ * PRIVATE_UPLOAD_DIR ngoài `static/` (FILE_STORAGE=local, dev/test) — KHÔNG có URL công khai; link trong thông báo xuất của
+ * Medusa trỏ về đây. Thiếu file: cả hai provider báo `code: "ENOENT"` → 404.
  *
  * Thứ tự kiểm: cổng admin (lib/admin-security/guard.ts — phiên, `settings.manage` theo map, MFA, audit từ chối) TRƯỚC khi
  * route chạm tới khoá → không danh tính 401 / thiếu quyền 403 như nhau cho khoá có thật hay không. Trong route: khoá phải

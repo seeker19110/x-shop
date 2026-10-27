@@ -42,6 +42,7 @@ export const DISCREPANCY_KIND_LABELS: Record<string, string> = {
   notification_failed: "Thông báo khách gửi hỏng",
   catalog_index_mismatch: "Chỉ mục danh mục lệch giá",
   catalog_compensation_failed: "Hoàn tác dữ liệu sản phẩm lỗi",
+  job_circuit_open: "Job nền tạm dừng gọi dịch vụ ngoài",
 };
 export const kindLabel = (c: string) => lookup(DISCREPANCY_KIND_LABELS, c);
 

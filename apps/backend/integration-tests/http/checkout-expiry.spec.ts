@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { createOrderWorkflow, createReservationsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { vnpay } from "@x-shop/domain";
@@ -9,10 +9,18 @@ import {
   codConfirmTimeout,
   dispatchOutbox,
   expireHolds,
+  isTransientQueryFailure,
   OUTBOX_POLICY,
   outboxBackoffMs,
+  probeOrder,
   reconcileAttempts,
+  rotate,
 } from "../../src/lib/checkout/jobs";
+import {
+  OUTBOX_BREAKER_POLICY,
+  VNPAY_QUERYDR_BREAKER_KEY,
+  type OutboxBreakerPolicy,
+} from "../../src/lib/outbox/breaker";
 import {
   HttpVnpayGateway,
   setVnpayGatewayForTest,
@@ -35,12 +43,17 @@ jest.setTimeout(300 * 1000);
 const R = vnpay.IPN_RESPONSES;
 const MIN = 60_000;
 
-/** Gateway lập trình được: kết quả querydr theo txnRef (mặc định "chưa trả"). */
+/** Gateway lập trình được: kết quả querydr theo txnRef (mặc định "chưa trả"); `down` → lỗi mạng (lỗi tạm của cổng). */
 class ScriptedGateway implements VnpayGateway {
   readonly results = new Map<string, QueryStatusResult>();
   calls = 0;
+  /** txnRef của từng lời gọi (đếm theo đơn của test — không lẫn lời gọi của job nền nếu có). */
+  readonly seen: string[] = [];
+  down = false;
   async queryStatus(input: { txnRef: string }): Promise<QueryStatusResult> {
     this.calls += 1;
+    this.seen.push(input.txnRef);
+    if (this.down) return { outcome: "unknown", transactionNo: null, reason: "network" };
     return (
       this.results.get(input.txnRef) ?? { outcome: "not_paid", transactionNo: null, reason: "status_01" }
     );
@@ -215,6 +228,402 @@ medusaIntegrationTestRunner({
           expect(await inventoryLevel(container, fx, key)).toEqual({ stocked: 50, reserved: confirmed });
         }
         process.stderr.write(`AT12 kết cục: ${JSON.stringify(outcomes)}\n`);
+      });
+    });
+
+    describe("expire-holds — circuit breaker querydr (T-161)", () => {
+      const KEY = VNPAY_QUERYDR_BREAKER_KEY;
+      const POLICY: OutboxBreakerPolicy = {
+        ...OUTBOX_BREAKER_POLICY,
+        failureThreshold: 2,
+        cooldownMs: 5 * MIN,
+      };
+      const pg = () => container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+      const reset = async () => {
+        await pg().raw(`DELETE FROM job_breaker WHERE breaker_key = ?`, [KEY]);
+        await pg().raw(`DELETE FROM rate_limit_counter WHERE bucket = ?`, [`breaker.budget:${KEY}`]);
+        await pg().raw(
+          `UPDATE ops_exception SET state = 'resolved' WHERE kind = 'job_circuit_open' AND detail->>'breaker' = ?`,
+          [KEY],
+        );
+      };
+      beforeEach(reset);
+      afterEach(async () => {
+        gateway.down = false;
+        await reset();
+      });
+      const breakerRow = async () =>
+        (
+          (
+            await pg().raw(`SELECT state, trip_count, open_until FROM job_breaker WHERE breaker_key = ?`, [
+              KEY,
+            ])
+          ).rows as Array<{ state: string; trip_count: number; open_until: Date | null }>
+        )[0];
+      const circuitExceptions = async () =>
+        (
+          await pg().raw(
+            `SELECT detail FROM ops_exception WHERE kind = 'job_circuit_open' AND state <> 'resolved' AND detail->>'breaker' = ?`,
+            [KEY],
+          )
+        ).rows as Array<{ detail: Record<string, unknown> }>;
+      const txnOf = async (orderId: string) =>
+        (await service().listPaymentAttempts({ order_id: orderId }, { order: { created_at: "ASC" } }))[0]!
+          .txn_ref;
+      const VARIANTS = ["Đen/S", "Đen/M", "Trắng/S", "Trắng/M"] as const;
+      /** 4 đơn VNPAY, mỗi biến thể 1 (thứ tự hết hạn = thứ tự đặt). */
+      const placeFour = async () => {
+        const out = [];
+        for (const v of VARIANTS) {
+          const o = await client.placeOrder([[v, 1]], "vnpay");
+          out.push({ ...o, variant: v, txn: await txnOf(o.orderId) });
+        }
+        return out;
+      };
+      const callsFor = (txns: string[]) => gateway.seen.filter((t) => txns.includes(t)).length;
+      const reserved = async (variant: string) => (await inventoryLevel(container, fx, variant)).reserved;
+
+      it("breaker mở → không gọi querydr, giữ hàng như unknown (không hủy đơn đã trả); đóng lại → xử lý đúng", async () => {
+        const orders = await placeFour();
+        const [o1, o2, o3, o4] = orders;
+        const txns = orders.map((o) => o.txn);
+        const ids = orders.map((o) => o.orderId);
+        const t0 = future(16 * MIN);
+
+        // VNPAY không phản hồi: 2 đơn khác nhau lỗi tạm → mở; 2 đơn còn lại KHÔNG gọi querydr.
+        gateway.down = true;
+        const r1 = await expireHolds(container, { now: t0, breakerPolicy: POLICY });
+        expect(callsFor(txns)).toBe(2);
+        expect(r1).toMatchObject({
+          unknown: [o1!.orderId, o2!.orderId],
+          deferred: [o3!.orderId, o4!.orderId],
+        });
+        expect(r1.cancelled).toEqual([]);
+        expect(await breakerRow()).toMatchObject({ state: "open", trip_count: 1 });
+        const trips = await circuitExceptions();
+        expect(trips).toHaveLength(1);
+        expect(trips[0]!.detail).toMatchObject({ breaker: KEY, reason: "consecutive_failures" });
+        for (const o of orders) {
+          expect((await fin(o.orderId)).state).toBe("awaiting_payment");
+          expect(await reserved(o.variant)).toBe(1);
+          const [pa] = await service().listPaymentAttempts({ order_id: o.orderId });
+          expect(pa!.state).toBe("unknown");
+        }
+        // Đơn bị hoãn vẫn có người theo dõi (không giữ hàng âm thầm): payment_unknown hạn 30 phút, lý do breaker_open.
+        for (const o of [o3!, o4!]) {
+          const ex = await service().listOpsExceptions({ order_id: o.orderId, kind: "payment_unknown" });
+          expect(ex).toHaveLength(1);
+          expect(ex[0]!.detail).toMatchObject({ reason: "breaker_open", source: "expire-holds" });
+          expect(new Date(ex[0]!.due_at!).getTime() - t0.getTime()).toBe(30 * MIN);
+        }
+
+        // Trong thời gian nguội: VNPAY thật ra đã thu tiền o2 (IPN lạc) — vẫn KHÔNG gọi, KHÔNG hủy, KHÔNG nhả.
+        gateway.results.set(o2!.txn, { outcome: "paid", transactionNo: "14999161", reason: "status_00" });
+        const r2 = await expireHolds(container, {
+          now: new Date(t0.getTime() + 2 * MIN),
+          breakerPolicy: POLICY,
+        });
+        expect(callsFor(txns)).toBe(2);
+        expect([...r2.deferred].sort()).toEqual([...ids].sort());
+        expect(r2.cancelled).toEqual([]);
+        expect(await reserved(o2!.variant)).toBe(1);
+        // IPN đi đường riêng (không qua breaker) → o3 xác nhận ngay dù breaker mở.
+        expect((await ipn(api, signer.pay(o3!.paymentUrl, "success"))).data).toEqual(R.success);
+        expect((await fin(o3!.orderId)).state).toBe("confirmed");
+
+        // Hết nguội, cổng vẫn hỏng: đúng MỘT lượt thử → lỗi → mở thêm một kỳ; không hủy gì.
+        const t1 = new Date(t0.getTime() + 5 * MIN);
+        const r3 = await expireHolds(container, { now: t1, breakerPolicy: POLICY });
+        expect(callsFor(txns)).toBe(3);
+        expect(r3.cancelled).toEqual([]);
+        expect(r3.unknown).toHaveLength(1);
+        expect(await breakerRow()).toMatchObject({ state: "open", trip_count: 2 });
+        expect(await circuitExceptions()).toHaveLength(1);
+
+        // Cổng hồi phục, hết kỳ nguội thứ hai → lượt thử thành công → đóng → mọi đơn còn chờ được xử lý đúng.
+        gateway.down = false;
+        const r4 = await expireHolds(container, {
+          now: new Date(t0.getTime() + 10 * MIN),
+          breakerPolicy: POLICY,
+        });
+        expect(r4.deferred).toEqual([]);
+        expect(r4.confirmed).toEqual([o2!.orderId]);
+        expect([...r4.cancelled].sort()).toEqual([o1!.orderId, o4!.orderId].sort());
+        expect(await breakerRow()).toMatchObject({ state: "closed" });
+        expect((await fin(o1!.orderId)).state).toBe("cancelled");
+        expect((await fin(o2!.orderId)).state).toBe("confirmed");
+        expect((await fin(o3!.orderId)).state).toBe("confirmed");
+        expect((await fin(o4!.orderId)).state).toBe("cancelled");
+        expect(await reserved(o1!.variant)).toBe(0);
+        expect(await reserved(o2!.variant)).toBe(1);
+        expect(await reserved(o3!.variant)).toBe(1);
+        expect(await reserved(o4!.variant)).toBe(0);
+        // o3: hoãn suốt lúc breaker mở, xác nhận qua IPN trước khi đóng → chưa từng tốn lượt querydr.
+        expect(gateway.seen.filter((t) => t === o3!.txn)).toHaveLength(0);
+      });
+
+      it("hai lượt song song khi cổng hỏng: mở đúng một lần, lượt gọi ≤ ngưỡng + số lượt; sau đó song song khi hồi phục → mỗi đơn đúng một kết cục", async () => {
+        const orders = await placeFour();
+        const txns = orders.map((o) => o.txn);
+        const t0 = future(16 * MIN);
+        gateway.down = true;
+        const [a, b] = await Promise.all([
+          expireHolds(container, { now: t0, breakerPolicy: POLICY }),
+          expireHolds(container, { now: t0, breakerPolicy: POLICY }),
+        ]);
+        expect(callsFor(txns)).toBeGreaterThanOrEqual(POLICY.failureThreshold);
+        expect(callsFor(txns)).toBeLessThanOrEqual(POLICY.failureThreshold + 2);
+        expect([...a.cancelled, ...b.cancelled]).toEqual([]);
+        expect(await breakerRow()).toMatchObject({ state: "open", trip_count: 1 });
+        expect(await circuitExceptions()).toHaveLength(1);
+        for (const o of orders) {
+          expect((await fin(o.orderId)).state).toBe("awaiting_payment");
+          expect(await reserved(o.variant)).toBe(1);
+        }
+
+        gateway.down = false;
+        const t1 = new Date(t0.getTime() + 5 * MIN);
+        const [c, d] = await Promise.all([
+          expireHolds(container, { now: t1, breakerPolicy: POLICY }),
+          expireHolds(container, { now: t1, breakerPolicy: POLICY }),
+        ]);
+        // Bản thua lượt thử half-open có thể hoãn vài đơn — lượt kế tiếp xử lý nốt.
+        const e = await expireHolds(container, { now: new Date(t1.getTime() + MIN), breakerPolicy: POLICY });
+        const cancelled = [...c.cancelled, ...d.cancelled, ...e.cancelled].sort();
+        expect(cancelled).toEqual(orders.map((o) => o.orderId).sort());
+        expect(await breakerRow()).toMatchObject({ state: "closed" });
+        for (const o of orders) {
+          expect((await fin(o.orderId)).state).toBe("cancelled");
+          expect(await reserved(o.variant)).toBe(0);
+          const events = (await service().listOutboxEvents({ aggregate_id: o.orderId })).filter(
+            (x) => x.type === "order.cancelled",
+          );
+          expect(events).toHaveLength(1);
+        }
+      });
+
+      it("isTransientQueryFailure: chỉ lỗi tạm của cổng mở breaker; cổng đã trả lời thì không", () => {
+        for (const r of [
+          "timeout",
+          "network",
+          "adapter_error:boom",
+          "http_500",
+          "http_503",
+          "http_408",
+          "http_429",
+        ]) {
+          expect(isTransientQueryFailure(r)).toBe(true);
+        }
+        for (const r of [
+          // Chuỗi thật của vnpay.interpretQueryResponse (packages/domain/src/providers/vnpay/vnpay.ts).
+          "status_01",
+          "status_00",
+          "invalid_signature",
+          "mismatch",
+          "amount_mismatch",
+          "response_91",
+          "http_400",
+          "http_401",
+          "http_403",
+          "http_404",
+          "",
+          "http_5000",
+        ]) {
+          expect(isTransientQueryFailure(r)).toBe(false);
+        }
+      });
+
+      it("cổng trả lời 401/403/chữ ký sai/400 → không mở breaker, không hoãn, không hủy (unknown)", async () => {
+        const orders = await placeFour();
+        const reasons = ["http_401", "http_403", "invalid_signature", "http_400"];
+        orders.forEach((o, i) =>
+          gateway.results.set(o.txn, { outcome: "unknown", transactionNo: null, reason: reasons[i]! }),
+        );
+        const r = await expireHolds(container, { now: future(16 * MIN), breakerPolicy: POLICY });
+        expect(callsFor(orders.map((o) => o.txn))).toBe(4);
+        expect(r.deferred).toEqual([]);
+        expect(r.cancelled).toEqual([]);
+        expect(r.unknown).toHaveLength(4);
+        expect((await breakerRow())?.state ?? "closed").toBe("closed");
+      });
+
+      it("lượt thử half-open xoay vòng: đơn cũ nhất lỗi tạm ổn định không giữ breaker mở — đơn khác xử lý, đơn lỗi vẫn được hỏi lại", async () => {
+        // Review T-161 🟠: trước sửa, lượt thử luôn rơi vào o1 (ORDER BY hold_expires_at) → mở lại mãi, o2..o4 giữ hàng vô hạn.
+        const orders = await placeFour();
+        const [o1, o2, o3, o4] = orders;
+        const t0 = future(16 * MIN);
+        gateway.down = true;
+        await expireHolds(container, { now: t0, breakerPolicy: POLICY });
+        expect(await breakerRow()).toMatchObject({ state: "open", trip_count: 1 });
+        gateway.down = false;
+        gateway.results.set(o1!.txn, { outcome: "unknown", transactionNo: null, reason: "http_500" });
+        const o1Calls = () => gateway.seen.filter((t) => t === o1!.txn).length;
+        const before = o1Calls();
+        const r1 = await expireHolds(container, {
+          now: new Date(t0.getTime() + 5 * MIN),
+          breakerPolicy: POLICY,
+        });
+        expect([...r1.cancelled].sort()).toEqual([o2!.orderId, o3!.orderId, o4!.orderId].sort());
+        expect(r1.unknown).toEqual([o1!.orderId]);
+        expect(await breakerRow()).toMatchObject({ state: "closed", trip_count: 1 });
+        for (const o of [o2!, o3!, o4!]) {
+          expect((await fin(o.orderId)).state).toBe("cancelled");
+          expect(await reserved(o.variant)).toBe(0);
+        }
+        // o1 không bị bỏ quên: hỏi ngay trong lượt đó và mọi lượt sau; một đơn lỗi lặp chỉ tính một → breaker vẫn đóng.
+        expect(o1Calls()).toBe(before + 1);
+        for (let k = 2; k <= 4; k++) {
+          const r = await expireHolds(container, {
+            now: new Date(t0.getTime() + k * 5 * MIN),
+            breakerPolicy: POLICY,
+          });
+          expect(r.unknown).toEqual([o1!.orderId]);
+        }
+        expect(o1Calls()).toBe(before + 4);
+        expect(await breakerRow()).toMatchObject({ state: "closed", trip_count: 1 });
+        expect((await fin(o1!.orderId)).state).toBe("awaiting_payment");
+        expect(await reserved(o1!.variant)).toBe(1);
+        // VNPAY hồi đáp cho o1 → hủy đúng.
+        gateway.results.delete(o1!.txn);
+        const r5 = await expireHolds(container, {
+          now: new Date(t0.getTime() + 25 * MIN),
+          breakerPolicy: POLICY,
+        });
+        expect(r5.cancelled).toEqual([o1!.orderId]);
+      });
+
+      it("cổng vẫn hỏng, số đơn không đổi → lượt thử xoay qua đủ mọi đơn và không bao giờ thử lại ngay đơn vừa lỗi", async () => {
+        const orders = await placeFour();
+        const t0 = future(16 * MIN);
+        gateway.down = true;
+        await expireHolds(container, { now: t0, breakerPolicy: POLICY }); // o1, o2 lỗi → mở (trip_count 1)
+        const probes: string[] = [];
+        for (let k = 1; k <= 4; k++) {
+          const n = gateway.seen.length;
+          await expireHolds(container, { now: new Date(t0.getTime() + k * 5 * MIN), breakerPolicy: POLICY });
+          expect(gateway.seen.length - n).toBe(1); // đúng một lượt thử mỗi kỳ
+          probes.push(gateway.seen[gateway.seen.length - 1]!);
+        }
+        expect(new Set(probes).size).toBe(4); // xoay hết 4 đơn
+        for (let i = 1; i < probes.length; i++) expect(probes[i]).not.toBe(probes[i - 1]);
+        expect(await breakerRow()).toMatchObject({ state: "open", trip_count: 5 });
+        for (const o of orders) expect((await fin(o.orderId)).state).toBe("awaiting_payment");
+      });
+
+      it("hoãn lặp lại nhiều lượt → mỗi đơn đúng MỘT payment_unknown (idempotent)", async () => {
+        const orders = await placeFour();
+        const t0 = future(16 * MIN);
+        gateway.down = true;
+        for (let k = 0; k < 4; k++) {
+          await expireHolds(container, { now: new Date(t0.getTime() + k * MIN), breakerPolicy: POLICY });
+        }
+        expect(callsFor(orders.map((o) => o.txn))).toBe(2);
+        for (const [i, o] of orders.entries()) {
+          const ex = await service().listOpsExceptions({ order_id: o.orderId, kind: "payment_unknown" });
+          expect(ex).toHaveLength(1);
+          expect(ex[0]!.detail).toMatchObject({ reason: i < 2 ? "network" : "breaker_open" });
+        }
+      });
+
+      it("bóp ngân sách → hoãn với lý do thật `breaker_throttled` (không gán cứng breaker_open), không hủy", async () => {
+        const orders = await placeFour();
+        const policy: OutboxBreakerPolicy = {
+          ...POLICY,
+          budgets: { [KEY]: 2 },
+          warnRatio: 0.5,
+          throttleRatio: 0.5,
+          throttledCallsPerRun: 1,
+        };
+        const r = await expireHolds(container, { now: future(16 * MIN), breakerPolicy: policy });
+        expect(callsFor(orders.map((o) => o.txn))).toBe(1);
+        expect(r.cancelled).toEqual([orders[0]!.orderId]);
+        expect(r.deferred).toEqual(orders.slice(1).map((o) => o.orderId));
+        for (const o of orders.slice(1)) {
+          expect((await fin(o.orderId)).state).toBe("awaiting_payment");
+          const ex = await service().listOpsExceptions({ order_id: o.orderId, kind: "payment_unknown" });
+          expect(ex[0]!.detail).toMatchObject({ reason: "breaker_throttled" });
+        }
+      });
+
+      it("RV2-V5: trip_count bám số đơn (mỗi kỳ nguội thêm đúng 1 đơn) — đơn lỗi đầu hàng vẫn không giữ được lượt thử", async () => {
+        // Review vòng 2: chỉ xoay theo trip_count thì trip_count ≡ 0 (mod N) mỗi kỳ → lượt thử luôn rơi vào o1 (lỗi ổn định).
+        const orders = await placeFour();
+        const [o1] = orders;
+        gateway.results.set(o1!.txn, { outcome: "unknown", transactionNo: null, reason: "http_500" });
+        const t0 = future(16 * MIN);
+        gateway.down = true;
+        await expireHolds(container, { now: t0, breakerPolicy: POLICY });
+        gateway.down = false;
+        const all = orders.map((o) => ({ orderId: o.orderId, txn: o.txn }));
+        const probes: string[] = [];
+        for (let k = 1; k <= 5; k++) {
+          const extra = await client.placeOrder([[VARIANTS[k % 4]!, 1]], "vnpay");
+          all.push({ orderId: extra.orderId, txn: await txnOf(extra.orderId) });
+          if (k === 1) {
+            await pg().raw(`UPDATE job_breaker SET trip_count = ? WHERE breaker_key = ?`, [all.length, KEY]);
+          }
+          const n = gateway.seen.length;
+          await expireHolds(container, {
+            now: new Date(t0.getTime() + k * 5 * MIN + k),
+            breakerPolicy: POLICY,
+          });
+          probes.push(gateway.seen[n] ?? "none");
+        }
+        // Kỳ 1: o1 nhận lượt thử (đơn vừa lỗi trước đó là o2) và lỗi; kỳ 2: o1 xuống cuối → đơn khác thử → đóng.
+        expect(probes[0]).toBe(o1!.txn);
+        expect(probes[1]).not.toBe(o1!.txn);
+        expect((await breakerRow())?.state).toBe("closed");
+        for (const o of all.slice(1)) expect((await fin(o.orderId)).state).toBe("cancelled");
+        expect((await fin(o1!.orderId)).state).toBe("awaiting_payment");
+        expect(gateway.seen.filter((t) => t === o1!.txn).length).toBeGreaterThanOrEqual(4); // o1 vẫn được hỏi
+      });
+
+      it("RV2-V4: chỉ còn MỘT đơn quá hạn và nó lỗi ổn định → nó vẫn được thử mỗi kỳ; có đơn mới → đơn mới nhận lượt thử", async () => {
+        const placed = await client.placeOrder([["Trắng/M", 1]], "vnpay");
+        const p = { orderId: placed.orderId, txn: await txnOf(placed.orderId) };
+        gateway.results.set(p.txn, { outcome: "unknown", transactionNo: null, reason: "http_500" });
+        const t0 = future(16 * MIN);
+        await service().tripJobBreaker(KEY, "consecutive_failures", t0, ["closed"]);
+        for (let k = 1; k <= 3; k++) {
+          const r = await expireHolds(container, {
+            now: new Date(t0.getTime() + k * 5 * MIN),
+            breakerPolicy: POLICY,
+          });
+          expect(r.unknown).toEqual([p.orderId]); // lượt thử rơi vào chính p
+        }
+        expect(gateway.seen.filter((t) => t === p.txn)).toHaveLength(3);
+        expect(await breakerRow()).toMatchObject({ state: "open", trip_count: 4 });
+        const g = await client.placeOrder([["Đen/S", 1]], "vnpay");
+        const r = await expireHolds(container, {
+          now: new Date(t0.getTime() + 20 * MIN),
+          breakerPolicy: POLICY,
+        });
+        expect(r.cancelled).toEqual([g.orderId]);
+        expect(r.unknown).toEqual([p.orderId]);
+        expect((await breakerRow())?.state).toBe("closed");
+      });
+
+      it("probeOrder: breaker đóng giữ nguyên; chưa đóng → xoay + đơn vừa lỗi xuống cuối (trừ khi chỉ còn nó)", () => {
+        const snap = (state: "closed" | "open" | "half_open", trip_count: number, last: string | null) => ({
+          state,
+          trip_count,
+          last_failed_event_id: last,
+        });
+        expect(probeOrder(["a", "b", "c"], null)).toEqual(["a", "b", "c"]);
+        expect(probeOrder(["a", "b", "c"], snap("closed", 1, "a"))).toEqual(["a", "b", "c"]);
+        expect(probeOrder(["a", "b", "c"], snap("open", 1, null))).toEqual(["b", "c", "a"]);
+        expect(probeOrder(["a", "b", "c"], snap("open", 3, "a"))).toEqual(["b", "c", "a"]);
+        expect(probeOrder(["a", "b", "c"], snap("half_open", 4, "b"))).toEqual(["c", "a", "b"]);
+        expect(probeOrder(["a", "b", "c"], snap("open", 0, "zz"))).toEqual(["a", "b", "c"]);
+        expect(probeOrder(["a"], snap("open", 7, "a"))).toEqual(["a"]);
+        expect(probeOrder([], snap("open", 2, "a"))).toEqual([]);
+      });
+
+      it("rotate: xoay trái, n lớn hơn độ dài, mảng rỗng", () => {
+        expect(rotate([1, 2, 3], 0)).toEqual([1, 2, 3]);
+        expect(rotate([1, 2, 3], 1)).toEqual([2, 3, 1]);
+        expect(rotate([1, 2, 3], 5)).toEqual([3, 1, 2]);
+        expect(rotate([], 3)).toEqual([]);
       });
     });
 

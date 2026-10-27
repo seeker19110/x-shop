@@ -1,6 +1,8 @@
-import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
-import { countOrders, storeFixture } from "./db.mjs";
+import type { APIRequestContext, APIResponse } from "@playwright/test";
+import { countOrdersFor } from "./cleanup.mjs";
+import { storeFixture } from "./db.mjs";
 import { PORTS, URLS } from "./env.mjs";
+import { expect, test } from "./fixtures";
 import { guestJourneyToFilledCheckout, placeCodOrder } from "./helpers";
 
 /**
@@ -17,7 +19,6 @@ const REPLICA = {
   b: `http://127.0.0.1:${PORTS.backendB}`,
 } as const;
 const HANOI_ADDRESS = { province_code: "01", ward_code: "00004", line: "12 Phố Điện Biên Phủ" };
-const CONTACT = { name: "Nguyễn Văn An", phone: "0912345678", email: "scale-out.e2e@example.com" };
 /** Hạn mức callback GHN (apps/backend/src/lib/http/webhook-rate-limit.ts). */
 const GHN_LIMIT = 300;
 const GHN_WINDOW_MS = 10_000;
@@ -61,10 +62,12 @@ test.describe("T-095 — hai bản sao backend, không sticky session", () => {
 
   test("Store API: mỗi bước sang bản khác — giỏ (A) → báo giá (B) → đặt (A) → gửi lại cùng khoá (B) ra đúng một đơn", async ({
     request,
+    buyer,
+    trackCart,
   }) => {
     const { regionId, variantId } = await storeFixture();
     const headers = { "x-publishable-api-key": publishableKey() };
-    const before = await countOrders();
+    expect(await countOrdersFor(buyer.email)).toBe(0);
 
     const cart = await okJson<{ cart: { id: string } }>(
       await request.post(`${REPLICA.a}/store/carts`, {
@@ -73,6 +76,7 @@ test.describe("T-095 — hai bản sao backend, không sticky session", () => {
       }),
       "tạo giỏ ở A",
     );
+    trackCart(cart.cart.id); // đăng ký ngay: các bước sau lỗi thì teardown vẫn dọn được giỏ
     const quoted = await okJson<{
       quote: { id: string; cart_id: string; cart_version: number; total: number };
     }>(
@@ -90,7 +94,7 @@ test.describe("T-095 — hai bản sao backend, không sticky session", () => {
       cart_version: quoted.quote.cart_version,
       quote_id: quoted.quote.id,
       payment_method: "cod",
-      contact: CONTACT,
+      contact: { name: buyer.name, phone: buyer.phone, email: buyer.email },
       address: HANOI_ADDRESS,
     };
     const key = `scale-out-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -111,16 +115,17 @@ test.describe("T-095 — hai bản sao backend, không sticky session", () => {
     );
     expect(replay.order.id).toBe(placed.order.id);
     expect(replay.order.display_ref).toBe(placed.order.display_ref);
-    expect(await countOrders()).toBe(before + 1);
+    expect(await countOrdersFor(buyer.email)).toBe(1);
   });
 
   test("luồng UI mua COD qua bộ cân bằng tải: cả hai bản sao phục vụ, không lỗi upstream, đúng một đơn", async ({
     page,
     request,
+    buyer,
   }) => {
-    const before = await countOrders();
+    expect(await countOrdersFor(buyer.email)).toBe(0);
     const s0 = await lbStats(request);
-    await guestJourneyToFilledCheckout(page, "cod");
+    await guestJourneyToFilledCheckout(page, "cod", buyer);
     const ref = await placeCodOrder(page);
     await expect(page.getByRole("heading", { level: 1 })).toContainText(ref);
     await page.reload();
@@ -129,7 +134,7 @@ test.describe("T-095 — hai bản sao backend, không sticky session", () => {
     expect(s1.errors - s0.errors).toBe(0);
     expect(s1.a - s0.a, "bản A không nhận request nào của luồng").toBeGreaterThanOrEqual(3);
     expect(s1.b - s0.b, "bản B không nhận request nào của luồng").toBeGreaterThanOrEqual(3);
-    expect(await countOrders()).toBe(before + 1);
+    expect(await countOrdersFor(buyer.email)).toBe(1);
   });
 
   test("giới hạn callback GHN là tổng chung của hai bản sao: 600 callback chia đều → chỉ 300 lượt qua", async ({

@@ -366,6 +366,22 @@ tables:
       - stocked_after
       - reserved_quantity
       - created_at
+  job_breaker:
+    system: x-shop/backend/checkout
+    pii: {}
+    non_pii:
+      - id
+      - breaker_key
+      - state
+      - consecutive_failures
+      - last_failed_event_id
+      - open_until
+      - probe_until
+      - trip_reason
+      - trip_count
+      - created_at
+      - updated_at
+      - deleted_at
   ops_exception:
     system: x-shop/backend/checkout
     pii:

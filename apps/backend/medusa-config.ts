@@ -3,6 +3,7 @@ import { sessionCookieConfig } from "./src/lib/admin-security/session-cookie";
 import { loadEnvOrExit } from "./src/lib/env";
 import { databaseConfig, redisQueueOptions, redisRequestOptions } from "./src/lib/infra/timeouts";
 import { appLoggerFromEnv } from "./src/lib/log/app-logger";
+import { fileProviderEntry } from "./src/lib/upload/config";
 
 loadEnv(process.env.NODE_ENV || "development", process.cwd());
 
@@ -99,15 +100,20 @@ module.exports = defineConfig({
         providers: [{ resolve: "./src/lib/admin-security/emailpass", id: "emailpass" }],
       },
     },
-    // File Module: provider local bọc lại — tên lưu `<ULID><đuôi theo MIME>` do server sinh, không dùng tên client
-    // (BE-FILE-003, T-100). Thay mặc định `@medusajs/medusa/file-local` của defineConfig. File private (xuất PII, chunk
-    // nhập) ở PRIVATE_UPLOAD_DIR — ngoài `static/` công khai — và chỉ tải qua GET /admin/x/files/:key (T-141). Ảnh công
-    // khai giữ `static/` + URL `/static/…` mặc định.
+    // File Module (thay mặc định `@medusajs/medusa/file-local` của defineConfig): tên lưu do server sinh, không dùng tên
+    // client (BE-FILE-003, T-100); file private (xuất PII, chunk nhập) rời kho công khai, chỉ tải qua
+    // GET /admin/x/files/:key (T-141). Kho theo FILE_STORAGE (T-154, src/lib/upload/config.ts):
+    //  - s3 (bắt buộc ở production): kho S3-compatible DÙNG CHUNG giữa các bản sao — bucket công khai + bucket private;
+    //  - local (dev/test, mặc định): `static/` + PRIVATE_UPLOAD_DIR trên đĩa máy này — chỉ đúng cho một tiến trình.
     {
       resolve: "@medusajs/medusa/file",
       options: {
         providers: [
-          { resolve: "./src/lib/upload", id: "local", options: { private_upload_dir: env.privateUploadDir } },
+          fileProviderEntry({
+            privateUploadDir: env.privateUploadDir,
+            backendUrl: env.MEDUSA_BACKEND_URL,
+            fileStorage: env.fileStorage,
+          }),
         ],
       },
     },

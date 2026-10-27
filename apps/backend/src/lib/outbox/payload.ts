@@ -109,7 +109,8 @@ function describe(issues: ReadonlyArray<{ path: PropertyKey[]; code: string }>):
 export function validateOutboxPayload(type: string, payload: unknown): PayloadCheck {
   const flat = flatPayload.safeParse(payload);
   if (!flat.success) return { ok: false, reason: describe(flat.error.issues) };
-  const schema = BY_TYPE[type];
+  // Chỉ khoá riêng: `constructor`/`__proto__` không được trúng Object.prototype (loại sự kiện là dữ liệu trong DB).
+  const schema = Object.hasOwn(BY_TYPE, type) ? BY_TYPE[type] : undefined;
   if (!schema) return { ok: true };
   const typed = schema.safeParse(payload);
   return typed.success ? { ok: true } : { ok: false, reason: describe(typed.error.issues) };

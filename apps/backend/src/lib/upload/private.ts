@@ -13,7 +13,8 @@ import type { Permission } from "@x-shop/domain";
  *    (`evidence_ref` là chuỗi tham chiếu; CSV đối soát/nhập catalog xử lý trong bộ nhớ, nội dung lưu DB) — khi thêm upload
  *    loại đó phải ghi `access: "private"`.
  *
- * File private nằm trong `private_upload_dir` (env `PRIVATE_UPLOAD_DIR`) — thư mục RỜI hẳn thư mục công khai — và chỉ tải
+ * File private nằm ở kho private: bucket `S3_PRIVATE_BUCKET` (FILE_STORAGE=s3 — production, T-154, lib/upload/s3) hoặc
+ * `private_upload_dir` (env `PRIVATE_UPLOAD_DIR`, FILE_STORAGE=local — dev/test) — RỜI hẳn kho công khai — và chỉ tải
  * được qua `GET /admin/x/files/:key`: cổng admin (phiên, RBAC, MFA, audit) rồi route stream. Không có URL công khai, không
  * có chữ ký trong URL (không lộ qua log/Referer/lịch sử trình duyệt; thu quyền có hiệu lực ngay).
  */

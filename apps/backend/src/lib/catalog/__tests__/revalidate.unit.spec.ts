@@ -11,6 +11,7 @@ import { envWarnings, loadEnvOrExit, parseEnv, SECRET_ENV_KEYS, type ExitHooks }
 import { resetShutdownStateForTest, shutdownState } from "../../lifecycle/shutdown";
 import { validateOutboxPayload } from "../../outbox/payload";
 import { retryInfoOf } from "../../outbox/retry";
+import { fakeOutboxDb } from "../../outbox/__tests__/fake-outbox-store";
 import {
   CATALOG_REVALIDATE_EVENT,
   CATALOG_REVALIDATE_POLICY,
@@ -125,6 +126,19 @@ const verify = (c: Captured, nowMs = T0.getTime()) =>
     c.body,
     nowMs,
   );
+
+/** Kho trạng thái breaker/ngân sách giả của outbox-dispatch (T-097) — luôn bắt đầu `closed`. */
+function breakerStore() {
+  const { service } = fakeOutboxDb([]);
+  return {
+    readJobBreaker: service.readJobBreaker,
+    claimJobBreakerProbe: service.claimJobBreakerProbe,
+    recordJobBreakerFailure: service.recordJobBreakerFailure,
+    recordJobBreakerSuccess: service.recordJobBreakerSuccess,
+    tripJobBreaker: service.tripJobBreaker,
+    hitRateCounter: service.hitRateCounter,
+  };
+}
 
 const ids = (n: number, from = 0) =>
   Array.from({ length: n }, (_, i) => `prod_${String(from + i).padStart(4, "0")}`);
@@ -676,9 +690,14 @@ describe("storefront treo không chặn khe outbox-dispatch dùng chung (review 
   const saved = { ...process.env };
   let server: Server;
   const sockets: Socket[] = [];
+  const withRequest = new Set<Socket>();
   let port = 0;
   beforeAll(async () => {
-    server = createServer((sock) => sockets.push(sock)); // nhận kết nối rồi im lặng
+    // Nhận kết nối rồi im lặng; đếm kết nối THẬT SỰ mang request (undici có thể mở sẵn kết nối rỗng).
+    server = createServer((sock) => {
+      sockets.push(sock);
+      sock.on("data", () => withRequest.add(sock));
+    });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     port = (server.address() as AddressInfo).port;
   });
@@ -719,6 +738,7 @@ describe("storefront treo không chặn khe outbox-dispatch dùng chung (review 
       },
     ];
     const svc = {
+      ...breakerStore(),
       claimDueOutbox: jest.fn(async () => queue.shift() ?? null),
       markOutboxSent: jest.fn(async () => undefined),
       markOutboxFailed: jest.fn(async () => undefined),
@@ -742,7 +762,7 @@ describe("storefront treo không chặn khe outbox-dispatch dùng chung (review 
     expect(otherAt).toBeLessThan(CATALOG_REVALIDATE_POLICY.requestTimeoutMs + 1_000);
     expect(summary.retried).toHaveLength(3); // tạm thời → hẹn lại, không dead
     expect(summary.sent).toEqual(["other:1"]);
-    expect(sockets).toHaveLength(1); // chỉ dòng đầu chạm mạng; hai dòng sau bị ngắt ngay
+    expect(withRequest.size).toBe(1); // chỉ dòng đầu chạm mạng; hai dòng sau bị ngắt ngay
     // Dòng bị ngắt hẹn lại ít nhất phần ngắt còn lại (không thử lại dồn dập).
     const delays = (svc.markOutboxFailed.mock.calls as unknown as [string, string, Date][])
       .slice(1)
@@ -917,6 +937,7 @@ describe("trần gọi mạng mỗi lượt dispatch (review T-142 vòng 2 🟠)
     process.env.CATALOG_REVALIDATE_URLS = "http://sf-a.test/api/revalidate";
     resetRevalidateStateForTests();
     const svc = {
+      ...breakerStore(),
       claimDueOutbox: jest.fn(async () => queue.shift() ?? null),
       markOutboxSent: jest.fn(async () => undefined),
       markOutboxFailed: jest.fn(async () => undefined),
@@ -1007,6 +1028,7 @@ describe("S2: storefront trả 5xx CHẬM không chặn khe dispatcher (review T
       },
     ];
     const svc = {
+      ...breakerStore(),
       claimDueOutbox: jest.fn(async () => queue.shift() ?? null),
       markOutboxSent: jest.fn(async () => undefined),
       markOutboxFailed: jest.fn(async () => undefined),
@@ -1054,6 +1076,7 @@ describe("dòng catalog.revalidate chết → MỘT ngoại lệ đang mở, ưu
       },
     ];
     const svc = {
+      ...breakerStore(),
       claimDueOutbox: jest.fn(async () => queue.shift() ?? null),
       markOutboxSent: jest.fn(async () => undefined),
       markOutboxFailed: jest.fn(async () => undefined),
@@ -1101,7 +1124,16 @@ describe("cấu hình env production (review T-142 🟠3)", () => {
     ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
     XS_TRUSTED_PROXIES: "10.0.0.0/8",
     STOREFRONT_URL: "https://shop.example.vn",
-    PRIVATE_UPLOAD_DIR: "/var/lib/xshop/private-uploads",
+    // T-154: production bắt buộc kho S3 dùng chung + MEDUSA_BACKEND_URL https.
+    MEDUSA_BACKEND_URL: "https://api.shop.example.vn",
+    FILE_STORAGE: "s3",
+    S3_ENDPOINT: "https://s3.shop.example.vn",
+    S3_REGION: "garage",
+    S3_BUCKET: "xshop-public",
+    S3_PRIVATE_BUCKET: "xshop-private",
+    S3_FILE_URL: "https://cdn.shop.example.vn/xshop-public",
+    S3_ACCESS_KEY_ID: "GK0123456789abcdef01234567",
+    S3_SECRET_ACCESS_KEY: "s3-secret-0123456789abcdef0123456789abcdef",
     STORE_CORS: "https://shop.example.vn",
     ADMIN_CORS: "https://admin.example.vn",
     AUTH_CORS: "https://admin.example.vn",
