@@ -782,3 +782,10 @@
 - Chọn: Giữ ngưỡng mặc định (notify 3000/ngày, khác 10000; 5 lỗi → nguội 5 phút; trần 100 vòng/50 lượt); tách T-161 cho expireHolds (ảnh hưởng nhả giữ hàng); lỗi vĩnh viễn của lượt thử half-open = dịch vụ đã trả lời → đóng breaker; ngân sách theo ngày UTC
 - Lý do (tiêu chí chất lượng cuối): (1) UTC theo luật dự án; đóng khi dịch vụ đã trả lời tránh treo half-open; expireHolds liên quan tồn kho nên lát riêng có test; ngưỡng chỉnh được ở một hằng
 - Đường lùi: Sửa OUTBOX_BREAKER_POLICY; coi lỗi vĩnh viễn half-open là trung lập
+
+### D-112 · 2026-10-27T18:11:24+00:00 · T-136: IP trần trong văn bản tự do; chuẩn hoá Unicode trước redact; khoá ip bị che theo tên
+
+- Phương án: (1) Không che IP trần (ghi knownGaps); thêm normalize NFC ở đầu redactText và looksLikePii; chấp nhận che mọi trường tên ip · (2) Che IPv4 công cộng trong văn bản; không chuẩn hoá Unicode
+- Chọn: Không che IP trần (ghi knownGaps); thêm normalize NFC ở đầu redactText và looksLikePii; chấp nhận che mọi trường tên ip
+- Lý do (tiêu chí chất lượng cuối): (1) NFD tiếng Việt làm lọt mẫu địa chỉ/khoá — chuẩn hoá rẻ, tuyến tính; che IP trần gây che nhầm số phiên bản/host nội bộ; IP không cần trong log ứng dụng
+- Đường lùi: Bỏ normalize NFC; thêm luật IPv4 công cộng
