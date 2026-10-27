@@ -50,3 +50,27 @@
 | warehouse | `inventory.*`, `return.receive`, `return.inspect` |
 | support | `order.read_masked`, `return.request`, `refund.request` |
 | accountant | `payment.read`, `refund.*`, `settlement.*`, `report.read` |
+
+## Đọc route admin native của Medusa (T-147, D-080, D-108)
+Bảng nguồn: `apps/backend/src/lib/admin-security/native-permissions.ts`. Route GET native **chưa khai báo → 403 với mọi vai trò, kể cả owner** (`UNDECLARED_ROUTE`); route ghi chưa khai báo → `settings.manage`. Danh sách đã khai = mọi route GET mà dashboard Medusa 2.22.1 gọi (`sdk.admin.*` trong `@medusajs/dashboard/dist`, ánh xạ qua `@medusajs/js-sdk`, đối chiếu `@medusajs/medusa/dist/api/admin`). `integration-tests/http/rbac.spec.ts` quét lại cả ba nguồn và chốt tổng số route GET native (133); số này đổi khi nâng cấp Medusa → test đỏ, phải rà lại bảng.
+
+| Nhóm route đọc native | Quyền | owner | catalog_manager | order_staff | warehouse | support | accountant |
+|---|---|---|---|---|---|---|---|
+| Tham chiếu không PII: stores, regions, sales-channels, currencies, locales, plugins, return/refund-reasons, views, layouts | có ít nhất một vai trò | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Catalog: products, product-variants, categories, collections, tags, types, options, property-labels, translations, shipping-profiles, price-preferences | `catalog.read` | ✓ | ✓ | – | ✓ | – | – |
+| Bảng giá, khuyến mãi, chiến dịch | `price.write` | ✓ | ✓ | – | – | – | – |
+| Tồn kho, giữ hàng, kho hàng; biến thể kèm tồn của form tạo vận đơn (`/admin/products/:id/variants/:variant_id`) | `inventory.read` | ✓ | ✓ | ✓ | ✓ | – | – |
+| Phương án giao (form tạo vận đơn) | `fulfillment.create` | ✓ | – | ✓ | – | – | – |
+| Đơn, đổi trả, khiếu nại, đổi hàng, đơn nháp, vận đơn; khách, nhóm khách (PII) | `order.read` | ✓ | – | ✓ | – | – | ✓ |
+| Thanh toán, payment collection | `payment.read` | ✓ | – | – | – | – | ✓ |
+| Người dùng, lời mời (PII nhân sự) | `user.manage` | ✓ | – | – | – | – | – |
+| Khoá API, thông báo (có người nhận), tìm kiếm toàn cục (quét đơn/khách/người dùng/khoá API), chỉ số tìm kiếm, thuế, nhà vận chuyển, loại phương án giao, workflow, RBAC native | `settings.manage` (MFA) | ✓ | – | – | – | – | – |
+| Cố ý đóng: `/admin/index/details`, `/admin/uploads/:id` (file private chỉ qua `/admin/x/files/:key`), `/admin/fulfillment-sets/:id/service-zones/:zone_id` | — | – | – | – | – | – | – |
+
+CSKH (`order.read_masked`) không đọc PII qua route native; xem đơn đã che qua `/admin/x/*`.
+
+Hạn chế đã biết của dashboard native (chấp nhận theo D-108):
+- Nhân viên đơn, kế toán, CSKH không đọc được catalog native (danh sách/chi tiết sản phẩm → 403); nhân viên đơn vẫn đọc được biến thể kèm tồn để tạo vận đơn.
+- Trang mặc định `/orders` của dashboard báo lỗi với vai trò không có `order.read` (catalog_manager, warehouse, support) — vào thẳng màn của vai trò mình.
+- Chuông thông báo ở khung dashboard gọi `GET /admin/notifications` mỗi 60 giây và nhận 403 với mọi vai trò trừ owner (dashboard bỏ qua lỗi); audit `rbac.denied` được gộp (lần 1, 10, 100…).
+- Thanh tìm kiếm toàn cục (Cmd-K) chỉ chạy với owner.

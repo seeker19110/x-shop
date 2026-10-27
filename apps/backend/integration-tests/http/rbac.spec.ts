@@ -120,6 +120,9 @@ const UNDECLARED_BY_DESIGN: Record<string, string> = {
   "/admin/fulfillment-sets/:id/service-zones/:zone_id": "dashboard đọc vùng giao qua stock-locations",
 };
 
+/** Tổng số route GET admin native của `@medusajs/medusa` 2.22.1 đã rà và phân loại (T-147, D-108). */
+const NATIVE_GET_ROUTE_COUNT = 133;
+
 /** Mẫu Express → path cụ thể để tra quy tắc (mọi tham số = `x1`). */
 const concretePath = (pattern: string) => pattern.replace(/:\w+/g, "x1").toLowerCase();
 
@@ -370,6 +373,17 @@ medusaIntegrationTestRunner({
           return rule.kind === UNDECLARED.kind && rule.reason === UNDECLARED.reason;
         });
         expect(undeclared).toEqual(Object.keys(UNDECLARED_BY_DESIGN).sort());
+      });
+
+      it("chốt tổng số route GET native của Medusa (D-108): đổi khi nâng cấp → rà lại native-permissions.ts", () => {
+        const core = coreNativeGetRoutes();
+        // Route GET mới nằm TRONG một họ đã khai (vd. `/admin/products/*`) tự nhận quy tắc của họ — test trên không bắt
+        // được; chốt số lượng buộc rà từng route mới/bị bỏ trước khi cập nhật số này.
+        const message =
+          `Medusa có ${core.length} route GET admin native (đã chốt ${NATIVE_GET_ROUTE_COUNT}). Rà lại ` +
+          "apps/backend/src/lib/admin-security/native-permissions.ts cho từng route thêm/bớt (PII → chỉ vai trò cần), " +
+          "cập nhật bảng ở docs/specs/SPEC-admin.md rồi mới đổi NATIVE_GET_ROUTE_COUNT.";
+        expect({ count: core.length, message }).toEqual({ count: NATIVE_GET_ROUTE_COUNT, message });
       });
 
       /**
