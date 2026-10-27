@@ -434,4 +434,85 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
       await slow.release();
     }
   });
+
+  /**
+   * T-137 / D-081: lượt xả read model hẹn sau sự kiện đang CHỜ khoá catalog (chủ khác giữ) khi SIGTERM tới; khoá nhả
+   * ngay sau tín hiệu. Lượt chờ không được giành khoá rồi đồng bộ giữa lúc tắt (bảng read model bị khoá → việc đó treo,
+   * tiến trình vượt trần, khoá bỏ lại tới hết lease) — phải thôi chờ, thoát 0 trong trần, dấu bẩn còn lại cho lần sau.
+   */
+  it("SIGTERM khi lượt xả catalog đang chờ khoá: không giành khoá/đồng bộ giữa lúc tắt → thoát 0 trong trần", async () => {
+    const TIMEOUT = 15_000;
+    const redisUrl = process.env.REDIS_URL!;
+    type RedisClient = {
+      set(k: string, v: string, mode: "EX", s: number): Promise<unknown>;
+      get(k: string): Promise<string | null>;
+      del(k: string): Promise<number>;
+      quit(): Promise<unknown>;
+    };
+    const Redis = createRequire(join(BACKEND_DIR, "package.json"))("ioredis") as new (
+      url: string,
+      opts?: Record<string, unknown>,
+    ) => RedisClient;
+    const { Queue } = createRequire(require.resolve("@medusajs/framework"))("bullmq") as {
+      Queue: new (
+        name: string,
+        opts: Record<string, unknown>,
+      ) => {
+        add(name: string, data: unknown, opts: Record<string, unknown>): Promise<unknown>;
+        close(): Promise<void>;
+      };
+    };
+    const LOCK = "medusa_lock:x-shop:catalog-index";
+    const FOREIGN = `foreign-${randomUUID()}`;
+    const PRODUCT = `prod_t137_${randomUUID().slice(0, 8)}`;
+    const be = await startBackend({ SHUTDOWN_DRAIN_DELAY_MS: "1000", SHUTDOWN_TIMEOUT_MS: String(TIMEOUT) });
+    const redis = new Redis(redisUrl);
+    const queueConn = new Redis(redisUrl, { maxRetriesPerRequest: null });
+    const queue = new Queue("events-queue", { prefix: "RedisEventBusService", connection: queueConn });
+    const db = new Client({ connectionString: DB_URL });
+    await db.connect();
+    const tableLock = new Client({ connectionString: DB_URL });
+    await tableLock.connect();
+    const dirty = async () =>
+      Number(
+        (
+          await db.query("SELECT count(*)::int AS n FROM catalog_index_dirty WHERE product_id = $1", [
+            PRODUCT,
+          ])
+        ).rows[0]!.n,
+      );
+    try {
+      await redis.set(LOCK, FOREIGN, "EX", 600);
+      // Sự kiện thật qua event bus của tiến trình con → subscriber đánh dấu + hẹn lượt xả (lượt này chờ khoá).
+      await queue.add(
+        "product.updated",
+        { data: { id: PRODUCT }, metadata: {} },
+        { removeOnComplete: true, attempts: 1 },
+      );
+      await waitFor("dấu bẩn", 10_000, async () => ((await dirty()) > 0 ? true : undefined));
+      await sleep(1_500); // lượt hẹn (250 ms) đã chạy và đang chờ khoá
+      // Giả lập đồng bộ chậm: lượt xả nào bắt đầu ghi read model sẽ treo tới khi test nhả.
+      await tableLock.query("BEGIN");
+      await tableLock.query("LOCK TABLE catalog_variant_index IN ACCESS EXCLUSIVE MODE");
+      const t0 = Date.now();
+      be.child.kill("SIGTERM");
+      await sleep(300);
+      await redis.del(LOCK); // khoá nhả ngay sau tín hiệu — lượt chờ giành được nếu không biết đang tắt
+      const exit = await Promise.race([be.exited, sleep(TIMEOUT + 5_000).then(() => null)]);
+      expect(exit).toMatchObject({ code: 0, signal: null });
+      expect(exit!.at - t0).toBeLessThan(TIMEOUT);
+      expect(await redis.get(LOCK)).toBeNull(); // không bỏ lại khoá tới hết lease
+      await tableLock.query("COMMIT");
+      expect(await dirty()).toBe(1); // dấu còn cho tiến trình khác/lần chạy sau
+      expect(shutdownLines(be.output()).some((l) => l.level === "error")).toBe(false);
+    } finally {
+      await tableLock.query("ROLLBACK").catch(() => undefined);
+      await tableLock.end().catch(() => undefined);
+      await db.end().catch(() => undefined);
+      await redis.del(LOCK).catch(() => 0);
+      await queue.close().catch(() => undefined);
+      await queueConn.quit().catch(() => undefined);
+      await redis.quit().catch(() => undefined);
+    }
+  });
 });

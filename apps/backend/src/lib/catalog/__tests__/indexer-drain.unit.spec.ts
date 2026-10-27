@@ -2,11 +2,13 @@ import { Modules } from "@medusajs/framework/utils";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { CATALOG_INDEX_MODULE } from "../../../modules/catalog-index";
 import { LOCK_CALL_TIMEOUT_MS } from "../../checkout/locks";
+import { resetShutdownStateForTest, shutdownState } from "../../lifecycle/shutdown";
 import {
   CATALOG_INDEX_LOCK,
   DRAIN_LOCK_EXPIRE_SECONDS,
   DRAIN_WAIT_SLICE_MS,
   drainCatalogIndex,
+  drainCatalogIndexForJob,
   rebuildCatalogIndex,
   scheduleCatalogDrain,
   syncCatalogProducts,
@@ -274,5 +276,114 @@ describe("drainCatalogIndex — chờ khoá bận (T-137)", () => {
     scheduleCatalogDrain(container);
     await jest.advanceTimersByTimeAsync(500);
     expect(owners).toHaveLength(3);
+  });
+
+  it("job (D-081): khoá bận → trả ngay (không chiếm khe job worker), giao lượt nền xả khi khoá nhả", async () => {
+    const { state, owners, index, container } = setup();
+    await expect(drainCatalogIndexForJob(container)).resolves.toBe(0);
+    expect(owners).toHaveLength(1); // chỉ thử một lần, không chờ
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(owners).toHaveLength(2); // lượt nền đang chờ khoá
+    expect(index.claimDirty).not.toHaveBeenCalled();
+    state.held = false;
+    await jest.advanceTimersByTimeAsync(500);
+    expect(index.claimDirty).toHaveBeenCalledTimes(1);
+  });
+
+  it("job: không còn dấu đến hạn → không hẹn lượt nền", async () => {
+    const { state, owners, container } = setup();
+    state.dirty = 0;
+    await expect(drainCatalogIndexForJob(container)).resolves.toBe(0);
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(owners).toHaveLength(1);
+  });
+});
+
+/** D-081 F2: lượt xả biết tiến trình đang tắt (T-094) — không chờ/không giành khoá/không bắt đầu đồng bộ giữa lúc tắt. */
+describe("drainCatalogIndex — đang tắt (T-137, D-081)", () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    resetShutdownStateForTest();
+    jest.useRealTimers();
+  });
+
+  const busy = () => new Error("Failed to acquire lock for key x-shop:catalog-index");
+
+  function setup() {
+    const state = { held: true, dirty: 1 };
+    const owners: string[] = [];
+    const acquire = jest.fn(async (_key: string, args: { ownerId: string; expire: number }) => {
+      if (!owners.includes(args.ownerId)) owners.push(args.ownerId);
+      if (state.held) throw busy();
+    });
+    const release = jest.fn(async () => true);
+    const index = {
+      claimDirty: jest.fn(async () => {
+        state.dirty = 0;
+        return [];
+      }),
+      clearDirty: jest.fn(),
+      dirtyCount: jest.fn(async () => state.dirty),
+    };
+    const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn() };
+    const container = {
+      resolve: (key: string) =>
+        key === Modules.LOCKING ? { acquire, release } : key === CATALOG_INDEX_MODULE ? index : logger,
+    } as unknown as MedusaContainer;
+    return { state, owners, acquire, release, index, container };
+  }
+
+  it("tín hiệu tắt khi đang chờ khoá: thôi chờ sau ≤ một lát, không giành khoá, không xả", async () => {
+    const { acquire, index, container } = setup();
+    let done: number | undefined;
+    const run = drainCatalogIndex(container, { waitMs: 300_000 }).then((n) => (done = n));
+    await jest.advanceTimersByTimeAsync(1_000);
+    shutdownState().draining = true;
+    await jest.advanceTimersByTimeAsync(DRAIN_WAIT_SLICE_MS + 200);
+    await run;
+    expect(done).toBe(0);
+    expect(index.claimDirty).not.toHaveBeenCalled();
+    const calls = acquire.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(acquire).toHaveBeenCalledTimes(calls);
+  });
+
+  it("khoá nhả đúng lúc đang tắt: giành được thì nhả ngay, không bắt đầu đồng bộ", async () => {
+    const { state, release, index, container } = setup();
+    let done: number | undefined;
+    const run = drainCatalogIndex(container, { waitMs: 300_000 }).then((n) => (done = n));
+    await jest.advanceTimersByTimeAsync(1_000);
+    shutdownState().draining = true;
+    state.held = false;
+    await jest.advanceTimersByTimeAsync(200);
+    await run;
+    expect(done).toBe(0);
+    expect(index.claimDirty).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledWith([CATALOG_INDEX_LOCK], expect.anything());
+  });
+
+  it("đang tắt: scheduleCatalogDrain không hẹn; job không hẹn lượt nền", async () => {
+    const { owners, container } = setup();
+    shutdownState().draining = true;
+    scheduleCatalogDrain(container, 0);
+    await drainCatalogIndexForJob(container);
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(owners).toHaveLength(0);
+  });
+
+  it("tín hiệu tắt khi lượt hẹn đang chờ: không chạy lại dù có yêu cầu gộp", async () => {
+    const { owners, index, container } = setup();
+    scheduleCatalogDrain(container, 0);
+    await jest.advanceTimersByTimeAsync(500);
+    scheduleCatalogDrain(container); // yêu cầu gộp trong lúc chờ
+    shutdownState().draining = true;
+    await jest.advanceTimersByTimeAsync(DRAIN_WAIT_SLICE_MS * 3);
+    expect(owners).toHaveLength(1);
+    expect(index.claimDirty).not.toHaveBeenCalled();
+    // Lượt hẹn đã kết thúc: sau khi tắt xong (test đặt lại trạng thái), hẹn mới chạy bình thường.
+    resetShutdownStateForTest();
+    scheduleCatalogDrain(container, 0);
+    await jest.advanceTimersByTimeAsync(100);
+    expect(owners).toHaveLength(2);
   });
 });

@@ -8,6 +8,7 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import type CatalogIndexModuleService from "../../modules/catalog-index/service";
 import type { CatalogIndexRow, DirtyClaim, DirtyDefer } from "../../modules/catalog-index/service";
 import { acquireOrdered, isLockUnavailable, releaseOwnedQuietly, withOwnedLock } from "../checkout/locks";
+import { isDraining } from "../lifecycle/shutdown";
 import { colorOf, loadDictionary, sizeOf, type Dictionary } from "./dictionary";
 import { loadProductSources, PRODUCT_SOURCE_BATCH, toVnd, type ProductSource } from "./product-source";
 import {
@@ -413,20 +414,20 @@ export const DRAIN_LOCK_EXPIRE_SECONDS = 30;
  * Khoá bận khi xả (T-137): người giữ có thể KHÔNG phải một lượt xả — rebuild/sync (`withIndexLock`, rebuild 50k SKU
  * ~110 giây) hoặc tiến trình khác — nên không ai xả dấu vừa đặt; bỏ lượt thì dấu nằm chờ job mỗi phút (đo dưới tải:
  * 41 giây, tối đa 60 giây + thời gian giữ khoá). Thay vào đó lượt xả CHỜ khoá (thăm dò ≤ 80 ms như mọi người chờ khác),
- * cứ mỗi lát `DRAIN_WAIT_SLICE_MS` kiểm còn dấu đến hạn không — hết dấu (lượt xả khác đã xả xong) thì thôi chờ.
+ * cứ mỗi lát `DRAIN_WAIT_SLICE_MS` kiểm còn dấu đến hạn không — hết dấu (lượt xả khác đã xả xong) thì thôi chờ. Tiến
+ * trình đang tắt (`isDraining`, T-094) → thôi chờ, giành được khoá thì nhả ngay: không bắt đầu việc nặng giữa lúc tắt
+ * (dấu còn trong DB cho tiến trình khác/lần chạy sau — D-081).
  */
 export const DRAIN_WAIT_SLICE_MS = 2_000;
 /** Hạn chờ khoá của lượt xả hẹn sau sự kiện — bằng hạn chờ của sync/rebuild (khoá bị giữ quá lâu → job phút sau). */
 export const DRAIN_SCHEDULED_WAIT_MS = LOCK_WAIT_MS;
-/** Hạn chờ khoá của job xả mỗi phút — dưới chu kỳ job để các lượt job không chồng nhau. */
-export const DRAIN_JOB_WAIT_MS = 45_000;
 
 export interface DrainOptions {
   /** Chờ khoá tối đa (ms) khi đang bị giữ và còn dấu đến hạn; 0 (mặc định) = bận thì trả về ngay. */
   waitMs?: number;
 }
 
-type DrainLockResult = "acquired" | "busy" | "idle" | "unavailable";
+type DrainLockResult = "acquired" | "busy" | "idle" | "unavailable" | "shutdown";
 
 /** Giành khoá xả: chờ theo lát tới `deadline`; giữa các lát hết dấu đến hạn → "idle" (không còn gì để xả). */
 async function acquireDrainLock(
@@ -437,6 +438,7 @@ async function acquireDrainLock(
 ): Promise<DrainLockResult> {
   const locking = container.resolve(Modules.LOCKING);
   for (;;) {
+    if (isDraining()) return "shutdown";
     try {
       // Gia hạn lease nền do acquireOrdered đảm nhiệm (cùng ownerId, bỏ qua lỗi tạm).
       await acquireOrdered(locking, [CATALOG_INDEX_LOCK], {
@@ -445,6 +447,11 @@ async function acquireDrainLock(
         ttlSeconds: DRAIN_LOCK_EXPIRE_SECONDS,
         scope: LOCK_SCOPE,
       });
+      if (isDraining()) {
+        // Tín hiệu tắt tới trong lúc chờ: trả khoá ngay (không giữ tới hết lease), không bắt đầu đồng bộ.
+        await releaseOwnedQuietly(locking, ownerId, [CATALOG_INDEX_LOCK]);
+        return "shutdown";
+      }
       return "acquired";
     } catch (e) {
       // Redis lỗi/không trả lời: bỏ lượt, dấu bẩn còn trong DB nên lượt/job sau xả tiếp.
@@ -496,6 +503,8 @@ export async function drainCatalogIndex(
     try {
       let ctx: IndexContext | null = null;
       for (;;) {
+        // Đang tắt: xong lô đang làm thì dừng, dấu còn lại để lần chạy sau.
+        if (isDraining()) break;
         const claims = await index.claimDirty(DRAIN_BATCH);
         if (claims.length === 0) break;
         if (claims.some((c) => c.product_id === REBUILD_MARK)) {
@@ -545,8 +554,20 @@ export async function drainCatalogIndex(
           .warn(`[catalog-index] Nhả khoá xả lỗi/quá hạn (lease tự hết): ${(err as Error).message}`);
       }
     }
-    if ((await index.dirtyCount(true)) === 0) break;
+    if (isDraining() || (await index.dirtyCount(true)) === 0) break;
   }
+  return processed;
+}
+
+/**
+ * Lượt xả của job mỗi phút: KHÔNG chờ khoá trong khe job worker — job worker của workflow-engine-redis chạy BullMQ
+ * `concurrency: 1` chung cho mọi scheduled job (outbox 10 s, expire-holds…), và SIGTERM phải chờ job đang chạy (D-081).
+ * Khoá bận/còn dấu đến hạn → giao cho lượt hẹn nền (`scheduleCatalogDrain`, đã gộp lượt, chờ ≤ 300 s).
+ */
+export async function drainCatalogIndexForJob(container: MedusaContainer): Promise<number> {
+  const processed = await drainCatalogIndex(container);
+  if (!isDraining() && (await indexService(container).dirtyCount(true)) > 0)
+    scheduleCatalogDrain(container, 0);
   return processed;
 }
 
@@ -560,7 +581,7 @@ async function runScheduledDrain(container: MedusaContainer): Promise<void> {
     do {
       drainRequested = false;
       await drainCatalogIndex(container, { waitMs: DRAIN_SCHEDULED_WAIT_MS });
-    } while (drainRequested);
+    } while (drainRequested && !isDraining());
   } catch (e) {
     container
       .resolve(ContainerRegistrationKeys.LOGGER)
@@ -574,9 +595,11 @@ async function runScheduledDrain(container: MedusaContainer): Promise<void> {
  * Hẹn một lượt xả sau `delayMs` (gộp mọi sự kiện đến trong khoảng đó thành một lô). Handler sự kiện chỉ đánh dấu rồi
  * trả về ngay → hàng đợi sự kiện không bị nghẽn bởi việc đồng bộ. Khoá đang bị giữ → lượt xả chờ khoá rồi xả ngay khi
  * khoá nhả (T-137), không bỏ lượt chờ job mỗi phút. Đang có lượt hẹn trước chạy/chờ → chỉ đánh dấu chạy lại sau nó
- * (không chồng nhiều lượt chờ). Tiến trình chết trước khi xả → dấu còn trong DB, job mỗi phút xả tiếp.
+ * (không chồng nhiều lượt chờ). Đang tắt → không hẹn. Tiến trình chết trước khi xả → dấu còn trong DB, job mỗi phút
+ * xả tiếp.
  */
 export function scheduleCatalogDrain(container: MedusaContainer, delayMs = 250): void {
+  if (isDraining()) return;
   if (scheduledDrain) {
     drainRequested = true;
     return;
@@ -584,6 +607,7 @@ export function scheduleCatalogDrain(container: MedusaContainer, delayMs = 250):
   if (drainTimer) return;
   drainTimer = setTimeout(() => {
     drainTimer = null;
+    if (isDraining()) return;
     scheduledDrain = runScheduledDrain(container);
   }, delayMs);
   drainTimer.unref?.();

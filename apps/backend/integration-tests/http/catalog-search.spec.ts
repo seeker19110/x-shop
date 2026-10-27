@@ -18,11 +18,12 @@ import {
   type FacetName,
   type IndexedProduct,
 } from "@x-shop/domain";
+import catalogIndexDrainJob from "../../src/jobs/catalog-index-drain";
 import { CURRENCY } from "../../src/lib/catalog/constants";
 import {
   CATALOG_INDEX_LOCK,
-  DRAIN_JOB_WAIT_MS,
-  drainCatalogIndex,
+  drainCatalogIndexForJob,
+  markCatalogDirty,
   markExpiredPrices,
   rebuildCatalogIndex,
   syncCatalogProducts,
@@ -621,10 +622,15 @@ medusaIntegrationTestRunner({
         // Hết hạn: job mỗi phút đánh dấu + xả; ở đây gọi trực tiếp đúng các hàm job dùng.
         await new Promise((r) => setTimeout(r, Math.max(0, endsAt.getTime() - Date.now() + 500)));
         expect(await markExpiredPrices(container)).toBeGreaterThanOrEqual(1);
-        await drainCatalogIndex(container, { waitMs: DRAIN_JOB_WAIT_MS });
-        const after = await index().listRows({ channelIds: [seed.base.salesChannelId], category: null }, [
-          idOf("ao-polo-nam"),
-        ]);
+        // Khoá bận (lượt xả khác) → job giao lượt chờ nền (D-081) nên đọc lại tới khi hội tụ.
+        await drainCatalogIndexForJob(container);
+        const after = await eventually(
+          () =>
+            index().listRows({ channelIds: [seed.base.salesChannelId], category: null }, [
+              idOf("ao-polo-nam"),
+            ]),
+          (rs) => rs.some((r) => r.sku === "POLO-TRANG-M" && r.price === 390_000),
+        );
         expect(after.find((r) => r.sku === "POLO-TRANG-M")).toMatchObject({
           price: 390_000,
           compare_at: null,
@@ -732,34 +738,36 @@ medusaIntegrationTestRunner({
           expect(Date.now() - released).toBeLessThanOrEqual(AFTER_RELEASE_MS);
         });
 
-        it("job xả gặp khoá bận: chờ khoá rồi xả trong cùng lượt (không bỏ lượt tới phút sau)", async () => {
-          const [variant] = await container
-            .resolve(Modules.PRODUCT)
-            .listProductVariants({ sku: "VMIDI-XAM-S" }, { select: ["id"] });
+        it("job xả gặp khoá bận: KHÔNG chờ trong khe job worker (trả ≤ 2 s), giao lượt nền xả ≤ 10 s sau khi khoá nhả", async () => {
+          const handle = "chan-vay-midi-xep-ly";
+          const pid = idOf(handle);
+          await betweenCronTicks(HOLD_MS + AFTER_RELEASE_MS);
           const owner = `test-foreign-${Date.now()}`;
           await holdForeign(owner);
-          let job: Promise<number>;
+          let released = 0;
           try {
-            await updateProductVariantsWorkflow(container).run({
-              input: {
-                product_variants: [
-                  { id: variant!.id, prices: [{ amount: 440_000, currency_code: CURRENCY }] },
-                ],
-              },
-            });
-            await eventually(
-              () => isDirty(idOf("chan-vay-midi-xep-ly")),
-              (d) => d,
-              HOLD_MS,
-            );
-            // Đúng lời gọi của job mỗi phút: phải trả về SAU khi thay đổi đã vào index (tự xả hoặc lượt xả khác đã xả).
-            job = drainCatalogIndex(container, { waitMs: DRAIN_JOB_WAIT_MS });
-            await sleep(1_000);
+            // Dòng index lệch nguồn + dấu bẩn KHÔNG qua sự kiện (như dấu của markExpiredPrices): chỉ job đưa vào lượt xả.
+            const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+            await db.raw("UPDATE catalog_variant_index SET price = 1 WHERE sku = 'VMIDI-XAM-S'");
+            await markCatalogDirty(container, [pid]);
+            const t0 = Date.now();
+            const job = catalogIndexDrainJob(container).then(() => Date.now() - t0);
+            const took = await Promise.race([job, sleep(2_000).then(() => -1)]);
+            // Job (BullMQ concurrency 1, chung với outbox/expire-holds…) phải trả khe ngay dù khoá bị giữ.
+            expect(took).toBeGreaterThanOrEqual(0);
+            expect(took).toBeLessThan(2_000);
+            await sleep(HOLD_MS - 2_000);
+            expect((await rowOf("VMIDI-XAM-S", handle))?.price).toBe(1);
           } finally {
-            setTimeout(() => void releaseOwned(locking(), owner, [CATALOG_INDEX_LOCK]), 1_000);
+            await releaseOwned(locking(), owner, [CATALOG_INDEX_LOCK]);
+            released = Date.now();
           }
-          await job!;
-          expect((await rowOf("VMIDI-XAM-S", "chan-vay-midi-xep-ly"))?.price).toBe(440_000);
+          await eventually(
+            () => rowOf("VMIDI-XAM-S", handle),
+            (r) => r?.price === 450_000,
+            AFTER_RELEASE_MS,
+          );
+          expect(Date.now() - released).toBeLessThanOrEqual(AFTER_RELEASE_MS);
         });
       });
 
