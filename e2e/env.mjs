@@ -7,7 +7,19 @@
  * `backendB` (9101, chỉ nhận HTTP — như production tách server/worker), cùng DB + Redis DB 7. Storefront và cổng VNPAY
  * giả lập gọi backend qua bộ cân bằng tải round-robin `backendLb` (9110, e2e/lb.mjs, không sticky session).
  */
-export const PORTS = { backend: 9100, backendB: 9101, backendLb: 9110, storefront: 3100, mockVnpay: 3300 };
+/**
+ * `E2E_PORT_OFFSET` (mặc định 0) dịch toàn bộ cổng — để chạy hai bộ E2E cùng lúc trên một máy (cùng với `E2E_DB_NAME`
+ * và `E2E_REDIS_DB`) mà không giẫm cổng/DB/Redis của nhau.
+ */
+const OFFSET = Number(process.env.E2E_PORT_OFFSET ?? 0);
+if (!Number.isInteger(OFFSET) || OFFSET < 0 || OFFSET > 20000) throw new Error("E2E_PORT_OFFSET không hợp lệ");
+export const PORTS = {
+  backend: 9100 + OFFSET,
+  backendB: 9101 + OFFSET,
+  backendLb: 9110 + OFFSET,
+  storefront: 3100 + OFFSET,
+  mockVnpay: 3300 + OFFSET,
+};
 
 export const URLS = {
   backend: `http://localhost:${PORTS.backend}`,
@@ -21,9 +33,9 @@ const PG_BASE = process.env.E2E_PG_BASE_URL ?? "postgres://xshop:xshop@localhost
 export const E2E_DB_NAME = process.env.E2E_DB_NAME ?? "xshop_e2e";
 export const ADMIN_DB_URL = `${PG_BASE}/postgres`;
 export const DATABASE_URL = `${PG_BASE}/${E2E_DB_NAME}`;
-// DB số 7 riêng cho E2E (khóa, cache, hàng đợi) — không đụng DB 0 của dev.
+// DB số 7 (mặc định, đổi bằng E2E_REDIS_DB) riêng cho E2E (khóa, cache, hàng đợi) — không đụng DB 0 của dev.
 const REDIS_BASE = process.env.E2E_REDIS_BASE_URL ?? "redis://localhost:6379";
-export const REDIS_URL = `${REDIS_BASE}/7`;
+export const REDIS_URL = `${REDIS_BASE}/${process.env.E2E_REDIS_DB ?? "7"}`;
 
 export const VNPAY = {
   tmnCode: "E2ETEST",
