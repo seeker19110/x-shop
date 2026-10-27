@@ -131,7 +131,7 @@ export function parseSettlementCsv(
       errors.push({
         line,
         column: "occurred_at",
-        message: "ISO 8601 có múi giờ, vd. 2026-10-25T08:00:00+07:00",
+        message: "RFC 3339 có giây và offset (Z hoặc ±hh:mm), vd. 2026-10-25T08:00:00+07:00",
       });
     } else if (occurredAt.getTime() > latest) {
       errors.push({ line, column: "occurred_at", message: "Thời điểm ở tương lai" });

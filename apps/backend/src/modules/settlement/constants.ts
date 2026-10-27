@@ -8,7 +8,7 @@
  *  - `reference`: GHN COD → `client_order_code` (hoặc mã vận đơn của hãng); VNPAY `payment` → `vnp_TxnRef`; VNPAY
  *    `refund` → `vnp_RequestId` của yêu cầu hoàn (`x_refund.provider_request_id`).
  *  - `amount`: số nguyên VND ≥ 0, chỉ chữ số (không dấu, không phân cách nghìn, không thập phân), ≤ trần cột integer.
- *  - `occurred_at`: ISO 8601 có múi giờ (`Z` hoặc `+07:00`) — thời điểm tiền chuyển/ghi có theo chứng từ.
+ *  - `occurred_at`: RFC 3339 có giây và offset (`Z` hoặc `+07:00`) — thời điểm tiền chuyển/ghi có theo chứng từ.
  *  - `type`: GHN COD → `cod`; VNPAY → `payment` | `refund`.
  */
 

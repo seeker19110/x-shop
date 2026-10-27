@@ -4,6 +4,7 @@ import { z } from "zod";
  * Thời điểm ở biên API (XC-UNITS-001): CHỈ nhận RFC 3339 `date-time` có offset — `Z` hoặc `±hh:mm` (RFC 3339 §5.6).
  * Chuỗi không offset (`2026-10-25T10:00:00`, chỉ ngày) bị từ chối thay vì đoán múi giờ; không dùng `Date.parse`
  * trên đầu vào thô vì nó đọc chuỗi không offset theo múi giờ máy chủ và cho tràn ngày (30/02 → 02/03).
+ * Cố ý chỉ nhận `T`/`Z` chữ hoa (RFC 3339 §5.6 cho phép chữ thường nhưng cũng cho phép spec giới hạn thêm).
  */
 const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 
@@ -14,7 +15,7 @@ function daysIn(year: number, month: number): number {
   return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
-/** RFC 3339 có offset → Date; mọi dạng khác (không offset, ngày/giờ không tồn tại, giây 60) → null. */
+/** RFC 3339 có offset → Date; mọi dạng khác (không offset, ngày/giờ không tồn tại, giây 60, năm UTC ngoài 0001–9999) → null. */
 export function parseRfc3339(raw: string): Date | null {
   const m = RFC3339.exec(raw);
   if (!m) return null;
@@ -30,7 +31,11 @@ export function parseRfc3339(raw: string): Date | null {
   if (hour > 23 || minute > 59 || second > 59) return null;
   if (m[7] !== undefined && (Number(m[8]) > 23 || Number(m[9]) > 59)) return null;
   const ms = Date.parse(raw);
-  return Number.isFinite(ms) ? new Date(ms) : null;
+  if (!Number.isFinite(ms)) return null;
+  // Offset có thể đẩy thời điểm UTC ra ngoài năm 0001–9999 (9999-12-31T23:59:59-23:59 → năm 10000): khi trả lại
+  // bằng `toISOString()` sẽ ra `+010000-…`, không còn là RFC 3339 → từ chối.
+  const utcYear = new Date(ms).getUTCFullYear();
+  return utcYear >= 1 && utcYear <= 9999 ? new Date(ms) : null;
 }
 
 /** Schema zod cho tham số/trường thời điểm: chuỗi RFC 3339 có offset → `Date`. */

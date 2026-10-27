@@ -58,6 +58,20 @@ describe("parseRfc3339 (XC-UNITS-001: chỉ nhận RFC 3339 có offset)", () => 
     expect(parseRfc3339("2026-10-25T10:00:00Z​")).toBeNull();
     expect(parseRfc3339("2026-10-25T10:00:00−" + "07:00")).toBeNull(); // dấu trừ Unicode, không phải '-'
   });
+
+  it("năm UTC sau khi trừ offset phải trong 0001–9999 (toISOString vẫn là RFC 3339)", () => {
+    expect(parseRfc3339("9999-12-31T23:59:59-23:59")).toBeNull(); // UTC năm 10000
+    expect(parseRfc3339("0000-01-01T00:00:00+00:01")).toBeNull(); // UTC năm -1
+    expect(parseRfc3339("0000-06-01T00:00:00Z")).toBeNull(); // năm 0
+    expect(parseRfc3339("9999-12-31T23:59:59Z")?.toISOString()).toBe("9999-12-31T23:59:59.000Z");
+    expect(parseRfc3339("0001-01-01T00:00:00Z")?.toISOString()).toBe("0001-01-01T00:00:00.000Z");
+  });
+
+  it("chỉ nhận T/Z chữ hoa (giới hạn cố ý trong phạm vi RFC 3339 §5.6)", () => {
+    expect(parseRfc3339("2026-10-25t10:00:00z")).toBeNull();
+    expect(parseRfc3339("2026-10-25T10:00:00z")).toBeNull();
+    expect(parseRfc3339("2026-10-25T10:00:00Z")).not.toBeNull();
+  });
 });
 
 describe("rfc3339Instant (zod) và tham số API", () => {

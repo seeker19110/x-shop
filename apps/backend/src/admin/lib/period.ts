@@ -1,5 +1,5 @@
 /**
- * Khoảng báo cáo chọn theo NGÀY (giờ Việt Nam, UTC+7) → cặp mốc `[from, to)` ISO 8601 có múi giờ mà API đòi.
+ * Khoảng báo cáo chọn theo NGÀY (giờ Việt Nam, UTC+7) → cặp mốc `[from, to)` RFC 3339 có giây và offset mà API đòi.
  * `to` là ngày CUỐI được tính (bao gồm) → mốc `to` gửi lên là 00:00 ngày kế tiếp.
  */
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
