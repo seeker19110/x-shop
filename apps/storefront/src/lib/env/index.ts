@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isNonEmpty } from "../presence";
+import { mediaUrlSchema } from "./media";
 import { ANALYTICS_TRANSPORTS } from "./public";
 
 /**
@@ -51,6 +52,11 @@ export const serverEnvSchema = z.object({
    * limit của backend. Vắng/`false` = không tin (client gọi thẳng tự khai được) — lib/security/client-ip.ts.
    */
   XS_TRUST_PROXY_HEADERS: z.enum(["true", "false"]).optional(),
+  /**
+   * Gốc URL ảnh của kho dùng chung (= S3_FILE_URL của backend, T-154) — `next.config.ts` mở host này cho `next/image`
+   * (src/lib/env/media.ts; production phải https). Vắng = chỉ ảnh `/static/**` của backend (dev).
+   */
+  XS_MEDIA_URL: mediaUrlSchema.optional(),
 });
 
 export type ClientEnv = z.infer<typeof clientEnvSchema>;
