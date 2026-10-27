@@ -660,13 +660,17 @@ medusaIntegrationTestRunner({
             warns.push(String(m));
           });
           try {
-            await reproB(warns);
+            await reproB();
           } finally {
             spy.mockRestore();
           }
+          // Tồn đọng chạm ngưỡng (tiêm 2 ở lượt cuối) → đúng MỘT log WARN (RUNBOOK §1); dưới ngưỡng mặc định (50) → không.
+          const backlogWarns = warns.filter((m) => m.includes("đơn quá hạn chưa rõ thanh toán"));
+          expect(backlogWarns).toHaveLength(1);
+          expect(backlogWarns[0]).toContain("2 đơn quá hạn chưa rõ thanh toán");
         });
 
-        const reproB = async (warns: string[]) => {
+        const reproB = async () => {
           const orders = await placeFour();
           const [o1, o2, o3, o4] = orders;
           for (const o of [o1!, o2!]) gateway.results.set(o.txn, R91);
@@ -700,12 +704,8 @@ medusaIntegrationTestRunner({
             const ex = await service().listOpsExceptions({ order_id: o.orderId, kind: "payment_unknown" });
             expect(ex).toHaveLength(1);
           }
-          // Tồn đọng đơn chưa rõ: đếm sau mỗi lượt; chạm ngưỡng (tiêm 2 ở lượt cuối) → log WARN (RUNBOOK §1); dưới
-          // ngưỡng mặc định (50) → không WARN.
+          // Tồn đọng đơn chưa rõ (o1/o2) đếm sau mỗi lượt.
           expect(runs.map((r) => r.unknownBacklog)).toEqual([2, 2, 2, 2, 2]);
-          const backlogWarns = warns.filter((m) => m.includes("đơn quá hạn chưa rõ thanh toán"));
-          expect(backlogWarns).toHaveLength(1);
-          expect(backlogWarns[0]).toContain("2 đơn quá hạn chưa rõ thanh toán");
         };
 
         const dueOf = async (orderId: string) => {
