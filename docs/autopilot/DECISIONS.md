@@ -797,3 +797,17 @@
 - Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: volume dùng chung không chứng minh được lúc khởi động và root_squash xung đột kiểm chủ sở hữu D-104; Medusa ghi provider local chỉ cho dev; (2) đường lùi: FILE_STORAGE=local cho dev; (3) MinIO bản cộng đồng đã archived, không còn vá bảo mật (dl.min.io 410, tra 2026-10-27) nên loại; kho tự host đề xuất Garage (AGPL, dịch vụ riêng) hoặc SeaweedFS (Apache-2.0)
 - Đường lùi: FILE_STORAGE=local + một bản sao; gỡ @medusajs/file-s3
 - Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Kho production do chủ dự án chọn: tự host Garage/SeaweedFS hoặc S3/R2 quản lý (cần tài khoản); thêm host ảnh vào remotePatterns/CSP storefront; chuyển file cũ giữ nguyên khoá
+
+### D-114 · 2026-10-27T19:30:06+00:00 · T-102: SET NOT NULL và drop unique index/constraint trong check-migrations
+
+- Phương án: (1) Chặn SET NOT NULL (miễn khi cột thêm kèm DEFAULT/bảng mới trong cùng file); chặn add column NOT NULL không DEFAULT; chặn drop index/constraint có tên do migration trên base tạo mà không tạo lại trong cùng file · (2) SET NOT NULL chỉ cảnh báo; không luật cho drop index
+- Chọn: Chặn SET NOT NULL (miễn khi cột thêm kèm DEFAULT/bảng mới trong cùng file); chặn add column NOT NULL không DEFAULT; chặn drop index/constraint có tên do migration trên base tạo mà không tạo lại trong cùng file
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: autopilot chỉ đọc exit code nên cảnh báo = cho qua; N−1 INSERT không biết cột mới vỡ NOT NULL; ~20 ON CONFLICT phụ thuộc unique index; lọc theo tên trên base tránh báo nhầm 22 drop phòng thủ; lối thoát có lý do: cờ contract/ALLOW
+- Đường lùi: Đổi luật thành cảnh báo trong check-migrations.mjs
+
+### D-115 · 2026-10-27T19:30:07+00:00 · T-102: vế OPS-DEPLOY-003 'test suite bản N−1 trên schema N' không có trong diff
+
+- Phương án: (1) Tách task mới T-163 (CI chạy test tích hợp của base trên schema của HEAD); T-102 chỉ đóng DB-MIG-001/003/008 phần CI · (2) Mở rộng T-102 làm luôn
+- Chọn: Tách task mới T-163 (CI chạy test tích hợp của base trên schema của HEAD); T-102 chỉ đóng DB-MIG-001/003/008 phần CI
+- Lý do (tiêu chí chất lượng cuối): (3) lát nhỏ, đảo ngược được; job gate đã ~26/30 phút nên cần đo/thiết kế job riêng; T-102 đã đủ lớn
+- Đường lùi: Gộp T-163 vào T-102
