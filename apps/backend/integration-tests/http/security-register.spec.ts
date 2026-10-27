@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import http from "node:http";
 import type { IAuthModuleService, MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
@@ -31,6 +31,12 @@ interface RawRes {
 
 let ipSeq = 0;
 const newIp = () => `203.0.${Math.floor(++ipSeq / 250)}.${(ipSeq % 250) + 1}`;
+/** Một /64 IPv6 ngẫu nhiên (bộ đếm Redis sống qua các ca/lần chạy trong cửa sổ) → hàm sinh địa chỉ thứ `i` trong dải. */
+const newV6Net = () => {
+  const g = () => randomInt(1, 0xffff).toString(16);
+  const prefix = `2001:db8:${g()}:${g()}`;
+  return (i: number) => `${prefix}:${(i % 0xfffe) + 1}:${g()}:${g()}:${g()}`;
+};
 
 medusaIntegrationTestRunner({
   testSuite: ({ api, getContainer }) => {
@@ -498,6 +504,99 @@ medusaIntegrationTestRunner({
         expect(
           (await post("/auth/user/emailpass", { email: admin.email, password: admin.password })).status,
         ).toBe(200);
+      });
+
+      it("IPv6 gộp /64 (T-148): sai mật khẩu với XFF xoay trong một /64 → 429 đúng ngưỡng IP; /64 khác vẫn thử được", async () => {
+        const net = newV6Net();
+        const n = AUTH_RATE_LIMITS.login.perIp;
+        const bad = () => ({ email: unknownEmail(), password: "sai-mat-khau-0123" });
+        for (let i = 0; i < n; i++) {
+          const r = await post("/auth/user/emailpass", bad(), { "x-forwarded-for": net(i) });
+          expect({ i, status: r.status }).toEqual({ i, status: 401 });
+        }
+        expect429(await post("/auth/user/emailpass", bad(), { "x-forwarded-for": net(n) }));
+        // Dạng viết khác (số 0 đầu, chữ hoa) của địa chỉ trong cùng /64 cũng bị chặn.
+        const upper = net(n + 1)
+          .split(":")
+          .map((part) => part.toUpperCase().padStart(4, "0"))
+          .join(":");
+        expect429(await post("/auth/user/emailpass", bad(), { "x-forwarded-for": upper }));
+        expect((await post("/auth/user/emailpass", bad(), { "x-forwarded-for": newV6Net()(0) })).status).toBe(
+          401,
+        );
+      });
+
+      it("IPv6 gộp /64 (T-148): một email, địa chỉ xoay trong /64 → chặn theo (email + IP) sau `perIdentityIp`", async () => {
+        const admin = await createAdmin(api as never, container);
+        const net = newV6Net();
+        const bad = { email: admin.email, password: "sai-mat-khau-0123" };
+        expect(AUTH_RATE_LIMITS.login.perIdentityIp).toBeLessThan(AUTH_RATE_LIMITS.login.perIdentity);
+        for (let i = 0; i < AUTH_RATE_LIMITS.login.perIdentityIp; i++) {
+          expect((await post("/auth/user/emailpass", bad, { "x-forwarded-for": net(i) })).status).toBe(401);
+        }
+        expect429(
+          await post(
+            "/auth/user/emailpass",
+            { email: admin.email, password: admin.password },
+            { "x-forwarded-for": net(99) },
+          ),
+        );
+        // Ngoài /64 đó (chưa tới ngưỡng theo email) vẫn đăng nhập đúng được.
+        expect(
+          (
+            await post(
+              "/auth/user/emailpass",
+              { email: admin.email, password: admin.password },
+              { "x-forwarded-for": newV6Net()(0) },
+            )
+          ).status,
+        ).toBe(200);
+      });
+
+      it("đăng ký: XFF xoay trong /64 → 429 ở `register.perIp`; IPv4 không đổi — IP liền kề không chung bộ đếm", async () => {
+        const net = newV6Net();
+        const n = AUTH_RATE_LIMITS.register.perIp;
+        for (let i = 0; i < n; i++) {
+          const r = await post(
+            "/auth/user/emailpass/register",
+            { email: unknownEmail(), password },
+            { "x-forwarded-for": net(i) },
+          );
+          expect({ i, status: r.status }).toEqual({ i, status: 400 });
+        }
+        expect429(
+          await post(
+            "/auth/user/emailpass/register",
+            { email: unknownEmail(), password },
+            { "x-forwarded-for": net(n) },
+          ),
+        );
+
+        const v4 = newIp();
+        const neighbour = newIp();
+        for (let i = 0; i < n; i++) {
+          await post(
+            "/auth/user/emailpass/register",
+            { email: unknownEmail(), password },
+            { "x-forwarded-for": v4 },
+          );
+        }
+        expect429(
+          await post(
+            "/auth/user/emailpass/register",
+            { email: unknownEmail(), password },
+            { "x-forwarded-for": v4 },
+          ),
+        );
+        expect(
+          (
+            await post(
+              "/auth/user/emailpass/register",
+              { email: unknownEmail(), password },
+              { "x-forwarded-for": neighbour },
+            )
+          ).status,
+        ).toBe(400);
       });
 
       it("GET/HEAD đăng nhập emailpass có thân → 405, không token; không làm lệch bộ đếm; provider khác không bị 405", async () => {

@@ -196,6 +196,40 @@ describe("rate limit nhiều tín hiệu", () => {
     }
   });
 
+  it("IPv6 gộp /64 (T-148): xoay địa chỉ trong một /64 vẫn chung bộ đếm IP và (email+IP); /64 khác tách riêng", async () => {
+    const store = new MemoryStore();
+    const in64 = (i: number) => `2001:db8:a:b:${(i + 1).toString(16)}::${(i * 7 + 3).toString(16)}`;
+    for (let i = 0; i < L.perIp; i++) {
+      expect((await registerAttempt(store, "login", `x${i}@example.test`, in64(i))).allowed).toBe(true);
+    }
+    // Dạng viết đầy đủ (số 0 đầu, chữ hoa) của cùng /64 vẫn chung bộ đếm.
+    expect(
+      (await registerAttempt(store, "login", "moi@example.test", "2001:0DB8:000A:000B:ffff:1:2:3")).allowed,
+    ).toBe(false);
+    expect((await registerAttempt(store, "login", "moi2@example.test", "2001:db8:a:c::1")).allowed).toBe(
+      true,
+    );
+
+    for (let i = 0; i < L.perIdentityIp; i++) {
+      expect(
+        (await registerAttempt(store, "login", "v6@example.test", `2001:db8:1:2::${i + 1}`)).allowed,
+      ).toBe(true);
+    }
+    expect((await registerAttempt(store, "login", "v6@example.test", "2001:db8:1:2:9::9")).allowed).toBe(
+      false,
+    );
+    // Thành công từ một địa chỉ trong /64 xoá thất bại (email+IP) của cả /64 (cùng khoá).
+    await registerSuccess(store, "login", "v6@example.test", "2001:db8:1:2::77");
+  });
+
+  it("IPv4 giữ nguyên địa chỉ (T-148): hai IP liền kề không chung bộ đếm IP", async () => {
+    const store = new MemoryStore();
+    for (let i = 0; i < L.perIp; i++)
+      await registerAttempt(store, "login", `y${i}@example.test`, "198.51.100.7");
+    expect((await registerAttempt(store, "login", "z@example.test", "198.51.100.7")).allowed).toBe(false);
+    expect((await registerAttempt(store, "login", "z@example.test", "198.51.100.8")).allowed).toBe(true);
+  });
+
   it("đồng thời: loạt thử song song không vượt ngưỡng (giữ chỗ trước bằng INCR)", async () => {
     const store = new MemoryStore();
     const results = await Promise.all(

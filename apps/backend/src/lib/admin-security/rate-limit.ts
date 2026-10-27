@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ipRateKey } from "../security/client-ip";
 import { AUTH_RATE_LIMITS } from "./config";
 import {
   exceedsLimit,
@@ -18,6 +19,9 @@ import type { SecurityStore } from "./store";
  *
  * Bộ đếm lưu theo cửa sổ cố định theo đồng hồ (khoá `…:w<chỉ số cửa sổ>`), quyết định theo xấp xỉ cửa sổ trượt (cửa sổ
  * hiện tại + cửa sổ trước × phần còn lại, lib/security/sliding-window.ts, T-055) — không còn 2× ngưỡng qua ranh giới.
+ *
+ * Tín hiệu IP (và cặp định danh + IP) dùng `ipRateKey` (T-148): IPv4 nguyên địa chỉ, IPv6 gộp theo /64 — một thuê bao
+ * thường có cả /64, xoay địa chỉ trong dải không lách được giới hạn (như mọi limiter khác, lib/security/rate-limit.ts).
  */
 export type LimitScope = "login" | "mfa" | "register";
 
@@ -29,9 +33,10 @@ interface Bucket {
   limit: number;
 }
 
-function buckets(scope: LimitScope, identity: string | null, ip: string): Bucket[] {
+function buckets(scope: LimitScope, identity: string | null, rawIp: string): Bucket[] {
   const id = (identity ?? "").trim().toLowerCase();
   const limits = AUTH_RATE_LIMITS[scope];
+  const ip = ipRateKey(rawIp);
   const out: Bucket[] = [{ kind: "ip", key: `rl:${scope}:ip:${h(ip)}`, limit: limits.perIp }];
   if (id) {
     out.push({ kind: "idip", key: `rl:${scope}:idip:${h(`${id}|${ip}`)}`, limit: limits.perIdentityIp });
