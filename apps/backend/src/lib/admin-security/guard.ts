@@ -11,7 +11,7 @@ import { sendProblem } from "../http/problem";
 import { decodePathSegments, INVALID_PATH, rawRequestPath } from "../http/request-path";
 import { clientIpOf } from "../security/config";
 import { getAdminSessionPolicy, isSensitive } from "./config";
-import { forbiddenFields, nativeReadFieldPolicy, requestedFields } from "./field-policy";
+import { forbiddenFields, nativeFieldPolicy, requestedFields } from "./field-policy";
 import { isAdminPath, isAdminXPath, resolveAdminRule, strictestRule, type AdminRule } from "./policy";
 import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
 import { normalizeAdminPath, normalizeMethod } from "./route-match";
@@ -199,7 +199,8 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
     }
   }
 
-  if (method === "GET" && !isAdminXPath(path)) {
+  // Mọi method (T-147 review 2): handler GHI của Medusa cũng tải lại thực thể theo `req.queryConfig.fields`.
+  if (!isAdminXPath(path)) {
     const blocked = applyNativeFieldPolicy(req, path, roles);
     if (blocked !== null) {
       await auditDenied(req, method, path, rule, { reason: "forbidden_fields", fields: blocked, roles });
@@ -219,13 +220,17 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
 type FieldFilteredRequest = MedusaRequest & { disallowed?: (string | RegExp)[]; allowed?: string[] };
 
 /**
- * Chính sách trường cho route ĐỌC native (field-policy.ts, T-147 review): trường yêu cầu qua `fields`/`order` vi phạm →
+ * Chính sách trường cho route native, mọi method (field-policy.ts, T-147 review): trường yêu cầu qua `fields`/`order` vi phạm →
  * trả danh sách (nơi gọi 403 + audit); không vi phạm → gán `req.disallowed`/`req.allowed` để Medusa gỡ trường cấm khỏi
  * trường MẶC ĐỊNH của route. Không route admin native nào của Medusa 2.22.1 tự đặt `disallowed` (rbac.spec.ts kiểm) nên
  * gán đè không xoá giới hạn sẵn có.
  */
-function applyNativeFieldPolicy(req: MedusaRequest, path: string, roles: readonly Role[]): string[] | null {
-  const policy = nativeReadFieldPolicy(path, roles);
+export function applyNativeFieldPolicy(
+  req: MedusaRequest,
+  path: string,
+  roles: readonly Role[],
+): string[] | null {
+  const policy = nativeFieldPolicy(path, roles);
   if (policy === null) return null;
   const requested = requestedFields(req.query as Record<string, unknown> | undefined);
   const bad = requested === null ? ["(fields/order không hợp lệ)"] : forbiddenFields(requested, policy);

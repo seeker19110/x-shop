@@ -24,9 +24,10 @@ import type { Permission } from "@x-shop/domain";
  *     người dùng/khoá API) chỉ cho vai trò cần: `order.read` (đơn/khách) hoặc `user.manage`/`settings.manage` (owner).
  *     CSKH (`order.read_masked`) và kho/catalog KHÔNG đọc PII qua route native — CSKH xem đơn đã che qua `/admin/x/*`.
  * Path chỉ là nửa đầu: route native nhận `?fields=` tuỳ ý và remote query đi theo link, nên cổng còn áp chính sách TRƯỜNG
- * (`field-policy.ts`): vai trò thiếu `order.read` không mở được quan hệ tới đơn/giỏ/khách/vận đơn/thanh toán/người dùng ở
- * bất kỳ route đọc native nào (403 nếu yêu cầu, gỡ khỏi trường mặc định); route biến thể kèm tồn chỉ trả trường tồn kho cho
- * vai trò thiếu `catalog.read`.
+ * (`field-policy.ts`, MỌI method — handler ghi cũng tải lại thực thể theo `fields`): vai trò thiếu `order.read` không mở được
+ * quan hệ tới đơn/giỏ/khách/vận đơn/thanh toán/người dùng (403 nếu yêu cầu, gỡ khỏi trường mặc định) và route vận đơn của kho
+ * chỉ trả trường tối thiểu; vai trò thiếu `catalog.read` không đi vào sản phẩm/biến thể ngoài họ đơn hàng, route biến thể kèm
+ * tồn và tồn kho chỉ trả trường tồn kho.
  *
  * `deny`: route native đóng với MỌI vai trò, kể cả owner (T-044) — đi vòng sổ/duyệt của `/admin/x/*`:
  *   - `NATIVE_MONEY_ROUTE`: ghi tiền native (capture/refund/mark-as-paid/payment-collection/credit-line) lách duyệt hoàn

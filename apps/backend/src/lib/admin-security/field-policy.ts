@@ -3,15 +3,17 @@ import { NATIVE_VARIANT_INVENTORY_ROUTE } from "./native-permissions";
 import { matchPath } from "./route-match";
 
 /**
- * Lọc `?fields=` cho route ĐỌC admin native (T-147 review, D-108). Cổng RBAC xét path; route native của Medusa 2.22.1 nhận
- * `fields` tuỳ ý và remote query đi theo link (kể cả link chỉ đọc) — `GET /admin/regions?fields=orders.email,
- * orders.shipping_address.*` trả PII đơn cho vai trò chỉ được đọc vùng. Chính sách:
- *  - vai trò KHÔNG có `order.read`: mọi đoạn trong `PII_FIELD_SEGMENTS`/`PII_FIELD_PATTERNS` bị cấm ở mọi route đọc native;
- *  - route biến thể kèm tồn (`NATIVE_VARIANT_INVENTORY_ROUTE`) cho vai trò không có `catalog.read`: chỉ các trường trong
- *    `VARIANT_INVENTORY_FIELDS` (form tạo vận đơn) — không đọc catalog qua `product.*`, `prices`, `options`…
+ * Lọc `?fields=`/`?order=` cho route admin native (T-147 review, D-108). Cổng RBAC xét path; route native của Medusa 2.22.1
+ * nhận `fields` tuỳ ý và remote query đi theo link (kể cả link chỉ đọc) — `GET /admin/regions?fields=orders.email,
+ * orders.shipping_address.*` trả PII đơn cho vai trò chỉ được đọc vùng; handler GHI cũng tải lại thực thể theo
+ * `req.queryConfig.fields` (`POST /admin/promotions/:id?fields=order_link.order.email`). Chính sách (mọi method):
+ *  - vai trò KHÔNG có `order.read`: cấm `PII_FIELD_SEGMENTS`/`PII_FIELD_PATTERNS`; route họ đơn hàng mà vai trò đó vẫn gọi
+ *    được (ghi `fulfillment.update` của kho) chỉ trả `ORDER_MIN_FIELDS`/`FULFILLMENT_MIN_FIELDS`;
+ *  - vai trò KHÔNG có `catalog.read`: cấm `CATALOG_FIELD_SEGMENTS` ngoài họ đơn hàng; route biến thể kèm tồn chỉ trả
+ *    `VARIANT_INVENTORY_FIELDS`, tồn kho chỉ trả `INVENTORY_ITEM_FIELDS`.
  * Áp hai lớp: (1) `fields`/`order` yêu cầu chạm trường cấm → 403 + audit (lộ rõ hành vi dò, không trả dữ liệu cắt xén
- * khiến người gọi tưởng không có gì); (2) `req.disallowed`/`req.allowed` cho `validateAndTransformQuery` của Medusa gỡ trường
- * cấm khỏi cả trường MẶC ĐỊNH của route (không nằm trong `fields`).
+ * khiến người gọi tưởng không có gì); (2) `req.disallowed`/`req.allowed` cho `validateAndTransformQuery` của Medusa (route
+ * đọc lẫn ghi đều dùng) gỡ trường cấm khỏi cả trường MẶC ĐỊNH của route (không nằm trong `fields`).
  */
 
 /**
@@ -56,6 +58,22 @@ export const PII_FIELD_SEGMENTS: readonly string[] = [
 /** Bảng nối của link (`order_link`, `payment_collection_link`, …) — chặn cả họ, kể cả alias tương lai. */
 export const PII_FIELD_PATTERNS: readonly RegExp[] = [/_link$/];
 
+/**
+ * Đoạn quan hệ dẫn vào catalog (sản phẩm/biến thể, kể cả bảng nối `products_link`, `variant_link`) — cấm với vai trò thiếu
+ * `catalog.read` ở mọi route native NGOÀI họ đơn hàng (đơn/vận đơn hiển thị tên sản phẩm của dòng hàng là hợp lệ).
+ * Chặn `?fields=products_link.product.title` trên kênh bán, `variants.product.*` trên tồn kho… (sản phẩm nháp).
+ */
+export const CATALOG_FIELD_SEGMENTS: readonly string[] = [
+  "product",
+  "products",
+  "variant",
+  "variants",
+  "product_variant",
+  "product_variants",
+  "products_link",
+  "variant_link",
+];
+
 /** Trường form tạo vận đơn native cần (dashboard: `*inventory,*inventory.location_levels,*inventory_items`). */
 export const VARIANT_INVENTORY_FIELDS: readonly string[] = [
   "id",
@@ -69,6 +87,90 @@ export const VARIANT_INVENTORY_FIELDS: readonly string[] = [
   "inventory_items",
 ];
 
+/**
+ * Tồn kho cho vai trò thiếu `catalog.read` (nhân viên đơn): trường riêng của inventory item + mức tồn từng kho (trường mặc
+ * định của `/admin/inventory-items*` trong Medusa 2.22.1), không có `variants`/`product`.
+ */
+export const INVENTORY_ITEM_FIELDS: readonly string[] = [
+  "id",
+  "sku",
+  "title",
+  "description",
+  "thumbnail",
+  "origin_country",
+  "hs_code",
+  "requires_shipping",
+  "mid_code",
+  "material",
+  "unit_of_measure",
+  "weight",
+  "length",
+  "height",
+  "width",
+  "metadata",
+  "reserved_quantity",
+  "stocked_quantity",
+  "created_at",
+  "updated_at",
+  "location_levels",
+  // `/admin/inventory-items/:id/location-levels` (gốc là inventory_level)
+  "inventory_item_id",
+  "location_id",
+  "incoming_quantity",
+  "available_quantity",
+];
+
+/** Đơn trả về cho vai trò thiếu `order.read` (kho tạo/giao vận đơn native): không email, khách, địa chỉ, dòng hàng, tiền. */
+export const ORDER_MIN_FIELDS: readonly string[] = [
+  "id",
+  "display_id",
+  "status",
+  "version",
+  "created_at",
+  "updated_at",
+];
+
+/** Vận đơn trả về cho vai trò thiếu `order.read`: mốc thời gian, nhãn (mã vận đơn), mặt hàng — không địa chỉ giao, `data`. */
+export const FULFILLMENT_MIN_FIELDS: readonly string[] = [
+  "id",
+  "location_id",
+  "provider_id",
+  "shipping_option_id",
+  "packed_at",
+  "shipped_at",
+  "delivered_at",
+  "canceled_at",
+  "created_at",
+  "updated_at",
+  "items",
+  "labels",
+];
+
+/**
+ * Họ route có gốc là dữ liệu đơn/khách/tiền. Vai trò thiếu `order.read` mà vẫn gọi được (route ghi `fulfillment.update` của
+ * kho) chỉ nhận trường tối thiểu; họ khác không có route nào mở cho vai trò đó (đọc cần `order.read`, ghi mặc định owner) —
+ * vẫn đặt `["id"]` để route mới mở nhầm cũng không trả dữ liệu.
+ */
+const ORDER_FAMILIES: readonly (readonly [string, readonly string[]])[] = [
+  ["/admin/orders", ORDER_MIN_FIELDS],
+  ["/admin/fulfillments", FULFILLMENT_MIN_FIELDS],
+  ["/admin/order-changes", ["id"]],
+  ["/admin/order-edits", ["id"]],
+  ["/admin/draft-orders", ["id"]],
+  ["/admin/returns", ["id"]],
+  ["/admin/claims", ["id"]],
+  ["/admin/exchanges", ["id"]],
+  ["/admin/customers", ["id"]],
+  ["/admin/customer-groups", ["id"]],
+  ["/admin/payments", ["id"]],
+  ["/admin/payment-collections", ["id"]],
+];
+
+const inFamily = (prefix: string, path: string) => path === prefix || path.startsWith(`${prefix}/`);
+
+/** `path` thuộc họ đơn hàng (đơn, vận đơn, đổi trả, khách, thanh toán…). */
+export const isOrderFamilyPath = (path: string) => ORDER_FAMILIES.some(([prefix]) => inFamily(prefix, path));
+
 export interface FieldPolicy {
   /** Đoạn/biểu thức cấm — gán `req.disallowed` (Medusa gỡ khỏi cả trường mặc định). */
   disallowed: (string | RegExp)[];
@@ -76,15 +178,26 @@ export interface FieldPolicy {
   allowed: string[] | null;
 }
 
-/** Chính sách trường cho một request ĐỌC native đã qua RBAC; `null` = không giới hạn (vai trò đủ quyền). */
-export function nativeReadFieldPolicy(path: string, roles: readonly Role[]): FieldPolicy | null {
-  const disallowed: (string | RegExp)[] = can(roles, "order.read")
-    ? []
-    : [...PII_FIELD_SEGMENTS, ...PII_FIELD_PATTERNS];
-  const allowed =
-    matchPath(NATIVE_VARIANT_INVENTORY_ROUTE, path) && !can(roles, "catalog.read")
-      ? [...VARIANT_INVENTORY_FIELDS]
-      : null;
+/**
+ * Chính sách trường cho MỌI request admin native đã qua RBAC (đọc lẫn ghi — handler ghi của Medusa tải lại thực thể theo
+ * `req.queryConfig.fields`); `null` = không giới hạn (vai trò đủ quyền).
+ */
+export function nativeFieldPolicy(path: string, roles: readonly Role[]): FieldPolicy | null {
+  const orderRead = can(roles, "order.read");
+  const catalogRead = can(roles, "catalog.read");
+  const orderFamily = isOrderFamilyPath(path);
+  const disallowed: (string | RegExp)[] = [
+    ...(orderRead ? [] : [...PII_FIELD_SEGMENTS, ...PII_FIELD_PATTERNS]),
+    ...(catalogRead || orderFamily ? [] : CATALOG_FIELD_SEGMENTS),
+  ];
+  let allowed: string[] | null = null;
+  if (!orderRead && orderFamily) {
+    allowed = [...(ORDER_FAMILIES.find(([prefix]) => inFamily(prefix, path))?.[1] ?? ["id"])];
+  } else if (!catalogRead && matchPath(NATIVE_VARIANT_INVENTORY_ROUTE, path)) {
+    allowed = [...VARIANT_INVENTORY_FIELDS];
+  } else if (!catalogRead && inFamily("/admin/inventory-items", path)) {
+    allowed = [...INVENTORY_ITEM_FIELDS];
+  }
   return disallowed.length === 0 && allowed === null ? null : { disallowed, allowed };
 }
 

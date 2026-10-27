@@ -1,38 +1,126 @@
+import type { MedusaRequest } from "@medusajs/framework/http";
+import { applyNativeFieldPolicy } from "../guard";
 import {
+  CATALOG_FIELD_SEGMENTS,
+  FULFILLMENT_MIN_FIELDS,
   forbiddenFields,
-  nativeReadFieldPolicy,
+  INVENTORY_ITEM_FIELDS,
+  isOrderFamilyPath,
+  nativeFieldPolicy,
+  ORDER_MIN_FIELDS,
   PII_FIELD_SEGMENTS,
   requestedFields,
   VARIANT_INVENTORY_FIELDS,
 } from "../field-policy";
 
-/** T-147 review: chính sách `?fields=` cho route đọc admin native. */
+/** T-147 review: chính sách `?fields=`/`?order=` cho route admin native (mọi method). */
 
 const VARIANT = "/admin/products/p1/variants/v1";
 
-describe("nativeReadFieldPolicy", () => {
-  it("vai trò có order.read (+ catalog.read) → không giới hạn; thiếu order.read → cấm đoạn PII", () => {
-    expect(nativeReadFieldPolicy("/admin/regions", ["owner"])).toBeNull();
-    expect(nativeReadFieldPolicy("/admin/regions", ["order_staff"])).toBeNull();
-    expect(nativeReadFieldPolicy("/admin/regions", ["accountant"])).toBeNull();
+describe("nativeFieldPolicy", () => {
+  it("vai trò có order.read + catalog.read → không giới hạn; thiếu order.read → cấm đoạn PII", () => {
+    expect(nativeFieldPolicy("/admin/regions", ["owner"])).toBeNull();
+    expect(nativeFieldPolicy("/admin/regions", ["order_staff", "catalog_manager"])).toBeNull();
     for (const role of ["support", "warehouse", "catalog_manager"] as const) {
-      const p = nativeReadFieldPolicy("/admin/regions", [role]);
+      const p = nativeFieldPolicy("/admin/regions", [role]);
       expect(p?.allowed).toBeNull();
       expect(p?.disallowed).toEqual(expect.arrayContaining([...PII_FIELD_SEGMENTS]));
     }
     // User chưa có vai trò (route `self`: /admin/users/me) cũng bị cấm đi tiếp qua quan hệ.
-    expect(nativeReadFieldPolicy("/admin/users/me", [])?.disallowed).toContain("users");
+    expect(nativeFieldPolicy("/admin/users/me", [])?.disallowed).toContain("users");
   });
 
-  it("route biến thể kèm tồn: thiếu catalog.read → chỉ trường tồn kho; có catalog.read → không allowlist", () => {
-    expect(nativeReadFieldPolicy(VARIANT, ["order_staff"])).toEqual({
-      disallowed: [],
-      allowed: [...VARIANT_INVENTORY_FIELDS],
-    });
-    expect(nativeReadFieldPolicy(VARIANT, ["warehouse"])?.allowed).toBeNull();
-    expect(nativeReadFieldPolicy(VARIANT, ["owner"])).toBeNull();
-    // Chỉ đúng route đó — danh sách biến thể vẫn là catalog.read ở tầng path.
-    expect(nativeReadFieldPolicy("/admin/products/p1/variants", ["order_staff"])).toBeNull();
+  it("thiếu catalog.read: cấm đoạn catalog ngoài họ đơn hàng; trong họ đơn hàng (dòng hàng có sản phẩm) không cấm", () => {
+    for (const role of ["order_staff", "accountant", "support"] as const) {
+      expect(nativeFieldPolicy("/admin/sales-channels", [role])?.disallowed).toEqual(
+        expect.arrayContaining([...CATALOG_FIELD_SEGMENTS]),
+      );
+    }
+    expect(nativeFieldPolicy("/admin/orders/o1", ["order_staff"])).toBeNull();
+    expect(nativeFieldPolicy("/admin/sales-channels", ["warehouse"])?.disallowed).not.toContain("product");
+  });
+
+  it("route biến thể kèm tồn / tồn kho: thiếu catalog.read → allowlist; có catalog.read → không allowlist", () => {
+    expect(nativeFieldPolicy(VARIANT, ["order_staff"])?.allowed).toEqual([...VARIANT_INVENTORY_FIELDS]);
+    expect(nativeFieldPolicy(VARIANT, ["warehouse"])?.allowed).toBeNull();
+    expect(nativeFieldPolicy(VARIANT, ["owner"])).toBeNull();
+    for (const path of [
+      "/admin/inventory-items",
+      "/admin/inventory-items/i1",
+      "/admin/inventory-items/i1/location-levels",
+    ])
+      expect(nativeFieldPolicy(path, ["order_staff"])?.allowed).toEqual([...INVENTORY_ITEM_FIELDS]);
+    expect(nativeFieldPolicy("/admin/inventory-items", ["warehouse"])?.allowed).toBeNull();
+    expect(INVENTORY_ITEM_FIELDS).not.toContain("variants");
+  });
+
+  it("họ đơn hàng, vai trò thiếu order.read (kho ghi vận đơn) → trường tối thiểu, không email/khách/địa chỉ", () => {
+    expect(
+      nativeFieldPolicy("/admin/orders/o1/fulfillments/f1/mark-as-delivered", ["warehouse"])?.allowed,
+    ).toEqual([...ORDER_MIN_FIELDS]);
+    expect(nativeFieldPolicy("/admin/fulfillments/f1/shipment", ["warehouse"])?.allowed).toEqual([
+      ...FULFILLMENT_MIN_FIELDS,
+    ]);
+    expect(nativeFieldPolicy("/admin/returns/r1", ["warehouse"])?.allowed).toEqual(["id"]);
+    for (const f of [
+      "email",
+      "customer",
+      "shipping_address",
+      "billing_address",
+      "items",
+      "delivery_address",
+      "data",
+    ])
+      expect({ f, order: ORDER_MIN_FIELDS.includes(f), ful: FULFILLMENT_MIN_FIELDS.includes(f) }).toEqual({
+        f,
+        order: false,
+        ful: f === "items",
+      });
+    expect(isOrderFamilyPath("/admin/orders")).toBe(true);
+    expect(isOrderFamilyPath("/admin/orders-khac")).toBe(false);
+  });
+});
+
+describe("applyNativeFieldPolicy (cổng)", () => {
+  const reqOf = (query: Record<string, unknown>) =>
+    ({ query }) as unknown as MedusaRequest & {
+      disallowed?: unknown[];
+      allowed?: string[];
+    };
+
+  it("không yêu cầu trường cấm → gán req.disallowed (gỡ trường MẶC ĐỊNH) và req.allowed khi có allowlist", () => {
+    const support = reqOf({});
+    expect(applyNativeFieldPolicy(support, "/admin/regions", ["support"])).toBeNull();
+    expect(support.disallowed).toEqual(expect.arrayContaining(["orders", "customer", /_link$/]));
+    expect(support.allowed).toBeUndefined();
+
+    const warehouse = reqOf({});
+    expect(
+      applyNativeFieldPolicy(warehouse, "/admin/orders/o1/fulfillments/f1/shipments", ["warehouse"]),
+    ).toBeNull();
+    expect(warehouse.allowed).toEqual([...ORDER_MIN_FIELDS]);
+
+    const owner = reqOf({ fields: "orders.email" });
+    expect(applyNativeFieldPolicy(owner, "/admin/regions", ["owner"])).toBeNull();
+    expect(owner.disallowed).toBeUndefined();
+    expect(owner.allowed).toBeUndefined();
+  });
+
+  it("yêu cầu trường cấm, hoặc fields/order dạng lạ → trả danh sách (403), KHÔNG gán req.disallowed", () => {
+    const bad = reqOf({ fields: "id,orders.email" });
+    expect(applyNativeFieldPolicy(bad, "/admin/regions", ["support"])).toEqual(["orders.email"]);
+    expect(bad.disallowed).toBeUndefined();
+    for (const query of [
+      { fields: { orders: "email" } },
+      { fields: ["id", 7] },
+      { "fields.orders": "email" },
+      { order: {} },
+    ])
+      expect(applyNativeFieldPolicy(reqOf(query), "/admin/regions", ["support"])).toEqual([
+        "(fields/order không hợp lệ)",
+      ]);
+    // Vai trò đủ quyền: dạng lạ để Medusa tự trả 400 (không phải việc của cổng RBAC).
+    expect(applyNativeFieldPolicy(reqOf({ fields: { a: 1 } }), "/admin/regions", ["owner"])).toBeNull();
   });
 });
 
@@ -62,7 +150,7 @@ describe("requestedFields", () => {
 });
 
 describe("forbiddenFields", () => {
-  const support = nativeReadFieldPolicy("/admin/regions", ["support"])!;
+  const support = nativeFieldPolicy("/admin/regions", ["support"])!;
 
   it("chặn theo TỪNG đoạn và họ *_link; giữ trường hợp lệ", () => {
     expect(
@@ -93,7 +181,7 @@ describe("forbiddenFields", () => {
   });
 
   it("allowlist biến thể: chỉ đúng đường dẫn đầy đủ trong VARIANT_INVENTORY_FIELDS", () => {
-    const p = nativeReadFieldPolicy(VARIANT, ["order_staff"])!;
+    const p = nativeFieldPolicy(VARIANT, ["order_staff"])!;
     expect(forbiddenFields(["inventory", "inventory.location_levels", "inventory_items", "sku"], p)).toEqual(
       [],
     );

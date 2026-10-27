@@ -69,14 +69,17 @@ Bảng nguồn: `apps/backend/src/lib/admin-security/native-permissions.ts`. Rou
 
 CSKH (`order.read_masked`) không đọc PII qua route native; xem đơn đã che qua `/admin/x/*`.
 
-**Chính sách trường (`?fields=`, `?order=`) — `apps/backend/src/lib/admin-security/field-policy.ts`.** Quyền theo path chưa đủ: route native của Medusa nhận `fields` tuỳ ý và remote query đi theo link, kể cả link chỉ đọc (`Region.orders`, `SalesChannel.orders`, `Promotion.order_link`, `RefundReason.refunds…`). Vì vậy:
+**Chính sách trường (`?fields=`, `?order=`) — `apps/backend/src/lib/admin-security/field-policy.ts`.** Áp cho MỌI method (handler ghi của Medusa cũng tải lại thực thể theo `fields`). Quyền theo path chưa đủ: route native của Medusa nhận `fields` tuỳ ý và remote query đi theo link, kể cả link chỉ đọc (`Region.orders`, `SalesChannel.orders`, `Promotion.order_link`, `RefundReason.refunds…`). Vì vậy:
 - Vai trò thiếu `order.read` (catalog_manager, warehouse, support, user chưa có vai trò ở `/admin/users/me`): yêu cầu trường có đoạn `order(s)`, `cart(s)`, `customer(s)`, `fulfillment(s)`, `*_address`, `payment*`, `refunds`, `captures`, `account_holder(s)`, `order_items`, `cart_items`, `usages`, `return(s)`, `claims`, `exchanges`, `user(s)`, `invite(s)` hoặc bảng nối `*_link` → 403 + audit `rbac.denied` lý do `forbidden_fields`. Medusa cũng gỡ các trường đó khỏi trường mặc định của route (`req.disallowed`).
 - Route biến thể kèm tồn, vai trò thiếu `catalog.read` (nhân viên đơn): chỉ `id, title, sku, manage_inventory, allow_backorder, inventory_quantity, inventory, inventory.location_levels, inventory_items`; trường khác → 403, trường mặc định ngoài danh sách bị gỡ (`req.allowed`).
-- Chọn 403 thay vì gỡ lặng lẽ để hành vi dò lộ rõ trong audit. `rbac.spec.ts` quét định nghĩa link của `@medusajs/link-modules`: alias mới dẫn tới đơn/giỏ/khách/vận đơn/thanh toán/người dùng chưa có trong danh sách cấm → đỏ.
-- Giới hạn: danh sách cấm theo link Medusa + quan hệ trong module đã rà (payment: `payment_collections`, `refunds`, `payments`); tham số lọc (`?orders[...]=`) do schema zod của từng route quyết định, chưa có kiểm riêng.
+- Vai trò thiếu `catalog.read` (nhân viên đơn, kế toán, CSKH): ngoài họ đơn hàng, đoạn `product(s)`, `variant(s)`, `product_variant(s)`, `products_link`, `variant_link` bị cấm (chặn sản phẩm nháp qua kênh bán/kho/tồn); `/admin/inventory-items*` chỉ trả trường riêng của tồn kho + mức tồn từng kho.
+- Route họ đơn hàng mà vai trò thiếu `order.read` vẫn gọi được (kho: ghi vận đơn native `fulfillment.update`): phản hồi chỉ có `id, display_id, status, version, created_at, updated_at` (đơn) hoặc mốc thời gian + nhãn + mặt hàng (vận đơn) — không email, khách, địa chỉ, `data`; kể cả khi không gửi `fields`.
+- Chọn 403 thay vì gỡ lặng lẽ để hành vi dò lộ rõ trong audit. `rbac.spec.ts` quét link (định nghĩa `@medusajs/link-modules` + joiner config lúc chạy, gồm `src/links` của dự án) và quan hệ nội module (model DML của từng module Medusa): alias/quan hệ mới dẫn tới đơn/giỏ/khách/vận đơn/thanh toán/người dùng chưa có trong danh sách cấm → đỏ; mọi route họ đơn hàng mà vai trò thiếu `order.read` gọi được phải có allowlist.
+- Giới hạn: tham số lọc (`?orders[...]=`) do schema zod của từng route quyết định (schema Medusa bỏ khoá lạ), chưa có kiểm riêng; module của dự án (`src/modules`) chỉ được quét qua link, không qua model nội bộ.
 
 Hạn chế đã biết của dashboard native (chấp nhận theo D-108):
 - Nhân viên đơn, kế toán, CSKH không đọc được catalog native (danh sách/chi tiết sản phẩm → 403); nhân viên đơn vẫn đọc được biến thể kèm tồn để tạo vận đơn.
+- Nhân viên đơn mở màn chi tiết tồn kho của dashboard (gửi `fields=*variants,*variants.product`) → 403; danh sách tồn kho, giữ hàng, form tạo vận đơn vẫn chạy.
 - Trang mặc định `/orders` của dashboard báo lỗi với vai trò không có `order.read` (catalog_manager, warehouse, support) — vào thẳng màn của vai trò mình.
 - Chuông thông báo ở khung dashboard gọi `GET /admin/notifications` mỗi 60 giây và nhận 403 với mọi vai trò trừ owner (dashboard bỏ qua lỗi); audit `rbac.denied` được gộp (lần 1, 10, 100…).
 - Thanh tìm kiếm toàn cục (Cmd-K) chỉ chạy với owner.
