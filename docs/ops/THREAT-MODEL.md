@@ -191,6 +191,7 @@ là bước của kiểm thử bảo mật độc lập trước G7 (§9).
 | R-05 | `maskFreeText` là heuristic, có thể sót địa chỉ không có cụm báo hiệu (D-036) | Thấp | accept | ghi chú tự do chỉ hiển thị cho nhân viên có quyền |
 | R-06 | Chưa có CHECK DB tồn `stocked >= reserved` (IND-ECOM-001) | Trung | mitigate | migration mới, không sửa migration cũ |
 | R-07 | Dò email admin qua độ trễ của request KHÁC chạy đồng thời với yêu cầu đặt lại mật khẩu (D-086): việc nền (tra identity, phát token, sự kiện) chỉ chạy cho email có thật và dùng chung CPU/DB của tiến trình | Thấp | mitigate (rủi ro còn lại accept) | phản hồi reset luôn 201 sau 250 ms; việc nền bắt đầu sau độ trễ ngẫu nhiên đều 0–5 s (bỏ khi đang tắt), bỏ `metadata` của thân; rate limit theo IP và (email + IP); ngưỡng theo email chỉ ở việc nền cho identity có thật, vượt thì bỏ âm thầm (D-085). Kẻ dò phải lặp rất nhiều lần trên cùng instance; xem lại nếu chạy một instance tải thấp công khai hoặc có subscriber `auth.password_reset` nặng (gửi email đồng bộ) — `apps/backend/src/lib/admin-security/reset-password.ts` |
+| R-08 | Tiêu hạn mức nền đặt lại mật khẩu của nạn nhân (D-085): kẻ tấn công dùng ≥ 2 IP gửi ĐÚNG email nạn nhân (mỗi IP dưới ngưỡng email + IP) tiêu hết `reset.perIdentity` (5 lượt/15 phút) của việc nền → yêu cầu của chính nạn nhân trong cửa sổ đó bị bỏ âm thầm (vẫn 201) | Thấp | accept | các lượt do kẻ tấn công kích vẫn phát token về hộp thư nạn nhân (nạn nhân dùng được token mới nhất); mỗi lượt mới vô hiệu token cũ nên có thể hở khe vài phút không có token hợp lệ trong tay nạn nhân; không lộ/chiếm tài khoản. Xem lại nếu có phản ánh không nhận được email đặt lại — `apps/backend/src/lib/admin-security/reset-password.ts` |
 
 ## 9. Rủi ro còn mở (chờ người)
 | ID | Việc | Chủ | Hệ quả nếu chưa làm |
@@ -209,3 +210,4 @@ là bước của kiểm thử bảo mật độc lập trước G7 (§9).
 | 1.0 | 2026-10-26 | theo hệ thống thật: DFD mermaid, STRIDE có quyết định + bằng chứng, OWASP Top 10:2025, ASVS 5.0.0 L2, rủi ro còn mở |
 | 1.1 | 2026-10-26 | §4.1 đối chiếu hàng Cao ↔ ID checklist đã đạt (SEC-TM-006); làm rõ hai loại token tra cứu đơn (liên kết ở URL, phiên ở header) theo mã |
 | 1.2 | 2026-10-27 | §8 R-07: kênh phụ thời gian còn lại của yêu cầu đặt lại mật khẩu (T-143, D-085, D-086) |
+| 1.3 | 2026-10-27 | §8 R-08: tiêu hạn mức nền đặt lại mật khẩu của nạn nhân (D-085), accept |

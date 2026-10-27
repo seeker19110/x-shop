@@ -249,6 +249,38 @@ describe("rate limit nhiều tín hiệu", () => {
     expect(minimal).toBeLessThanOrEqual(Math.ceil((AUTH_RATE_LIMITS.windowSeconds * (L3 + 3)) / (L3 + 1)));
   });
 
+  it("Retry-After tính cả tín hiệu chỉ đọc theo LƯỢT KẾ TIẾP: thử lại đúng mốc được báo thì qua (không 429 lần nữa)", async () => {
+    const store = new MemoryStore();
+    const M = AUTH_RATE_LIMITS.windowSeconds * 1000;
+    const t0 = Math.floor(Date.now() / M) * M + Math.floor(0.4 * M);
+    const at = (ms: number) => new Date(t0 + ms);
+    // (a) bộ đếm theo email nạn nhân lên đúng ngưỡng (20) từ 5 IP × 4 lượt.
+    for (let ipN = 0; ipN < 5; ipN++) {
+      for (let i = 0; i < 4; i++) {
+        expect(
+          (await registerAttempt(store, "login", "nan-nhan@example.test", `198.51.100.${ipN + 1}`, at(0)))
+            .allowed,
+        ).toBe(true);
+      }
+    }
+    // (b) IP 203.0.113.50 chạm ngưỡng IP (100) bằng các email khác.
+    for (let i = 0; i < L.perIp; i++) {
+      expect(
+        (await registerAttempt(store, "login", `khac${i}@example.test`, "203.0.113.50", at(0))).allowed,
+      ).toBe(true);
+    }
+    // (c) nạn nhân thử từ IP đó: bị chặn ở IP; tín hiệu email chỉ đọc nhưng lượt kế tiếp cũng vượt → Retry-After phải gồm nó.
+    const first = await registerAttempt(store, "login", "nan-nhan@example.test", "203.0.113.50", at(0));
+    expect(first.allowed).toBe(false);
+    const wait = (first as { retryAfterSeconds: number }).retryAfterSeconds;
+    // (d) thử lại đúng mốc được báo → qua.
+    expect(
+      await registerAttempt(store, "login", "nan-nhan@example.test", "203.0.113.50", at(wait * 1000)),
+    ).toEqual({
+      allowed: true,
+    });
+  });
+
   it("D-085: IP A đã bị chặn không đốt hạn mức theo email của nạn nhân — nạn nhân ở IP B vẫn được thử", async () => {
     const store = new MemoryStore();
     const results = await Promise.all(

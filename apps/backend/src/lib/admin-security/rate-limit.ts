@@ -7,6 +7,7 @@ import {
   sampleAt,
   slidingRetryAfterSeconds,
   windowStartMs,
+  wouldExceedLimit,
 } from "../security/sliding-window";
 import type { SecurityStore } from "./store";
 
@@ -83,7 +84,11 @@ export async function registerAttempt(
     const cap = retryAfterSeconds > 0 ? 0 : b.limit + 1;
     const counts = await store.incrPeek(windowKey(b, idx), keyTtlSeconds(), windowKey(b, idx - 1), cap);
     const sample = sampleAt(counts, windowMs(), now);
-    if (exceedsLimit(sample, b.limit, windowMs())) {
+    // Tín hiệu đã tăng: chặn khi số hiệu dụng (gồm lượt này) vượt ngưỡng. Tín hiệu chỉ đọc (lượt này KHÔNG được đếm):
+    // xét lượt kế tiếp (`wouldExceedLimit` = hiệu dụng + 1) — nếu không, Retry-After bỏ sót nó và thử lại đúng mốc vẫn 429.
+    const blocking =
+      cap === 0 ? wouldExceedLimit(sample, b.limit, windowMs()) : exceedsLimit(sample, b.limit, windowMs());
+    if (blocking) {
       retryAfterSeconds = Math.max(
         retryAfterSeconds,
         slidingRetryAfterSeconds(sample, b.limit, windowMs(), NEXT_HIT),
