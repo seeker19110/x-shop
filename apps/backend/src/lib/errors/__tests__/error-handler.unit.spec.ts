@@ -5,6 +5,7 @@ import { CheckoutError, sendProblem as sendCheckoutProblem } from "../../checkou
 import { sendProblem } from "../../http/problem";
 import {
   DEFAULT_RETRY_AFTER_SECONDS,
+  dbValueMessage,
   INTERNAL_LEAK,
   logServerError,
   toHttpProblem,
@@ -508,5 +509,113 @@ describe("problem+json của route có trace_id (cùng mã với log)", () => {
       status: 409,
       trace_id: "req-c",
     });
+  });
+});
+
+/** T-157 / D-097 — thông điệp `dbErrorMapper` của Medusa chép giá trị người gửi; phản hồi 4xx chỉ giữ tên trường. */
+describe("toHttpProblem — dbErrorMapper không chép giá trị (T-157)", () => {
+  const uniqueMsg = (pairs: string[]) =>
+    `Fashion model measurement with ${pairs.join(", ")}, already exists.`;
+  const fkMsg = (pairs: string[]) =>
+    `You tried to set relationship ${pairs.join(",")}, but such entity does not exist`;
+  const VALUES = [
+    "173",
+    "a: b: c",
+    "dòng một\ndòng hai\n    at x.ts:1",
+    "Nguyễn Văn Ạ 0912345678 😀",
+    "khach@example.test",
+    "",
+  ];
+
+  it("unique → 400 giữ mã + tên trường, bỏ giá trị và tên bảng", () => {
+    const err = new MedusaError(MedusaError.Types.INVALID_DATA, uniqueMsg(["height_cm: 173", "hip_cm: 139"]));
+    const p = toHttpProblem(err, "t");
+    expect(p.status).toBe(400);
+    expect(p.body.code).toBe("INVALID_DATA");
+    expect(p.body.detail).toBe("Giá trị đã tồn tại (trường: height_cm, hip_cm)");
+    expect(p.body.message).toBe(p.body.detail);
+    expect(p.body.errors).toEqual([
+      { param: "height_cm", reason: "Giá trị đã tồn tại" },
+      { param: "hip_cm", reason: "Giá trị đã tồn tại" },
+    ]);
+    expect(JSON.stringify(p.body)).not.toMatch(/173|139|Fashion|measurement/);
+  });
+
+  it("FK → giữ status 404 + tên trường, bỏ giá trị", () => {
+    const p = toHttpProblem(
+      new MedusaError(MedusaError.Types.NOT_FOUND, fkMsg(["product_id: prod_01SECRET", "order_id: o1"])),
+      "t",
+    );
+    expect(p.status).toBe(404);
+    expect(p.body.detail).toBe("Tham chiếu không tồn tại (trường: product_id, order_id)");
+    expect(JSON.stringify(p.body)).not.toMatch(/prod_01SECRET|o1/);
+  });
+
+  it.each(VALUES)("giá trị đặc biệt %j không lọt ra, trường còn", (value) => {
+    for (const msg of [
+      uniqueMsg([`email: ${value}`, "has_account: false"]),
+      fkMsg([`email: ${value}`, "a: 1"]),
+    ]) {
+      const kind = msg.startsWith("You") ? MedusaError.Types.NOT_FOUND : MedusaError.Types.INVALID_DATA;
+      const p = toHttpProblem(new MedusaError(kind, msg), "t");
+      expect(p.body.errors?.[0]?.param).toBe("email");
+      const text = JSON.stringify(p.body);
+      for (const leak of ["Nguyễn", "0912345678", "😀", "khach@example", "a: b", "dòng", "x.ts", "173"])
+        expect(text).not.toContain(leak);
+    }
+  });
+
+  it("một khoá, tên trường không hợp lệ, quá dài, 'undefined': vẫn không lộ giá trị", () => {
+    const one = toHttpProblem(
+      new MedusaError(MedusaError.Types.INVALID_DATA, uniqueMsg(["handle: áo-thun"])),
+      "t",
+    );
+    expect(one.body.detail).toBe("Giá trị đã tồn tại (trường: handle)");
+    const badKey = toHttpProblem(
+      new MedusaError(MedusaError.Types.INVALID_DATA, uniqueMsg(["không hợp lệ: bí mật"])),
+      "t",
+    );
+    expect(badKey.body.detail).toBe("Giá trị đã tồn tại");
+    expect(badKey.body.errors).toBeUndefined();
+    const long = toHttpProblem(
+      new MedusaError(MedusaError.Types.INVALID_DATA, uniqueMsg([`k: ${"x".repeat(10_000)}`])),
+      "t",
+    );
+    expect(long.body.detail).toBe("Giá trị đã tồn tại");
+    const undef = toHttpProblem(new MedusaError(MedusaError.Types.NOT_FOUND, fkMsg(["undefined"])), "t");
+    expect(undef.body.detail).toBe("Tham chiếu không tồn tại");
+  });
+
+  it("không ảnh hưởng 4xx khác (thông điệp thường, thông điệp 'already' sai dạng)", () => {
+    for (const m of [
+      "Giỏ hàng cart_01 không tồn tại",
+      "Email đã được dùng, already exists",
+      "with x: 1, already",
+    ]) {
+      expect(toHttpProblem(new MedusaError(MedusaError.Types.INVALID_DATA, m), "t").body.detail).toBe(m);
+    }
+    expect(dbValueMessage("Giỏ hàng không tồn tại")).toBeNull();
+    expect(dbValueMessage(undefined)).toBeNull();
+  });
+
+  const N = 32_768;
+  const adversarial: Array<[string, string]> = [
+    ["unique: lặp ' with '", `${" with ".repeat(N / 6)}, already exists.`],
+    ["unique: nhiều cặp", `T with ${"a: b, ".repeat(N / 6)}, already exists.`],
+    ["unique: toàn dấu hai chấm", `T with ${": ".repeat(N / 2)}, already exists.`],
+    [
+      "FK: nhiều cặp",
+      `You tried to set relationship ${"a: b,".repeat(N / 5)}, but such entity does not exist`,
+    ],
+    ["FK: không dấu phẩy", `You tried to set relationship ${"a".repeat(N)}, but such entity does not exist`],
+    ["unique: không đuôi", `T with ${"a: b, ".repeat(N / 6)}already exist`],
+  ];
+  it.each(adversarial)("đối nghịch %s → < 50 ms CPU", (_n, input) => {
+    dbValueMessage(input.slice(0, 100));
+    const t0 = process.cpuUsage();
+    dbValueMessage(input);
+    toHttpProblem(new MedusaError(MedusaError.Types.INVALID_DATA, input), "t");
+    const d = process.cpuUsage(t0);
+    expect((d.user + d.system) / 1000).toBeLessThan(50);
   });
 });

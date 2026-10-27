@@ -411,6 +411,38 @@ medusaIntegrationTestRunner({
       expect(line).not.toMatch(MEASURE_LEAK);
     });
 
+    /**
+     * T-157 / D-097 — Medusa `dbErrorMapper` đổi lỗi unique thành `<Bảng> with k: v, …, already exists.` (chép giá trị người
+     * gửi) và đi ra thân 400. Tạo trùng THẬT qua route admin native: thân không còn giá trị, vẫn nêu tên trường.
+     */
+    it("T-157: tạo trùng thật qua route admin → 400, thân không chứa giá trị, vẫn nêu tên trường", async () => {
+      const container = getContainer();
+      const admin = (await adminHeaders(api, container)).headers;
+      const handle = "ao-thun-trung-t157-nguyen-van-a";
+      const body = {
+        title: "Áo thử T-157",
+        handle,
+        status: "draft",
+        options: [{ title: "Size", values: ["s"] }],
+        variants: [
+          { title: "S", options: { Size: "s" }, prices: [{ currency_code: "vnd", amount: 300000 }] },
+        ],
+      };
+      const first = await api.post("/admin/products", body, { headers: admin, ...noThrow });
+      expect(first.status).toBe(200);
+      const dup = await api.post("/admin/products", body, { headers: admin, ...noThrow });
+      expect(dup.status).toBe(400);
+      expect(dup.headers["content-type"]).toContain("application/problem+json");
+      const text = JSON.stringify(dup.data);
+      expect(text).not.toContain(handle);
+      expect(text).not.toMatch(/nguyen|ao-thun|already exists|Product with/i);
+      expect(dup.data.code).toBe("INVALID_DATA");
+      expect(dup.data.detail).toBe("Giá trị đã tồn tại (trường: handle)");
+      expect(dup.data.message).toBe(dup.data.detail);
+      expect(dup.data.errors).toEqual([{ param: "handle", reason: "Giá trị đã tồn tại" }]);
+      expect(dup.data.trace_id).toBeTruthy();
+    });
+
     it("vòng 3 ca C: raise … using detail, hint — route fashion chỉ log code; lỗi thô qua handler 500 giữ lỗi, detail, hint", async () => {
       const setup =
         "create function t151c_boom() returns trigger language plpgsql as $$ begin if NEW.height_cm = 173 then " +

@@ -111,6 +111,67 @@ function httpErrorStatus(err: unknown): number | null {
   return status >= 400 && status <= 599 ? status : null;
 }
 
+/** Trần độ dài thông điệp mà bộ nhận dạng `dbErrorMapper` chịu phân tích (dài hơn → vẫn thông điệp chung, không tên trường). */
+const MAX_DB_MESSAGE = 4096;
+const FIELD_NAME = /^[A-Za-z_][\w.]{0,63}$/;
+const UNIQUE_TAIL = ", already exists.";
+const FK_HEAD = "You tried to set relationship ";
+const FK_TAIL = ", but such entity does not exist";
+const DUPLICATE_REASON = "Giá trị đã tồn tại";
+const MISSING_REF_REASON = "Tham chiếu không tồn tại";
+
+export interface DbValueMessage {
+  detail: string;
+  reason: string;
+  fields: string[];
+}
+
+/** Tên trường của `k: v<sep>k2: v2`; một tên không hợp lệ → `[]`. Giá trị không chứa `,` (Medusa tách `detail` theo dấu phẩy) nhưng có thể chứa `: `, xuống dòng, Unicode. */
+function fieldsOf(body: string, sep: string): string[] {
+  const pieces = body.split(sep, 33);
+  if (pieces.length > 32) return [];
+  const out: string[] = [];
+  for (const piece of pieces) {
+    const i = piece.indexOf(": ");
+    const k = i === -1 ? "" : piece.slice(0, i);
+    if (!FIELD_NAME.test(k)) return [];
+    out.push(k);
+  }
+  return out;
+}
+
+function dbValueResult(reason: string, fields: string[]): DbValueMessage {
+  return {
+    reason,
+    fields,
+    detail: fields.length === 0 ? reason : `${reason} (trường: ${fields.join(", ")})`,
+  };
+}
+
+/**
+ * Thông điệp của Medusa `dbErrorMapper` chép GIÁ TRỊ người gửi (D-097, T-157): unique → `<Bảng> with k: v, k2: v2,
+ * already exists.`; FK → `You tried to set relationship k: v,k2: v2, but such entity does not exist`. Trả thông điệp
+ * chung giữ tên trường, bỏ giá trị và tên bảng. Chỉ `indexOf`/`endsWith`/`split` có trần — tuyến tính, không regex backtrack.
+ * Hình dạng đúng mà tên trường không hợp lệ → vẫn thông điệp chung (không tên trường): đóng an toàn.
+ */
+export function dbValueMessage(message: unknown): DbValueMessage | null {
+  if (typeof message !== "string") return null;
+  const tooLong = message.length > MAX_DB_MESSAGE;
+  if (message.endsWith(UNIQUE_TAIL)) {
+    const at = message.indexOf(" with ");
+    if (at < 1) return null;
+    const fields = tooLong ? [] : fieldsOf(message.slice(at + 6, message.length - UNIQUE_TAIL.length), ", ");
+    return dbValueResult(DUPLICATE_REASON, fields);
+  }
+  if (message.startsWith(FK_HEAD) && message.endsWith(FK_TAIL)) {
+    const fields = tooLong
+      ? []
+      : fieldsOf(message.slice(FK_HEAD.length, message.length - FK_TAIL.length), ",");
+    return dbValueResult(MISSING_REF_REASON, fields);
+  }
+  return null;
+}
+
 function safeDetail(message: unknown, status: number): string {
   if (typeof message !== "string" || message.trim() === "" || message.length > MAX_DETAIL)
     return titleOf(status);
@@ -153,7 +214,11 @@ export function toHttpProblem(err: unknown, traceId: string): HttpProblem {
       if (status < 500) {
         if (typeof mapped.body.code === "string" && /^[a-z_]{1,64}$/.test(mapped.body.code))
           code = mapped.body.code;
-        detail = isPostgresError(err) ? titleOf(status) : safeDetail(mapped.body.message, status);
+        const dbMsg = isPostgresError(err) ? null : dbValueMessage(mapped.body.message);
+        if (dbMsg !== null) {
+          detail = dbMsg.detail;
+          errors = dbMsg.fields.map((param) => ({ param, reason: dbMsg.reason }));
+        } else detail = isPostgresError(err) ? titleOf(status) : safeDetail(mapped.body.message, status);
       }
     } catch {
       // Bộ định dạng lỗi của Medusa tự ném (vd lỗi Postgres thiếu trường) → coi là lỗi máy chủ.
