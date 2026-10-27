@@ -524,7 +524,7 @@ medusaIntegrationTestRunner({
           .resolve(Modules.CUSTOMER)
           .createCustomers([{ email: `khach-${randomUUID()}@example.test`, first_name: "Khach" }]);
         const id = customer!.id;
-        const encoded = id.replace("_", "%5F");
+        const encoded = id.replaceAll("_", "%5F");
         expect(encoded).not.toBe(id);
         expect((await call("GET", `/admin/customers/${encoded}`, owner.headers)).status).toBe(200);
         const rows = await waitRows({ action: SECURITY_EVENTS.DATA_ACCESSED, actor_id: owner.userId }, 1);
