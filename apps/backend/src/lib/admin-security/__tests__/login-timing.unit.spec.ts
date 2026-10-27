@@ -7,12 +7,11 @@ import type {
 } from "@medusajs/framework/types";
 import { MedusaError } from "@medusajs/framework/utils";
 import EmailPassProvider from "@medusajs/medusa/auth-emailpass";
-import { performance } from "node:perf_hooks";
 import { TimingSafeEmailPassAuthService } from "../emailpass";
 
 /**
  * BE-AUTH-003 (T-099): đăng nhập sai với email KHÔNG tồn tại phải tốn thời gian như email tồn tại sai mật khẩu.
- * Đo bằng trung vị của các mẫu xen kẽ (A/B/A/B…) — bền với nhiễu lịch CPU; ngưỡng 1.5× cho hai đường cùng một
+ * Đo thời gian CPU bằng trung vị của các mẫu xen kẽ (A/B/A/B…) — bền với nhiễu lịch CPU; ngưỡng 1.5× cho hai đường cùng một
  * scrypt.verify, còn bản gốc của Medusa phải chênh ≥ 5× (chứng minh phép đo đủ nhạy để bắt lỗi).
  */
 
@@ -70,10 +69,16 @@ const median = (xs: number[]) => {
   return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
 };
 
+/**
+ * Thời gian CPU (user + system, ms) của tiến trình trong một lần gọi — gồm cả thread libuv chạy scrypt (getrusage
+ * SELF). Không đo wall-clock: khi cổng chạy song song nhiều tiến trình test, tải CPU của tiến trình khác làm lệch
+ * tỷ lệ wall-clock của hai đường cùng một scrypt.verify (đỏ 1.52× hai lần, T-143) dù khối lượng việc như nhau.
+ */
 async function timeIt(fn: () => Promise<unknown>): Promise<number> {
-  const t0 = performance.now();
+  const t0 = process.cpuUsage();
   await fn();
-  return performance.now() - t0;
+  const d = process.cpuUsage(t0);
+  return (d.user + d.system) / 1000;
 }
 
 /** Trung vị thời gian của hai đường, lấy mẫu xen kẽ sau 2 lượt khởi động. */
