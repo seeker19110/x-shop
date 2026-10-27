@@ -409,6 +409,56 @@ export const SKIP_MAX_ATTEMPTS = SKIP_RETRY_DELAYS_SECONDS.length + 1;
 // Lease ngắn + gia hạn mỗi 1/3 lease khi còn xả: tiến trình chết giữa chừng thì khoá tự hết sau ≤ 30 giây (lease
 // dài 600 giây cũ làm index đứng 10 phút và chặn rebuild — chờ tối đa LOCK_TIMEOUT_SECONDS — tới khi hết hạn).
 export const DRAIN_LOCK_EXPIRE_SECONDS = 30;
+/**
+ * Khoá bận khi xả (T-137): người giữ có thể KHÔNG phải một lượt xả — rebuild/sync (`withIndexLock`, rebuild 50k SKU
+ * ~110 giây) hoặc tiến trình khác — nên không ai xả dấu vừa đặt; bỏ lượt thì dấu nằm chờ job mỗi phút (đo dưới tải:
+ * 41 giây, tối đa 60 giây + thời gian giữ khoá). Thay vào đó lượt xả CHỜ khoá (thăm dò ≤ 80 ms như mọi người chờ khác),
+ * cứ mỗi lát `DRAIN_WAIT_SLICE_MS` kiểm còn dấu đến hạn không — hết dấu (lượt xả khác đã xả xong) thì thôi chờ.
+ */
+export const DRAIN_WAIT_SLICE_MS = 2_000;
+/** Hạn chờ khoá của lượt xả hẹn sau sự kiện — bằng hạn chờ của sync/rebuild (khoá bị giữ quá lâu → job phút sau). */
+export const DRAIN_SCHEDULED_WAIT_MS = LOCK_WAIT_MS;
+/** Hạn chờ khoá của job xả mỗi phút — dưới chu kỳ job để các lượt job không chồng nhau. */
+export const DRAIN_JOB_WAIT_MS = 45_000;
+
+export interface DrainOptions {
+  /** Chờ khoá tối đa (ms) khi đang bị giữ và còn dấu đến hạn; 0 (mặc định) = bận thì trả về ngay. */
+  waitMs?: number;
+}
+
+type DrainLockResult = "acquired" | "busy" | "idle" | "unavailable";
+
+/** Giành khoá xả: chờ theo lát tới `deadline`; giữa các lát hết dấu đến hạn → "idle" (không còn gì để xả). */
+async function acquireDrainLock(
+  container: MedusaContainer,
+  index: CatalogIndexModuleService,
+  ownerId: string,
+  deadline: number,
+): Promise<DrainLockResult> {
+  const locking = container.resolve(Modules.LOCKING);
+  for (;;) {
+    try {
+      // Gia hạn lease nền do acquireOrdered đảm nhiệm (cùng ownerId, bỏ qua lỗi tạm).
+      await acquireOrdered(locking, [CATALOG_INDEX_LOCK], {
+        ownerId,
+        waitMs: Math.min(DRAIN_WAIT_SLICE_MS, Math.max(0, deadline - Date.now())),
+        ttlSeconds: DRAIN_LOCK_EXPIRE_SECONDS,
+        scope: LOCK_SCOPE,
+      });
+      return "acquired";
+    } catch (e) {
+      // Redis lỗi/không trả lời: bỏ lượt, dấu bẩn còn trong DB nên lượt/job sau xả tiếp.
+      if (isLockUnavailable(e)) {
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .warn(`[catalog-index] Bỏ lượt xả — hạ tầng khoá không sẵn sàng: ${(e as Error).message}`);
+        return "unavailable";
+      }
+      if (Date.now() >= deadline) return "busy";
+      if ((await index.dirtyCount(true)) === 0) return "idle";
+    }
+  }
+}
 
 /** Đánh dấu sản phẩm cần đồng bộ (sự kiện) — ghi một dòng, rẻ; việc nặng do `drainCatalogIndex` làm theo lô. */
 export async function markCatalogDirty(container: MedusaContainer, productIds: string[]): Promise<void> {
@@ -416,32 +466,30 @@ export async function markCatalogDirty(container: MedusaContainer, productIds: s
 }
 
 /**
- * Xả hàng đợi sản phẩm bẩn: chỉ MỘT tiến trình xả tại một thời điểm (khoá không chờ — tiến trình khác đang xả thì
- * trả về ngay, lượt xả đang chạy sẽ thấy dấu mới ở vòng lặp kế). Nhiều sự kiện của cùng sản phẩm gộp thành một lần
- * đồng bộ. Dấu đặt lại trong lúc đồng bộ được giữ cho vòng sau (so mốc marked_at). Trả số sản phẩm đã xử lý.
+ * Xả hàng đợi sản phẩm bẩn: chỉ MỘT tiến trình xả tại một thời điểm. Khoá bận → chờ tối đa `waitMs` (mặc định 0 =
+ * trả về ngay) trong khi còn dấu đến hạn — xem `DRAIN_WAIT_SLICE_MS`. Nhiều sự kiện của cùng sản phẩm gộp thành một
+ * lần đồng bộ. Dấu đặt lại trong lúc đồng bộ được giữ cho vòng sau (so mốc marked_at). Trả số sản phẩm đã xử lý (0 khi
+ * lượt xả khác đã xả hết trong lúc chờ).
  */
-export async function drainCatalogIndex(container: MedusaContainer): Promise<number> {
+export async function drainCatalogIndex(
+  container: MedusaContainer,
+  opts: DrainOptions = {},
+): Promise<number> {
   const locking = container.resolve(Modules.LOCKING);
   const index = indexService(container);
   let processed = 0;
+  const waitMs = Math.max(0, opts.waitMs ?? 0);
+  // Một hạn chờ cho cả lời gọi (mọi vòng) — job mỗi phút không kéo dài quá chu kỳ của nó.
+  const deadline = Date.now() + waitMs;
   // Vòng ngoài: sau khi nhả khoá còn dấu mới (đặt đúng lúc đang nhả) thì thử xả tiếp.
   for (let attempt = 0; attempt < 3; attempt++) {
     const ownerId = `drain-${randomUUID()}`;
-    try {
-      // Không chờ khoá (waitMs 0); gia hạn lease nền do acquireOrdered đảm nhiệm (cùng ownerId, bỏ qua lỗi tạm).
-      await acquireOrdered(locking, [CATALOG_INDEX_LOCK], {
-        ownerId,
-        waitMs: 0,
-        ttlSeconds: DRAIN_LOCK_EXPIRE_SECONDS,
-        scope: LOCK_SCOPE,
-      });
-    } catch (e) {
-      // Bận: tiến trình khác đang giữ (xả/rebuild) — nó sẽ xử lý dấu này. Redis lỗi/không trả lời: bỏ lượt, dấu bẩn còn
-      // trong DB nên lượt/job sau xả tiếp.
-      if (isLockUnavailable(e)) {
+    const lock = await acquireDrainLock(container, index, ownerId, deadline);
+    if (lock !== "acquired") {
+      if (lock === "busy" && waitMs > 0) {
         container
           .resolve(ContainerRegistrationKeys.LOGGER)
-          .warn(`[catalog-index] Bỏ lượt xả — hạ tầng khoá không sẵn sàng: ${(e as Error).message}`);
+          .warn(`[catalog-index] Khoá index bị giữ quá ${waitMs} ms — dấu bẩn để lượt/job sau xả.`);
       }
       return processed;
     }
@@ -503,21 +551,40 @@ export async function drainCatalogIndex(container: MedusaContainer): Promise<num
 }
 
 let drainTimer: ReturnType<typeof setTimeout> | null = null;
+/** Lượt xả hẹn trước đang chạy/chờ khoá (mỗi tiến trình tối đa một); yêu cầu đến lúc đó gộp thành một lượt chạy lại. */
+let scheduledDrain: Promise<void> | null = null;
+let drainRequested = false;
+
+async function runScheduledDrain(container: MedusaContainer): Promise<void> {
+  try {
+    do {
+      drainRequested = false;
+      await drainCatalogIndex(container, { waitMs: DRAIN_SCHEDULED_WAIT_MS });
+    } while (drainRequested);
+  } catch (e) {
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .error(`[catalog-index] Xả hàng đợi lỗi: ${(e as Error).message}`);
+  } finally {
+    scheduledDrain = null;
+  }
+}
 
 /**
  * Hẹn một lượt xả sau `delayMs` (gộp mọi sự kiện đến trong khoảng đó thành một lô). Handler sự kiện chỉ đánh dấu rồi
- * trả về ngay → hàng đợi sự kiện không bị nghẽn bởi việc đồng bộ. Tiến trình chết trước khi xả → dấu còn trong DB,
- * job mỗi phút xả tiếp.
+ * trả về ngay → hàng đợi sự kiện không bị nghẽn bởi việc đồng bộ. Khoá đang bị giữ → lượt xả chờ khoá rồi xả ngay khi
+ * khoá nhả (T-137), không bỏ lượt chờ job mỗi phút. Đang có lượt hẹn trước chạy/chờ → chỉ đánh dấu chạy lại sau nó
+ * (không chồng nhiều lượt chờ). Tiến trình chết trước khi xả → dấu còn trong DB, job mỗi phút xả tiếp.
  */
 export function scheduleCatalogDrain(container: MedusaContainer, delayMs = 250): void {
+  if (scheduledDrain) {
+    drainRequested = true;
+    return;
+  }
   if (drainTimer) return;
   drainTimer = setTimeout(() => {
     drainTimer = null;
-    drainCatalogIndex(container).catch((e: unknown) =>
-      container
-        .resolve(ContainerRegistrationKeys.LOGGER)
-        .error(`[catalog-index] Xả hàng đợi lỗi: ${(e as Error).message}`),
-    );
+    scheduledDrain = runScheduledDrain(container);
   }, delayMs);
   drainTimer.unref?.();
 }
