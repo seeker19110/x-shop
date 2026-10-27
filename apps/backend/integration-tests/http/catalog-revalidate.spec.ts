@@ -5,7 +5,11 @@ import { updateProductVariantsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { catalogRevalidate as protocol } from "@x-shop/domain";
 import { CURRENCY } from "../../src/lib/catalog/constants";
-import { CATALOG_REVALIDATE_EVENT, CATALOG_REVALIDATE_POLICY } from "../../src/lib/catalog/revalidate";
+import {
+  CATALOG_REVALIDATE_EVENT,
+  CATALOG_REVALIDATE_POLICY,
+  windowStartMs,
+} from "../../src/lib/catalog/revalidate";
 import { dispatchOutbox } from "../../src/lib/checkout/jobs";
 import { validateOutboxPayload } from "../../src/lib/outbox/payload";
 import seedCatalog from "../../src/scripts/seed-catalog";
@@ -103,60 +107,98 @@ medusaIntegrationTestRunner({
       });
     };
     const db = () => container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+    /** Mốc cửa sổ gộp trong id webhook (`…:w:<mốc>`) hoặc khoá sự kiện (`…:p:<mốc>:<id>`, `…:all:<mốc>`). */
+    const windowOf = (id: string) => Number(id.split(":")[2]);
     /**
-     * Dòng outbox revalidate của sản phẩm tạo từ `since`; `withCatalog` thêm dòng "cả catalog" (cũng phủ sản phẩm, nhưng có
-     * thể do nơi khác ghi — ca kiểm đúng dòng CỦA ca dùng `withCatalog = false`, review T-142 🟢4).
+     * Dòng outbox revalidate của sản phẩm thuộc cửa sổ ≥ cửa sổ chứa `t0` (thay đổi do CHÍNH ca gây ra); `withCatalog` thêm
+     * dòng "cả catalog" cùng điều kiện cửa sổ. Không lọc theo created_at: dòng "all" của seed/rebuild trước ca bị loại theo
+     * mốc cửa sổ (gate T-142 chập chờn: dòng all:1793141528000 của seed lọt vào ca gộp).
      */
-    const rowsFor = async (productId: string, since: Date, withCatalog = true) =>
+    const rowsFor = async (productId: string, t0: number, withCatalog = true) =>
       (
-        await db().raw(
-          `SELECT event_key, state, payload FROM outbox_event
-           WHERE type = ? AND aggregate_id IN (?, ?) AND created_at >= ? ORDER BY created_at`,
-          [CATALOG_REVALIDATE_EVENT, productId, withCatalog ? "catalog" : productId, since],
-        )
-      ).rows as { event_key: string; state: string; payload: Record<string, unknown> }[];
-    /** Webhook từ `since` làm mới PDP của sản phẩm: tag `product:<handle>` hoặc `catalog` (vượt trần → cả catalog). */
-    const withTag = (since: number) =>
+        (
+          await db().raw(
+            `SELECT event_key, state, payload FROM outbox_event
+             WHERE type = ? AND aggregate_id IN (?, ?) ORDER BY created_at`,
+            [CATALOG_REVALIDATE_EVENT, productId, withCatalog ? "catalog" : productId],
+          )
+        ).rows as { event_key: string; state: string; payload: Record<string, unknown> }[]
+      ).filter((r) => windowOf(r.event_key) >= windowStartMs(t0));
+    /**
+     * Webhook do thay đổi từ `t0` gây ra (mốc cửa sổ trong id ≥ cửa sổ chứa `t0`) làm mới PDP của sản phẩm: tag
+     * `product:<handle>`, hoặc `catalog` (vượt trần → cả catalog) khi `orCatalog`.
+     */
+    const withTag = (t0: number, orCatalog = true) =>
       sf.received.filter(
         (r) =>
-          r.at >= since && (r.body.tags.includes(productTag) || r.body.tags.includes(protocol.CATALOG_TAG)),
+          windowOf(r.body.id) >= windowStartMs(t0) &&
+          (r.body.tags.includes(productTag) || (orCatalog && r.body.tags.includes(protocol.CATALOG_TAG))),
       );
 
-    beforeAll(async () => {
-      await new Promise<void>((r) => sf.server.listen(PORT, "127.0.0.1", r));
-      container = getContainer();
-      await seedCatalog({ container });
-      headers = await storeHeaders(container);
-      // Seed kích rebuild + đồng bộ hàng loạt (→ cửa sổ "cả catalog"): chờ read model xả hết và webhook lặng ≥ 2 cửa sổ
-      // để mỗi ca dưới chỉ thấy webhook do chính nó gây ra.
+    /**
+     * Cách ly mỗi ca: read model xả hết, KHÔNG còn dòng catalog.revalidate pending/failed (kể cả dòng "all" của seed/rebuild
+     * đang chờ lượt gửi gộp hoặc dispatcher), rồi webhook lặng hơn một cửa sổ.
+     */
+    const quiesce = async () => {
+      sf.state.status = 200;
       const index = container.resolve<CatalogIndexModuleService>(CATALOG_INDEX_MODULE);
       await eventually(
         () => index.dirtyCount(),
         (n) => n === 0,
         120_000,
       );
-      await eventually(
-        () => Date.now() - (sf.received.at(-1)?.at ?? 0),
-        (quietMs) => quietMs > 2 * CATALOG_REVALIDATE_POLICY.windowMs + 500,
-        120_000,
-      );
+      const open = async () =>
+        Number(
+          (
+            await db().raw(
+              `SELECT count(*)::int AS n FROM outbox_event WHERE type = ? AND state IN ('pending', 'failed')`,
+              [CATALOG_REVALIDATE_EVENT],
+            )
+          ).rows[0].n,
+        );
+      // Không "đẩy" bằng dispatcher ở tương lai: chữ ký mang mốc tương lai bị storefront từ chối (lệch giờ) → dòng dead thay
+      // vì được gửi. Dòng hẹn lại (lỗi tạm/ngắt) được job outbox-dispatch thật của app gửi lại trong vài chục giây.
+      try {
+        await eventually(open, (n) => n === 0, 90_000);
+      } catch (e) {
+        const left = (
+          await db().raw(
+            `SELECT event_key, state, attempts, next_attempt_at, left(coalesce(last_error, ''), 160) AS err
+               FROM outbox_event WHERE type = ? AND state IN ('pending', 'failed')`,
+            [CATALOG_REVALIDATE_EVENT],
+          )
+        ).rows;
+        throw new Error(`quiesce: ${(e as Error).message}; còn ${JSON.stringify(left)}`);
+      }
+      for (;;) {
+        const n = sf.received.length;
+        await new Promise((r) => setTimeout(r, CATALOG_REVALIDATE_POLICY.windowMs + 500));
+        if (sf.received.length === n) break;
+      }
+    };
+
+    beforeAll(async () => {
+      await new Promise<void>((r) => sf.server.listen(PORT, "127.0.0.1", r));
+      container = getContainer();
+      await seedCatalog({ container });
+      headers = await storeHeaders(container);
     });
     afterAll(async () => {
       await new Promise<void>((r) => sf.server.close(() => r()));
     });
-    beforeEach(() => {
-      sf.state.status = 200;
-    });
+    beforeEach(async () => {
+      await quiesce();
+    }, 300_000);
 
     const productId = async () =>
       (await container.resolve(Modules.PRODUCT).listProducts({ handle: HANDLE }, { select: ["id"] }))[0]!.id;
 
     it("sửa giá → webhook đã ký mang tag PDP + danh sách tới storefront trong vài giây; PDP backend đã là giá mới", async () => {
       const t0 = Date.now();
-      const since = new Date(t0 - 1000);
       await setPrice(455_000);
+      // Webhook mang tag CỦA sản phẩm này (không lấy webhook đầu tiên bất kỳ).
       const [hit] = await eventually(
-        () => withTag(t0),
+        () => withTag(t0, false),
         (r) => r.length > 0,
       );
       expect(hit!.verified).toBe(true);
@@ -165,12 +207,12 @@ medusaIntegrationTestRunner({
       expect(hit!.at - t0).toBeLessThan(10_000);
       // Storefront nạp lại NGAY khi nhận webhook → phải đọc được giá mới tại thời điểm đó.
       expect(await pdpPrice()).toBe(455_000);
-      const rows = await rowsFor(await productId(), since);
+      const rows = await rowsFor(await productId(), t0);
       expect(rows.length).toBeGreaterThan(0);
       for (const r of rows)
         expect(validateOutboxPayload(CATALOG_REVALIDATE_EVENT, r.payload)).toEqual({ ok: true });
       await eventually(
-        async () => (await rowsFor(await productId(), since)).map((r) => r.state),
+        async () => (await rowsFor(await productId(), t0)).map((r) => r.state),
         (states) => states.every((s) => s === "sent"),
       );
     });
@@ -178,7 +220,6 @@ medusaIntegrationTestRunner({
     it("storefront lỗi (500) → ghi backend vẫn thành công, outbox giữ dòng; storefront hồi → dispatcher gửi, dòng sent", async () => {
       sf.state.status = 500;
       const t0 = Date.now();
-      const since = new Date(t0 - 1000);
       await expect(setPrice(466_000)).resolves.toBeUndefined();
       expect(await pdpPrice()).toBe(466_000);
       const pid = await productId();
@@ -187,7 +228,7 @@ medusaIntegrationTestRunner({
         () => withTag(t0),
         (r) => r.length > 0,
       );
-      const pending = await rowsFor(pid, since, false);
+      const pending = await rowsFor(pid, t0, false);
       expect(pending.length).toBeGreaterThan(0);
       expect(pending.every((r) => r.event_key.endsWith(`:${pid}`))).toBe(true);
       expect(pending.every((r) => r.state === "pending")).toBe(true);
@@ -198,13 +239,12 @@ medusaIntegrationTestRunner({
       const summary = await dispatchOutbox(container, { now: new Date(Date.now() + 60_000) });
       expect(summary.sent).toEqual(expect.arrayContaining(pending.map((r) => r.event_key)));
       expect(withTag(t0).length).toBeGreaterThan(before);
-      expect((await rowsFor(pid, since, false)).every((r) => r.state === "sent")).toBe(true);
+      expect((await rowsFor(pid, t0, false)).every((r) => r.state === "sent")).toBe(true);
     });
 
     it("storefront từ chối chữ ký (401) → dispatcher đưa dòng vào dead ngay (không retry vô ích), ghi backend không ảnh hưởng", async () => {
       sf.state.status = 401;
       const t0 = Date.now();
-      const since = new Date(t0 - 1000);
       await setPrice(477_000);
       expect(await pdpPrice()).toBe(477_000);
       const pid = await productId();
@@ -213,11 +253,11 @@ medusaIntegrationTestRunner({
         (r) => r.length > 0,
       );
       const summary = await dispatchOutbox(container, { now: new Date(Date.now() + 60_000) });
-      const keys = (await rowsFor(pid, since, false)).map((r) => r.event_key);
+      const keys = (await rowsFor(pid, t0, false)).map((r) => r.event_key);
       expect(keys.length).toBeGreaterThan(0);
       expect(keys.every((k) => k.endsWith(`:${pid}`))).toBe(true);
       expect(summary.dead).toEqual(expect.arrayContaining(keys));
-      expect((await rowsFor(pid, since, false)).every((r) => r.state === "dead")).toBe(true);
+      expect((await rowsFor(pid, t0, false)).every((r) => r.state === "dead")).toBe(true);
       // Một ngoại lệ đang mở cho loại sự kiện này (không mỗi dòng một cái), ưu tiên thường (review T-142 🟠2).
       const active = (
         await db().raw(
@@ -231,7 +271,6 @@ medusaIntegrationTestRunner({
 
     it("gộp: 8 lần sửa giá liên tiếp → mỗi cửa sổ một dòng + một webhook (ít hơn số lần sửa), giá cuối đúng", async () => {
       const t0 = Date.now();
-      const since = new Date(t0 - 1000);
       for (let i = 1; i <= 8; i++) await setPrice(480_000 + i * 1000);
       const t1 = Date.now();
       expect(await pdpPrice()).toBe(488_000);
@@ -242,7 +281,7 @@ medusaIntegrationTestRunner({
       // Chờ thêm hơn một cửa sổ để mọi lượt gửi gộp đã chạy.
       await new Promise((r) => setTimeout(r, 2 * CATALOG_REVALIDATE_POLICY.windowMs + 500));
       const hooks = withTag(t0);
-      const rows = await rowsFor(await productId(), since);
+      const rows = await rowsFor(await productId(), t0);
       const windows = new Set(rows.map((r) => r.event_key.split(":")[3]));
       expect(windows.size).toBe(rows.length); // một dòng mỗi (sản phẩm, cửa sổ)
       expect(hooks).toHaveLength(rows.length); // một webhook mỗi cửa sổ
