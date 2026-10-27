@@ -36,6 +36,11 @@ export const CheckoutQuote = model
     address: model.json(),
     /** QuoteBreakdown của domain (`computeQuote`). */
     breakdown: model.json(),
+    /**
+     * Báo phí của hãng lúc quote (`ShippingFeeSnapshot` của domain: phí, đầu vào định phí, thời điểm/hạn) — submit dùng
+     * lại khi còn hạn và đầu vào không đổi (T-153). null = quote tạo trước T-153 → submit hỏi lại hãng.
+     */
+    shipping: model.json().nullable(),
     total: model.number(),
     expires_at: model.dateTime(),
   })

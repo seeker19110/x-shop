@@ -7,6 +7,7 @@ x-shop/backend/audit,audit_log,resource_id,basic,"đích của thao tác — có
 x-shop/backend/catalog-import,catalog_import_job,previewed_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
 x-shop/backend/catalog-import,catalog_import_job,committed_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
 x-shop/backend/checkout,checkout_quote,address,basic,báo giá phí vận chuyển theo địa chỉ giao (AddressSnapshot),contract,transient-90d
+x-shop/backend/checkout,checkout_quote,shipping,basic,giữ phí ship đã báo tới submit (mã tỉnh/phường + khối lượng + giá trị khai lúc quote),contract,transient-90d
 x-shop/backend/fashion,fashion_model_measurement,height_cm,basic,"chiều cao người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật",contract,model-release
 x-shop/backend/fashion,fashion_model_measurement,chest_cm,basic,"số đo ngực người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật",contract,model-release
 x-shop/backend/fashion,fashion_model_measurement,waist_cm,basic,"số đo eo người mẫu, hiển thị trên trang sản phẩm để khách chọn cỡ; dữ liệu của người mẫu thật",contract,model-release

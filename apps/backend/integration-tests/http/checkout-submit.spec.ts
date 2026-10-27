@@ -3,10 +3,12 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
 import { createCustomerAccountWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
-import { vnpay } from "@x-shop/domain";
+import { listWards, vnpay } from "@x-shop/domain";
 import Redis from "ioredis";
 import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
 import { VNPAY_DEV_DEFAULTS } from "../../src/lib/env";
+import { GhnError, MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
+import * as shippingRates from "../../src/lib/shipping/rates";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { submitCheckoutWorkflow } from "../../src/workflows/checkout/submit-checkout";
@@ -92,6 +94,29 @@ async function leakedLocks(keys: string[]): Promise<string[]> {
     await redis.quit();
   }
 }
+/** GHN giả lập có núm cho T-153: đếm lần báo phí, đổi phí, sập. */
+class ScriptedGhn extends MockModeGhnClient {
+  quoteCalls = 0;
+  feeOverride: number | null = null;
+  down = false;
+  override async quoteFee(input: Parameters<MockModeGhnClient["quoteFee"]>[0]) {
+    this.quoteCalls += 1;
+    if (this.down) throw new GhnError("unavailable", "GHN sập (giả lập)", { status: 503 });
+    const fee = await super.quoteFee(input);
+    return this.feeOverride === null ? fee : { ...fee, fee: this.feeOverride };
+  }
+}
+
+/**
+ * Mô phỏng submit chạy ở bản sao KHÁC bản đã quote: bỏ mọi trạng thái báo phí giữ trong tiến trình. Mã trước T-153 giữ
+ * cache phí trong bộ nhớ (`clearShippingFeeCache`) — bản sao khác có cache trống; mã hiện tại không còn trạng thái này
+ * (hàm không tồn tại → không làm gì). Cùng file test chạy được trên cả hai để đối chứng đỏ/xanh.
+ */
+async function asOtherReplica(): Promise<void> {
+  const clear = (shippingRates as Record<string, unknown>)["clearShippingFeeCache"];
+  if (typeof clear === "function") await (clear as () => unknown)();
+}
+
 /** Giỏ → độ trễ (ms) trước khi chốt — giữ attempt ở `preparing` để kiểm nhánh 202. */
 const slowBeforeFinalize = new Map<string, number>();
 submitCheckoutWorkflow.hooks.orderPrepared(async ({ cart_id }) => {
@@ -388,6 +413,170 @@ medusaIntegrationTestRunner({
         expect(expired.status).toBe(409);
         expect(expired.data.code).toBe("QUOTE_EXPIRED");
         expect(await countOrders(container)).toBe(0);
+      });
+    });
+
+    describe("T-153 — phí ship đã báo còn hiệu lực từ quote tới submit, qua mọi bản sao", () => {
+      let ghn: ScriptedGhn;
+      beforeEach(() => {
+        ghn = new ScriptedGhn();
+        setGhnClientForTest(ghn);
+      });
+      afterEach(() => setGhnClientForTest(null));
+
+      const otherWard = () => listWards("01").find((w) => w.code !== HANOI_ADDRESS.ward_code)!.code;
+      const storedQuote = async (id: string) => (await service().listCheckoutQuotes({ id }))[0]!;
+
+      it("quote ở bản B, GHN sập, submit ở bản A (cache trống), quote còn hạn → 200 đúng phí đã báo, không hỏi GHN", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        expect([q.shipping_fee, q.total, ghn.quoteCalls]).toEqual([30_000, 730_000, 1]);
+        ghn.down = true;
+        await asOtherReplica();
+
+        const res = await submit(submitBody(q));
+        expect({ status: res.status, code: res.data.code }).toEqual({ status: 200, code: undefined });
+        expect(res.data.order.total).toBe(730_000);
+        expect(ghn.quoteCalls).toBe(1);
+        expect(await countOrders(container)).toBe(1);
+      });
+
+      it("GHN đổi phí trong hạn quote, submit ở bản A (cache trống) → đặt với phí đã báo 30 000, không SHIPPING_CHANGED", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        ghn.feeOverride = 32_000;
+        await asOtherReplica();
+
+        const res = await submit(submitBody(q));
+        expect({ status: res.status, code: res.data.code }).toEqual({ status: 200, code: undefined });
+        expect(res.data.order.total).toBe(730_000);
+        expect(ghn.quoteCalls).toBe(1);
+      });
+
+      it("đồng thời: GHN sập, hai tab submit song song ở bản sao cache trống → một đơn, đúng phí đã báo", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        ghn.down = true;
+        await asOtherReplica();
+
+        const [a, b] = await Promise.all([submit(submitBody(q)), submit(submitBody(q))]);
+        expect([a.status, b.status]).toEqual([200, 200]);
+        expect(a.data.order.id).toBe(b.data.order.id);
+        expect(a.data.order.total).toBe(730_000);
+        expect(await countOrders(container)).toBe(1);
+        expect(ghn.quoteCalls).toBe(1);
+      });
+
+      it("đổi phường lúc submit → hỏi lại GHN; phí khác → 409 SHIPPING_CHANGED kèm quote mới; xác nhận thì đặt đúng phí mới", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        ghn.feeOverride = 35_000;
+        const moved = { ...HANOI_ADDRESS, ward_code: otherWard() };
+
+        const res = await submit(submitBody(q, { address: moved }));
+        expect(res.status).toBe(409);
+        expect(res.data).toMatchObject({ code: "SHIPPING_CHANGED", action: "confirm_new_quote" });
+        expect(res.data.quote).toMatchObject({ shipping_fee: 35_000, total: 735_000 });
+        expect(ghn.quoteCalls).toBe(2);
+        expect(await countOrders(container)).toBe(0);
+
+        // Quote mới mang báo phí mới: xác nhận ngay → dùng lại phí đó (không hỏi GHN lần nữa).
+        const ok = await submit(submitBody(res.data.quote, { address: moved }));
+        expect(ok.status).toBe(200);
+        expect(ok.data.order.total).toBe(735_000);
+        expect(ghn.quoteCalls).toBe(2);
+      });
+
+      it("đổi phường mà phí như cũ → hỏi lại GHN rồi đặt được; đổi phường khi GHN sập → 503, không đặt bằng phí cũ", async () => {
+        const moved = { ...HANOI_ADDRESS, ward_code: otherWard() };
+        const c1 = await createCart([["Đen/M", 1]]);
+        const q1 = await quoteOk(c1);
+        const same = await submit(submitBody(q1, { address: moved }));
+        expect(same.status).toBe(200);
+        expect(same.data.order.total).toBe(730_000);
+        expect(ghn.quoteCalls).toBe(2);
+
+        const c2 = await createCart([["Trắng/M", 1]]);
+        const q2 = await quoteOk(c2);
+        ghn.down = true;
+        const down = await submit(submitBody(q2, { address: moved }));
+        expect(down.status).toBe(503);
+        expect(down.data.code).toBe("SHIPPING_UNAVAILABLE");
+        expect(await countOrders(container)).toBe(1);
+      });
+
+      it("khối lượng giỏ đổi (cân nặng biến thể sửa sau quote, giỏ giữ nguyên) → hỏi lại GHN, 409 SHIPPING_CHANGED", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        await container
+          .resolve(Modules.PRODUCT)
+          .updateProductVariants(fx.variants["Đen/M"]!.id, { weight: 2_000 });
+
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(409);
+        expect(res.data.code).toBe("SHIPPING_CHANGED");
+        // Bảng phí giả lập: 30 000 tới 1 kg + 5 000 mỗi 500 g → 2 kg = 40 000.
+        expect(res.data.quote).toMatchObject({ shipping_fee: 40_000 });
+        expect(ghn.quoteCalls).toBe(2);
+        expect(await countOrders(container)).toBe(0);
+      });
+
+      it("đổi phương thức thanh toán so với quote → không dùng lại phí đã báo (GHN sập → 503)", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        ghn.down = true;
+        const res = await submit(submitBody(q, { payment_method: "vnpay" }));
+        expect(res.status).toBe(503);
+        expect(res.data.code).toBe("SHIPPING_UNAVAILABLE");
+      });
+
+      it("quote hết hạn → QUOTE_EXPIRED, quote lại thì hỏi GHN; báo phí hết hạn (quote còn hạn) → hỏi lại, phí khác → SHIPPING_CHANGED", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q1 = await quoteOk(cartId);
+        ghn.feeOverride = 32_000;
+        await service().updateCheckoutQuotes({ id: q1.id, expires_at: new Date(Date.now() - 1000) });
+        const expired = await submit(submitBody(q1));
+        expect(expired.data.code).toBe("QUOTE_EXPIRED");
+        expect(ghn.quoteCalls).toBe(1);
+        const q2 = await quoteOk(cartId);
+        expect(q2.shipping_fee).toBe(32_000);
+        expect(ghn.quoteCalls).toBe(2);
+
+        ghn.feeOverride = 34_000;
+        const stored = await storedQuote(q2.id);
+        await service().updateCheckoutQuotes({
+          id: q2.id,
+          shipping: { ...stored.shipping, expiresAt: new Date(Date.now() - 1000).toISOString() },
+        });
+        const stale = await submit(submitBody(q2));
+        expect(stale.status).toBe(409);
+        expect(stale.data.code).toBe("SHIPPING_CHANGED");
+        expect(stale.data.quote).toMatchObject({ shipping_fee: 34_000 });
+        expect(ghn.quoteCalls).toBe(3);
+      });
+
+      it("quote không có báo phí lưu kèm (tạo trước T-153) → hỏi lại GHN (sập → 503)", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        await service().updateCheckoutQuotes({ id: q.id, shipping: null });
+        ghn.down = true;
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(503);
+        expect(res.data.code).toBe("SHIPPING_UNAVAILABLE");
+      });
+
+      it("chỉ quote của chính giỏ mới cho mượn phí: quote_id của giỏ khác → 422; quote của giỏ mình → 200", async () => {
+        const mine = await createCart([["Đen/M", 1]]);
+        const other = await createCart([["Đen/M", 1]]);
+        const qOther = await quoteOk(other);
+        const qMine = await quoteOk(mine);
+        ghn.down = true;
+        const denied = await submit({ ...submitBody(qMine), quote_id: qOther.id });
+        expect(denied.status).toBe(422);
+        expect(denied.data).toMatchObject({ code: "VALIDATION", field: "quote_id" });
+        const allowed = await submit(submitBody(qMine));
+        expect(allowed.status).toBe(200);
+        expect(allowed.data.order.total).toBe(730_000);
       });
     });
 

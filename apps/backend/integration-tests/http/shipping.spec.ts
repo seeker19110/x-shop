@@ -8,7 +8,6 @@ import {
   MockModeGhnClient,
   setGhnClientForTest,
 } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { SHIPPING_MODULE } from "../../src/modules/shipping";
@@ -56,7 +55,6 @@ medusaIntegrationTestRunner({
       fx = await seedCatalog(container);
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       staff = await adminHeaders(api as unknown as HttpClient, container, { roles: ["order_staff"] });
     });
 

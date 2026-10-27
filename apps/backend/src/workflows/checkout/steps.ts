@@ -170,7 +170,12 @@ export const prepareCheckoutStep = createStep(
     if (stored.cart_version !== input.cart_version) throw new CheckoutError("CART_CHANGED");
     if (now.getTime() >= new Date(stored.expires_at).getTime()) throw new CheckoutError("QUOTE_EXPIRED");
 
-    const built = await buildQuote(container, cart, input.address, stored.discount_code ?? null, now);
+    // Phí ship: dùng phí đã lưu trong quote khi quote còn hạn và đầu vào định phí không đổi (bản sao nào cũng đọc cùng
+    // một quote trong DB); đầu vào đổi/hết hạn → hỏi lại hãng, phí khác → SHIPPING_CHANGED (T-153).
+    const built = await buildQuote(container, cart, input.address, stored.discount_code ?? null, now, {
+      quote: stored,
+      paymentMethod: input.payment_method,
+    });
     const change = diffQuotes(stored.breakdown as unknown as QuoteBreakdown, built.breakdown);
     if (change !== null) {
       const fresh = await service.createCheckoutQuotes({
@@ -180,6 +185,7 @@ export const prepareCheckoutStep = createStep(
         discount_code: stored.discount_code ?? null,
         address: input.address as unknown as Record<string, unknown>,
         breakdown: built.breakdown as unknown as Record<string, unknown>,
+        shipping: built.shipping as unknown as Record<string, unknown>,
         total: built.breakdown.total,
         expires_at: new Date(now.getTime() + CHECKOUT_CONFIG.quoteTtlMs),
       });
@@ -190,6 +196,8 @@ export const prepareCheckoutStep = createStep(
             discount_code: fresh.discount_code ?? null,
             breakdown: built.breakdown,
             address: input.address,
+            // Hình quote trong 409 giữ như trước T-153 (không kèm `shipping_quote`).
+            shipping: undefined,
           }),
         },
       });

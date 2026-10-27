@@ -204,6 +204,14 @@ tables:
         recipients:
           - ghn
         copies: không
+      shipping:
+        category: basic
+        purpose: giữ phí ship đã báo tới submit (mã tỉnh/phường + khối lượng + giá trị khai lúc quote)
+        legal_basis: contract
+        retention: transient-90d
+        recipients:
+          - ghn
+        copies: không
     non_pii:
       - id
       - cart_id

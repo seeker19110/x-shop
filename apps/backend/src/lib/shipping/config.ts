@@ -2,10 +2,11 @@ import { parseEnv, type GhnMode } from "../env";
 
 /** Tham số giao vận (đặc tả §6.4): thời hạn có tên, đổi một chỗ. */
 export const SHIPPING_CONFIG = {
-  /** Báo phí GHN có hiệu lực 10 phút (bằng hạn quote checkout) — hết hạn thì hỏi lại hãng. */
+  /**
+   * Báo phí GHN có hiệu lực 10 phút (bằng hạn quote checkout): lưu cùng quote, submit trong hạn dùng lại (T-153); hết
+   * hạn hoặc đầu vào định phí đổi thì hỏi lại hãng.
+   */
   feeQuoteTtlMs: 10 * 60_000,
-  /** Số mục tối đa giữ trong bộ nhớ đệm báo phí mỗi tiến trình. */
-  feeCacheMaxEntries: 5_000,
   /** Hạn chờ một lời gọi GHN; quá hạn = kết quả mơ hồ (timeout) → tra lại theo client_order_code (S-303). */
   requestTimeoutMs: 10_000,
   /** Ghi chú giao hàng mặc định: cho xem hàng, không cho thử. */

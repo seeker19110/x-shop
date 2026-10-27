@@ -48,6 +48,7 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
       discount_code: discountCode,
       address: address as unknown as Record<string, unknown>,
       breakdown: built.breakdown as unknown as Record<string, unknown>,
+      shipping: built.shipping as unknown as Record<string, unknown>,
       total: built.breakdown.total,
       expires_at: new Date(now.getTime() + CHECKOUT_CONFIG.quoteTtlMs),
     });

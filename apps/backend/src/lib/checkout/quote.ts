@@ -7,19 +7,19 @@ import {
   type QuoteBreakdown,
   type ShippingDiscount,
   isNonEmpty,
+  reusableShippingFee,
 } from "@x-shop/domain";
 import type { CheckoutCart } from "./cart";
 import { toSafeInteger } from "./cart";
 import { MAX_MONEY_VND } from "./config";
 import { CheckoutError } from "./errors";
-import { quoteShippingFee, type ShippingFeeQuote } from "../shipping/rates";
+import { quoteShippingFee, shippingFeeBasis, type ShippingFeeQuote } from "../shipping/rates";
 import { cartWeightGrams } from "./shipping";
 
 /**
  * Báo giá do server tính (S-001, PRICE01): giá HIỆN HÀNH đọc trực tiếp Pricing Module (không cache, không nhận giá từ
  * client, không dùng unit_price đã lưu trong giỏ), mã giảm đọc Promotion Module, phí ship báo từ GHN (`quoteShippingFee`,
- * có hạn); số học
- * tiền nằm trọn trong `computeQuote` của domain.
+ * có hạn, lưu cùng quote để submit dùng lại — `reusableShippingFee`); số học tiền nằm trọn trong `computeQuote` của domain.
  */
 export interface LoadedDiscount {
   code: string;
@@ -182,13 +182,25 @@ const QUOTE_ERROR_MESSAGES: Record<string, string> = {
   LIMIT: "Giỏ hàng vượt giới hạn cho phép",
 };
 
-/** Tính báo giá đầy đủ cho giỏ + địa chỉ + mã (không ghi gì). */
+/** Quote đã lưu (`checkout_quote`) mà submit đối chiếu — nguồn của phí ship đã báo. */
+export interface StoredQuoteShipping {
+  shipping?: unknown;
+  breakdown: unknown;
+  payment_method: string;
+  expires_at: Date | string;
+}
+
+/**
+ * Tính báo giá đầy đủ cho giỏ + địa chỉ + mã (không ghi gì). `reuse` (chỉ submit): quote khách đã xác nhận + phương thức
+ * thanh toán lúc submit — phí ship lấy từ quote nếu còn dùng được, ngược lại hỏi hãng như lúc quote.
+ */
 export async function buildQuote(
   container: MedusaContainer,
   cart: CheckoutCart,
   address: AddressSnapshot,
   discountCode: string | null,
   now: Date,
+  reuse?: { quote: StoredQuoteShipping; paymentMethod: string },
 ): Promise<BuiltQuote> {
   if (cart.items.length === 0) throw new CheckoutError("CART_EMPTY");
   const prices = await currentUnitPrices(container, cart);
@@ -201,12 +213,29 @@ export async function buildQuote(
     (sum, l) => sum + (prices.get(l.variant_id as string) as number) * l.quantity,
     0,
   );
-  const shipping = await quoteShippingFee(
-    address,
-    cartWeightGrams(cart.items.map((l) => ({ weightGrams: l.weight_grams, quantity: l.quantity }))),
-    Number.isSafeInteger(goodsValue) ? Math.min(goodsValue, MAX_MONEY_VND) : MAX_MONEY_VND,
-    now,
+  const weightGrams = cartWeightGrams(
+    cart.items.map((l) => ({ weightGrams: l.weight_grams, quantity: l.quantity })),
   );
+  const insuranceValue = Number.isSafeInteger(goodsValue)
+    ? Math.min(goodsValue, MAX_MONEY_VND)
+    : MAX_MONEY_VND;
+  // Submit: phí đã báo trong quote còn hạn + đầu vào định phí không đổi → dùng lại, không hỏi lại hãng (T-153).
+  const reused = reuse
+    ? reusableShippingFee(
+        {
+          snapshot: reuse.quote.shipping,
+          shippingFee: (reuse.quote.breakdown as { shippingFee?: unknown } | null)?.shippingFee,
+          paymentMethod: reuse.quote.payment_method,
+          expiresAt: reuse.quote.expires_at,
+        },
+        { ...shippingFeeBasis(address, weightGrams, insuranceValue), paymentMethod: reuse.paymentMethod },
+        now,
+      )
+    : null;
+  const shipping: ShippingFeeQuote =
+    reused !== null && reused.provider === "ghn"
+      ? { ...reused, provider: "ghn" }
+      : await quoteShippingFee(address, weightGrams, insuranceValue, now);
   const result = computeQuote({
     lines: cart.items.map((l) => ({
       lineId: l.id,

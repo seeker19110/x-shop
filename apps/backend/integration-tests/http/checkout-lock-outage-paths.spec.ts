@@ -10,7 +10,6 @@ import { activeLeaseCount, LOCK_CALL_TIMEOUT_MS, lockKeys } from "../../src/lib/
 import { CATALOG_INDEX_LOCK } from "../../src/lib/catalog/indexer";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { AUDIT_MODULE } from "../../src/modules/audit";
 import type AuditModuleService from "../../src/modules/audit/service";
 import { CATALOG_IMPORT_MODULE } from "../../src/modules/catalog-import";
@@ -146,7 +145,6 @@ medusaIntegrationTestRunner({
       fx = await seedCatalog(container, { stock: { "Đen/S": 20, "Đen/M": 20 } });
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       ip = newIp();
     });
     afterEach(() => {
