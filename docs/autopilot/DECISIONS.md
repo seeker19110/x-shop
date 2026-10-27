@@ -544,3 +544,10 @@
 - Chọn: globalSetup giành độc quyền Redis DB bằng SET NX EX (T-146)
 - Lý do (tiêu chí chất lượng cuối): (1) chặt nhất, chỉ đụng hạ tầng test; namespace không phủ locking-redis/workflows-cleaner
 - Đường lùi: Redis riêng mỗi worktree
+
+### D-078 · 2026-10-27T02:41:06+00:00 · Log khoá VNPAY trước chỉ ở IPN; return/querydr chưa có (interpretQueryResponseWithRotation không trả secretUsed)
+
+- Phương án: (1) Giữ: IPN là đường chính xác nhận tiền; RUNBOOK ghi rõ · (2) Mở rộng sang return/querydr
+- Chọn: Giữ: IPN là đường chính xác nhận tiền; RUNBOOK ghi rõ
+- Lý do (tiêu chí chất lượng cuối): (3) đơn giản: IPN là nơi VNPAY ký bằng khoá cấu hình ở cổng, đủ để biết khi nào bỏ khoá trước; querydr do server chủ động gọi
+- Đường lùi: Cho interpretQueryResponseWithRotation trả secretUsed nếu vận hành cần
