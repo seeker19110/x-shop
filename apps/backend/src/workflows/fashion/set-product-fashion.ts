@@ -148,6 +148,51 @@ export async function relinkSizeChart(
 
 type MeasurementInput = NonNullable<ProductFashionInput["model_measurements"]>[number];
 
+/** Cột của `fashion_model_measurement` cần chụp để tạo lại y nguyên khi bù trừ (giữ cả `id`). */
+const MEASUREMENT_KEYS = [
+  "id",
+  "image_set",
+  "color",
+  "height_cm",
+  "chest_cm",
+  "waist_cm",
+  "hip_cm",
+  "size_worn",
+  "note",
+] as const;
+
+export type MeasurementSnapshot = Record<(typeof MEASUREMENT_KEYS)[number], unknown> & { id: string };
+
+/**
+ * Tạo lại số đo đã chụp, idempotent: chỉ tạo bản ghi chưa có. Hai lần bù trừ chạy song song có thể cùng thấy "thiếu" rồi
+ * cùng tạo → bên thua gặp trùng khoá; khi đó mọi id đã có mặt nghĩa là kết quả đã đúng nên bỏ qua lỗi.
+ */
+export async function recreateMeasurements(
+  fashion: FashionModuleService,
+  attributesId: string,
+  snapshot: MeasurementSnapshot[],
+): Promise<void> {
+  const ids = snapshot.map((m) => m.id);
+  const presentIds = async () => new Set((await fashion.listModelMeasurements({ id: ids })).map((m) => m.id));
+  const present = await presentIds();
+  const missing = snapshot.filter((m) => !present.has(m.id));
+  if (!missing.length) return;
+  try {
+    await fashion.createModelMeasurements(
+      missing.map((m) => ({ ...m, attributes_id: attributesId })) as never,
+    );
+  } catch (e) {
+    const after = await presentIds();
+    if (!ids.every((id) => after.has(id))) throw e;
+  }
+}
+
+/**
+ * Thay toàn bộ số đo người mẫu. Bản cũ bị XOÁ CỨNG (số đo là PII của người mẫu, data-map `retention: model-release` —
+ * không để lại bản soft-delete không ai dọn), nên bước chụp đủ cột bản cũ vào dữ liệu bù trừ và tạo lại cùng `id` khi
+ * workflow lỗi ở bước sau (vd. `assertStillPublishableStep`). `restore*` của MedusaService chỉ gỡ soft-delete, không
+ * cứu được bản ghi đã xoá cứng (T-144).
+ */
 const replaceMeasurementsStep = createStep(
   "x-replace-model-measurements",
   async (
@@ -157,6 +202,12 @@ const replaceMeasurementsStep = createStep(
     if (input.model_measurements === undefined) return new StepResponse(undefined, null);
     const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
     const previous = await fashion.listModelMeasurements({ attributes_id: input.attributes_id });
+    const snapshot = previous.map(
+      (m) =>
+        Object.fromEntries(
+          MEASUREMENT_KEYS.map((k) => [k, (m as Record<string, unknown>)[k] ?? null]),
+        ) as MeasurementSnapshot,
+    );
     if (previous.length) await fashion.deleteModelMeasurements(previous.map((m) => m.id));
     const created = input.model_measurements.length
       ? await fashion.createModelMeasurements(
@@ -164,15 +215,16 @@ const replaceMeasurementsStep = createStep(
         )
       : [];
     return new StepResponse(undefined, {
+      attributesId: input.attributes_id,
       createdIds: (created as { id: string }[]).map((m) => m.id),
-      previousIds: previous.map((m) => m.id),
+      previous: snapshot,
     });
   },
   async (comp, { container }) => {
     if (!comp) return;
     const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
     if (comp.createdIds.length) await fashion.deleteModelMeasurements(comp.createdIds);
-    if (comp.previousIds.length) await fashion.restoreModelMeasurements(comp.previousIds);
+    if (comp.previous.length) await recreateMeasurements(fashion, comp.attributesId, comp.previous);
   },
 );
 

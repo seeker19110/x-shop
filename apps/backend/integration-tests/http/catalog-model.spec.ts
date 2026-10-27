@@ -8,7 +8,11 @@ import { FASHION_MODULE } from "../../src/modules/fashion";
 import type FashionModuleService from "../../src/modules/fashion/service";
 import { DEMO_PRODUCTS } from "../../src/scripts/catalog-demo-data";
 import seedCatalog from "../../src/scripts/seed-catalog";
-import { setProductFashionWorkflow } from "../../src/workflows/fashion/set-product-fashion";
+import {
+  type MeasurementSnapshot,
+  recreateMeasurements,
+  setProductFashionWorkflow,
+} from "../../src/workflows/fashion/set-product-fashion";
 import { adminHeaders } from "../helpers/auth";
 import { createTestProduct, TEST_CHART } from "../helpers/catalog";
 
@@ -227,6 +231,121 @@ medusaIntegrationTestRunner({
           material: "cotton",
           materialLabel: "Cotton",
           origin: "Việt Nam",
+        });
+      });
+
+      describe("bù trừ số đo người mẫu (T-144)", () => {
+        const NEW_MODEL = { image_set: "moi", height_cm: 170, size_worn: "m", note: "Số đo mới" };
+        const MEASUREMENT_FIELDS = [
+          "id",
+          "image_set",
+          "color",
+          "height_cm",
+          "chest_cm",
+          "waist_cm",
+          "hip_cm",
+          "size_worn",
+          "note",
+        ] as const;
+
+        async function seededPolo() {
+          const seeded = await container.resolve(Modules.PRODUCT).listProducts({ handle: "ao-polo-nam" });
+          const id = seeded[0]!.id;
+          const [src] = await loadProductSources(container, { id: [id] });
+          const attributesId = src!.attributes!.id;
+          return { id, attributesId };
+        }
+
+        async function measurementRows(attributesId: string, withDeleted = false) {
+          const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
+          const rows = await fashion.listModelMeasurements(
+            { attributes_id: attributesId },
+            withDeleted ? { withDeleted: true } : {},
+          );
+          return rows
+            .map((m) => Object.fromEntries(MEASUREMENT_FIELDS.map((k) => [k, m[k]])))
+            .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        }
+
+        const removeChartWithNewModel = (id: string, headers?: Headers) =>
+          api
+            .post(
+              `/admin/x/products/${id}/fashion`,
+              {
+                attributes: { kind: "apparel", material: "cotton" },
+                size_chart_id: null,
+                model_measurements: [NEW_MODEL],
+              },
+              headers ? { headers } : {},
+            )
+            .catch((e: unknown) => e);
+
+        it("published + size_chart_id null + số đo mới → lỗi xuất bản, số đo cũ còn nguyên (cả id)", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          expect(before).toHaveLength(1);
+          expect(before[0]).toMatchObject({ height_cm: 180, chest_cm: 94, size_worn: "l" });
+          const [srcBefore] = await loadProductSources(container, { id: [id] });
+
+          const err = await removeChartWithNewModel(id, admin);
+          expect(status(err)).toBe(400);
+          expect(String(body(err).message)).toContain("SIZE_CHART_MISSING");
+
+          expect(await measurementRows(attributesId)).toEqual(before);
+          const [srcAfter] = await loadProductSources(container, { id: [id] });
+          expect(srcAfter?.attributes?.modelMeasurements).toEqual(srcBefore?.attributes?.modelMeasurements);
+          expect(srcAfter?.sizeChart?.code).toBe("ao-nam");
+        });
+
+        it("hai request lỗi đồng thời → cả hai 400, số đo cũ còn đúng một bản", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          const errs = await Promise.all([
+            removeChartWithNewModel(id, admin),
+            removeChartWithNewModel(id, admin),
+          ]);
+          expect(errs.map(status)).toEqual([400, 400]);
+          expect(await measurementRows(attributesId)).toEqual(before);
+        });
+
+        it("thay thành công → chỉ còn số đo mới, bản cũ bị xoá hẳn (không giữ PII người mẫu)", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          const res = await api.post(
+            `/admin/x/products/${id}/fashion`,
+            { attributes: { kind: "apparel", material: "cotton" }, model_measurements: [NEW_MODEL] },
+            { headers: admin },
+          );
+          expect(res.status).toBe(200);
+          const after = await measurementRows(attributesId, true);
+          expect(after).toHaveLength(1);
+          expect(after[0]).toMatchObject({ height_cm: 170, size_worn: "m", note: "Số đo mới" });
+          expect(after[0]!.id).not.toBe(before[0]!.id);
+        });
+
+        it("tạo lại số đo idempotent: đã có → không đổi; hai lần bù trừ song song → đúng một bản, không ném lỗi", async () => {
+          const { attributesId } = await seededPolo();
+          const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
+          const before = await measurementRows(attributesId);
+          const snapshot = before as unknown as MeasurementSnapshot[];
+          await recreateMeasurements(fashion, attributesId, snapshot);
+          expect(await measurementRows(attributesId)).toEqual(before);
+
+          await fashion.deleteModelMeasurements(snapshot.map((m) => m.id));
+          expect(await measurementRows(attributesId, true)).toEqual([]);
+          await Promise.all([
+            recreateMeasurements(fashion, attributesId, snapshot),
+            recreateMeasurements(fashion, attributesId, snapshot),
+          ]);
+          expect(await measurementRows(attributesId)).toEqual(before);
+        });
+
+        it("không đăng nhập → 401, số đo không đổi", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          const err = await removeChartWithNewModel(id);
+          expect(status(err)).toBe(401);
+          expect(await measurementRows(attributesId)).toEqual(before);
         });
       });
 
