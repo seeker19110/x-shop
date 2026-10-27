@@ -719,3 +719,17 @@
 - Chọn: Route có phiên + MFA + quyền, không URL ký (link trong thông báo nền sẽ hết hạn trước khi mở; không bí mật trong URL; thu quyền có hiệu lực ngay)
 - Lý do (tiêu chí chất lượng cuối): (1) chặt hơn: mọi lần tải kiểm phiên+quyền+MFA, không token trong URL/log; mục Kiểm 'URL hết hạn → 403' thay bằng 'không phiên/không quyền → 401/403'
 - Đường lùi: Thêm endpoint cấp URL ký hạn ngắn từ route này (T-154 presigned)
+
+### D-103 · 2026-10-27T13:12:56+00:00 · T-159: phạm vi che thông điệp Medusa nội suy giá trị (22 dạng PII/nhạy cảm đã làm; còn nhóm giá trị admin gõ độ nhạy thấp và echo req.params.id ở 404)
+
+- Phương án: (1) Đóng T-159 với 22 dạng; không che id echo (id/handle hệ thống, cần cho debug admin); nhóm còn lại ghi backlog (không task) vì là giá trị cấu hình catalog do chính admin gõ, không PII · (2) Che toàn bộ 514 dạng và id echo
+- Chọn: Đóng T-159 với 22 dạng; không che id echo (id/handle hệ thống, cần cho debug admin); nhóm còn lại ghi backlog (không task) vì là giá trị cấu hình catalog do chính admin gõ, không PII
+- Lý do (tiêu chí chất lượng cuối): (1) PII/bí mật (email, SĐT, idempotency key, mã khuyến mãi, tên biến thể) đã che; (3)(4) che id làm mất thông tin debug, bảng che quá rộng tăng rủi ro báo nhầm
+- Đường lùi: Thêm dòng vào ECHO_FORMS cho dạng cần che
+
+### D-104 · 2026-10-27T13:23:24+00:00 · T-141: tạo/kiểm thư mục private ngay lúc khởi động provider (fail-fast) hay trì hoãn tới lần đọc/ghi đầu
+
+- Phương án: (1) Giữ fail-fast lúc khởi động; ghi rõ mọi tiến trình backend (server, worker, migrate) phải mount volume PRIVATE_UPLOAD_DIR (GO-NO-GO) · (2) Trì hoãn tới lần đọc/ghi đầu
+- Chọn: Giữ fail-fast lúc khởi động; ghi rõ mọi tiến trình backend (server, worker, migrate) phải mount volume PRIVATE_UPLOAD_DIR (GO-NO-GO)
+- Lý do (tiêu chí chất lượng cuối): (1) mặc định an toàn: cấu hình sai lộ ra ngay khi deploy thay vì lúc khách xuất file; (3) đơn giản
+- Đường lùi: Chuyển preparePrivateDir sang lazy trong provider
