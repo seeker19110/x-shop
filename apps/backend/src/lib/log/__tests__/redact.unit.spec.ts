@@ -317,7 +317,7 @@ describe("cấu trúc", () => {
     const out = redactLog({
       err,
       at: new Date("2026-10-26T10:00:00Z"),
-      bad: new Date("x"),
+      bad: new Date(Number.NaN),
       big: 10n,
       m: new Map([["phone", "0912345678"]]),
       fn: () => 1,
