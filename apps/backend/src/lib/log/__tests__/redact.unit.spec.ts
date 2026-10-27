@@ -2,7 +2,7 @@ import { inspect } from "node:util";
 import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText, shortHash } from "../redact";
 
 /**
- * ReDoS (review T-090): đầu vào đối nghịch 32K ký tự cho TỪNG mẫu phải xong nhanh. Trần 50 ms/lần (máy CI chậm vẫn dư —
+ * ReDoS (review T-090): đầu vào đối nghịch 32K ký tự cho TỪNG mẫu phải xong nhanh. Trần 50 ms CPU/lần (máy CI chậm vẫn dư —
  * bản regex mở cũ mất 300–450 ms với 16K ký tự cho riêng mẫu email).
  */
 describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
@@ -35,9 +35,12 @@ describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
   ];
   it.each(cases)("%s → < 50 ms", (_name, input) => {
     redactText(input.slice(0, 100)); // làm nóng regex
-    const t0 = performance.now();
+    // Thời gian CPU (không phải wall-clock): cổng chạy song song nhiều tiến trình làm wall-clock vượt trần dù regex
+    // không backtrack (63 ms khi máy tải nặng); backtracking thảm hoạ vẫn tốn hàng trăm ms CPU nên vẫn bị bắt.
+    const t0 = process.cpuUsage();
     redactText(input);
-    expect(performance.now() - t0).toBeLessThan(50);
+    const d = process.cpuUsage(t0);
+    expect((d.user + d.system) / 1000).toBeLessThan(50);
   });
 });
 
