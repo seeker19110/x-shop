@@ -136,7 +136,7 @@ jobs:
       - name: Fixture không PII thật — `node scripts/check-fixtures.mjs` (QA-DATA-002)
         run: node scripts/check-fixtures.mjs
       - name: Test của các script kiểm kiến trúc/dữ liệu
-        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test
+        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test
       - name: Schema module tuỳ biến (FK ON DELETE/index, NOT NULL, CHECK) — `pnpm check:schema` (DB-MODEL-004)
         run: pnpm check:schema
       - name: Route dữ liệu cá nhân có test BOLA/BFLA — `pnpm check:authz` (QA-INT-006)
