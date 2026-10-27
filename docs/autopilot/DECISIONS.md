@@ -586,3 +586,10 @@
 - Chọn: 1–12 trừ 7 (an toàn với E2E DB7, tải/perf/diễn tập 13–15)
 - Lý do (tiêu chí chất lượng cuối): (1) FLUSHDB không xoá dữ liệu của e2e/tải/perf chạy cùng lúc; 11 DB đủ cho số tiến trình song song thực tế
 - Đường lùi: Đổi hằng TEST_REDIS_DBS
+
+### D-084 · 2026-10-27T06:01:35+00:00 · T-143 reset-password: vượt ngưỡng trả 429 hay vẫn 201; ngưỡng 3/5/20 trong 15 phút, sàn thời gian 250 ms
+
+- Phương án: (1) Giữ 429 + Retry-After (bộ đếm như nhau cho mọi email nên không lộ tồn tại); duyệt ngưỡng 3/5/20/15 phút và sàn 250 ms · (2) Vượt ngưỡng vẫn 201, không chạy workflow
+- Chọn: Giữ 429 + Retry-After (bộ đếm như nhau cho mọi email nên không lộ tồn tại); duyệt ngưỡng 3/5/20/15 phút và sàn 250 ms
+- Lý do (tiêu chí chất lượng cuối): (1) không lộ tài khoản (đếm theo email nhập, không theo tồn tại); (4) người dùng thật biết phải chờ thay vì mất email âm thầm; thống nhất với login/register
+- Đường lùi: Đổi sang 201 im lặng trong resetPasswordGuard nếu đo thấy kênh phụ
