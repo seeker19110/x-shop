@@ -10,7 +10,7 @@ import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
 import { syncNativePayment } from "./payment";
-import { queryAndProcess } from "./recheck";
+import { queryAndProcess, type QueryGate } from "./recheck";
 import { validateOutboxPayload } from "../outbox/payload";
 import { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs } from "../outbox/policy";
 import { retryInfoOf, type Random } from "../outbox/retry";
@@ -21,6 +21,7 @@ import {
   OUTBOX_BREAKER_POLICY,
   OUTBOX_RUN_LIMITS,
   subBudgetOf,
+  VNPAY_QUERYDR_BREAKER_KEY,
   type BreakerTrip,
   type OutboxBreakerPolicy,
   type OutboxRunLimits,
@@ -74,39 +75,90 @@ export interface ExpireSummary {
   cancelled: string[];
   confirmed: string[];
   unknown: string[];
+  /**
+   * Không gọi querydr vì breaker `vnpay.querydr` mở/đang thử/bóp (T-161): xử lý NHƯ `unknown` (giữ hàng, attempt
+   * `unknown`, ngoại lệ payment_unknown lý do `breaker_open`) — không hủy, không nhả; lượt sau khi breaker đóng hỏi lại.
+   */
+  deferred: string[];
   skipped: string[];
+}
+
+/**
+ * Kết quả querydr là lỗi TẠM của cổng (tín hiệu sức khoẻ cho breaker): hết giờ, lỗi mạng, adapter ném, HTTP 5xx/408/429.
+ * Còn lại (mã trạng thái VNPAY, chữ ký/số tiền sai, HTTP 4xx khác) = cổng ĐÃ TRẢ LỜI → không phải lỗi của cổng (D-111).
+ */
+export function isTransientQueryFailure(reason: string): boolean {
+  return (
+    reason === "timeout" ||
+    reason === "network" ||
+    reason.startsWith("adapter_error:") ||
+    /^http_(5\d\d|408|429)$/.test(reason)
+  );
 }
 
 /**
  * Đơn `awaiting_payment` quá `hold_expires_at`: khóa đơn → querydr. paid → xử lý như IPN; chưa trả/thất bại → hủy
  * native (nhả reservation) + cancelled + mã released + attempt failed (đúng một lần); unknown → KHÔNG hủy, attempt
  * `unknown`, ngoại lệ payment_unknown hạn 30 phút (AT11).
+ *
+ * querydr đi qua circuit breaker `vnpay.querydr` (T-161, lib/outbox/breaker.ts — trạng thái dùng chung mọi bản sao):
+ * cổng lỗi tạm liên tiếp → mở, các đơn còn lại KHÔNG gọi querydr mà xử lý như `unknown` (giữ hàng — không bán vượt, không
+ * nhả hàng của đơn có thể đã trả tiền; mỗi đơn có ngoại lệ payment_unknown hạn 30 phút + một ngoại lệ job_circuit_open →
+ * không giữ hàng âm thầm vô thời hạn). Đơn vẫn `awaiting_payment` quá hạn nên lượt chạy sau khi breaker đóng hỏi lại.
+ * Lỗi DB của breaker → ném (fail-closed: không gọi, không hủy).
  */
 export async function expireHolds(
   container: MedusaContainer,
-  opts: { now?: Date; limit?: number } = {},
+  opts: {
+    now?: Date;
+    limit?: number;
+    /** Chính sách breaker (test tiêm ngưỡng nhỏ); mặc định `OUTBOX_BREAKER_POLICY`. */
+    breakerPolicy?: OutboxBreakerPolicy;
+  } = {},
 ): Promise<ExpireSummary> {
   const now = opts.now ?? new Date();
   const s = service(container);
-  const summary: ExpireSummary = { cancelled: [], confirmed: [], unknown: [], skipped: [] };
+  const summary: ExpireSummary = { cancelled: [], confirmed: [], unknown: [], deferred: [], skipped: [] };
+  const policy = opts.breakerPolicy ?? OUTBOX_BREAKER_POLICY;
+  if (opts.breakerPolicy) assertBreakerPolicy(policy, OUTBOX_RUN_LIMITS);
+  const log = logger(container);
+  const breaker = new BreakerRun(s, policy, {
+    onTrip: (trip) => openBreakerException(container, trip),
+    warn: (m) => log.warn(m),
+    info: (m) => log.info(m),
+  });
   for (const orderId of await s.listExpiredHoldOrderIds(now, opts.limit ?? 100)) {
     const outcome = await withLock(
       container,
       lockKeys.order(orderId),
       CHECKOUT_CONFIG.orderLockWaitMs,
       "order",
-      () => expireOne(container, orderId, now),
+      () => expireOne(container, orderId, now, breaker),
     );
     summary[outcome === "busy" ? "skipped" : outcome].push(orderId);
   }
   return summary;
 }
 
+/** Cổng querydr của MỘT đơn qua breaker của lượt chạy (lỗi tạm tính theo đơn — một đơn lỗi lặp chỉ tính một). */
+function querydrGate(breaker: BreakerRun, orderId: string, now: Date): QueryGate {
+  const key = VNPAY_QUERYDR_BREAKER_KEY;
+  return {
+    admit: async () => (await breaker.admit(key, now)).kind === "call",
+    settle: async (raw) => {
+      if (isTransientQueryFailure(raw.reason)) await breaker.onFailure(key, orderId, now);
+      // Cổng đã trả lời (kể cả `unknown` vì chữ ký/số tiền sai — D-111): half_open → closed; closed → xoá đếm lỗi.
+      else await breaker.onSuccess(key);
+    },
+  };
+}
+
 async function expireOne(
   container: MedusaContainer,
   orderId: string,
   now: Date,
-): Promise<"cancelled" | "confirmed" | "unknown" | "skipped"> {
+  breaker: BreakerRun,
+): Promise<"cancelled" | "confirmed" | "unknown" | "deferred" | "skipped"> {
   const s = service(container);
   const [fin] = await s.listOrderFinances({ order_id: orderId });
   // Kiểm lại SAU khi có khóa: IPN/lượt expiry khác có thể đã xử lý.
@@ -118,12 +170,16 @@ async function expireOne(
   ) {
     return "skipped";
   }
-  const q = await queryAndProcess(container, orderId, { orderLockHeld: true });
+  const q = await queryAndProcess(container, orderId, {
+    orderLockHeld: true,
+    gate: querydrGate(breaker, orderId, now),
+  });
   if (q.outcome === "paid") {
     const [after] = await s.listOrderFinances({ order_id: orderId });
     return after?.state === "confirmed" ? "confirmed" : "skipped";
   }
-  if (q.outcome === "unknown") {
+  // Breaker mở → chưa hỏi được: trạng thái tiền CHƯA RÕ, đi đúng đường `unknown` (không bao giờ suy ra "chưa trả").
+  if (q.outcome === "unknown" || q.outcome === "deferred") {
     const [pa] = await s.listPaymentAttempts({ order_id: orderId, state: ["created", "pending", "unknown"] });
     if (pa) await s.movePaymentAttempt(pa.id, "unknown");
     await s.openOpsException({
@@ -135,7 +191,7 @@ async function expireOne(
       due_at: new Date(now.getTime() + CHECKOUT_CONFIG.paymentUnknownDueMs),
       detail: { reason: q.reason, txn_ref: pa?.txn_ref ?? null, source: "expire-holds" },
     });
-    return "unknown";
+    return q.outcome;
   }
   // not_paid | failed | skipped (không còn attempt mở) → hủy. Native trước (idempotent), rồi chốt trạng thái module:
   // chết giữa chừng thì lần chạy sau thấy đơn vẫn awaiting_payment và làm lại an toàn.

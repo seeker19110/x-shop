@@ -455,7 +455,9 @@ code=55P03`; bản trùng đóng theo bước 5. `detail` chỉ có id + mã l�
 last_drilled: chưa diễn tập (test đơn vị `breaker` + test tích hợp `outbox-breaker`).
 
 Mô hình thật (`apps/backend/src/lib/outbox/breaker.ts`, T-097, OPS-COST-004): dispatcher outbox chia breaker theo adapter
-(`outbox.notify` = mọi thông báo email/SMS; loại khác `outbox.<loại sự kiện>`). Trạng thái ở bảng `job_breaker` (dùng chung mọi bản
+(`outbox.notify` = mọi thông báo email/SMS; loại khác `outbox.<loại sự kiện>`); job `expire-holds` có breaker `vnpay.querydr` cho lời gọi
+VNPAY querydr (T-161) — khi mở, đơn quá hạn giữ hàng KHÔNG bị hủy mà xử lý như `unknown` (giữ hàng, ngoại lệ `payment_unknown` lý do
+`breaker_open`, xem §1); ngân sách ngày 144 000 = trần vật lý của lịch chạy nên chỉ mở vì lỗi. Trạng thái ở bảng `job_breaker` (dùng chung mọi bản
 sao), ngân sách lượt gọi theo ngày UTC ở `rate_limit_counter` (bucket `breaker.budget:<breaker>`). Ngưỡng trong code
 (`OUTBOX_BREAKER_POLICY`, `OUTBOX_RUN_LIMITS` — đổi qua review): mỗi lượt chạy tối đa 100 sự kiện / 50 lượt gọi; 5 sự kiện khác nhau
 lỗi tạm liên tiếp → mở 5 phút; ngân sách ngày `outbox.notify` 3 000, loại khác 10 000 — 80 % log WARN, 90 % bóp còn 5 lượt gọi/lượt

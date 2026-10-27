@@ -93,10 +93,21 @@ export interface SubBudget {
 /** Ngân sách con của thông báo do khách tự kích (chia chung giữa các loại khai trong `subBudgets` cùng `key`). */
 export const CUSTOMER_TRIGGERED_NOTIFY_KEY = "outbox.notify.customer_triggered";
 
+/** Breaker của lời gọi VNPAY querydr trong job `expire-holds` (T-161). */
+export const VNPAY_QUERYDR_BREAKER_KEY = "vnpay.querydr";
+
+/**
+ * Ngân sách ngày của querydr = trần vật lý của `expire-holds` (≤ 100 đơn/lượt × 1 440 lượt/ngày): chạy đúng lịch thì
+ * KHÔNG BAO GIỜ chạm — hết ngân sách sẽ giữ hàng quá hạn tới 00:00 UTC (T-161), nên ngân sách ở đây chỉ là rào cho lịch/vòng
+ * lặp chạy sai (80 % → cảnh báo). Breaker querydr chủ yếu mở vì LỖI (cổng không phản hồi).
+ */
+export const VNPAY_QUERYDR_DAILY_BUDGET = 100 * 1_440;
+
 /**
  * Ngưỡng mặc định (đổi qua review — OPS-COST-004 "cấu hình ngưỡng trong code có review"):
  *  - 5 sự kiện khác nhau lỗi liên tiếp → mở 5 phút; lượt thử half-open giữ 60 giây (= lease nhận sự kiện outbox);
- *  - ngân sách ngày: thông báo khách (email/SMS — trả phí theo tin) 3 000 lượt; bộ xử lý khác 10 000 lượt;
+ *  - ngân sách ngày: thông báo khách (email/SMS — trả phí theo tin) 3 000 lượt; VNPAY querydr 144 000 (xem trên); bộ xử
+ *    lý khác 10 000 lượt;
  *  - ngân sách con (T-162): thông báo do khách tự kích (`order.lookup_link`) 1 000 lượt TRONG 3 000 của `outbox.notify`
  *    → thư giao dịch (xác nhận/giao hàng) luôn còn ≥ 2 000 lượt/ngày dù lookup bị lạm dụng.
  */
@@ -105,7 +116,7 @@ export const OUTBOX_BREAKER_POLICY: OutboxBreakerPolicy = {
   cooldownMs: 5 * 60_000,
   probeLeaseMs: OUTBOX_POLICY.claimLeaseMs,
   budgetWindowMs: 24 * 3600_000,
-  budgets: { "outbox.notify": 3_000 },
+  budgets: { "outbox.notify": 3_000, [VNPAY_QUERYDR_BREAKER_KEY]: VNPAY_QUERYDR_DAILY_BUDGET },
   defaultBudget: 10_000,
   warnRatio: 0.8,
   throttleRatio: 0.9,
