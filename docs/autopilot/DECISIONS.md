@@ -683,7 +683,7 @@
 - Phương án: (1) Tách task T-157: error-handler trả thông điệp chung cho dạng dbErrorMapper unique/FK ở 4xx, giữ mã lỗi + tên trường (không giá trị); test admin vẫn hiểu lỗi · (2) Giữ nguyên
 - Chọn: Tách task T-157: error-handler trả thông điệp chung cho dạng dbErrorMapper unique/FK ở 4xx, giữ mã lỗi + tên trường (không giá trị); test admin vẫn hiểu lỗi
 - Lý do (tiêu chí chất lượng cuối): (1) 4xx không lộ chi tiết nội bộ/giá trị, kể cả với admin (log/proxy/APM có thể ghi body); (4) giữ tên trường để admin sửa được
-- Đường lùi: Bỏ mẫu khỏi INTERNAL_LEAK
+- Đường lùi: Bỏ mẫu khỏi INTERNAL_LEAK (bổ sung sau T-157: bản cài nằm ở `dbValueMessage` trong error-handler — đường lùi là bỏ lời gọi `dbValueMessage`)
 
 ### D-098 · 2026-10-27T11:17:46+00:00 · T-152: lượt đang bay (chờ DB) có tính vào chặn sớm không — lệch chữ D-092 khi DB treo
 
@@ -705,3 +705,17 @@
 - Chọn: Theo vai trò settings.manage + MFA (chỉ owner xem thông báo xuất); giữ 403 đồng nhất (không lộ tồn tại); quyết PRIVATE_UPLOAD_DIR ở T-154
 - Lý do (tiêu chí chất lượng cuối): (1) chặt: chỉ owner có MFA tải file PII, phản hồi đồng nhất không lộ tồn tại; (3) không thêm bảng sở hữu khi File Module chưa có; catalog_manager không tải được xuất sản phẩm là thiếu UX chấp nhận được
 - Đường lùi: Thêm quyền theo loại file (catalog.read cho xuất sản phẩm) hoặc bảng x_private_file
+
+### D-101 · 2026-10-27T12:56:33+00:00 · T-156: dedupe exception catalog_compensation_failed theo kind làm mất dấu sản phẩm thứ hai (lỗi bù trừ không tự phát hiện lại)
+
+- Phương án: (1) Dedupe theo kind + detail->>'product_id' trong các dòng đang mở; dashboard lấy reference từ product_id · (2) Một dòng, nối product_ids vào detail · (3) Chỉ lấy reference dashboard
+- Chọn: Dedupe theo kind + detail->>'product_id' trong các dòng đang mở; dashboard lấy reference từ product_id
+- Lý do (tiêu chí chất lượng cuối): (1) mỗi sản phẩm lệch có một mục xử lý riêng, đóng một mục không làm mất dấu mục khác; (3) không migration
+- Đường lùi: Về dedupe theo kind
+
+### D-102 · 2026-10-27T12:56:34+00:00 · T-141: tải file private qua route có phiên thay vì URL ký hết hạn ngắn (lệch chữ PLAN/BE-FILE-005)
+
+- Phương án: (1) Route có phiên + MFA + quyền, không URL ký (link trong thông báo nền sẽ hết hạn trước khi mở; không bí mật trong URL; thu quyền có hiệu lực ngay) · (2) URL ký HMAC hạn ngắn
+- Chọn: Route có phiên + MFA + quyền, không URL ký (link trong thông báo nền sẽ hết hạn trước khi mở; không bí mật trong URL; thu quyền có hiệu lực ngay)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt hơn: mọi lần tải kiểm phiên+quyền+MFA, không token trong URL/log; mục Kiểm 'URL hết hạn → 403' thay bằng 'không phiên/không quyền → 401/403'
+- Đường lùi: Thêm endpoint cấp URL ký hạn ngắn từ route này (T-154 presigned)
