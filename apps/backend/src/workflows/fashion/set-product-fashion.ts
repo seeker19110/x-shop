@@ -248,6 +248,21 @@ export async function recreateMeasurements(
   }
 }
 
+/**
+ * Mô tả lỗi an toàn để log: chỉ `name`, `code` (mã lỗi Postgres nếu có) và phần sau " - " CUỐI của message (thông điệp
+ * của Postgres trong dạng "<câu SQL> - <lỗi>" của knex). KHÔNG log message thô: knex chép giá trị bind vào câu SQL nên
+ * số đo người mẫu (PII) sẽ lọt vào log — bộ che log chỉ băm chuỗi trong nháy, số giữ nguyên.
+ */
+function safeErrorSummary(e: unknown): string {
+  if (!(e instanceof Error)) return `non-error(${typeof e})`;
+  const parts = [e.name];
+  const code = (e as { code?: unknown }).code;
+  if (typeof code === "string" || typeof code === "number") parts.push(`code=${code}`);
+  const cut = e.message.lastIndexOf(" - ");
+  if (cut >= 0) parts.push(`pg=${e.message.slice(cut + 3).slice(0, 200)}`);
+  return parts.join(" ");
+}
+
 type MeasurementCompensation = {
   attributesId: string;
   createdIds: string[];
@@ -279,7 +294,7 @@ async function undoReplaceMeasurements(
       .error(
         `[set-product-fashion] Hoàn tác số đo người mẫu lỗi: attributes_id=${comp.attributesId} ` +
           `created_ids=${comp.createdIds.join(",") || "-"} previous_ids=${comp.previous.map((m) => m.id).join(",") || "-"}: ` +
-          `${e instanceof Error ? e.message : String(e)}`,
+          safeErrorSummary(e),
       );
     throw e;
   }
@@ -321,7 +336,18 @@ const replaceMeasurementsStep = createStep(
         : [];
       comp.createdIds = (created as { id: string }[]).map((m) => m.id);
     } catch (e) {
-      await undoReplaceMeasurements(container, comp);
+      try {
+        await undoReplaceMeasurements(container, comp);
+      } catch (undoError) {
+        // Lỗi hoàn tác sẽ thay lỗi gốc khi ném ra → ghi lỗi gốc trước (an toàn, không PII).
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .error(
+            `[set-product-fashion] Thay số đo người mẫu lỗi (lỗi gốc trước khi hoàn tác lỗi): ` +
+              `attributes_id=${comp.attributesId}: ${safeErrorSummary(e)}`,
+          );
+        throw undoError;
+      }
       throw e;
     }
     return new StepResponse(undefined, comp);

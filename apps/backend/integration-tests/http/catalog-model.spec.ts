@@ -527,7 +527,8 @@ medusaIntegrationTestRunner({
           expect(line).toBeDefined();
           expect(line).toContain(`attributes_id=${attributesId}`);
           expect(line).toContain(oldId);
-          expect(line).toContain("recreate boom");
+          expect(line).toContain("Error"); // chỉ tên lỗi — message thô không được log (có thể chứa PII)
+          expect(line).not.toContain("recreate boom");
           expect(line).not.toMatch(/Dữ liệu demo|height_cm|size_worn/);
           // Khoá đã nhả dù bù trừ lỗi: lượt kế tiếp chạy được ngay, không chờ hết lease.
           const t0 = Date.now();
@@ -598,6 +599,110 @@ medusaIntegrationTestRunner({
           } finally {
             redis.disconnect();
           }
+        });
+
+        it("lỗi DB thật khi tạo mới và khi hoàn tác → log lỗi gốc + lỗi hoàn tác, không chứa số đo/câu SQL", async () => {
+          const { id, attributesId } = await seededPolo();
+          const before = await measurementRows(attributesId);
+          const oldId = String(before[0]!.id);
+          const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+          const logger = container.resolve(ContainerRegistrationKeys.LOGGER) as unknown as Record<
+            string,
+            (...args: unknown[]) => unknown
+          >;
+          const origError = logger.error!;
+          const errors: string[] = [];
+          logger.error = (...args: unknown[]) => {
+            errors.push(args.map(String).join(" "));
+            return origError.apply(logger, args);
+          };
+          // Trigger raise ở mọi INSERT số đo của sản phẩm này: bản mới → "boom create", tạo lại bản cũ → "boom recreate".
+          await pg.raw(`
+            create or replace function t144_boom() returns trigger language plpgsql as $$
+            begin
+              if new.id = '${oldId}' then raise exception 'boom recreate'; end if;
+              if new.image_set = 'moi' then raise exception 'boom create'; end if;
+              return new;
+            end $$;
+            create trigger t144_boom before insert on fashion_model_measurement
+              for each row execute function t144_boom();
+          `);
+          let r: string;
+          try {
+            r = await outcome(setProductFashionWorkflow(container).run({ input: succeeding(id, "moi") }));
+          } finally {
+            await pg.raw("drop trigger if exists t144_boom on fashion_model_measurement");
+            await pg.raw("drop function if exists t144_boom()");
+            logger.error = origError;
+          }
+          expect(r).toMatch(/^err: /);
+          const undoLine = errors.find((l) => l.includes("Hoàn tác số đo người mẫu lỗi"));
+          const origLine = errors.find((l) => l.includes("lỗi gốc trước khi hoàn tác lỗi"));
+          expect(undoLine).toContain("boom recreate");
+          expect(undoLine).toContain(oldId);
+          expect(origLine).toContain("boom create");
+          expect(origLine).toContain(`attributes_id=${attributesId}`);
+          for (const line of [undoLine!, origLine!]) {
+            expect(line).not.toMatch(/insert into|values|\b(180|94|78|95|170)\b|Dữ liệu demo/i);
+          }
+        });
+
+        describe("khoá theo sản phẩm qua HTTP", () => {
+          const BODY = {
+            attributes: { kind: "apparel", material: "cotton" },
+            model_measurements: [{ image_set: "moi", height_cm: 170, size_worn: "m" }],
+          };
+          const header = (e: unknown, name: string) =>
+            (e as { response?: { headers?: Record<string, string> } }).response?.headers?.[name];
+
+          it("chủ khác đang giữ khoá → 409 BUSY_RETRY + Retry-After, số đo không đổi", async () => {
+            const { id, attributesId } = await seededPolo();
+            const before = await measurementRows(attributesId);
+            const locking = container.resolve(Modules.LOCKING);
+            await locking.acquire(productFashionLockKey(id), { ownerId: "t144-holder", expire: 30 });
+            let err: unknown;
+            try {
+              err = await api
+                .post(`/admin/x/products/${id}/fashion`, BODY, { headers: admin })
+                .catch((e: unknown) => e);
+            } finally {
+              await locking.release(productFashionLockKey(id), { ownerId: "t144-holder" });
+            }
+            expect(status(err)).toBe(409);
+            expect(body(err)).toMatchObject({ code: "BUSY_RETRY" });
+            expect(header(err, "retry-after")).toBe("1");
+            expect(header(err, "content-type")).toMatch(/application\/problem\+json/);
+            expect(await measurementRows(attributesId)).toEqual(before);
+          });
+
+          it("Redis lỗi khi lấy khoá → 503 LOCK_UNAVAILABLE + Retry-After, số đo không đổi", async () => {
+            const { id, attributesId } = await seededPolo();
+            const before = await measurementRows(attributesId);
+            const locking = container.resolve(Modules.LOCKING) as unknown as Record<string, unknown>;
+            const origAcquire = locking.acquire;
+            locking.acquire = async () => {
+              throw new Error("ECONNRESET giả lập");
+            };
+            let err: unknown;
+            try {
+              err = await api
+                .post(`/admin/x/products/${id}/fashion`, BODY, { headers: admin })
+                .catch((e: unknown) => e);
+            } finally {
+              locking.acquire = origAcquire;
+            }
+            expect(status(err)).toBe(503);
+            expect(body(err)).toMatchObject({ code: "LOCK_UNAVAILABLE" });
+            expect(header(err, "retry-after")).toBe("60");
+            expect(await measurementRows(attributesId)).toEqual(before);
+          });
+
+          it("khoá rảnh → 200 (đường được phép vẫn chạy)", async () => {
+            const { id, attributesId } = await seededPolo();
+            const res = await api.post(`/admin/x/products/${id}/fashion`, BODY, { headers: admin });
+            expect(res.status).toBe(200);
+            expect((await measurementRows(attributesId)).map((m) => m.image_set)).toEqual(["moi"]);
+          });
         });
 
         it("không đăng nhập → 401, số đo không đổi", async () => {
