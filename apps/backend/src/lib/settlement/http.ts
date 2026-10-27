@@ -7,6 +7,7 @@ import { maskFreeText } from "../audit/sanitize";
 import { adminPageQuery } from "../http/pagination";
 import { readCsvBody } from "../http/read-body";
 import { sendProblem, zodErrors } from "../http/problem";
+import { rfc3339Instant } from "../http/time";
 import { SETTLEMENT_MODULE } from "../../modules/settlement";
 import {
   DISCREPANCY_KINDS,
@@ -15,7 +16,7 @@ import {
   SETTLEMENT_CONFIG,
   SETTLEMENT_SOURCES,
 } from "../../modules/settlement/constants";
-import { parseInstant, parseSettlementCsv } from "../../modules/settlement/csv";
+import { parseSettlementCsv } from "../../modules/settlement/csv";
 import SettlementModuleService, {
   SettlementError,
   type DiscrepancyView,
@@ -86,17 +87,7 @@ export function parseInput<T extends z.ZodType>(schema: T, input: unknown): z.ou
 export const settlementOf = (req: MedusaRequest) =>
   req.scope.resolve<SettlementModuleService>(SETTLEMENT_MODULE);
 
-const instant = z
-  .string()
-  .trim()
-  .transform((v, ctx) => {
-    const d = parseInstant(v);
-    if (!d) {
-      ctx.addIssue({ code: "custom", message: "ISO 8601 có múi giờ, vd. 2026-10-25T00:00:00+07:00" });
-      return z.NEVER;
-    }
-    return d;
-  });
+const instant = rfc3339Instant;
 const notFuture = (d: Date) => d.getTime() <= Date.now() + SETTLEMENT_CONFIG.futureSkewMs;
 const code = z
   .string()

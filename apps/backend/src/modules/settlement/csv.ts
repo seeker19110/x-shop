@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseCsv } from "@x-shop/domain";
+import { parseRfc3339 } from "../../lib/http/time";
 import {
   LINE_TYPES_BY_SOURCE,
   SETTLEMENT_CONFIG,
@@ -39,7 +40,6 @@ export type ParseOutcome =
 
 const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 const DIGITS = /^\d{1,10}$/;
-const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
 
 /** Số tiền VND: chuỗi chỉ chữ số → số nguyên an toàn trong [0, trần cột]. null = sai định dạng. */
 export function parseVnd(raw: string): number | null {
@@ -49,12 +49,8 @@ export function parseVnd(raw: string): number | null {
   return n;
 }
 
-/** Thời điểm ISO 8601 BẮT BUỘC có múi giờ (không đoán giờ VN/UTC). null = sai định dạng. */
-export function parseInstant(raw: string): Date | null {
-  if (!ISO_WITH_ZONE.test(raw)) return null;
-  const ms = Date.parse(raw);
-  return Number.isFinite(ms) ? new Date(ms) : null;
-}
+/** Thời điểm RFC 3339 BẮT BUỘC có offset (không đoán giờ VN/UTC). null = sai định dạng. */
+export const parseInstant = parseRfc3339;
 
 /**
  * Băm nội dung CHUẨN HOÁ của batch (nguồn + dòng đã parse, sắp xếp): cùng chứng từ xuất lại với CRLF/LF, BOM hay thứ
