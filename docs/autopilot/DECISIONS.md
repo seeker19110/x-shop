@@ -579,3 +579,10 @@
 - Chọn: Merge hotfix ngay + gia cố 🟢1 (từ chối byte ≤0x20/0x7F/≥0x80) + ghi việc rà bảo mật đối nghịch cho người
 - Lý do (tiêu chí chất lượng cuối): (1) an toàn: giữ lại nghĩa là để lỗ hổng đã chứng minh trên PR; hotfix chỉ thu hẹp đầu vào, phần đã rà sạch (unit/tích hợp/đối chiếu parseurl); (2) đường lùi: revert từng commit
 - Đường lùi: Revert 2 commit T-145 nếu rà bảo mật thấy hồi quy
+
+### D-083 · 2026-10-27T04:54:45+00:00 · Vùng Redis DB cho test tích hợp (T-146)
+
+- Phương án: (1) 1–12 trừ 7 (an toàn với E2E DB7, tải/perf/diễn tập 13–15) · (2) 1–15 trừ 7
+- Chọn: 1–12 trừ 7 (an toàn với E2E DB7, tải/perf/diễn tập 13–15)
+- Lý do (tiêu chí chất lượng cuối): (1) FLUSHDB không xoá dữ liệu của e2e/tải/perf chạy cùng lúc; 11 DB đủ cho số tiến trình song song thực tế
+- Đường lùi: Đổi hằng TEST_REDIS_DBS
