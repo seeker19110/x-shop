@@ -23,6 +23,21 @@ export interface GhnRuntimeConfig {
   shopId: string;
 }
 
+/**
+ * Retry phía dịch vụ cho lời gọi GHN (T-093 — BE-REL-003): mặc định 3 lần/request (Google SRE "Handling Overload"),
+ * backoff mũ 200 ms → trần 2 s, full jitter; tổng thời gian chờ ≤ 3 s (và ≤ một lần timeout — xem HttpGhnClient).
+ * `Retry-After` của hãng kẹp ≤ 1 giờ; vượt ngân sách thì không chờ trong request mà ném lỗi kèm `retryAfterMs` để caller
+ * hẹn lại (202/503 + Retry-After, outbox).
+ */
+export const GHN_RETRY_POLICY = {
+  maxAttempts: 3,
+  baseDelayMs: 200,
+  maxDelayMs: 2_000,
+  jitter: "full",
+  totalBudgetMs: 3_000,
+  maxRetryAfterMs: 3600_000,
+} as const;
+
 let cached: GhnRuntimeConfig | null = null;
 
 /** Cấu hình GHN từ env (đã kiểm khi khởi động ở medusa-config). Token chỉ đọc ở server, không bao giờ trả client. */

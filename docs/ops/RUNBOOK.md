@@ -318,10 +318,14 @@ staging, script ẩn danh hoá hay quét PII mẫu.
 
 last_drilled: chưa diễn tập (lệnh SQL chưa chạy trên DB thật).
 
-Mô hình thật (`apps/backend/src/lib/checkout/jobs.ts`, `OUTBOX_POLICY`): job `x-outbox-dispatch` (10 s) xử lý `outbox_event` `pending`/`failed`;
-lỗi → `failed` + `next_attempt_at` lùi lũy thừa (10 s … tối đa 1 giờ); sau 8 lần → trạng thái **`dead`** (đây là "DLQ": giữ `payload`,
-`last_error`, `attempts`) và mở `ops_exception` loại `outbox_dead` (hoặc `notification_failed` cho thông báo khách), ưu tiên `high`. Job KHÔNG
-tự nhặt `dead`.
+Mô hình thật (`apps/backend/src/lib/checkout/jobs.ts` `dispatchOutbox`, `apps/backend/src/lib/outbox/policy.ts` `OUTBOX_POLICY`): job
+`x-outbox-dispatch` (10 s) xử lý `outbox_event` `pending`/`failed`; lỗi tạm → `failed` + `next_attempt_at` lùi lũy thừa có equal jitter
+(lần n chờ trong [exp/2, exp), exp = 10 s·2^(n−1), trần 1 giờ) hoặc theo `Retry-After` bên kia trả nếu lâu hơn; sau 8 lần → trạng thái
+**`dead`** (đây là "DLQ": giữ `payload`, `last_error`, `attempts`) và mở `ops_exception` loại `outbox_dead` (hoặc `notification_failed` cho
+thông báo khách), ưu tiên `high`. Vào `dead` NGAY ở lần nhận đầu (T-093), `detail.dead_reason` cho biết vì sao:
+`invalid_payload` (payload sai schema `lib/outbox/payload.ts` — `last_error` nêu trường + mã lỗi, không nêu giá trị), `permanent_error` (lỗi
+vĩnh viễn: 4xx không phải 408/429, lỗi validate), `max_attempts` (hết lượt). Job KHÔNG tự nhặt `dead`; `invalid_payload`/`permanent_error`
+redrive mà không sửa nguyên nhân sẽ lại `dead` ngay.
 
 1. Phát hiện (chưa có rule cảnh báo tự động "dead > 0 sau N phút" — BE-JOB-004 còn mở; kiểm tay hoặc gắn vào giám sát khi có hạ tầng):
 

@@ -16,7 +16,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
     const actorId = requirePermission(req, "fulfillment.create");
     const r = await createShipmentForOrder(req.scope, String(req.params.id), actorId, auditContextOf(req));
     res.setHeader("Cache-Control", "no-store");
-    if (r.outcome === "pending") res.setHeader("Retry-After", "10");
+    // Không sớm hơn 10 giây; hãng yêu cầu chờ lâu hơn (429 Retry-After) thì theo hãng (T-093).
+    if (r.outcome === "pending") res.setHeader("Retry-After", String(Math.max(10, r.retryAfterSeconds ?? 0)));
     res
       .status(r.outcome === "created" ? 201 : r.outcome === "existing" ? 200 : 202)
       .json({ outcome: r.outcome, shipment: presentShipment(r.shipment) });

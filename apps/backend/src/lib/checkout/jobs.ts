@@ -11,6 +11,9 @@ import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
 import { syncNativePayment } from "./payment";
 import { queryAndProcess } from "./recheck";
+import { validateOutboxPayload } from "../outbox/payload";
+import { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs } from "../outbox/policy";
+import { retryInfoOf, type Random } from "../outbox/retry";
 
 /**
  * Hàm xử lý của các job worker (docs/design/checkout-flow.md §6). Tách khỏi `src/jobs/*` để test gọi trực tiếp với
@@ -236,18 +239,8 @@ export async function codConfirmTimeout(
 
 export type OutboxHandler = (container: MedusaContainer, event: OutboxClaim) => Promise<void>;
 
-export const OUTBOX_POLICY = {
-  maxAttempts: 8,
-  baseDelayMs: 10_000,
-  maxDelayMs: 3600_000,
-  /** Thời gian một dispatcher giữ sự kiện đã nhận trước khi dispatcher khác được nhận lại. */
-  claimLeaseMs: 60_000,
-} as const;
-
-/** Lũy thừa: 10s, 20s, 40s… tối đa 1 giờ (lần thử thứ n đã hỏng). */
-export function outboxBackoffMs(failedAttempts: number): number {
-  return Math.min(OUTBOX_POLICY.baseDelayMs * 2 ** Math.max(0, failedAttempts - 1), OUTBOX_POLICY.maxDelayMs);
-}
+// Chính sách retry outbox (hàm thuần) ở lib/outbox/policy — giữ export cũ cho caller/test.
+export { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs };
 
 /** Bộ xử lý mặc định. Thông báo khách (email/SMS) đi qua `lib/notify` (T-029) theo message key duy nhất. */
 export const DEFAULT_OUTBOX_HANDLERS: Record<string, OutboxHandler> = {
@@ -275,17 +268,53 @@ export interface DispatchSummary {
   dead: string[];
 }
 
+/** Vì sao sự kiện vào `dead` (ghi vào ngoại lệ — không PII). */
+export type DeadReason = "invalid_payload" | "permanent_error" | "max_attempts";
+
 export async function dispatchOutbox(
   container: MedusaContainer,
-  opts: { now?: Date; limit?: number; handlers?: Record<string, OutboxHandler> } = {},
+  opts: {
+    now?: Date;
+    limit?: number;
+    handlers?: Record<string, OutboxHandler>;
+    /** RNG cho jitter (test tiêm để tất định). */
+    random?: Random;
+  } = {},
 ): Promise<DispatchSummary> {
   const now = opts.now ?? new Date();
   const s = service(container);
   const handlers = { ...DEFAULT_OUTBOX_HANDLERS, ...opts.handlers };
   const summary: DispatchSummary = { sent: [], retried: [], dead: [] };
+
+  const markDead = async (event: OutboxClaim, message: string, reason: DeadReason) => {
+    await s.markOutboxFailed(event.id, message, null);
+    // Thông báo khách hỏng → ngoại lệ riêng cho người theo dõi gửi tin (AT18); đơn không bị ảnh hưởng.
+    const kind = isNotificationEvent(event.type) ? "notification_failed" : "outbox_dead";
+    await s.openOpsException({
+      kind,
+      dedupe_key: `${kind}:${event.event_key}`,
+      order_id: event.aggregate_id.startsWith("order_") ? event.aggregate_id : null,
+      priority: "high",
+      detail: {
+        event_key: event.event_key,
+        type: event.type,
+        dead_reason: reason,
+        attempts: event.attempts + 1,
+        last_error: message.slice(0, 500),
+      },
+    });
+    summary.dead.push(event.event_key);
+  };
+
   for (let i = 0; i < (opts.limit ?? 100); i++) {
     const event = await s.claimDueOutbox(now, OUTBOX_POLICY.claimLeaseMs);
     if (!event) break;
+    // Payload kiểm khi NHẬN (BE-JOB-007): sai schema là lỗi vĩnh viễn → dead ngay kèm lý do, lượt chạy tiếp tục.
+    const check = validateOutboxPayload(event.type, event.payload);
+    if (!check.ok) {
+      await markDead(event, check.reason, "invalid_payload");
+      continue;
+    }
     try {
       await (handlers[event.type] ?? logHandler)(container, event);
       await s.markOutboxSent(event.id);
@@ -293,20 +322,15 @@ export async function dispatchOutbox(
     } catch (e) {
       const failed = event.attempts + 1;
       const message = e instanceof Error ? e.message : String(e);
-      if (failed >= OUTBOX_POLICY.maxAttempts) {
-        await s.markOutboxFailed(event.id, message, null);
-        // Thông báo khách hỏng → ngoại lệ riêng cho người theo dõi gửi tin (AT18); đơn không bị ảnh hưởng.
-        const kind = isNotificationEvent(event.type) ? "notification_failed" : "outbox_dead";
-        await s.openOpsException({
-          kind,
-          dedupe_key: `${kind}:${event.event_key}`,
-          order_id: event.aggregate_id.startsWith("order_") ? event.aggregate_id : null,
-          priority: "high",
-          detail: { event_key: event.event_key, type: event.type, last_error: message.slice(0, 500) },
-        });
-        summary.dead.push(event.event_key);
+      const info = retryInfoOf(e);
+      if (info.permanent) {
+        // 4xx nghiệp vụ / validate: thử lại không đổi được kết quả → DLQ ngay (BE-JOB-003).
+        await markDead(event, message, "permanent_error");
+      } else if (failed >= OUTBOX_POLICY.maxAttempts) {
+        await markDead(event, message, "max_attempts");
       } else {
-        await s.markOutboxFailed(event.id, message, new Date(now.getTime() + outboxBackoffMs(failed)));
+        const delay = outboxNextDelayMs(failed, info.retryAfterMs, opts.random);
+        await s.markOutboxFailed(event.id, message, new Date(now.getTime() + delay));
         summary.retried.push(event.event_key);
       }
     }

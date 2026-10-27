@@ -14,7 +14,9 @@ const limiter = new FixedWindowLimiter(300, 10_000);
  */
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
-  if (!limiter.allow(clientIpOf(req).ip ?? "unknown")) {
+  const ipKey = clientIpOf(req).ip ?? "unknown";
+  if (!limiter.allow(ipKey)) {
+    res.setHeader("Retry-After", String(limiter.retryAfterSeconds(ipKey)));
     res.status(429).json(vnpay.IPN_RESPONSES.unknownError);
     return;
   }

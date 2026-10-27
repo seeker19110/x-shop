@@ -326,20 +326,26 @@ medusaIntegrationTestRunner({
         // Hạn đầu ở tương lai → dispatcher nền (giờ thật) không nhận sự kiện của test.
         await s.insertOutbox("test.fail:1", "agg_1", "test.fail", {}, undefined, base);
         const failing = { "test.fail": async () => Promise.reject(new Error("SMTP 503")) };
+        // RNG tiêm (T-093: backoff có jitter) → khoảng chờ tất định để so đúng giá trị.
+        const random = () => 0.25;
 
         let now = base;
         for (let attempt = 1; attempt < OUTBOX_POLICY.maxAttempts; attempt++) {
-          expect((await dispatchOutbox(container, { now, handlers: failing })).retried).toEqual([
+          expect((await dispatchOutbox(container, { now, handlers: failing, random })).retried).toEqual([
             "test.fail:1",
           ]);
           // Chưa tới hạn thử lại → không nhận.
-          expect((await dispatchOutbox(container, { now, handlers: failing })).retried).toEqual([]);
+          expect((await dispatchOutbox(container, { now, handlers: failing, random })).retried).toEqual([]);
           const [ev] = await s.listOutboxEvents({ event_key: "test.fail:1" });
           expect(ev).toMatchObject({ state: "failed", attempts: attempt, last_error: "SMTP 503" });
-          expect(new Date(ev!.next_attempt_at).getTime() - now.getTime()).toBe(outboxBackoffMs(attempt));
+          expect(new Date(ev!.next_attempt_at).getTime() - now.getTime()).toBe(
+            outboxBackoffMs(attempt, random),
+          );
           now = new Date(ev!.next_attempt_at);
         }
-        expect((await dispatchOutbox(container, { now, handlers: failing })).dead).toEqual(["test.fail:1"]);
+        expect((await dispatchOutbox(container, { now, handlers: failing, random })).dead).toEqual([
+          "test.fail:1",
+        ]);
         const [dead] = await s.listOutboxEvents({ event_key: "test.fail:1" });
         expect(dead).toMatchObject({ state: "dead", attempts: OUTBOX_POLICY.maxAttempts });
         expect(await s.listOpsExceptions({ kind: "outbox_dead" })).toHaveLength(1);

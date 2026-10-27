@@ -127,6 +127,8 @@ export interface CreateShipmentResult {
   /** created = vừa tạo/khôi phục ở hãng · existing = đã có từ trước · pending = chưa rõ kết quả ở hãng (thử lại sau). */
   outcome: "created" | "existing" | "pending";
   shipment: ShipmentRow;
+  /** pending vì hãng trả 429/503 kèm `Retry-After` → số giây hãng yêu cầu chờ (route đưa vào `Retry-After`). */
+  retryAfterSeconds?: number;
 }
 
 interface OrderSnapshot {
@@ -330,7 +332,12 @@ async function createShipmentLocked(
     if (e.kind === "rejected" && found === null) {
       throw new ShippingError("PROVIDER_REJECTED", e.message);
     }
-    return { outcome: "pending", shipment };
+    // Hãng yêu cầu chờ (429/503 + Retry-After, BE-INT-007) → báo lại cho người gọi thay vì thử lại sớm hơn.
+    return {
+      outcome: "pending",
+      shipment,
+      ...(e.retryAfterMs !== null && { retryAfterSeconds: Math.ceil(e.retryAfterMs / 1000) }),
+    };
   }
 }
 

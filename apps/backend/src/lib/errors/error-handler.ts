@@ -59,6 +59,9 @@ const CODES: Record<number, string> = {
   429: "RATE_LIMITED",
 };
 
+/** `Retry-After` mặc định (giây) cho 429 không có giá trị riêng. */
+export const DEFAULT_RETRY_AFTER_SECONDS = 60;
+
 const titleOf = (status: number) => TITLES[status] ?? (status >= 500 ? TITLES[500]! : TITLES[400]!);
 
 /**
@@ -232,6 +235,10 @@ export function xErrorHandler(
     loggerOf(req).info(
       `[http] ${problem.status} ${problem.body.code} ${req.method} ${req.path} trace_id=${traceId}`,
     );
+  // 429 của chính ta luôn kèm `Retry-After` (T-093, RFC 6585 §4): lỗi 429 lọt tới handler toàn cục mà route chưa đặt
+  // giá trị riêng → mặc định thận trọng.
+  if (problem.status === 429 && res.getHeader("Retry-After") === undefined)
+    res.setHeader("Retry-After", String(DEFAULT_RETRY_AFTER_SECONDS));
   res
     .status(problem.status)
     .setHeader("Content-Type", "application/problem+json; charset=utf-8")

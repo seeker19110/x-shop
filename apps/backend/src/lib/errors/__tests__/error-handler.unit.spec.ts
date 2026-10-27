@@ -3,7 +3,13 @@ import { MedusaError } from "@medusajs/framework/utils";
 import { z } from "zod";
 import { CheckoutError, sendProblem as sendCheckoutProblem } from "../../checkout/errors";
 import { sendProblem } from "../../http/problem";
-import { INTERNAL_LEAK, logServerError, toHttpProblem, xErrorHandler } from "../error-handler";
+import {
+  DEFAULT_RETRY_AFTER_SECONDS,
+  INTERNAL_LEAK,
+  logServerError,
+  toHttpProblem,
+  xErrorHandler,
+} from "../error-handler";
 import { REQUEST_ID_PATTERN, traceIdOf } from "../trace";
 import { isNonEmpty } from "@x-shop/domain";
 
@@ -29,6 +35,9 @@ function fakeRes(opts: { headersSent?: boolean } = {}) {
     setHeader(name: string, value: string) {
       captured.headers[name.toLowerCase()] = value;
       return res;
+    },
+    getHeader(name: string): string | undefined {
+      return captured.headers[name.toLowerCase()];
     },
     send(body: string) {
       captured.body = body;
@@ -337,6 +346,30 @@ describe("xErrorHandler", () => {
     expect(captured.status).toBe(404);
     expect(body).toMatchObject({ code: "NOT_FOUND", trace_id: "r1" });
     expect(logs).toEqual([{ level: "info", msg: "[http] 404 NOT_FOUND POST /store/x/thing trace_id=r1" }]);
+  });
+
+  it("429 lọt tới handler toàn cục → luôn kèm Retry-After (mặc định); route đã đặt giá trị riêng thì giữ nguyên", () => {
+    const tooMany = Object.assign(new Error("Too Many Requests"), { status: 429, expose: true });
+    const { captured, body } = run(tooMany, "r429");
+    expect(captured.status).toBe(429);
+    expect(body).toMatchObject({ code: "RATE_LIMITED" });
+    expect(captured.headers["retry-after"]).toBe(String(DEFAULT_RETRY_AFTER_SECONDS));
+
+    const { req } = fakeReq("r429b");
+    const { res, captured: c2 } = fakeRes();
+    res.req = req;
+    res.setHeader("Retry-After", "7");
+    xErrorHandler(
+      tooMany,
+      req as unknown as MedusaRequest,
+      res as unknown as MedusaResponse,
+      jest.fn() as unknown as MedusaNextFunction,
+    );
+    expect(c2.headers["retry-after"]).toBe("7");
+    // Mã khác 429 không bị gắn Retry-After.
+    expect(
+      run(new MedusaError(MedusaError.Types.NOT_FOUND, "x")).captured.headers["retry-after"],
+    ).toBeUndefined();
   });
 
   it("x-request-id xấu → trace_id là UUID mới, request được gán lại cùng mã", () => {

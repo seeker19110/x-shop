@@ -80,7 +80,10 @@ medusaIntegrationTestRunner({
         expect(r1.retried).toContain(key);
         const ev1 = await outboxOf(key);
         expect(ev1).toMatchObject({ state: "failed", attempts: 1 });
-        expect(new Date(ev1.next_attempt_at).getTime() - at.getTime()).toBe(outboxBackoffMs(1));
+        // Backoff lần 1 có equal jitter (T-093): trong [base/2, base) — không tiêm RNG ở đây, chỉ kiểm khoảng.
+        const wait1 = new Date(ev1.next_attempt_at).getTime() - at.getTime();
+        expect(wait1).toBeGreaterThanOrEqual(outboxBackoffMs(1, () => 0));
+        expect(wait1).toBeLessThan(OUTBOX_POLICY.baseDelayMs);
         // Lỗi ghi lại không lộ email/SĐT.
         expect(ev1.last_error).not.toMatch(/an@example\.vn|0912|345 678/);
         const [m1] = await messagesOf(key);
@@ -140,6 +143,125 @@ medusaIntegrationTestRunner({
         expect(ex).toHaveLength(1);
         expect(JSON.stringify(ex[0]!.detail)).not.toMatch(/an@example\.vn|0912/);
         expect((await checkout().listOrderFinances({ order_id: o.orderId }))[0]!.state).toBe("placed");
+      });
+    });
+
+    describe("T-093 — payload sai / lỗi vĩnh viễn → dead ngay; lỗi tạm theo backoff + Retry-After", () => {
+      /** Adapter ném lỗi do test chọn cho message key có tiền tố `prefix`. */
+      class ThrowingAdapter implements NotificationAdapter {
+        readonly name = "throwing";
+        readonly live = false;
+        calls = 0;
+        constructor(
+          private readonly prefix: string,
+          private readonly error: () => Error,
+        ) {}
+        async send(m: OutgoingMessage) {
+          if (!m.messageKey.includes(this.prefix)) return { providerMessageId: null };
+          this.calls += 1;
+          throw this.error();
+        }
+      }
+      const exceptionOf = async (orderId: string, key: string) =>
+        (
+          await checkout().listOpsExceptions({ kind: "notification_failed" as never, order_id: orderId })
+        ).filter((e) => (e.detail as { event_key?: string } | null)?.event_key === key);
+
+      it("payload sai schema (thiếu link, khoá bí mật, object lồng) → dead ở lần nhận đầu kèm lý do, không gửi; lượt vẫn xử lý sự kiện đúng", async () => {
+        const o = await client.placeOrder([["Đen/S", 1]], "cod");
+        const noLink = await enqueue("order.lookup_link", o.orderId);
+        const secret = await enqueue("order.confirmed", o.orderId, { password: "mat-khau-bi-mat-123" });
+        const nested = await enqueue("order.placed_pending", o.orderId, { cart: { items: [{ sku: "X" }] } });
+        const good = await enqueue("order.placed_pending", o.orderId, { payment_method: "cod" });
+        const adapter = new ScriptedAdapter("t029-");
+        adapter.failing = false;
+        setNotificationAdapterForTest(adapter);
+
+        const r = await dispatchOutbox(container, { now: good.at });
+        expect(r.dead).toEqual(expect.arrayContaining([noLink.key, secret.key, nested.key]));
+        expect(r.sent).toContain(good.key);
+        expect(r.retried).not.toEqual(expect.arrayContaining([noLink.key]));
+
+        for (const [ev, field] of [
+          [noLink, "link"],
+          [secret, "password"],
+          [nested, "cart"],
+        ] as const) {
+          const row = await outboxOf(ev.key);
+          expect(row).toMatchObject({ state: "dead", attempts: 1 });
+          expect(row.last_error).toContain("payload không hợp lệ");
+          expect(row.last_error).toContain(`${field}:`);
+          expect(await messagesOf(ev.key)).toHaveLength(0);
+          const ex = await exceptionOf(o.orderId, ev.key);
+          expect(ex).toHaveLength(1);
+          expect(ex[0]!.detail).toMatchObject({ dead_reason: "invalid_payload", attempts: 1 });
+        }
+        // Lý do không chứa giá trị của trường (bí mật/PII).
+        const secretRow = await outboxOf(secret.key);
+        expect(secretRow.last_error).not.toContain("mat-khau-bi-mat-123");
+        expect(JSON.stringify(await exceptionOf(o.orderId, secret.key))).not.toContain("mat-khau-bi-mat-123");
+        expect(adapter.delivered.filter((m) => m.messageKey.includes(good.key))).toHaveLength(1);
+      });
+
+      it("đồng thời: hai dispatcher cùng lúc gặp payload sai → dead đúng một lần, một ngoại lệ", async () => {
+        const o = await client.placeOrder([["Trắng/M", 1]], "cod");
+        const bad = await enqueue("order.lookup_link", o.orderId, { link: "ftp://khong-hop-le" });
+        const [a, b] = await Promise.all([
+          dispatchOutbox(container, { now: bad.at }),
+          dispatchOutbox(container, { now: bad.at }),
+        ]);
+        expect([...a.dead, ...b.dead].filter((k) => k === bad.key)).toHaveLength(1);
+        expect(await outboxOf(bad.key)).toMatchObject({ state: "dead", attempts: 1 });
+        expect(await exceptionOf(o.orderId, bad.key)).toHaveLength(1);
+      });
+
+      it("adapter trả 4xx vĩnh viễn (422) → dead ngay lần 1, ngoại lệ permanent_error; 408 và 429 không có Retry-After → retry backoff", async () => {
+        const o = await client.placeOrder([["Đen/M", 1]], "cod");
+        const p = await enqueue("order.placed_pending", o.orderId, { payment_method: "cod" });
+        const perm = new ThrowingAdapter(p.key, () =>
+          Object.assign(new Error(`ESP 422 địa chỉ ${CONTACT.email} không hợp lệ`), { status: 422 }),
+        );
+        setNotificationAdapterForTest(perm);
+        const r1 = await dispatchOutbox(container, { now: p.at });
+        expect(r1.dead).toContain(p.key);
+        expect(perm.calls).toBe(1);
+        const row = await outboxOf(p.key);
+        expect(row).toMatchObject({ state: "dead", attempts: 1 });
+        expect(row.last_error).not.toContain(CONTACT.email);
+        const ex = await exceptionOf(o.orderId, p.key);
+        expect(ex).toHaveLength(1);
+        expect(ex[0]!.detail).toMatchObject({ dead_reason: "permanent_error" });
+        expect(JSON.stringify(ex[0]!.detail)).not.toContain(CONTACT.email);
+        // Đơn không bị đụng tới.
+        expect((await checkout().listOrderFinances({ order_id: o.orderId }))[0]!.state).toBe("placed");
+
+        for (const status of [408, 429]) {
+          const q = await enqueue("order.placed_pending", o.orderId, { payment_method: "cod" });
+          const tmp = new ThrowingAdapter(q.key, () => Object.assign(new Error(`ESP ${status}`), { status }));
+          setNotificationAdapterForTest(tmp);
+          const r = await dispatchOutbox(container, { now: q.at });
+          expect(r.retried).toContain(q.key);
+          const ev = await outboxOf(q.key);
+          expect(ev).toMatchObject({ state: "failed", attempts: 1 });
+          const wait = new Date(ev.next_attempt_at).getTime() - q.at.getTime();
+          expect(wait).toBeGreaterThanOrEqual(OUTBOX_POLICY.baseDelayMs / 2);
+          expect(wait).toBeLessThan(OUTBOX_POLICY.baseDelayMs);
+        }
+      });
+
+      it("lỗi tạm kèm Retry-After (429, 600 s) → hẹn lại đúng sau Retry-After (lớn hơn backoff), không dead", async () => {
+        const o = await client.placeOrder([["Trắng/S", 1]], "cod");
+        const q = await enqueue("order.placed_pending", o.orderId, { payment_method: "cod" });
+        setNotificationAdapterForTest(
+          new ThrowingAdapter(q.key, () =>
+            Object.assign(new Error("ESP 429"), { status: 429, retryAfterMs: 600_000 }),
+          ),
+        );
+        const r = await dispatchOutbox(container, { now: q.at, random: () => 0.5 });
+        expect(r.retried).toContain(q.key);
+        const ev = await outboxOf(q.key);
+        expect(ev).toMatchObject({ state: "failed", attempts: 1 });
+        expect(new Date(ev.next_attempt_at).getTime() - q.at.getTime()).toBe(600_000);
       });
     });
 

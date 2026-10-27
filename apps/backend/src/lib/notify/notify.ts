@@ -12,8 +12,8 @@ import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Gửi thông báo giao dịch từ outbox (T-029, SPEC-payment S-109, AT18): mỗi sự kiện outbox → tối đa một thông báo với
- * message key `notify:<event_key>:<kênh>`. Lỗi gửi ném ra để outbox-dispatch retry lũy thừa (đơn không bị đụng tới);
- * quá trần → ngoại lệ `notification_failed`. Chỉ đọc trạng thái đơn đã finalization — sự kiện native không gửi gì (AT34).
+ * message key `notify:<event_key>:<kênh>`. Lỗi gửi ném ra để outbox-dispatch retry lũy thừa có jitter (đơn không bị đụng
+ * tới); lỗi vĩnh viễn của adapter (4xx không phải 408/429) hoặc quá trần → ngoại lệ `notification_failed`. Chỉ đọc trạng thái đơn đã finalization — sự kiện native không gửi gì (AT34).
  */
 export const NOTIFICATION_EVENT_TYPES = [
   "order.placed_pending",
@@ -82,7 +82,9 @@ export async function sendNotification(
   } catch (e) {
     const reason = scrubPii(e instanceof Error ? `${e.name}: ${e.message}` : "lỗi không rõ");
     await notify.markFailed(id, reason);
-    throw new Error(`gửi ${input.template} qua ${input.channel} lỗi — ${reason}`);
+    // `cause` giữ mã gốc của adapter (status 4xx vĩnh viễn, `retryAfterMs`) cho outbox phân loại (T-093); thông điệp
+    // ghi DB/log vẫn chỉ là bản đã che PII.
+    throw new Error(`gửi ${input.template} qua ${input.channel} lỗi — ${reason}`, { cause: e });
   }
 }
 
