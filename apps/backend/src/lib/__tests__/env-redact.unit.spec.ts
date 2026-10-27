@@ -41,6 +41,7 @@ const withAllSecrets: Record<string, string> = {
   GHN_BASE_URL: "https://ghn.example.vn",
   GHN_TOKEN: "SENTINELtokenghn0123456789",
   GHN_SHOP_ID: "123",
+  CATALOG_REVALIDATE_SECRET: "SENTINEL-catalog_revalidate_secret-0123456789",
   FILE_STORAGE: "s3",
   S3_ENDPOINT: "http://127.0.0.1:3900",
   S3_REGION: "garage",
@@ -61,6 +62,7 @@ const SENTINEL_VALUES = [
   "SENTINEL-vnpay_hash_secret",
   "SENTINEL-vnpay_hash_secret_previous",
   "SENTINELtokenghn",
+  "SENTINEL-catalog_revalidate_secret",
   "SENTINEL-s3_access_key_id",
   "SENTINEL-s3_secret_access_key",
 ];
@@ -82,6 +84,7 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
     expect(env.JWT_SECRET).toContain("SENTINEL-jwt_secret");
     expect(env.vnpay?.hashSecretPrevious).toContain("SENTINEL-vnpay_hash_secret_previous");
     expect(env.ghn.token).toContain("SENTINELtokenghn");
+    expect(env.catalogRevalidate?.secret).toContain("SENTINEL-catalog_revalidate_secret");
     expect(env.fileStorage.kind === "s3" && env.fileStorage.secretAccessKey).toContain("SENTINEL-s3_secret");
   });
 
@@ -97,6 +100,8 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
       orderLookupSecret: REDACTED,
       vnpay: { hashSecret: REDACTED, hashSecretPrevious: REDACTED },
       ghn: { token: REDACTED },
+      CATALOG_REVALIDATE_SECRET: REDACTED,
+      catalogRevalidate: { secret: REDACTED },
       S3_ACCESS_KEY_ID: REDACTED,
       S3_SECRET_ACCESS_KEY: REDACTED,
       fileStorage: { kind: "s3", bucket: "xshop-public", accessKeyId: REDACTED, secretAccessKey: REDACTED },
@@ -152,7 +157,9 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
     expect(names.filter((n) => SECRET_LOOKING_NAME.test(n) && !isSecretName(n))).toEqual([]);
   });
 
-  it("đối tượng lồng (ghn, vnpay) tự che khi stringify/inspect", () => {
+  it("đối tượng lồng (ghn, vnpay, catalogRevalidate) tự che khi stringify/inspect", () => {
+    expectNoSecret(JSON.stringify(env.catalogRevalidate));
+    expectNoSecret(inspect(env.catalogRevalidate));
     expectNoSecret(JSON.stringify(env.ghn));
     expectNoSecret(JSON.stringify(env.vnpay));
     expectNoSecret(inspect(env.ghn));

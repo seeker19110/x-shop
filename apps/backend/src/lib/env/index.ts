@@ -201,6 +201,36 @@ const secret = z
   .string()
   .min(MIN_SECRET_LENGTH, { message: `phải dài tối thiểu ${MIN_SECRET_LENGTH} ký tự` });
 
+/** Trần số đích webhook revalidate (một mục mỗi bản storefront khi chạy nhiều bản — T-142). */
+export const MAX_CATALOG_REVALIDATE_URLS = 8;
+/** Đường route nhận webhook ở storefront (apps/storefront/src/app/api/revalidate/route.ts). */
+export const CATALOG_REVALIDATE_PATH = "/api/revalidate";
+
+/**
+ * Danh sách URL http(s) cách nhau dấu phẩy (≤ `MAX_CATALOG_REVALIDATE_URLS`): không khoảng trắng trong mục, `\`, `@`
+ * (thông tin đăng nhập), query, fragment — nên giá trị không bao giờ mang bí mật (khác `DATABASE_URL`/`REDIS_URL`).
+ */
+const urlList = z.string().refine(
+  (raw) => {
+    const parts = raw.split(",").map((p) => p.trim());
+    return (
+      parts.length <= MAX_CATALOG_REVALIDATE_URLS &&
+      parts.every((entry) => {
+        if (entry === "" || /[\s\\@#?]/.test(entry)) return false;
+        try {
+          const u = new URL(entry);
+          return (u.protocol === "http:" || u.protocol === "https:") && u.hostname !== "";
+        } catch {
+          return false;
+        }
+      })
+    );
+  },
+  {
+    message: `phải là danh sách ≤ ${MAX_CATALOG_REVALIDATE_URLS} URL http(s) cách nhau dấu phẩy (không thông tin đăng nhập, query, fragment)`,
+  },
+);
+
 /** Danh sách origin cách nhau dấu phẩy: mỗi mục là origin http(s) hoặc biểu thức chính quy dạng /…/. */
 const corsList = z.string().refine(
   (raw) =>
@@ -307,6 +337,15 @@ const baseSchema = z.object({
   AUTH_CORS: optionalText.pipe(corsList.optional()),
   MEDUSA_BACKEND_URL: optionalText.pipe(urlWithProtocol(["http:", "https:"], "http(s)://").optional()),
   STOREFRONT_URL: optionalText.pipe(baseUrl.optional()),
+  // Webhook vô hiệu hoá cache catalog → storefront (T-142, D-070). Khoá HMAC chung với storefront (≥ 32 ký tự). Production
+  // BẮT BUỘC có khoá trừ khi tắt tường minh `CATALOG_REVALIDATE_ENABLED=false` (đường lùi của D-070, cảnh báo lúc khởi
+  // động); dev/test vắng khoá = tắt. URLS vắng = `<STOREFRONT_URL>/api/revalidate`; production phải https.
+  CATALOG_REVALIDATE_ENABLED: z.preprocess(
+    (v) => (v === undefined || v === "" ? "true" : v),
+    z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
+  ),
+  CATALOG_REVALIDATE_SECRET: optionalText.pipe(secret.optional()),
+  CATALOG_REVALIDATE_URLS: optionalText.pipe(urlList.optional()),
   // Thư mục file private (T-141, BE-FILE-005): không ký tự điều khiển; rời thư mục công khai `static/` (kiểm ở superRefine).
   PRIVATE_UPLOAD_DIR: optionalText.pipe(
     z
@@ -445,6 +484,13 @@ const schema = baseSchema
         });
       }
     }
+    if (env.CATALOG_REVALIDATE_URLS !== undefined && env.CATALOG_REVALIDATE_SECRET === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["CATALOG_REVALIDATE_URLS"],
+        message: "chỉ đặt khi đã đặt CATALOG_REVALIDATE_SECRET",
+      });
+    }
     fileStorageProblems(env).forEach(([variable, message]) =>
       ctx.addIssue({ code: "custom", path: [variable], message }),
     );
@@ -470,6 +516,23 @@ const schema = baseSchema
     if (env.NODE_ENV !== "production") return;
     if (env.DEBUG) {
       ctx.addIssue({ code: "custom", path: ["DEBUG"], message: "phải tắt khi NODE_ENV=production" });
+    }
+    if (env.CATALOG_REVALIDATE_ENABLED) {
+      if (env.CATALOG_REVALIDATE_SECRET === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["CATALOG_REVALIDATE_SECRET"],
+          message:
+            "bắt buộc khi NODE_ENV=production (tắt webhook revalidate tường minh: CATALOG_REVALIDATE_ENABLED=false)",
+        });
+      }
+      if (env.CATALOG_REVALIDATE_URLS?.split(",").some((u) => !u.trim().startsWith("https://")) === true) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["CATALOG_REVALIDATE_URLS"],
+          message: "phải dùng https:// ở production",
+        });
+      }
     }
     if (env.GHN_MODE === undefined) {
       ctx.addIssue({
@@ -560,6 +623,18 @@ const schema = baseSchema
       },
       // STOREFRONT_URL đã chuẩn hoá ở schema; production đã bắt buộc biến nên mặc định dev không áp ở production.
       storefrontUrl: env.STOREFRONT_URL ?? DEV_STOREFRONT_URL,
+      // null = tắt webhook revalidate (không ghi outbox, storefront dựa TTL).
+      catalogRevalidate:
+        !env.CATALOG_REVALIDATE_ENABLED || env.CATALOG_REVALIDATE_SECRET === undefined
+          ? null
+          : {
+              secret: env.CATALOG_REVALIDATE_SECRET,
+              urls: (
+                env.CATALOG_REVALIDATE_URLS?.split(",").map((u) => u.trim()) ?? [
+                  `${env.STOREFRONT_URL ?? DEV_STOREFRONT_URL}${CATALOG_REVALIDATE_PATH}`,
+                ]
+              ).map((u) => u.replace(/\/+$/, "")),
+            },
       // Chỉ dùng khi FILE_STORAGE=local (dev/test; production bắt buộc s3 nên mặc định dev không áp ở production).
       privateUploadDir: path.resolve(
         env.PRIVATE_UPLOAD_DIR ?? path.join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME),
@@ -582,6 +657,7 @@ const schema = baseSchema
     // `JSON.stringify`/`console.log`/`util.inspect` trên Env và các đối tượng lồng (ghn, vnpay) luôn ra bản đã che (BASE-CFG-005).
     // Không chặn được `{ ...env }`/`Object.entries`: các cách đó sao chép GIÁ TRỊ THẬT — dump phải qua redactConfig.
     withRedaction(effective.ghn);
+    if (effective.catalogRevalidate !== null) withRedaction(effective.catalogRevalidate);
     if (effective.fileStorage.kind === "s3") withRedaction(effective.fileStorage);
     if (effective.vnpay !== null) withRedaction(effective.vnpay);
     return withRedaction(effective);
@@ -715,6 +791,8 @@ export function formatEnvProblems(problems: readonly EnvProblem[]): string {
 
 export interface ExitHooks {
   writeError: (message: string) => void;
+  /** Cảnh báo lúc khởi động (cấu hình hợp lệ nhưng tắt một hàng rào); vắng → dùng `writeError`. */
+  writeWarning?: (message: string) => void;
   exit: (code: number) => never;
 }
 
@@ -731,9 +809,27 @@ export function loadEnvOrExit(
   hooks: ExitHooks = processHooks,
 ): Env {
   const result = parseEnv(source);
-  if (result.ok) return result.env;
+  if (result.ok) {
+    for (const w of envWarnings(result.env)) (hooks.writeWarning ?? hooks.writeError)(w);
+    return result.env;
+  }
   hooks.writeError(formatEnvProblems(result.problems));
   return hooks.exit(1);
+}
+
+/**
+ * Cảnh báo lúc khởi động cho cấu hình hợp lệ nhưng đang tắt hàng rào có chủ đích (không in giá trị biến):
+ * production + `CATALOG_REVALIDATE_ENABLED=false` → cache catalog storefront chỉ hết hạn theo TTL (BE-CACHE-007, D-070).
+ */
+export function envWarnings(env: Env): string[] {
+  const out: string[] = [];
+  if (env.NODE_ENV === "production" && !env.CATALOG_REVALIDATE_ENABLED) {
+    out.push(
+      "[x-shop] CẢNH BÁO: CATALOG_REVALIDATE_ENABLED=false — webhook vô hiệu hoá cache catalog TẮT, storefront chỉ " +
+        "làm mới theo TTL 60 giây (giá/tồn trên PDP có thể cũ; docs/ops/CACHE.md).",
+    );
+  }
+  return out;
 }
 
 /**

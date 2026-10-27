@@ -10,6 +10,7 @@ import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
 import { syncNativePayment } from "./payment";
+import { CATALOG_REVALIDATE_EVENT, catalogRevalidateHandler } from "../catalog/revalidate";
 import { queryAndProcess, type QueryGate } from "./recheck";
 import { validateOutboxPayload } from "../outbox/payload";
 import { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs } from "../outbox/policy";
@@ -339,6 +340,11 @@ export async function codConfirmTimeout(
  */
 export interface OutboxHandlerContext {
   now: Date;
+  /**
+   * Trạng thái dùng chung giữa các lần gọi bộ xử lý trong CÙNG một lượt `dispatchOutbox` (mới mỗi lượt) — vd. trần gọi
+   * mạng mỗi lượt của `catalog.revalidate` (T-142, D-081). Khoá theo loại sự kiện.
+   */
+  runState: Map<string, unknown>;
 }
 
 export type OutboxHandler = (
@@ -353,6 +359,8 @@ export { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs };
 /** Bộ xử lý mặc định. Thông báo khách (email/SMS) đi qua `lib/notify` (T-029) theo message key duy nhất. */
 export const DEFAULT_OUTBOX_HANDLERS: Record<string, OutboxHandler> = {
   ...Object.fromEntries(NOTIFICATION_EVENT_TYPES.map((t) => [t, notificationHandler] as const)),
+  // Webhook vô hiệu hoá cache catalog của storefront (T-142) — đường dự phòng khi lượt gửi gộp cuối cửa sổ lỗi.
+  [CATALOG_REVALIDATE_EVENT]: catalogRevalidateHandler,
   "payment.native_sync": async (container, event) => {
     const orderId = String(event.payload.order_id ?? event.aggregate_id);
     const r = await withLock(
@@ -456,12 +464,14 @@ export async function dispatchOutbox(
     warn: (m) => log.warn(m),
     info: (m) => log.info(m),
   });
+  // Trạng thái theo lượt cho bộ xử lý (T-142: trần gọi mạng mỗi lượt của catalog.revalidate).
+  const runState = new Map<string, unknown>();
 
   const markDead = async (event: OutboxClaim, message: string, reason: DeadReason) => {
     await s.markOutboxFailed(event.id, message, null);
     // Thông báo khách hỏng → ngoại lệ riêng cho người theo dõi gửi tin (AT18); đơn không bị ảnh hưởng.
     const kind = isNotificationEvent(event.type) ? "notification_failed" : "outbox_dead";
-    await s.openOpsException({
+    const exception = {
       kind,
       dedupe_key: `${kind}:${event.event_key}`,
       order_id: event.aggregate_id.startsWith("order_") ? event.aggregate_id : null,
@@ -473,7 +483,14 @@ export async function dispatchOutbox(
         attempts: event.attempts + 1,
         last_error: message.slice(0, 500),
       },
-    });
+    } as const;
+    if (event.type === CATALOG_REVALIDATE_EVENT) {
+      // T-142: webhook revalidate chết hàng loạt khi storefront lệch khoá/hỏng → MỘT ngoại lệ đang mở cho loại này, ưu
+      // tiên thường (dữ liệu vẫn tươi lại theo TTL), không mỗi dòng một ngoại lệ high (D-107, phạm vi `type`).
+      await s.openOpsExceptionIfNoneActive({ ...exception, priority: "normal", active_scope: ["type"] });
+    } else {
+      await s.openOpsException(exception);
+    }
     summary.dead.push(event.event_key);
   };
 
@@ -507,7 +524,7 @@ export async function dispatchOutbox(
     }
     let ok = false;
     try {
-      await (handler ?? logHandler)(container, event, { now: opts.now ?? clock() });
+      await (handler ?? logHandler)(container, event, { now: opts.now ?? clock(), runState });
       await s.markOutboxSent(event.id);
       summary.sent.push(event.event_key);
       ok = true;

@@ -86,6 +86,11 @@ const BY_TYPE: Record<string, z.ZodType> = {
     reason: id.optional(),
     refund_amount: money.optional(),
   }),
+  // T-142 (D-070): chỉ phạm vi + ID sản phẩm — handle/tag dựng LÚC GỬI từ nguồn (lib/catalog/revalidate.ts).
+  "catalog.revalidate": z.union([
+    z.looseObject({ scope: z.literal("all"), product_id: z.never().optional() }),
+    z.looseObject({ scope: z.literal("product"), product_id: z.string().regex(/^prod_[0-9A-Za-z]{1,64}$/) }),
+  ]),
 };
 
 export const OUTBOX_PAYLOAD_TYPES = Object.keys(BY_TYPE);

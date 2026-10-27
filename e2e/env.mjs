@@ -50,6 +50,15 @@ export const VNPAY = {
   hashSecret: "e2e-test-only-vnpay-hash-secret-0123456789",
 };
 
+/** Webhook vô hiệu hoá cache catalog backend → storefront (T-142): khoá HMAC TEST-ONLY dùng chung hai phía. */
+export const CATALOG_REVALIDATE_SECRET = "e2e-test-only-catalog-revalidate-secret-0123456789";
+
+/** Admin owner TEST-ONLY (run.mjs tạo bằng `medusa user` + grant-owner) — cho spec cần sửa catalog qua Admin API. */
+export const E2E_ADMIN = {
+  email: "e2e-admin@example.com",
+  password: "e2e-test-only-admin-password-0123456789",
+};
+
 /** Biến môi trường backend: VNPAY mock (querydr nội bộ) + cổng thanh toán là máy chủ giả lập cục bộ. */
 export function backendEnv() {
   return {
@@ -69,6 +78,8 @@ export function backendEnv() {
     VNPAY_API_URL: `${URLS.mockVnpay}/api/transaction`,
     VNPAY_RETURN_URL: `${URLS.storefront}/thanh-toan/ket-qua`,
     GHN_MODE: "mock",
+    CATALOG_REVALIDATE_SECRET,
+    CATALOG_REVALIDATE_URLS: `${URLS.storefront}/api/revalidate`,
   };
 }
 
@@ -79,5 +90,6 @@ export function storefrontEnv(publishableKey) {
     NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: publishableKey,
     MEDUSA_BACKEND_URL: URLS.backendLb,
     XS_DATA_SOURCE: "backend",
+    CATALOG_REVALIDATE_SECRET,
   };
 }

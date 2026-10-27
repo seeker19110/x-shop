@@ -17,5 +17,7 @@ export const ADMIN_DB_URL: string;
 export const DATABASE_URL: string;
 export const REDIS_URL: string;
 export const VNPAY: { tmnCode: string; hashSecret: string };
+export const CATALOG_REVALIDATE_SECRET: string;
+export const E2E_ADMIN: { email: string; password: string };
 export function backendEnv(): Record<string, string>;
 export function storefrontEnv(publishableKey: string): Record<string, string>;

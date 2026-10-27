@@ -7,6 +7,8 @@ import {
   parseServerEnv,
   resetEnvCacheForTests,
   resolveDataSource,
+  SECRET_SERVER_ENV_KEYS,
+  serverEnvSchema,
   shouldUseDefaults,
 } from "./index";
 
@@ -70,6 +72,30 @@ describe("parseServerEnv", () => {
 
   it("URL sai định dạng → lỗi", () => {
     expect(() => parseServerEnv({ MEDUSA_BACKEND_URL: "không phải url" }, { useDefaults: false })).toThrow();
+  });
+
+  it("CATALOG_REVALIDATE_SECRET (T-142): vắng = tắt; ngắn hơn 32 ký tự → lỗi nêu tên biến, KHÔNG nêu giá trị", () => {
+    expect(parseServerEnv({}, { useDefaults: true }).CATALOG_REVALIDATE_SECRET).toBeUndefined();
+    const ok = "k".repeat(32);
+    expect(
+      parseServerEnv({ CATALOG_REVALIDATE_SECRET: ok }, { useDefaults: true }).CATALOG_REVALIDATE_SECRET,
+    ).toBe(ok);
+    let message = "";
+    try {
+      parseServerEnv({ CATALOG_REVALIDATE_SECRET: "bi-mat-ngan-SENTINEL" }, { useDefaults: true });
+    } catch (e) {
+      message = String(e);
+    }
+    expect(message).toContain("CATALOG_REVALIDATE_SECRET");
+    expect(message).not.toContain("SENTINEL");
+  });
+
+  it("hàng rào: mọi khoá schema server tên giống bí mật đều đã đăng ký trong SECRET_SERVER_ENV_KEYS", () => {
+    const looksSecret = /secret|token|password|passwd|private[_-]?key|encryption[_-]?key|_key$|credential/i;
+    const keys = Object.keys(serverEnvSchema.shape);
+    const registered: readonly string[] = SECRET_SERVER_ENV_KEYS;
+    expect(keys.filter((k) => looksSecret.test(k) && !registered.includes(k))).toEqual([]);
+    for (const k of registered) expect(keys).toContain(k);
   });
 });
 

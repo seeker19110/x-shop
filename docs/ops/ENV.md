@@ -47,6 +47,17 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # khoảng trắng/xuống dòng/tab, `\`, `@`, `?`, `#` bị từ chối lúc khởi động (hay gặp: newline thừa khi tạo từ file/echo);
 # gốc dùng thật được chuẩn hoá từ URL đã parse (scheme/host viết thường, bỏ cổng mặc định).
 STOREFRONT_URL=https://shop.example.vn
+# Webhook vô hiệu hoá cache catalog → storefront (T-142, D-070; docs/ops/CACHE.md). BÍ MẬT, ≥ 32 ký tự ngẫu nhiên (sinh:
+# openssl rand -base64 48), PHẢI TRÙNG CATALOG_REVALIDATE_SECRET của storefront. Production BẮT BUỘC (thiếu → in tên biến,
+# thoát mã 1) trừ khi tắt tường minh CATALOG_REVALIDATE_ENABLED=false (đường lùi D-070: không ghi outbox, storefront chỉ hết
+# hạn theo TTL 60 giây, backend in CẢNH BÁO lúc khởi động). Dev/test vắng khoá = tắt. Đổi khoá: RUNBOOK §9 (webhook gửi
+# trong lúc lệch khoá bị 401 → outbox `dead` + MỘT ngoại lệ `outbox_dead` đang mở; dữ liệu vẫn tươi lại sau TTL).
+# CATALOG_REVALIDATE_ENABLED=true
+CATALOG_REVALIDATE_SECRET=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-revalidate
+# Đích webhook: danh sách ≤ 8 URL http(s) cách dấu phẩy (production: https), không thông tin đăng nhập/query/fragment; chỉ
+# đặt khi đã đặt khoá. Vắng = `<STOREFRONT_URL>/api/revalidate`. Chạy NHIỀU bản storefront → liệt kê URL nội bộ của TỪNG bản (cache dữ liệu của
+# Next nằm trong từng tiến trình; gửi qua LB chỉ tới một bản).
+# CATALOG_REVALIDATE_URLS=https://sf-1.internal.example.vn/api/revalidate,https://sf-2.internal.example.vn/api/revalidate
 # Kho file của File Module (T-154, ARC-RES-005): local | s3.
 #  - local = đĩa của MÁY ĐANG CHẠY (`static/` công khai + PRIVATE_UPLOAD_DIR). Ảnh upload ở bản sao A KHÔNG có ở bản sao B;
 #    file xuất do worker ghi KHÔNG tải được qua server ở máy khác. Chỉ dev/test một tiến trình — mặc định khi vắng ở dev/test
@@ -125,7 +136,7 @@ MEDUSA_BACKEND_URL=https://api.shop.example.vn
 # tượng `Env` (và `ghn`, `vnpay` lồng trong đó) tự che khi JSON.stringify/console.log/util.inspect; `{ ...env }` hay
 # Object.entries sao chép GIÁ TRỊ THẬT — nơi dump phải qua `redactConfig`. Trường bí mật rỗng in "(chưa đặt)". Danh sách bí mật `SECRET_ENV_KEYS`: DATABASE_URL, REDIS_URL (có mật
 # khẩu), JWT_SECRET, COOKIE_SECRET, AUTH_MFA_ENCRYPTION_KEY, ORDER_LOOKUP_SECRET, VNPAY_HASH_SECRET(_PREVIOUS), GHN_TOKEN,
-# S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY (đối tượng `fileStorage` lồng trong Env cũng tự che).
+# CATALOG_REVALIDATE_SECRET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY (đối tượng `fileStorage` lồng trong Env cũng tự che).
 # Thêm biến bí mật mới → thêm vào danh sách. Hàng rào test duyệt MỌI khoá của schema (cả biến optional vắng mặt): tên
 # giống bí mật (secret/token/password/…/_KEY) hoặc `*_URL` chưa xếp vào "bí mật" hay danh sách URL đã xác minh không
 # chứa user:pass → test đỏ.
@@ -195,6 +206,10 @@ MEDUSA_BACKEND_URL=http://localhost:9000
 # true = storefront đứng sau proxy tin cậy (LB/CDN) đặt x-real-ip / x-forwarded-for → chuyển tiếp IP khách cho rate limit
 # của backend. Vắng/false = không tin (client gọi thẳng tự khai được): không chuyển tiếp IP (T-034).
 # XS_TRUST_PROXY_HEADERS=false
+# BÍ MẬT (chỉ server, `SECRET_SERVER_ENV_KEYS` trong src/lib/env — T-098): khoá HMAC của webhook `/api/revalidate` (T-142),
+# ≥ 32 ký tự, TRÙNG CATALOG_REVALIDATE_SECRET của backend. Vắng = route trả 503, cache catalog chỉ theo TTL. Sai độ dài →
+# getServerEnv() ném lỗi nêu tên biến (không in giá trị). Không bao giờ đặt tiền tố NEXT_PUBLIC_.
+# CATALOG_REVALIDATE_SECRET=
 # Gốc URL ảnh của kho dùng chung (T-154) = S3_FILE_URL của backend. Chỉ server; ĐỌC LÚC `next build` (images.remotePatterns
 # đóng vào bản build — đổi = build lại). http(s), không query/fragment/thông tin đăng nhập; production phải https:// (sai →
 # build/start dừng, nêu tên biến). Vắng = chỉ ảnh `<MEDUSA_BACKEND_URL>/static/**` (backend FILE_STORAGE=local — dev).
