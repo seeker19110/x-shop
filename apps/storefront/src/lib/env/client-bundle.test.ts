@@ -75,25 +75,76 @@ describe("biến server không lọt vào bundle client", () => {
     expect(() => getServerEnv()).toThrow(/chỉ được gọi ở server/);
   });
 
-  it('file "use client" chỉ được nhập getClientEnv/getAnalyticsTransport từ module env', () => {
-    const offenders: string[] = [];
+  const byRel = new Map(files.map((f) => [f.rel, f]));
+  const isClientRoot = (text: string): boolean => /^\s*["']use client["']/.test(text);
+
+  const isServerActions = (text: string): boolean => /^\s*["']use server["']/.test(text);
+
+  /** Giải import tương đối (`./x`, `../x`) về file nguồn: x.ts, x.tsx, x/index.ts(x). Bỏ qua gói ngoài và alias. */
+  function resolveRelative(fromRel: string, spec: string): string | undefined {
+    const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), spec));
+    return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`, base].find((c) =>
+      byRel.has(c),
+    );
+  }
+
+  const IMPORT_RE =
+    /(?:import|export)\s[^"';]*?from\s*["']([^"']+)["']|import\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;
+
+  /** Đồ thị import: mọi file client + phần bao đóng bắc cầu của chúng, kèm đường đi để báo lỗi dễ đọc. */
+  function clientClosure(): Map<string, string[]> {
+    const seen = new Map<string, string[]>();
+    const queue: string[] = [];
     for (const f of files) {
-      if (!/^\s*["']use client["']/.test(f.text)) continue;
-      for (const m of f.text.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'][^"']*\/lib\/env["']/g)) {
-        const names = m[1]!.split(",").map((n) => n.trim().replace(/^type\s+/, ""));
-        if (names.some((n) => n !== "" && !["getClientEnv", "getAnalyticsTransport"].includes(n)))
-          offenders.push(f.rel);
+      if (isClientRoot(f.text)) {
+        seen.set(f.rel, [f.rel]);
+        queue.push(f.rel);
       }
     }
-    expect(offenders).toEqual([]);
+    while (queue.length > 0) {
+      const rel = queue.shift()!;
+      // Module "use server": Next thay import từ client bằng stub gọi RPC, mã bên trong không vào bundle client.
+      if (isServerActions(byRel.get(rel)!.text)) continue;
+      for (const m of byRel.get(rel)!.text.matchAll(IMPORT_RE)) {
+        const spec = m[1] ?? m[2] ?? m[3] ?? "";
+        if (!spec.startsWith(".")) continue;
+        const target = resolveRelative(rel, spec);
+        if (target !== undefined && !seen.has(target)) {
+          seen.set(target, [...seen.get(rel)!, target]);
+          queue.push(target);
+        }
+      }
+    }
+    return seen;
+  }
+
+  it("bao đóng import của file client không chứa lib/env/index (mang schema + tên biến server)", () => {
+    const closure = clientClosure();
+    expect(closure.size).toBeGreaterThan(10); // bộ quét thật sự đi được qua nhiều file
+    expect(closure.has("lib/analytics/track.ts")).toBe(true); // module trung gian được tính
+    expect(closure.has("lib/env/public.ts")).toBe(true);
+    const bad = [...closure].filter(([rel]) => rel === "lib/env/index.ts").map(([, p]) => p.join(" -> "));
+    expect(bad).toEqual([]);
   });
 
-  it('file "use client" không tham chiếu biến server (tên trong serverEnvSchema)', () => {
+  it('bao đóng import của file client không chứa file nào nhập "zod"', () => {
+    const bad = [...clientClosure()]
+      .filter(([rel]) => /from\s*["']zod["']/.test(byRel.get(rel)!.text))
+      .map(([, p]) => p.join(" -> "));
+    expect(bad).toEqual([]);
+  });
+
+  it("bộ quét bắt được vi phạm: track.ts mà nhập ../env sẽ bị phát hiện (kiểm chứng bộ quét)", () => {
+    const track = byRel.get("lib/analytics/track.ts")!;
+    expect(resolveRelative("lib/analytics/track.ts", "../env")).toBe("lib/env/index.ts");
+    expect(track.text).not.toMatch(/from\s*["']\.\.\/env["']/);
+  });
+
+  it("file trong bao đóng client không tham chiếu tên biến server (serverEnvSchema)", () => {
     const offenders: string[] = [];
-    for (const f of files) {
-      if (!/^\s*["']use client["']/.test(f.text)) continue;
+    for (const rel of clientClosure().keys()) {
       for (const k of Object.keys(serverEnvSchema.shape))
-        if (f.text.includes(k)) offenders.push(`${f.rel}:${k}`);
+        if (byRel.get(rel)!.text.includes(k)) offenders.push(`${rel}:${k}`);
     }
     expect(offenders).toEqual([]);
   });
@@ -120,5 +171,17 @@ describe("không đọc process.env ngoài module env", () => {
     const proxy = files.find((f) => f.rel === "proxy.ts")!;
     expect(proxy.text).toContain("getClientEnv().NEXT_PUBLIC_SITE_URL");
     expect(proxy.text).not.toMatch(/process\.env\.NEXT_PUBLIC_/);
+  });
+});
+
+describe("BASE-SEC-010: storefront bind 127.0.0.1 mặc định", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(SRC, "../package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+  };
+
+  it("scripts dev/start truyền -H với HOST mặc định 127.0.0.1 (mặc định của Next là 0.0.0.0)", () => {
+    for (const name of ["dev", "start"]) {
+      expect(pkg.scripts[name]).toContain('-H "${HOST:-127.0.0.1}"');
+    }
   });
 });

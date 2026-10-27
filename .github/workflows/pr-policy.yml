@@ -71,7 +71,7 @@ jobs:
                   errors.append("PR đổi migration phải điền 'Backup trước migrate: <link hoặc lý do>' (DB-MIG-011)")
 
           touches_docs = any(f.startswith("docs/") or f in ("README.md", "CHANGELOG.md") for f in changed)
-          api_or_config = [f for f in changed if re.match(r"^(apps/backend/src/api/|xt\.yaml$|.*/lib/env\.ts$)", f)]
+          api_or_config = [f for f in changed if re.match(r"^(apps/backend/src/api/|xt\.yaml$|.*/lib/env(\.ts|/))", f)]
           if api_or_config and not touches_docs:
               docs = section("Docs cập nhật") or ""
               if not re.search(r"không cần\s*[—-]\s*\S", docs):

@@ -3,7 +3,8 @@
  *
  * `SECRET_ENV_KEYS` là danh sách TÊN BIẾN bí mật (khoá ký, khoá mã hoá, token, URL kèm mật khẩu). `SECRET_CONFIG_FIELDS`
  * là tên trường của đối tượng cấu hình đã dựng (camelCase / lồng nhau) mang cùng giá trị. Thêm biến bí mật mới = thêm vào
- * đây; test `env-redact.unit.spec.ts` có hàng rào bắt trường tên "giống bí mật" mà chưa đăng ký.
+ * đây. Hàng rào ở `env-redact.unit.spec.ts` duyệt MỌI khoá của schema (`ENV_SCHEMA_KEYS`, kể cả biến optional vắng mặt):
+ * tên giống bí mật (secret/token/password/…/_KEY) hoặc URL `user:pass@` trong giá trị mẫu mà chưa đăng ký → test đỏ.
  */
 
 export const SECRET_ENV_KEYS = [
@@ -27,6 +28,8 @@ export const SECRET_CONFIG_FIELDS = [
 ] as const;
 
 export const REDACTED = "***";
+/** Trường bí mật nhưng RỖNG (vd. production chưa đặt): không có gì để che, in rõ là chưa đặt. */
+export const UNSET = "(chưa đặt)";
 
 const SECRET_NAMES: ReadonlySet<string> = new Set<string>([...SECRET_ENV_KEYS, ...SECRET_CONFIG_FIELDS]);
 
@@ -38,7 +41,7 @@ export const isSecretName = (name: string): boolean => SECRET_NAMES.has(name);
 
 /**
  * Bản sao sâu của cấu hình với mọi trường bí mật (khớp tên) thay bằng `***`. `null`/`undefined` giữ nguyên (cho biết
- * "chưa đặt" mà không lộ giá trị). Vòng tham chiếu được cắt. Không sửa đối tượng gốc.
+ * "chưa đặt" mà không lộ giá trị); chuỗi rỗng in `UNSET`. Vòng tham chiếu được cắt. Không sửa đối tượng gốc.
  */
 export function redactConfig<T>(value: T): T {
   return walk(value, new WeakSet()) as T;
@@ -51,7 +54,8 @@ function walk(value: unknown, seen: WeakSet<object>): unknown {
   if (Array.isArray(value)) return value.map((v) => walk(v, seen));
   const out: Record<string, unknown> = {};
   for (const [key, v] of Object.entries(value)) {
-    out[key] = isSecretName(key) && v !== null && v !== undefined ? REDACTED : walk(v, seen);
+    out[key] =
+      isSecretName(key) && v !== null && v !== undefined ? (v === "" ? UNSET : REDACTED) : walk(v, seen);
   }
   return out;
 }
@@ -59,4 +63,16 @@ function walk(value: unknown, seen: WeakSet<object>): unknown {
 /** Cấu hình hiệu lực dạng văn bản (JSON, đã che) cho `--print-config`/log khởi động/trang debug. */
 export function formatEffectiveConfig(config: unknown): string {
   return JSON.stringify(redactConfig(config), null, 2);
+}
+
+/**
+ * Gắn `toJSON` và `util.inspect.custom` (không liệt kê được) để đối tượng tự che khi `JSON.stringify`/`console.log`/
+ * `util.inspect`. Không chặn được `{ ...obj }`/`Object.entries(obj)` (sao chép giá trị thật) — nơi dump phải đi qua
+ * `redactConfig`/`formatEffectiveConfig`. Truy cập trường trực tiếp vẫn trả giá trị thật.
+ */
+export function withRedaction<T extends object>(obj: T): T {
+  const masked = (): unknown => redactConfig({ ...obj });
+  Object.defineProperty(obj, "toJSON", { value: masked, enumerable: false });
+  Object.defineProperty(obj, Symbol.for("nodejs.util.inspect.custom"), { value: masked, enumerable: false });
+  return obj;
 }

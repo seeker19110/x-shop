@@ -3,6 +3,7 @@ import path from "node:path";
 import { inspect } from "node:util";
 import {
   DEFAULT_BIND_HOST,
+  ENV_SCHEMA_KEYS,
   formatEffectiveConfig,
   parseEnv,
   REDACTED,
@@ -10,7 +11,17 @@ import {
   renderEffectiveConfig,
   type Env,
 } from "../env";
-import { SECRET_ENV_KEYS, SECRET_LOOKING_NAME, isSecretName } from "../env/redact";
+import { SECRET_ENV_KEYS, SECRET_LOOKING_NAME, UNSET, isSecretName } from "../env/redact";
+
+/** `*_URL` đã xác minh không mang user:pass (schema/ENV.md); URL mới phải được xếp vào một trong hai nhóm. */
+const NON_SECRET_URLS: ReadonlySet<string> = new Set([
+  "MEDUSA_BACKEND_URL",
+  "STOREFRONT_URL",
+  "VNPAY_PAYMENT_URL",
+  "VNPAY_API_URL",
+  "VNPAY_RETURN_URL",
+  "GHN_BASE_URL",
+]);
 
 const base = { DATABASE_URL: "postgres://xshop:xshop@localhost:5432/xshop" };
 
@@ -90,7 +101,18 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
     }
   });
 
-  it("hàng rào: mọi trường (kể cả lồng) tên giống bí mật phải đã đăng ký", () => {
+  it("hàng rào: MỌI khoá của schema (kể cả optional vắng mặt) tên giống bí mật phải đã đăng ký", () => {
+    expect(ENV_SCHEMA_KEYS.length).toBeGreaterThan(30);
+    expect(ENV_SCHEMA_KEYS).toContain("GHN_TOKEN"); // optional + vắng mặt khi parse vẫn có trong danh sách
+    const looksSecret = ENV_SCHEMA_KEYS.filter((k) => SECRET_LOOKING_NAME.test(k) && !isSecretName(k));
+    expect(looksSecret).toEqual([]);
+    // URL có thể chứa user:pass@ → phải là bí mật, hoặc nằm trong danh sách đã xác minh KHÔNG chứa thông tin đăng nhập.
+    const urls = ENV_SCHEMA_KEYS.filter((k) => /(_URL|_URI|_DSN)$/.test(k));
+    expect(urls.filter((k) => !isSecretName(k) && !NON_SECRET_URLS.has(k))).toEqual([]);
+    for (const k of NON_SECRET_URLS) expect(ENV_SCHEMA_KEYS).toContain(k); // danh sách cho phép không bị cũ
+  });
+
+  it("mọi trường (kể cả lồng) của đối tượng đã parse tên giống bí mật đều đã đăng ký", () => {
     const names: string[] = [];
     const visit = (o: unknown): void => {
       if (o === null || typeof o !== "object") return;
@@ -100,8 +122,22 @@ describe("BASE-CFG-005: che bí mật khi in/dump cấu hình", () => {
       }
     };
     visit(env);
-    expect(names.length).toBeGreaterThan(20);
     expect(names.filter((n) => SECRET_LOOKING_NAME.test(n) && !isSecretName(n))).toEqual([]);
+  });
+
+  it("đối tượng lồng (ghn, vnpay) tự che khi stringify/inspect", () => {
+    expectNoSecret(JSON.stringify(env.ghn));
+    expectNoSecret(JSON.stringify(env.vnpay));
+    expectNoSecret(inspect(env.ghn));
+    expectNoSecret(inspect(env.vnpay));
+    expect(env.ghn.token).toContain("SENTINELtokenghn"); // trường trực tiếp vẫn thật
+  });
+
+  it("trường bí mật RỖNG in (chưa đặt) thay vì ***", () => {
+    expect(redactConfig({ orderLookupSecret: "", token: "x" })).toEqual({
+      orderLookupSecret: UNSET,
+      token: REDACTED,
+    });
   });
 
   it("không sửa đối tượng gốc; giữ null/undefined; cắt vòng tham chiếu", () => {
@@ -188,7 +224,7 @@ describe("BASE-CFG-007 / BASE-SEC-010: mặc định an toàn", () => {
       scripts: Record<string, string>;
     };
     for (const name of ["dev", "start"]) {
-      expect(pkg.scripts[name]).toContain("-H ${HOST:-127.0.0.1}");
+      expect(pkg.scripts[name]).toContain('-H "${HOST:-127.0.0.1}"');
     }
   });
 });

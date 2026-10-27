@@ -1,5 +1,5 @@
 import { findPii, ORDER_EVENTS, SCHEMA_VERSION, type AnalyticsEvent, type AnalyticsPayload } from "./schema";
-import { getAnalyticsTransport } from "../env";
+import { getAnalyticsTransport } from "../env/public";
 import { isNonEmpty } from "../presence";
 
 /**

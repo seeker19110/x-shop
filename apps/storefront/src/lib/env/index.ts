@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isNonEmpty } from "../presence";
+import { ANALYTICS_TRANSPORTS } from "./public";
 
 /**
  * Cấu hình môi trường, validate bằng zod, tách server / client.
@@ -24,8 +25,8 @@ const httpUrl = z
   .refine((v) => /^https?:\/\//i.test(v), "phải là URL http(s)")
   .transform((v) => v.replace(/\/+$/, ""));
 
-export const ANALYTICS_TRANSPORTS = ["none", "beacon"] as const;
-export type AnalyticsTransport = (typeof ANALYTICS_TRANSPORTS)[number];
+// Phần công khai (không zod) nằm ở ./public để module client nhập được mà không kéo schema/tên biến server vào bundle.
+export { ANALYTICS_TRANSPORTS, getAnalyticsTransport, type AnalyticsTransport } from "./public";
 
 /**
  * Schema CLIENT: chỉ biến `NEXT_PUBLIC_*` (Next nhúng giá trị vào bundle trình duyệt lúc build — mọi thứ ở đây là CÔNG
@@ -128,19 +129,6 @@ export function getClientEnv(): ClientEnv {
     { useDefaults: shouldUseDefaults() },
   );
   return clientCache;
-}
-
-/**
- * Transport analytics, đọc KHÔNG qua cache (đổi được trong test) nhưng vẫn qua schema client. Giá trị sai/thiếu → `none`:
- * telemetry không được làm hỏng trang (giá trị sai vẫn làm `getClientEnv()` ở layout fail theo FE-BUILD-005).
- */
-export function getAnalyticsTransport(): AnalyticsTransport {
-  // Tham chiếu tĩnh để Next nhúng giá trị vào bundle client.
-  const raw = process.env.NEXT_PUBLIC_ANALYTICS_TRANSPORT;
-  const r = clientEnvSchema.shape.NEXT_PUBLIC_ANALYTICS_TRANSPORT.safeParse(
-    raw === undefined || raw.trim() === "" ? undefined : raw,
-  );
-  return r.success ? r.data : "none";
 }
 
 export function getServerEnv(): ServerEnv {

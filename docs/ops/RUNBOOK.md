@@ -251,7 +251,7 @@ cd apps/backend && npx medusa db:migrate
 #    server (không publish cổng DB/Redis); thiếu thì LB không tới được backend. Xem cấu hình hiệu lực (đã che): pnpm --filter @x-shop/backend config:print
 MEDUSA_WORKER_MODE=server pnpm --filter @x-shop/backend start   # nhận HTTP (store, admin, IPN, callback GHN)
 MEDUSA_WORKER_MODE=worker pnpm --filter @x-shop/backend start   # chạy job định kỳ (outbox, reconcile, expire-holds…)
-# 3) Storefront
+# 3) Storefront (script `start` cũng bind 127.0.0.1 mặc định: sau LB/container đặt HOST=0.0.0.0)
 pnpm --filter @x-shop/storefront start
 ```
 

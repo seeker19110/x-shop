@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { parseTrustedProxies, TRUSTED_PROXY_KEYWORDS } from "../security/client-ip";
 import { privateDirProblem } from "../upload/private";
-import { formatEffectiveConfig, redactConfig } from "./redact";
+import { formatEffectiveConfig, withRedaction } from "./redact";
 
 export { REDACTED, SECRET_ENV_KEYS, formatEffectiveConfig, redactConfig } from "./redact";
 
@@ -222,127 +222,129 @@ const bindHost = z.string().refine((v) => /^[A-Za-z0-9._-]+$/.test(v) || isIPv6(
   message: "phải là tên máy hoặc địa chỉ IP (vd. 127.0.0.1, 0.0.0.0, ::1)",
 });
 
-const schema = z
-  .object({
-    NODE_ENV: z.preprocess(
-      (v) => (v === undefined || v === "" ? "development" : v),
-      z.enum(NODE_ENVS, { message: `phải là một trong ${NODE_ENVS.join("|")}` }),
-    ),
-    // Bind (BASE-SEC-010): vắng → 127.0.0.1. Scripts dev/start đọc cùng biến này (package.json).
-    HOST: optionalText.pipe(bindHost.optional()),
-    // DEBUG (BASE-CFG-007): vắng = tắt; production không được bật. Chấp nhận cả dạng namespace của thư viện `debug`.
-    DEBUG: z.preprocess(
-      (v) => (typeof v === "string" ? v.trim().toLowerCase() : v),
-      z
-        .string()
-        .optional()
-        .transform((v) => v !== undefined && !DEBUG_OFF.has(v)),
-    ),
-    DATABASE_URL: z.preprocess(
-      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-      z.string({ message: "bắt buộc" }).pipe(urlWithProtocol(["postgres:", "postgresql:"], "postgres://")),
-    ),
-    REDIS_URL: optionalText.pipe(
-      urlWithProtocol(["redis:", "rediss:"], "redis:// hoặc rediss://").optional(),
-    ),
-    JWT_SECRET: optionalText.pipe(secret.optional()),
-    COOKIE_SECRET: optionalText.pipe(secret.optional()),
-    AUTH_MFA_ENCRYPTION_KEY: optionalText.pipe(secret.optional()),
-    ORDER_LOOKUP_SECRET: optionalText.pipe(secret.optional()),
-    STORE_CORS: optionalText.pipe(corsList.optional()),
-    ADMIN_CORS: optionalText.pipe(corsList.optional()),
-    AUTH_CORS: optionalText.pipe(corsList.optional()),
-    MEDUSA_BACKEND_URL: optionalText.pipe(urlWithProtocol(["http:", "https:"], "http(s)://").optional()),
-    STOREFRONT_URL: optionalText.pipe(baseUrl.optional()),
-    // Thư mục file private (T-141, BE-FILE-005): không ký tự điều khiển; rời thư mục công khai `static/` (kiểm ở superRefine).
-    PRIVATE_UPLOAD_DIR: optionalText.pipe(
-      z
-        .string()
-        // eslint-disable-next-line no-control-regex -- chặn đúng ký tự điều khiển (NUL, xuống dòng…) trong đường dẫn
-        .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), { message: "không được chứa ký tự điều khiển" })
-        .optional(),
-    ),
-    // Proxy tin cậy (LB, storefront) được phép báo IP khách qua X-Forwarded-For. Vắng = không tin header nào (SEC03).
-    XS_TRUSTED_PROXIES: optionalText.pipe(
-      z
-        .string()
-        .refine((v) => parseTrustedProxies(v).ok, {
-          message: `phải là none hoặc danh sách IP/CIDR/${TRUSTED_PROXY_KEYWORDS.join("|")} cách nhau dấu phẩy (≤ 64 mục)`,
-        })
-        .optional(),
-    ),
-    // Pool Postgres MỖI tiến trình (T-092, DB-PERF-004): tổng `DB_POOL_MAX × số tiến trình` + dự phòng ≤ max_connections
-    // (docs/db/connections.md). statement_timeout của phiên ứng dụng; chạy migration dài → nâng tạm cho lệnh migrate.
-    DB_POOL_MAX: intInRange(10, 1, 100, "kết nối"),
-    DB_STATEMENT_TIMEOUT_MS: intInRange(30_000, 1_000, 3_600_000, "mili giây"),
-    // Tắt êm (T-094, BE-REL-004): giữ readiness 503 trong DRAIN_DELAY rồi mới đóng listener; toàn bộ quá trình tắt có
-    // trần TIMEOUT, phải < grace period của nền tảng (Kubernetes mặc định 30 s). Vắng DRAIN_DELAY → 5 s ở production,
-    // 0 ở dev/test (Ctrl-C không phải chờ).
-    SHUTDOWN_DRAIN_DELAY_MS: optionalText.pipe(
-      z
-        .string()
-        .regex(/^\d+$/, { message: "phải là số nguyên mili giây trong [0, 60000]" })
-        .transform(Number)
-        .refine((n) => n <= 60_000, { message: "phải là số nguyên mili giây trong [0, 60000]" })
-        .optional(),
-    ),
-    SHUTDOWN_TIMEOUT_MS: intInRange(25_000, 1_000, 300_000, "mili giây"),
-    // Ngưỡng log (T-090): tên mức của Medusa/winston; vắng = info. Log truy cập của dự án ở mức info.
-    LOG_LEVEL: z.preprocess(
-      (v) => (v === undefined || (typeof v === "string" && v.trim() === "") ? "info" : v),
-      z.enum(["error", "warn", "info", "http", "verbose", "debug", "silly"], {
-        message: "phải là một trong error|warn|info|http|verbose|debug|silly",
-      }),
-    ),
-    MEDUSA_WORKER_MODE: z.preprocess(
-      (v) => (v === undefined || v === "" ? "shared" : v),
-      z.enum(WORKER_MODES, { message: `phải là một trong ${WORKER_MODES.join("|")}` }),
-    ),
-    DISABLE_MEDUSA_ADMIN: z.preprocess(
-      (v) => (v === undefined || v === "" ? "false" : v),
-      z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
-    ),
-    // Chính sách phiên admin (SPEC-admin S-402, SEC02): tuyệt đối 8 giờ, nhàn rỗi 30 phút, xác thực lại ≤ 5 phút.
-    ADMIN_SESSION_MAX_AGE_SECONDS: intInRange(28_800, 300, 86_400),
-    ADMIN_SESSION_IDLE_SECONDS: intInRange(1_800, 60, 28_800),
-    ADMIN_REAUTH_MAX_AGE_SECONDS: intInRange(300, 30, 900),
-    VNPAY_ENABLED: z.preprocess(
-      (v) => (v === undefined || v === "" ? "true" : v),
-      z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
-    ),
-    VNPAY_MODE: optionalText.pipe(
-      z.enum(VNPAY_MODES, { message: `phải là một trong ${VNPAY_MODES.join("|")}` }).optional(),
-    ),
-    VNPAY_TMN_CODE: optionalText.pipe(
-      z
-        .string()
-        .regex(/^[A-Za-z0-9]{1,32}$/, { message: "phải là mã merchant chữ/số (≤ 32 ký tự)" })
-        .optional(),
-    ),
-    VNPAY_HASH_SECRET: optionalText.pipe(secret.optional()),
-    // Xoay khoá (BE-INT-002, T-099): khoá TRƯỚC vẫn được nhận khi XÁC MINH chữ ký (IPN/return/querydr) trong cửa sổ
-    // xoay; mọi chữ ký gửi đi chỉ dùng VNPAY_HASH_SECRET. Bỏ biến này khi hết cửa sổ xoay.
-    VNPAY_HASH_SECRET_PREVIOUS: optionalText.pipe(secret.optional()),
-    VNPAY_PAYMENT_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
-    VNPAY_API_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
-    VNPAY_RETURN_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
-    GHN_MODE: optionalText.pipe(
-      z.enum(GHN_MODES, { message: `phải là một trong ${GHN_MODES.join("|")}` }).optional(),
-    ),
-    GHN_BASE_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
-    GHN_TOKEN: optionalText.pipe(
-      z
-        .string()
-        .regex(/^[A-Za-z0-9-]{8,128}$/, { message: "phải là token chữ/số/gạch nối (8–128 ký tự)" })
-        .optional(),
-    ),
-    GHN_SHOP_ID: optionalText.pipe(
-      z
-        .string()
-        .regex(/^[0-9]{1,20}$/, { message: "phải là mã cửa hàng dạng số" })
-        .optional(),
-    ),
-  })
+const baseSchema = z.object({
+  NODE_ENV: z.preprocess(
+    (v) => (v === undefined || v === "" ? "development" : v),
+    z.enum(NODE_ENVS, { message: `phải là một trong ${NODE_ENVS.join("|")}` }),
+  ),
+  // Bind (BASE-SEC-010): vắng → 127.0.0.1. Scripts dev/start đọc cùng biến này (package.json).
+  HOST: optionalText.pipe(bindHost.optional()),
+  // DEBUG (BASE-CFG-007): vắng = tắt; production không được bật. Chấp nhận cả dạng namespace của thư viện `debug`.
+  DEBUG: z.preprocess(
+    (v) => (typeof v === "string" ? v.trim().toLowerCase() : v),
+    z
+      .string()
+      .optional()
+      .transform((v) => v !== undefined && !DEBUG_OFF.has(v)),
+  ),
+  DATABASE_URL: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string({ message: "bắt buộc" }).pipe(urlWithProtocol(["postgres:", "postgresql:"], "postgres://")),
+  ),
+  REDIS_URL: optionalText.pipe(urlWithProtocol(["redis:", "rediss:"], "redis:// hoặc rediss://").optional()),
+  JWT_SECRET: optionalText.pipe(secret.optional()),
+  COOKIE_SECRET: optionalText.pipe(secret.optional()),
+  AUTH_MFA_ENCRYPTION_KEY: optionalText.pipe(secret.optional()),
+  ORDER_LOOKUP_SECRET: optionalText.pipe(secret.optional()),
+  STORE_CORS: optionalText.pipe(corsList.optional()),
+  ADMIN_CORS: optionalText.pipe(corsList.optional()),
+  AUTH_CORS: optionalText.pipe(corsList.optional()),
+  MEDUSA_BACKEND_URL: optionalText.pipe(urlWithProtocol(["http:", "https:"], "http(s)://").optional()),
+  STOREFRONT_URL: optionalText.pipe(baseUrl.optional()),
+  // Thư mục file private (T-141, BE-FILE-005): không ký tự điều khiển; rời thư mục công khai `static/` (kiểm ở superRefine).
+  PRIVATE_UPLOAD_DIR: optionalText.pipe(
+    z
+      .string()
+      // eslint-disable-next-line no-control-regex -- chặn đúng ký tự điều khiển (NUL, xuống dòng…) trong đường dẫn
+      .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), { message: "không được chứa ký tự điều khiển" })
+      .optional(),
+  ),
+  // Proxy tin cậy (LB, storefront) được phép báo IP khách qua X-Forwarded-For. Vắng = không tin header nào (SEC03).
+  XS_TRUSTED_PROXIES: optionalText.pipe(
+    z
+      .string()
+      .refine((v) => parseTrustedProxies(v).ok, {
+        message: `phải là none hoặc danh sách IP/CIDR/${TRUSTED_PROXY_KEYWORDS.join("|")} cách nhau dấu phẩy (≤ 64 mục)`,
+      })
+      .optional(),
+  ),
+  // Pool Postgres MỖI tiến trình (T-092, DB-PERF-004): tổng `DB_POOL_MAX × số tiến trình` + dự phòng ≤ max_connections
+  // (docs/db/connections.md). statement_timeout của phiên ứng dụng; chạy migration dài → nâng tạm cho lệnh migrate.
+  DB_POOL_MAX: intInRange(10, 1, 100, "kết nối"),
+  DB_STATEMENT_TIMEOUT_MS: intInRange(30_000, 1_000, 3_600_000, "mili giây"),
+  // Tắt êm (T-094, BE-REL-004): giữ readiness 503 trong DRAIN_DELAY rồi mới đóng listener; toàn bộ quá trình tắt có
+  // trần TIMEOUT, phải < grace period của nền tảng (Kubernetes mặc định 30 s). Vắng DRAIN_DELAY → 5 s ở production,
+  // 0 ở dev/test (Ctrl-C không phải chờ).
+  SHUTDOWN_DRAIN_DELAY_MS: optionalText.pipe(
+    z
+      .string()
+      .regex(/^\d+$/, { message: "phải là số nguyên mili giây trong [0, 60000]" })
+      .transform(Number)
+      .refine((n) => n <= 60_000, { message: "phải là số nguyên mili giây trong [0, 60000]" })
+      .optional(),
+  ),
+  SHUTDOWN_TIMEOUT_MS: intInRange(25_000, 1_000, 300_000, "mili giây"),
+  // Ngưỡng log (T-090): tên mức của Medusa/winston; vắng = info. Log truy cập của dự án ở mức info.
+  LOG_LEVEL: z.preprocess(
+    (v) => (v === undefined || (typeof v === "string" && v.trim() === "") ? "info" : v),
+    z.enum(["error", "warn", "info", "http", "verbose", "debug", "silly"], {
+      message: "phải là một trong error|warn|info|http|verbose|debug|silly",
+    }),
+  ),
+  MEDUSA_WORKER_MODE: z.preprocess(
+    (v) => (v === undefined || v === "" ? "shared" : v),
+    z.enum(WORKER_MODES, { message: `phải là một trong ${WORKER_MODES.join("|")}` }),
+  ),
+  DISABLE_MEDUSA_ADMIN: z.preprocess(
+    (v) => (v === undefined || v === "" ? "false" : v),
+    z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
+  ),
+  // Chính sách phiên admin (SPEC-admin S-402, SEC02): tuyệt đối 8 giờ, nhàn rỗi 30 phút, xác thực lại ≤ 5 phút.
+  ADMIN_SESSION_MAX_AGE_SECONDS: intInRange(28_800, 300, 86_400),
+  ADMIN_SESSION_IDLE_SECONDS: intInRange(1_800, 60, 28_800),
+  ADMIN_REAUTH_MAX_AGE_SECONDS: intInRange(300, 30, 900),
+  VNPAY_ENABLED: z.preprocess(
+    (v) => (v === undefined || v === "" ? "true" : v),
+    z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
+  ),
+  VNPAY_MODE: optionalText.pipe(
+    z.enum(VNPAY_MODES, { message: `phải là một trong ${VNPAY_MODES.join("|")}` }).optional(),
+  ),
+  VNPAY_TMN_CODE: optionalText.pipe(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9]{1,32}$/, { message: "phải là mã merchant chữ/số (≤ 32 ký tự)" })
+      .optional(),
+  ),
+  VNPAY_HASH_SECRET: optionalText.pipe(secret.optional()),
+  // Xoay khoá (BE-INT-002, T-099): khoá TRƯỚC vẫn được nhận khi XÁC MINH chữ ký (IPN/return/querydr) trong cửa sổ
+  // xoay; mọi chữ ký gửi đi chỉ dùng VNPAY_HASH_SECRET. Bỏ biến này khi hết cửa sổ xoay.
+  VNPAY_HASH_SECRET_PREVIOUS: optionalText.pipe(secret.optional()),
+  VNPAY_PAYMENT_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
+  VNPAY_API_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
+  VNPAY_RETURN_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
+  GHN_MODE: optionalText.pipe(
+    z.enum(GHN_MODES, { message: `phải là một trong ${GHN_MODES.join("|")}` }).optional(),
+  ),
+  GHN_BASE_URL: optionalText.pipe(urlWithProtocol(["https:", "http:"], "http(s)://").optional()),
+  GHN_TOKEN: optionalText.pipe(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9-]{8,128}$/, { message: "phải là token chữ/số/gạch nối (8–128 ký tự)" })
+      .optional(),
+  ),
+  GHN_SHOP_ID: optionalText.pipe(
+    z
+      .string()
+      .regex(/^[0-9]{1,20}$/, { message: "phải là mã cửa hàng dạng số" })
+      .optional(),
+  ),
+});
+
+/** Mọi khoá biến môi trường của schema (kể cả optional vắng mặt) — hàng rào "tên giống bí mật" ở test duyệt theo danh sách này. */
+export const ENV_SCHEMA_KEYS: readonly string[] = Object.keys(baseSchema.shape);
+
+const schema = baseSchema
   .superRefine((env, ctx) => {
     if (env.SHUTDOWN_DRAIN_DELAY_MS !== undefined && env.SHUTDOWN_DRAIN_DELAY_MS >= env.SHUTDOWN_TIMEOUT_MS) {
       ctx.addIssue({
@@ -496,15 +498,11 @@ const schema = z
           }
         : null,
     };
-    // In/dump cấu hình (JSON.stringify, console.log, util.inspect) luôn qua bản đã che bí mật (BASE-CFG-005).
-    // Không liệt kê được nên không lọt vào `{ ...env }`/so sánh; truy cập trường trực tiếp vẫn trả giá trị thật.
-    const masked = (): unknown => redactConfig({ ...effective });
-    Object.defineProperty(effective, "toJSON", { value: masked, enumerable: false });
-    Object.defineProperty(effective, Symbol.for("nodejs.util.inspect.custom"), {
-      value: masked,
-      enumerable: false,
-    });
-    return effective;
+    // `JSON.stringify`/`console.log`/`util.inspect` trên Env và các đối tượng lồng (ghn, vnpay) luôn ra bản đã che (BASE-CFG-005).
+    // Không chặn được `{ ...env }`/`Object.entries`: các cách đó sao chép GIÁ TRỊ THẬT — dump phải qua redactConfig.
+    withRedaction(effective.ghn);
+    if (effective.vnpay !== null) withRedaction(effective.vnpay);
+    return withRedaction(effective);
   });
 
 export type Env = z.output<typeof schema>;

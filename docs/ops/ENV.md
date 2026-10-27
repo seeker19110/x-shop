@@ -1,7 +1,7 @@
 # Biến môi trường (thay cho `.env.example`)
 
 > Quyền ghi file `.env*` bị chặn trong môi trường agent (bảo vệ bí mật) — danh sách biến được giữ ở đây và trong schema
-> zod (`apps/backend/src/lib/env.ts`, `apps/storefront/src/lib/env.ts`) là nguồn chuẩn. Tạo `.env` cục bộ từ các khối dưới
+> zod (`apps/backend/src/lib/env/index.ts`, `apps/storefront/src/lib/env/index.ts`) là nguồn chuẩn. Tạo `.env` cục bộ từ các khối dưới
 > (đã gitignore). **Mọi giá trị dưới đây là GIẢ** — không commit bí mật thật (BASE-CFG-003).
 
 ## Backend (`apps/backend/.env`)
@@ -31,7 +31,7 @@ STORE_CORS=http://localhost:3000
 ADMIN_CORS=http://localhost:5173,http://localhost:9000
 AUTH_CORS=http://localhost:5173,http://localhost:9000,http://localhost:3000
 # Khoá ký token phiên đơn / liên kết tra cứu đơn (T-021). ≥ 32 ký tự ngẫu nhiên; production bắt buộc, khác khoá giả của dev
-# (dev/test vắng → ORDER_LOOKUP_DEV_SECRET trong env.ts). Đổi khoá = mọi phiên đơn/liên kết đang có mất hiệu lực.
+# (dev/test vắng → ORDER_LOOKUP_DEV_SECRET trong env/index.ts). Đổi khoá = mọi phiên đơn/liên kết đang có mất hiệu lực.
 ORDER_LOOKUP_SECRET=thay-bang-chuoi-ngau-nhien-it-nhat-32-ky-tu-order
 # Proxy tin cậy được phép báo IP khách qua X-Forwarded-For (rate limit theo IP, vnp_IpAddr, IP băm trong audit — T-034).
 # Danh sách IP/CIDR (v4/v6) hoặc từ khoá loopback|private|linklocal, phẩy; `none` = không tin proxy nào. Vắng (dev/test)
@@ -43,7 +43,7 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # Gốc URL storefront để dựng liên kết gửi khách — hiện là liên kết tra cứu đơn `<gốc>/tra-cuu-don/xac-thuc?token=…`
 # (T-149, D-089): token một lần phát hành LÚC GỬI ở bộ xử lý thông báo, không lưu trong outbox. http(s), không query/
 # fragment/thông tin đăng nhập; cho phép tiền tố đường dẫn; `/` cuối bị bỏ. Production BẮT BUỘC và phải https://; vắng
-# (dev/test) = http://localhost:3000 (DEV_STOREFRONT_URL trong env.ts, cổng mặc định của `next dev`). Giá trị thô có
+# (dev/test) = http://localhost:3000 (DEV_STOREFRONT_URL trong env/index.ts, cổng mặc định của `next dev`). Giá trị thô có
 # khoảng trắng/xuống dòng/tab, `\`, `@`, `?`, `#` bị từ chối lúc khởi động (hay gặp: newline thừa khi tạo từ file/echo);
 # gốc dùng thật được chuẩn hoá từ URL đã parse (scheme/host viết thường, bỏ cổng mặc định).
 STOREFRONT_URL=https://shop.example.vn
@@ -79,7 +79,7 @@ PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # SHUTDOWN_TIMEOUT_MS=25000      # [1000, 300000]
 # Log (T-090): JSON một dòng/stdout, đã che bí mật + PII. Ngưỡng: error|warn|info|http|verbose|debug|silly; vắng = info.
 # LOG_LEVEL=info
-# Mặc định an toàn (T-098, BASE-CFG-007, BASE-SEC-010). Bind: scripts `dev`/`start` chạy `medusa … -H ${HOST:-127.0.0.1}` —
+# Mặc định an toàn (T-098, BASE-CFG-007, BASE-SEC-010). Bind: scripts `dev`/`start` của backend VÀ storefront chạy `medusa|next … -H "${HOST:-127.0.0.1}"` —
 # vắng HOST = chỉ loopback (trước đây Node nghe mọi giao diện). Container/sau LB phải ĐẶT `HOST=0.0.0.0` tường minh (và
 # không publish cổng DB/Redis); tên máy hoặc IP, không kèm cổng (cổng = `-p`). DEBUG: vắng/false/0 = tắt; bật ở dev
 # (true/1/namespace) được; NODE_ENV=production + DEBUG bật → từ chối khởi động.
@@ -87,12 +87,15 @@ PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # HOST=127.0.0.1
 # DEBUG=false
 # Che bí mật khi in cấu hình (T-098, BASE-CFG-005): `redactConfig`/`formatEffectiveConfig` (src/lib/env/redact.ts); đối
-# tượng `Env` tự che khi JSON.stringify/console.log. Danh sách bí mật `SECRET_ENV_KEYS`: DATABASE_URL, REDIS_URL (có mật
+# tượng `Env` (và `ghn`, `vnpay` lồng trong đó) tự che khi JSON.stringify/console.log/util.inspect; `{ ...env }` hay
+# Object.entries sao chép GIÁ TRỊ THẬT — nơi dump phải qua `redactConfig`. Trường bí mật rỗng in "(chưa đặt)". Danh sách bí mật `SECRET_ENV_KEYS`: DATABASE_URL, REDIS_URL (có mật
 # khẩu), JWT_SECRET, COOKIE_SECRET, AUTH_MFA_ENCRYPTION_KEY, ORDER_LOOKUP_SECRET, VNPAY_HASH_SECRET(_PREVIOUS), GHN_TOKEN.
-# Thêm biến bí mật mới → thêm vào danh sách (test hàng rào báo đỏ nếu tên giống bí mật mà chưa đăng ký).
+# Thêm biến bí mật mới → thêm vào danh sách. Hàng rào test duyệt MỌI khoá của schema (cả biến optional vắng mặt): tên
+# giống bí mật (secret/token/password/…/_KEY) hoặc `*_URL` chưa xếp vào "bí mật" hay danh sách URL đã xác minh không
+# chứa user:pass → test đỏ.
 
 # VNPAY (SPEC-payment). Bật mặc định (VNPAY_ENABLED=true). Production + bật → BẮT BUỘC đủ 5 biến dưới, URL phải https,
-# không được dùng khoá giả của dev. Dev/test vắng biến → dùng giá trị GIẢ trong env.ts (VNPAY_DEV_DEFAULTS) — chỉ ký/kiểm
+# không được dùng khoá giả của dev. Dev/test vắng biến → dùng giá trị GIẢ trong env/index.ts (VNPAY_DEV_DEFAULTS) — chỉ ký/kiểm
 # chữ ký cục bộ với MockVnpayGateway, không gọi cổng thật.
 # VNPAY_ENABLED=true
 # Cách gọi VNPAY từ server (querydr): mock = cổng giả lập cục bộ (mặc định dev/test) · sandbox | live = HTTP tới
@@ -132,6 +135,9 @@ NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=
 # CÔNG KHAI (schema client, T-098): none | beacon; vắng = none. beacon = `track()` gửi sendBeacon tới /api/analytics khi
 # người dùng đã đồng ý. Giá trị khác → getClientEnv() ném lỗi (layout/proxy không lên); `track()` thì coi như none.
 # NEXT_PUBLIC_ANALYTICS_TRANSPORT=none
+# Bind (BASE-SEC-010): `next dev`/`next start` chạy với -H "${HOST:-127.0.0.1}" (mặc định của Next là 0.0.0.0). Sau LB/
+# container đặt HOST=0.0.0.0 tường minh. E2E (playwright) gọi thẳng `next start -p` nên không bị ảnh hưởng.
+# HOST=127.0.0.1
 # Chỉ server.
 MEDUSA_BACKEND_URL=http://localhost:9000
 # Nguồn dữ liệu catalog: backend | fixtures. Bỏ trống → `backend` nếu MEDUSA_BACKEND_URL được đặt thật,

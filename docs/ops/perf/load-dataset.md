@@ -26,7 +26,7 @@ Thời gian đo được (2026-10-26, máy dev 4 CPU, dựng mới): migrate ~16
 
 ## Điều kiện tái lập (đã ghi trong báo cáo mỗi lần chạy)
 
-Máy 4 CPU Xeon 2,8 GHz, 15,7 GiB RAM, **dùng chung** với các phiên khác (tải hệ thống nền ~1–2 trước khi chạy); PostgreSQL 16.15 cục bộ, Redis cục bộ DB 13; Medusa 2.22.1 `medusa start` một tiến trình (worker shared), kết nối DB theo mặc định Medusa (không đặt pool); `NODE_ENV=development` vì production từ chối GHN mock (`lib/env.ts`) — chưa đo chênh lệch với production mode. GHN mock (độ trễ cố định theo mock, **không có độ trễ giả lập cấu hình được**), chỉ COD, VNPAY tắt. Máy phát tải (Node/k6) chạy cùng máy nên tranh CPU với backend + PostgreSQL.
+Máy 4 CPU Xeon 2,8 GHz, 15,7 GiB RAM, **dùng chung** với các phiên khác (tải hệ thống nền ~1–2 trước khi chạy); PostgreSQL 16.15 cục bộ, Redis cục bộ DB 13; Medusa 2.22.1 `medusa start` một tiến trình (worker shared), kết nối DB theo mặc định Medusa (không đặt pool); `NODE_ENV=development` vì production từ chối GHN mock (`lib/env/index.ts`) — chưa đo chênh lệch với production mode. GHN mock (độ trễ cố định theo mock, **không có độ trễ giả lập cấu hình được**), chỉ COD, VNPAY tắt. Máy phát tải (Node/k6) chạy cùng máy nên tranh CPU với backend + PostgreSQL.
 
 Rate limit (SEC03) **không bị nới**: tải đến từ một IP nên backend của môi trường tải đặt `XS_TRUSTED_PROXIES=loopback` và máy tải gửi `X-Forwarded-For` khác nhau mỗi khách (dải 100.64.0.0/10) — đúng như sau CDN/LB thật. Mặc định của sản phẩm giữ nguyên (không đổi code/config). Nếu rate limit chặn, request bị tính là **lỗi** (429), không bị che.
 

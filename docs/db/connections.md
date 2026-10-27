@@ -1,7 +1,7 @@
 # Kết nối Postgres/Redis và timeout (T-092)
 
 Nguồn sự thật của giá trị: `apps/backend/src/lib/infra/timeouts.ts` (đọc bởi `apps/backend/medusa-config.ts`), biến môi
-trường kiểm bằng zod ở `apps/backend/src/lib/env.ts`. Kiểm: `pnpm --filter @x-shop/backend test -- timeouts tx-network`.
+trường kiểm bằng zod ở `apps/backend/src/lib/env/index.ts`. Kiểm: `pnpm --filter @x-shop/backend test -- timeouts tx-network`.
 
 ## 1. Pool Postgres — mỗi tiến trình một pool
 

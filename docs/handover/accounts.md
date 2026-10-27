@@ -31,7 +31,7 @@
 
 ## 3. Bí mật ứng dụng (chỉ tên và nơi giữ)
 
-Giá trị nằm ở kho bí mật production (chưa chọn) và `.env` cục bộ đã gitignore của từng máy dev. Nguồn chuẩn danh sách: `docs/ops/ENV.md`, `apps/backend/src/lib/env.ts`.
+Giá trị nằm ở kho bí mật production (chưa chọn) và `.env` cục bộ đã gitignore của từng máy dev. Nguồn chuẩn danh sách: `docs/ops/ENV.md`, `apps/backend/src/lib/env/index.ts`.
 
 | Biến | Thuộc dịch vụ | Xoay (RUNBOOK) | Ngày xoay gần nhất |
 | --- | --- | --- | --- |

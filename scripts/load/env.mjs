@@ -51,7 +51,7 @@ export function assertSafeTargets(load = LOAD) {
 export function backendEnv() {
   const origin = BASE_URL;
   return {
-    NODE_ENV: "development", // production từ chối GHN/VNPAY mock (lib/env.ts) — tải dùng mock có độ trễ xác định
+    NODE_ENV: "development", // production từ chối GHN/VNPAY mock (lib/env/index.ts) — tải dùng mock có độ trễ xác định
     DATABASE_URL,
     REDIS_URL,
     DISABLE_MEDUSA_ADMIN: "true",
