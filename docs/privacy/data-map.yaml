@@ -467,7 +467,7 @@ tables:
     pii:
       payload:
         category: basic
-        purpose: "hàng đợi sự kiện: mã đơn, display_ref, và với order.lookup_link là token liên kết tra cứu một lần 15 phút (cho phép xem đơn của khách)"
+        purpose: "hàng đợi sự kiện: chỉ ID và tham số tối thiểu (mã đơn, display_ref…); order.lookup_link chỉ {order_id, display_ref} — token liên kết phát hành lúc gửi, không lưu (T-149)"
         legal_basis: contract
         retention: transient-90d
         recipients: []

@@ -117,27 +117,37 @@ const urlWithProtocol = (protocols: readonly string[], label: string) =>
 /**
  * Gốc URL storefront (T-149): http(s), có host, không query/fragment/thông tin đăng nhập — liên kết gửi khách được nối
  * thêm đường dẫn vào sau (`<gốc>/tra-cuu-don/xac-thuc?token=…`). Cho phép tiền tố đường dẫn (vd. `/shop`).
+ * Giá trị THÔ không được chứa khoảng trắng/xuống dòng/tab, `\`, `@`, `?`, `#`: WHATWG URL nuốt hoặc sửa các ký tự này
+ * khi kiểm, nhưng bộ đọc khác (RFC 3986, ứng dụng thư) thì không — vd. `https://a.vn\@evil.example` có host evil.example.
+ * Kết quả là gốc dựng lại từ bản ĐÃ PARSE (`origin + pathname`, bỏ `/` cuối), không dùng chuỗi thô (review T-149).
  */
-const baseUrl = z.string().refine(
-  (raw) => {
-    try {
-      const u = new URL(raw);
-      return (
-        (u.protocol === "http:" || u.protocol === "https:") &&
-        u.hostname !== "" &&
-        u.search === "" &&
-        u.hash === "" &&
-        !raw.includes("?") &&
-        !raw.includes("#") &&
-        u.username === "" &&
-        u.password === ""
-      );
-    } catch {
-      return false;
-    }
-  },
-  { message: "phải là URL gốc http(s):// (không query, fragment hay thông tin đăng nhập)" },
-);
+const baseUrl = z
+  .string()
+  .refine(
+    (raw) => {
+      if (/[\s\\@?#]/.test(raw)) return false;
+      try {
+        const u = new URL(raw);
+        return (
+          (u.protocol === "http:" || u.protocol === "https:") &&
+          u.hostname !== "" &&
+          u.search === "" &&
+          u.hash === "" &&
+          u.username === "" &&
+          u.password === ""
+        );
+      } catch {
+        return false;
+      }
+    },
+    {
+      message: "phải là URL gốc http(s):// (không khoảng trắng, \\, query, fragment hay thông tin đăng nhập)",
+    },
+  )
+  .transform((raw) => {
+    const u = new URL(raw);
+    return `${u.origin}${u.pathname}`.replace(/\/+$/, "");
+  });
 
 // Độ dài tối thiểu cũng loại các mặc định công khai ngắn như "supersecret" của Medusa.
 const secret = z
@@ -402,8 +412,8 @@ const schema = z
         ),
         timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
       },
-      // Bỏ `/` cuối để nối đường dẫn; production đã bắt buộc biến nên mặc định dev không áp ở production.
-      storefrontUrl: (env.STOREFRONT_URL ?? DEV_STOREFRONT_URL).replace(/\/+$/, ""),
+      // STOREFRONT_URL đã chuẩn hoá ở schema; production đã bắt buộc biến nên mặc định dev không áp ở production.
+      storefrontUrl: env.STOREFRONT_URL ?? DEV_STOREFRONT_URL,
       orderLookupSecret:
         env.ORDER_LOOKUP_SECRET ?? (env.NODE_ENV === "production" ? "" : ORDER_LOOKUP_DEV_SECRET),
       vnpay: env.VNPAY_ENABLED

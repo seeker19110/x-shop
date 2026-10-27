@@ -84,6 +84,7 @@ Mục đặc thù hồ sơ/ngành (ecommerce, PCI SAQ A, đối soát) nằm tro
 | 13 | BLOCKER | Kiểm tay a11y chưa có | — | biên bản người + ngày + luồng | người kiểm |
 | — | BLOCKER | Ruleset nhánh `main` đang tắt trên remote | THREAT-MODEL O-01 (file mẫu `.github/rulesets/main.json` đặt `active`) | chủ dự án bật ruleset đòi check `quality`, `gitleaks` | chủ dự án |
 | — | BLOCKER | Khoá merchant thật VNPAY + token GHN chưa có | THREAT-MODEL O-02 | chủ dự án đăng ký | chủ dự án |
+| — | BLOCKER | Production bắt buộc đặt `STOREFRONT_URL` (https://, gốc storefront thật) — liên kết tra cứu đơn dựng từ biến này; thiếu/không https thì backend từ chối khởi động (D-091, T-149) | `apps/backend/src/lib/env.ts` (`PRODUCTION_REQUIRED`), `docs/ops/ENV.md` | đặt biến trong cấu hình triển khai (server và worker) trước khi lên production | chủ dự án / người triển khai |
 
 ### 3.2 Đề xuất "Khi chạy thật" chờ chủ dự án quyết (mục 18, `prod_switch`)
 | D-NNN | Đề xuất (chủ dự án quyết ở G7) | Quyết định (chủ dự án) |

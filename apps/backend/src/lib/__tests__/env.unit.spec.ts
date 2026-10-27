@@ -351,6 +351,7 @@ describe("STOREFRONT_URL (T-149 — gốc liên kết gửi khách)", () => {
       "https://shop.example.vn/?",
       "https://shop.example.vn/#x",
       "https://user:mat-khau@shop.example.vn",
+      "https://@shop.example.vn",
     ]) {
       const problems = problemsOf({ DATABASE_URL: DB, STOREFRONT_URL: bad });
       expect(problems.map((p) => p.variable)).toEqual(["STOREFRONT_URL"]);
@@ -363,5 +364,33 @@ describe("STOREFRONT_URL (T-149 — gốc liên kết gửi khách)", () => {
     expect(variablesOf({ ...production, STOREFRONT_URL: "http://shop.example.vn" })).toEqual([
       "STOREFRONT_URL",
     ]);
+  });
+
+  it("review T-149 🟠1: khoảng trắng/xuống dòng/tab/`\\` trong giá trị thô → lỗi (WHATWG URL nuốt hoặc sửa được, link dựng ra thì không)", () => {
+    for (const bad of [
+      "https://shop.example.vn\n",
+      "https://shop.example.vn ",
+      " https://shop.example.vn",
+      "https://shop.example.vn/\t",
+      "https://shop.example.vn\\@evil.example",
+      "https://shop.example.vn\\shop",
+      "https://shop.example.vn/a b",
+    ]) {
+      expect(variablesOf({ ...production, STOREFRONT_URL: bad })).toEqual(["STOREFRONT_URL"]);
+      expect(variablesOf({ DATABASE_URL: DB, STOREFRONT_URL: bad })).toEqual(["STOREFRONT_URL"]);
+    }
+  });
+
+  it("gốc dựng từ bản ĐÃ PARSE (origin + pathname, bỏ `/` cuối): scheme/host chuẩn hoá, cổng mặc định bỏ", () => {
+    const cases: Array<[string, string]> = [
+      ["HTTPS://Shop.Example.VN", "https://shop.example.vn"],
+      ["https://shop.example.vn:443/", "https://shop.example.vn"],
+      ["https://shop.example.vn/cua-hang/", "https://shop.example.vn/cua-hang"],
+      ["https://shop.example.vn/a%20b", "https://shop.example.vn/a%20b"],
+    ];
+    for (const [raw, base] of cases) {
+      const r = parseEnv({ ...production, STOREFRONT_URL: raw });
+      expect(r.ok && r.env.storefrontUrl).toBe(base);
+    }
   });
 });

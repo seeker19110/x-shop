@@ -644,6 +644,40 @@ medusaIntegrationTestRunner({
         for (const r of rows as Array<{ p: string }>) expect(r.p).not.toMatch(TOKEN_SHAPE);
       });
 
+      it("gửi trễ (đồng hồ dispatcher tiêm): hạn 15 phút tính từ LÚC GỬI, không phải lúc tra cứu", async () => {
+        const o = await place([["Trắng/S", 1]], "cod");
+        const catcher = new LookupLinkCatcher(o.orderId);
+        setNotificationAdapterForTest(catcher);
+        // Sự kiện hẹn ở tương lai (dispatcher nền giờ thật không nhận) — mô phỏng hàng đợi kẹt 40 phút.
+        const sendAt = new Date(Date.now() + 40 * 60_000);
+        const s = service();
+        const realInsert = s.insertOutbox.bind(s);
+        const spy = jest
+          .spyOn(s, "insertOutbox")
+          .mockImplementation((key, agg, type, payload, em) =>
+            realInsert(key, agg, type, payload, em, sendAt),
+          );
+        const requestedAt = Date.now();
+        try {
+          expect((await lookup({ display_ref: o.ref, phone: CONTACT.phone })).status).toBe(202);
+        } finally {
+          spy.mockRestore();
+        }
+        const [ev] = await settleLookupLinks(o.orderId, { now: sendAt });
+        expect(ev).toMatchObject({ state: "sent", attempts: 0 });
+        expect(catcher.seen).toHaveLength(1);
+        const token = linkTokenOf(catcher.seen[0]!)!;
+        const ttl = ORDER_ACCESS_CONFIG.linkTtlMs;
+        const claim = readOrderToken("link", token, sendAt);
+        expect(claim?.orderId).toBe(o.orderId);
+        // Hạn = lúc gửi + 15 phút (token tính theo giây).
+        expect(claim!.expiresAt.getTime()).toBe(Math.floor((sendAt.getTime() + ttl) / 1000) * 1000);
+        // Nếu hạn tính từ lúc tra cứu thì thư tới nơi đã hết hạn.
+        expect(claim!.expiresAt.getTime()).toBeGreaterThan(requestedAt + ttl);
+        expect(readOrderToken("link", token, new Date(sendAt.getTime() + ttl - 2_000))).not.toBeNull();
+        expect(readOrderToken("link", token, new Date(sendAt.getTime() + ttl + 1_000))).toBeNull();
+      });
+
       it("retry: lần gửi đầu lỗi (thư có thể đã tới) → lần sau phát token MỚI; mỗi token chỉ mở đúng đơn đó, một lần, không thay được token phiên", async () => {
         const o = await place([["Trắng/M", 1]], "cod");
         const other = await place([["Đen/S", 1]], "cod");

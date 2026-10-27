@@ -42,3 +42,26 @@ describe("scrubPii — token liên kết", () => {
     expect(scrubPii("ESP 422 smtp.example.com từ chối")).toBe("ESP 422 smtp.example.com từ chối");
   });
 });
+
+/**
+ * ReDoS (review T-149 🟢2): thông điệp lỗi adapter không giới hạn độ dài; mẫu token/email O(n²) trên chuỗi dài không có
+ * `.`/`@` — bản cũ (regex trước, cắt sau) mất ~10 s với 100 KB. Đo bằng CPU time của tiến trình; trần 50 ms/lần.
+ */
+describe("scrubPii — đầu vào đối nghịch dài (chống ReDoS)", () => {
+  const N = 100_000;
+  const cases: Array<[string, string]> = [
+    ["chữ dài không dấu chấm", "a".repeat(N)],
+    ["chữ dài rồi một dấu chấm", `${"a".repeat(N)}.`],
+    ["chữ dài không @", `${"b".repeat(N)}@`],
+    ["nhiều @", "a@".repeat(N / 2)],
+    ["số dài", "1 ".repeat(N / 2)],
+    ["token= lặp", "?token=".repeat(N / 7)],
+  ];
+  it.each(cases)("%s → xong < 50 ms CPU, kết quả ≤ 300 ký tự", (_name, input) => {
+    const t0 = process.cpuUsage();
+    const out = scrubPii(input);
+    const { user, system } = process.cpuUsage(t0);
+    expect((user + system) / 1000).toBeLessThan(50);
+    expect(out.length).toBeLessThanOrEqual(300);
+  });
+});

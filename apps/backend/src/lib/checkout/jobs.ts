@@ -237,7 +237,19 @@ export async function codConfirmTimeout(
 
 /* ---------------------------------------------------------------- outbox-dispatch */
 
-export type OutboxHandler = (container: MedusaContainer, event: OutboxClaim) => Promise<void>;
+/**
+ * Ngữ cảnh một lần xử lý: `now` = thời điểm xử lý sự kiện theo đồng hồ của dispatcher (`opts.now`, không thì `clock()`
+ * lúc gọi bộ xử lý) — bộ xử lý cần giờ (vd. hạn token liên kết tính từ LÚC GỬI, T-149) dùng giá trị này để test tiêm được.
+ */
+export interface OutboxHandlerContext {
+  now: Date;
+}
+
+export type OutboxHandler = (
+  container: MedusaContainer,
+  event: OutboxClaim,
+  ctx: OutboxHandlerContext,
+) => Promise<void>;
 
 // Chính sách retry outbox (hàm thuần) ở lib/outbox/policy — giữ export cũ cho caller/test.
 export { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs };
@@ -319,7 +331,7 @@ export async function dispatchOutbox(
       continue;
     }
     try {
-      await (handlers[event.type] ?? logHandler)(container, event);
+      await (handlers[event.type] ?? logHandler)(container, event, { now: opts.now ?? clock() });
       await s.markOutboxSent(event.id);
       summary.sent.push(event.event_key);
     } catch (e) {

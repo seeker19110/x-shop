@@ -33,7 +33,10 @@ export function isNotificationEvent(type: string): boolean {
  * khi ghi DB/log. Token: tham số `token=` và mọi chuỗi dạng token ký HMAC (`base64url.base64url`).
  */
 export function scrubPii(s: string): string {
+  // Cắt TRƯỚC khi chạy regex (review T-149): mẫu token/email là O(n²) trên chuỗi dài không có `.`/`@` — thông điệp lỗi
+  // của adapter không giới hạn độ dài. Lớp cắt 300 ở cuối vẫn giữ (độ dài lưu DB/log).
   return s
+    .slice(0, 2000)
     .replace(/([?&]token=)[^\s&"'<>]+/gi, "$1***")
     .replace(/[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g, "***")
     .replace(/[^\s@<>"']+@[^\s@<>"']+/g, "***@***")
@@ -112,7 +115,11 @@ export async function sendNotification(
 }
 
 /** Bộ xử lý outbox cho sự kiện thông báo. Không có gì để gửi (đơn online chưa thu, đơn hủy…) → coi như xong. */
-export async function notificationHandler(container: MedusaContainer, event: OutboxClaim): Promise<void> {
+export async function notificationHandler(
+  container: MedusaContainer,
+  event: OutboxClaim,
+  ctx: { now?: Date } = {},
+): Promise<void> {
   const orderId = String(event.payload.order_id ?? event.aggregate_id);
   const [fin] = await container.resolve<CheckoutModuleService>(CHECKOUT_MODULE).listOrderFinances({
     order_id: orderId,
@@ -132,11 +139,15 @@ export async function notificationHandler(container: MedusaContainer, event: Out
       template = "order.confirmed";
       break;
     case "order.lookup_link":
-      // T-149 (D-089): token một lần (15 phút, tính từ LÚC GỬI) phát hành tại đây, chỉ nằm trong thư — outbox chỉ có ID.
+      // T-149 (D-089): token một lần (15 phút, tính từ LÚC GỬI = `ctx.now` của dispatcher) phát hành tại đây, chỉ nằm
+      // trong thư — outbox chỉ có ID.
       // Retry phát token mới: token cũ (thư lỗi có thể đã tới) vẫn chỉ mở đúng đơn này, một lần, tới khi hết hạn —
       // không rộng hơn token mới (cùng loại `link`, cùng đơn, cùng người nhận trên đơn).
       template = "order.lookup_link";
-      extra.link = orderLookupLink(storefrontUrl(), issueOrderToken("link", orderId).token);
+      extra.link = orderLookupLink(
+        storefrontUrl(),
+        issueOrderToken("link", orderId, ctx.now ?? new Date()).token,
+      );
       break;
     case "shipment.shipped":
       template = "shipment.shipped";

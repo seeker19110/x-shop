@@ -21,7 +21,7 @@ x-shop/backend/checkout,ops_exception,detail,basic,"chi tiết ngoại lệ vậ
 x-shop/backend/checkout,order_finance,contact,basic,"giao kết và thực hiện đơn hàng: họ tên, SĐT, email? (JSON {name, phone, email?}); liên hệ giao hàng; gửi thông báo giao dịch; xác minh tra cứu đơn",contract,contact-anonymize
 x-shop/backend/checkout,order_finance,address,basic,giao hàng: tỉnh/phường và địa chỉ chi tiết (JSON),contract,contact-anonymize
 x-shop/backend/notify,outbound_message,recipient_masked,basic,ghi nhận đã gửi thông báo cho ai (SĐT/email đã che một phần); chống gửi lặp,contract,transient-90d
-x-shop/backend/checkout,outbox_event,payload,basic,"hàng đợi sự kiện: mã đơn, display_ref, và với order.lookup_link là token liên kết tra cứu một lần 15 phút (cho phép xem đơn của khách)",contract,transient-90d
+x-shop/backend/checkout,outbox_event,payload,basic,"hàng đợi sự kiện: chỉ ID và tham số tối thiểu (mã đơn, display_ref…); order.lookup_link chỉ {order_id, display_ref} — token liên kết phát hành lúc gửi, không lưu (T-149)",contract,transient-90d
 x-shop/backend/checkout,payment_attempt,payment_url,basic,URL thanh toán đã ký; chứa vnp_IpAddr = IP khách ở dạng thô (xem DPIA §1) và mã đơn,contract,payment-evidence
 x-shop/backend/checkout,rate_limit_counter,bucket,basic,"khoá giới hạn tần suất theo IP/SĐT/mã đơn, chỉ lưu bản băm (giả danh hoá) — chống dò và lạm dụng",legitimate_interests,rate-limit-2d
 x-shop/backend/shipping,shipment,created_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
