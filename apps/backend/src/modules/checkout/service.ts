@@ -928,8 +928,26 @@ class CheckoutModuleService extends MedusaService({
     return rows.length === 1;
   }
 
-  /** Dọn bộ đếm cửa sổ cũ và dấu đổi token đã hết hạn (token hết hạn không còn đổi được nên dấu không cần nữa). */
-  async purgeOrderAccessRecords(now: Date): Promise<{ counters: number; redemptions: number }> {
+  /**
+   * Dọn bộ đếm cửa sổ cũ và dấu đổi token đã hết hạn (token hết hạn không còn đổi được nên dấu không cần nữa).
+   * `webhookWindows`: chính sách webhook (tên → windowMs) — hàng `webhook.<tên>:%` chỉ cần giữ 2×windowMs (cửa sổ hiện
+   * tại + trước), dọn sớm thay vì 2 ngày; bucket khác giữ 2 ngày.
+   */
+  async purgeOrderAccessRecords(
+    now: Date,
+    webhookWindows: Readonly<Record<string, number>> = {},
+  ): Promise<{ counters: number; redemptions: number }> {
+    let purged = 0;
+    for (const [name, windowMs] of Object.entries(webhookWindows)) {
+      if (!/^[A-Za-z0-9]+$/.test(name) || !Number.isSafeInteger(windowMs) || windowMs <= 0) {
+        throw new RangeError(`Chính sách webhook không hợp lệ: ${name}`);
+      }
+      const rows = await this.exec(
+        `DELETE FROM rate_limit_counter WHERE bucket LIKE ? AND window_start < ? RETURNING id`,
+        [`webhook.${name}:%`, new Date(now.getTime() - 2 * windowMs)],
+      );
+      purged += rows.length;
+    }
     const counters = await this.exec(`DELETE FROM rate_limit_counter WHERE window_start < ? RETURNING id`, [
       new Date(now.getTime() - 2 * 24 * 3600_000),
     ]);
@@ -937,7 +955,7 @@ class CheckoutModuleService extends MedusaService({
       `DELETE FROM order_access_redemption WHERE expires_at < ? RETURNING id`,
       [new Date(now.getTime() - 24 * 3600_000)],
     );
-    return { counters: counters.length, redemptions: redemptions.length };
+    return { counters: purged + counters.length, redemptions: redemptions.length };
   }
 
   /** Tổng ledger của đơn (dạng LedgerEntry của domain). */

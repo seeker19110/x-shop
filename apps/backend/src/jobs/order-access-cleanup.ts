@@ -1,13 +1,17 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { WEBHOOK_RATE_LIMITS } from "../lib/http/webhook-rate-limit";
 import { CHECKOUT_MODULE } from "../modules/checkout";
 import type CheckoutModuleService from "../modules/checkout/service";
 
-/** Mỗi giờ: dọn bộ đếm giới hạn tần suất cũ (> 2 ngày) và dấu đổi liên kết tra cứu đã hết hạn (> 1 ngày) — T-021. */
+/** Mỗi giờ: dọn bộ đếm giới hạn tần suất cũ (> 2 ngày; hàng webhook > 2×cửa sổ chính sách) và dấu đổi liên kết tra cứu đã hết hạn (> 1 ngày) — T-021. */
 export default async function orderAccessCleanupJob(container: MedusaContainer): Promise<void> {
   const r = await container
     .resolve<CheckoutModuleService>(CHECKOUT_MODULE)
-    .purgeOrderAccessRecords(new Date());
+    .purgeOrderAccessRecords(
+      new Date(),
+      Object.fromEntries(Object.entries(WEBHOOK_RATE_LIMITS).map(([name, w]) => [name, w.windowMs])),
+    );
   if (r.counters + r.redemptions > 0) {
     container
       .resolve(ContainerRegistrationKeys.LOGGER)

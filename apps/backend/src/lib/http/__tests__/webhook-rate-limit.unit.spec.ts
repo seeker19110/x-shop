@@ -1,6 +1,8 @@
 import { MemoryCounter } from "../../security/__tests__/memory-counter";
 import {
   consumeWebhookRate,
+  LocalHitGuard,
+  localHitGuard,
   WEBHOOK_RATE_LIMITS,
   webhookRateBucket,
   type WebhookRateDecision,
@@ -25,13 +27,24 @@ const denied = (ds: WebhookRateDecision[]) =>
   ds.filter((d): d is { allowed: false; retryAfterSeconds: number } => !d.allowed);
 
 describe("consumeWebhookRate — bộ đếm chung giữa các bản sao", () => {
+  // Bộ chặn sớm của tiến trình là trạng thái toàn cục: mỗi ca bắt đầu từ trạng thái sạch.
+  beforeEach(() => localHitGuard.clear());
+
   it("đồng thời: 2 bản sao × 200 request song song cùng cửa sổ → đúng `limit` lượt qua, phần còn lại 429 kèm Retry-After", async () => {
     const shared = new MemoryCounter();
     const replicaA = hitOf(shared);
     const replicaB = hitOf(shared);
     const decisions = await Promise.all(
       Array.from({ length: 400 }, (_, i) =>
-        consumeWebhookRate(i % 2 === 0 ? replicaA : replicaB, "ghnCallbackIp", "203.0.113.7", at(1_000)),
+        // guard = null: kiểm Retry-After của CHÍNH bộ đếm chung (chặn sớm dùng số đếm cục bộ nên Retry-After có thể ngắn hơn).
+        consumeWebhookRate(
+          i % 2 === 0 ? replicaA : replicaB,
+          "ghnCallbackIp",
+          "203.0.113.7",
+          at(1_000),
+          undefined,
+          null,
+        ),
       ),
     );
     expect(decisions.filter((d) => d.allowed)).toHaveLength(limit);
@@ -118,5 +131,126 @@ describe("consumeWebhookRate — bộ đếm chung giữa các bản sao", () =>
     await expect(consumeWebhookRate(broken, "ghnCallbackIp", "203.0.113.7", at(0))).resolves.toEqual({
       allowed: true,
     });
+  });
+});
+
+describe("vnpayIpnIp — chính sách IPN VNPAY (T-152)", () => {
+  const { limit: ipnLimit, windowMs: ipnWindow } = WEBHOOK_RATE_LIMITS.vnpayIpnIp;
+
+  it("hạn mức 300/10 s như hiện hành; khoá tách khỏi GHN", () => {
+    expect(ipnLimit).toBe(300);
+    expect(ipnWindow).toBe(10_000);
+    expect(webhookRateBucket("vnpayIpnIp", "203.0.113.7")).toMatch(/^webhook\.vnpayIpnIp:[0-9a-f]{40}$/);
+    expect(webhookRateBucket("vnpayIpnIp", "203.0.113.7")).not.toBe(
+      webhookRateBucket("ghnCallbackIp", "203.0.113.7"),
+    );
+  });
+
+  it("hai bản sao (hai LocalHitGuard riêng, chung một bộ đếm) chia nhau đúng `limit` lượt", async () => {
+    const shared = new MemoryCounter();
+    const [ga, gb] = [new LocalHitGuard(), new LocalHitGuard()];
+    const calls = Array.from({ length: 400 }, (_, i) =>
+      consumeWebhookRate(
+        hitOf(shared),
+        "vnpayIpnIp",
+        "203.0.113.7",
+        at(1_000),
+        undefined,
+        i % 2 === 0 ? ga : gb,
+      ),
+    );
+    const decisions = await Promise.all(calls);
+    expect(decisions.filter((d) => d.allowed)).toHaveLength(ipnLimit);
+    expect(denied(decisions)).toHaveLength(400 - ipnLimit);
+  });
+});
+
+describe("chặn sớm trong bộ nhớ (LocalHitGuard)", () => {
+  /** Bộ đếm chung đếm số lần ghi (UPSERT) thật. */
+  const counting = (c: MemoryCounter) => {
+    let writes = 0;
+    const hit: WindowHit = (b, ms, now) => {
+      writes += 1;
+      return c.hit(b, ms, now);
+    };
+    return { hit, writes: () => writes };
+  };
+
+  it("dội 2 000 request song song từ một bản: ≤ limit lần ghi, kết quả cho/chặn y hệt khi không có chặn sớm", async () => {
+    const run = async (guard: LocalHitGuard | null) => {
+      const { hit, writes } = counting(new MemoryCounter());
+      const ds = await Promise.all(
+        Array.from({ length: 2_000 }, () =>
+          consumeWebhookRate(hit, "ghnCallbackIp", "203.0.113.7", at(1_000), undefined, guard),
+        ),
+      );
+      return { allowed: ds.filter((d) => d.allowed).length, writes: writes() };
+    };
+    const without = await run(null);
+    const withGuard = await run(new LocalHitGuard());
+    expect(without).toEqual({ allowed: limit, writes: 2_000 }); // không chặn sớm: mỗi request một UPSERT
+    expect(withGuard.allowed).toBe(limit); // cùng số lượt qua
+    expect(withGuard.writes).toBe(limit); // ghi bị chặn trần
+  });
+
+  it("không chặn nhầm: bản khác đã tiêu hạn mức thì bản này vẫn được hỏi bộ đếm chung (và bị chặn ở đó)", async () => {
+    const shared = new MemoryCounter();
+    const { hit, writes } = counting(shared);
+    for (let i = 0; i < limit; i += 1)
+      await shared.hit(webhookRateBucket("ghnCallbackIp", "203.0.113.7"), 10_000, at(1_000));
+    const d = await consumeWebhookRate(
+      hit,
+      "ghnCallbackIp",
+      "203.0.113.7",
+      at(1_000),
+      undefined,
+      new LocalHitGuard(),
+    );
+    expect(d.allowed).toBe(false);
+    expect(writes()).toBe(1); // đã tới bộ đếm chung, không phải do chặn sớm
+  });
+
+  it("vắt qua ranh giới cửa sổ: cùng quyết định trong cửa sổ đầu; sau đó không bao giờ lọt quá hạn mức trượt", async () => {
+    const run = async (guard: LocalHitGuard | null) => {
+      const shared = new MemoryCounter();
+      const phases: boolean[][] = [[], []];
+      for (const [k, t] of [9_900, 10_100].entries()) {
+        for (let i = 0; i < 400; i += 1) {
+          phases[k]!.push(
+            (await consumeWebhookRate(hitOf(shared), "ghnCallbackIp", "203.0.113.7", at(t), undefined, guard))
+              .allowed,
+          );
+        }
+      }
+      return phases;
+    };
+    const [g1, g2] = await run(new LocalHitGuard());
+    const [n1] = await run(null);
+    expect(g1).toEqual(n1); // cùng cửa sổ: y hệt bộ đếm chung
+    // Lượt bị chặn sớm không được đếm vào DB nên cửa sổ trước "nhẹ" hơn: 300·0,99 = 297 → đúng 3 lượt nữa, không hơn.
+    expect(g2!.filter(Boolean)).toHaveLength(3);
+  });
+
+  it("sang cửa sổ mới: phần đóng góp cục bộ trôi dần, lượt hợp lệ lại qua; IP khác độc lập", async () => {
+    const guard = new LocalHitGuard();
+    const hit = hitOf(new MemoryCounter());
+    for (let i = 0; i < limit + 5; i += 1)
+      await consumeWebhookRate(hit, "ghnCallbackIp", "203.0.113.7", at(0), undefined, guard);
+    expect(
+      (await consumeWebhookRate(hit, "ghnCallbackIp", "203.0.113.7", at(30_000), undefined, guard)).allowed,
+    ).toBe(true);
+    expect(
+      (await consumeWebhookRate(hit, "ghnCallbackIp", "198.51.100.1", at(0), undefined, guard)).allowed,
+    ).toBe(true);
+  });
+
+  it("bộ đếm chung lỗi: cho qua và KHÔNG tiêu hạn mức cục bộ (không tự khoá)", async () => {
+    const guard = new LocalHitGuard();
+    const broken: WindowHit = () => Promise.reject(new Error("down"));
+    for (let i = 0; i < limit + 50; i += 1) {
+      expect(
+        await consumeWebhookRate(broken, "ghnCallbackIp", "203.0.113.7", at(0), undefined, guard),
+      ).toEqual({ allowed: true });
+    }
   });
 });
