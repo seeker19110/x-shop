@@ -653,6 +653,11 @@ const schema = baseSchema
             mode: (env.VNPAY_MODE ?? "mock") as VnpayMode,
           }
         : null,
+      // Khoá XÁC MINH IPN (T-166) — tách khỏi `vnpay`: VNPAY_ENABLED=false chỉ chặn TẠO thanh toán mới; IPN của giao dịch
+      // đã tạo vẫn phải xác minh/ghi nhận được (RUNBOOK §1 "giữ endpoint IPN chạy"). Bật → khoá của `vnpay`. Tắt → khoá
+      // đặt tường minh (VNPAY_TMN_CODE + VNPAY_HASH_SECRET); dev/test vắng → khoá giả dev; production vắng hoặc dùng khoá
+      // giả dev → null (IPN trả 99 để VNPAY gửi lại, không ghi nhận gì).
+      vnpayIpnKeys: vnpayIpnKeysOf(env, pick),
     };
     // `JSON.stringify`/`console.log`/`util.inspect` trên Env và các đối tượng lồng (ghn, vnpay) luôn ra bản đã che (BASE-CFG-005).
     // Không chặn được `{ ...env }`/`Object.entries`: các cách đó sao chép GIÁ TRỊ THẬT — dump phải qua redactConfig.
@@ -660,10 +665,48 @@ const schema = baseSchema
     if (effective.catalogRevalidate !== null) withRedaction(effective.catalogRevalidate);
     if (effective.fileStorage.kind === "s3") withRedaction(effective.fileStorage);
     if (effective.vnpay !== null) withRedaction(effective.vnpay);
+    if (effective.vnpayIpnKeys !== null) withRedaction(effective.vnpayIpnKeys);
     return withRedaction(effective);
   });
 
 export type Env = z.output<typeof schema>;
+
+/** Khoá xác minh IPN VNPAY (cùng hình với `VnpayVerifyKeys` của lib/payment/vnpay-secrets). */
+export interface VnpayIpnKeys {
+  tmnCode: string;
+  hashSecret: string;
+  hashSecretPrevious: string | null;
+}
+
+function vnpayIpnKeysOf(
+  env: {
+    NODE_ENV?: string;
+    VNPAY_ENABLED: boolean;
+    VNPAY_TMN_CODE?: string;
+    VNPAY_HASH_SECRET?: string;
+    VNPAY_HASH_SECRET_PREVIOUS?: string;
+  },
+  pick: (key: "VNPAY_TMN_CODE" | "VNPAY_HASH_SECRET") => string,
+): VnpayIpnKeys | null {
+  const keys: VnpayIpnKeys = {
+    tmnCode: pick("VNPAY_TMN_CODE"),
+    hashSecret: pick("VNPAY_HASH_SECRET"),
+    hashSecretPrevious: env.VNPAY_HASH_SECRET_PREVIOUS ?? null,
+  };
+  // Bật: production đã bắt buộc đủ biến và cấm khoá giả (superRefine ở trên) — dùng y như `vnpay`.
+  if (env.VNPAY_ENABLED) return keys;
+  if (env.NODE_ENV !== "production") return keys;
+  const dev = VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET;
+  if (
+    keys.tmnCode === "" ||
+    keys.hashSecret === "" ||
+    keys.hashSecret === dev ||
+    keys.hashSecretPrevious === dev
+  ) {
+    return null;
+  }
+  return keys;
+}
 
 type BaseEnv = z.output<typeof baseSchema>;
 

@@ -1,5 +1,5 @@
 import type { vnpay } from "@x-shop/domain";
-import { parseEnv, type VnpayMode } from "../env";
+import { parseEnv, type VnpayIpnKeys, type VnpayMode } from "../env";
 
 /**
  * Tham số checkout (D-002): mọi thời hạn là cấu hình có tên, đổi một chỗ. Thời gian lưu UTC (DATA04).
@@ -39,6 +39,7 @@ export const MAX_MONEY_VND = 2_147_483_647;
 export type VnpayRuntimeConfig = vnpay.VnpayConfig & { mode: VnpayMode; hashSecretPrevious: string | null };
 
 let cachedVnpay: { value: VnpayRuntimeConfig | null } | null = null;
+let cachedIpnKeys: { value: VnpayIpnKeys | null } | null = null;
 
 /** Cấu hình VNPAY từ env (đã kiểm khi khởi động ở medusa-config); null = VNPAY tắt. */
 export function getVnpayConfig(): VnpayRuntimeConfig | null {
@@ -47,4 +48,16 @@ export function getVnpayConfig(): VnpayRuntimeConfig | null {
   if (!parsed.ok) throw new Error("[checkout] Cấu hình môi trường không hợp lệ (đã báo khi khởi động)");
   cachedVnpay = { value: parsed.env.vnpay };
   return cachedVnpay.value;
+}
+
+/**
+ * Khoá xác minh IPN VNPAY (T-166) — có cả khi VNPAY_ENABLED=false (chỉ chặn tạo thanh toán mới) nếu khoá còn cấu hình;
+ * null = không xác minh được (IPN trả 99, không ghi nhận). Đừng dùng để tạo thanh toán/querydr — dùng `getVnpayConfig`.
+ */
+export function getVnpayIpnKeys(): VnpayIpnKeys | null {
+  if (cachedIpnKeys) return cachedIpnKeys.value;
+  const parsed = parseEnv(process.env);
+  if (!parsed.ok) throw new Error("[checkout] Cấu hình môi trường không hợp lệ (đã báo khi khởi động)");
+  cachedIpnKeys = { value: parsed.env.vnpayIpnKeys };
+  return cachedIpnKeys.value;
 }

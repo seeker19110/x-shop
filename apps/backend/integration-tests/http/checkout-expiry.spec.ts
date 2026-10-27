@@ -28,6 +28,7 @@ import {
   type VnpayGateway,
 } from "../../src/lib/checkout/vnpay-gateway";
 import { HOLD_RECHECK_POLICY } from "../../src/lib/checkout/hold-recheck";
+import { cancelByCustomer } from "../../src/lib/orders/cancel";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { checkoutClient, DEV_VNPAY, ipn, type Api } from "../helpers/checkout-api";
@@ -40,6 +41,22 @@ import {
 } from "../helpers/checkout-fixtures";
 
 jest.setTimeout(300 * 1000);
+
+/**
+ * T-166: mô phỏng `VNPAY_ENABLED=false` lúc đang chạy (INCIDENT-RESPONSE §3) mà không khởi động lại app. Công tắc toàn
+ * cục (mặc định tắt → hành vi thật): `"keys"` = VNPAY tắt nhưng khoá xác minh IPN còn; `"nokeys"` = tắt và không có khoá.
+ */
+type VnpayOff = "keys" | "nokeys" | undefined;
+const vnpaySwitch = globalThis as { __xshopVnpayOff?: VnpayOff };
+jest.mock("../../src/lib/checkout/config", () => {
+  const actual = jest.requireActual("../../src/lib/checkout/config");
+  const sw = globalThis as { __xshopVnpayOff?: "keys" | "nokeys" };
+  return {
+    ...actual,
+    getVnpayConfig: () => (sw.__xshopVnpayOff ? null : actual.getVnpayConfig()),
+    getVnpayIpnKeys: () => (sw.__xshopVnpayOff === "nokeys" ? null : actual.getVnpayIpnKeys()),
+  };
+});
 
 const R = vnpay.IPN_RESPONSES;
 const MIN = 60_000;
@@ -983,6 +1000,107 @@ medusaIntegrationTestRunner({
               .unknown,
           ).toEqual([]);
         });
+      });
+    });
+
+    describe("VNPAY_ENABLED=false khi cổng lỗi (T-166)", () => {
+      const R91: QueryStatusResult = { outcome: "unknown", transactionNo: null, reason: "response_91" };
+      const pg = () => container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+      const txnOf = async (orderId: string) =>
+        (await service().listPaymentAttempts({ order_id: orderId }))[0]!.txn_ref;
+      const callsOf = (txn: string) => gateway.seen.filter((t) => t === txn).length;
+      const reservedOf = async (variant: string) => (await inventoryLevel(container, fx, variant)).reserved;
+      const inboxCount = async (txn: string) =>
+        Number(
+          (
+            await pg().raw(`SELECT count(*)::int AS n FROM webhook_inbox WHERE payload->>'vnp_TxnRef' = ?`, [
+              txn,
+            ])
+          ).rows[0].n,
+        );
+      const withVnpayOff = async <T>(mode: VnpayOff, fn: () => Promise<T>): Promise<T> => {
+        vnpaySwitch.__xshopVnpayOff = mode;
+        try {
+          return await fn();
+        } finally {
+          vnpaySwitch.__xshopVnpayOff = undefined;
+        }
+      };
+      afterEach(() => {
+        vnpaySwitch.__xshopVnpayOff = undefined;
+      });
+
+      it("REVIEW-3: tắt VNPAY (khoá còn) → đơn chưa rõ KHÔNG bị hủy/nhả, không querydr; hủy tay 409; đơn mới chặn; IPN vẫn xác nhận", async () => {
+        const o = await client.placeOrder([["Trắng/M", 1]], "vnpay");
+        const txn = await txnOf(o.orderId);
+        gateway.results.set(txn, R91);
+        const t0 = future(16 * MIN);
+        expect((await expireHolds(container, { now: t0 })).unknown).toEqual([o.orderId]);
+        const calls = callsOf(txn);
+        await withVnpayOff("keys", async () => {
+          // Trước T-166: lượt này HỦY đơn (queryAndProcess → skipped "vnpay_disabled" → nhánh hủy), reserved về 0.
+          for (let k = 1; k <= 3; k++) {
+            const r = await expireHolds(container, { now: new Date(t0.getTime() + k * MIN) });
+            expect(r.cancelled).toEqual([]);
+            expect(r.deferred).toEqual([o.orderId]);
+          }
+          expect(callsOf(txn)).toBe(calls);
+          expect((await fin(o.orderId)).state).toBe("awaiting_payment");
+          expect(await reservedOf("Trắng/M")).toBe(1);
+          // Hoãn không tăng số mũ (như breaker mở): bật lại là lượt kế tiếp hỏi ngay.
+          expect((await fin(o.orderId)).hold_check_attempts).toBe(1);
+          expect(
+            await service().listOpsExceptions({ order_id: o.orderId, kind: "payment_unknown" }),
+          ).toHaveLength(1);
+          // Hủy tay (khách/nhân viên) cũng không suy "tắt" thành "chưa trả".
+          await expect(cancelByCustomer(container, o.orderId)).rejects.toMatchObject({
+            code: "PAYMENT_PENDING",
+          });
+          // Chỉ chặn TẠO thanh toán VNPAY mới.
+          await expect(client.placeOrder([["Đen/S", 1]], "vnpay")).rejects.toThrow();
+          // IPN thanh toán tới lúc đang tắt → xác minh + xác nhận (không 99, không late_payment).
+          expect((await ipn(api, signer.pay(o.paymentUrl, "success"))).data).toEqual(R.success);
+        });
+        expect((await fin(o.orderId)).state).toBe("confirmed");
+        expect(await reservedOf("Trắng/M")).toBe(1);
+        expect(await service().listOpsExceptions({ order_id: o.orderId, kind: "late_payment" })).toHaveLength(
+          0,
+        );
+        expect((await service().listPaymentLedgers({ order_id: o.orderId })).map((l) => l.amount)).toEqual([
+          o.total,
+        ]);
+      });
+
+      it("tắt VNPAY và KHÔNG có khoá → IPN trả 99 (VNPAY gửi lại), không ghi inbox/ngoại lệ/tiền; bật lại → IPN gửi lại xác nhận", async () => {
+        const o = await client.placeOrder([["Đen/M", 1]], "vnpay");
+        const txn = await txnOf(o.orderId);
+        const params = signer.pay(o.paymentUrl, "success");
+        const t0 = future(16 * MIN);
+        const rejectedBefore = (await service().listOpsExceptions({ kind: "webhook_rejected" })).length;
+        await withVnpayOff("nokeys", async () => {
+          expect((await ipn(api, params)).data).toEqual(R.unknownError);
+          const r = await expireHolds(container, { now: t0 });
+          expect(r).toMatchObject({ cancelled: [], deferred: [o.orderId] });
+        });
+        expect(await inboxCount(txn)).toBe(0);
+        expect((await service().listOpsExceptions({ kind: "webhook_rejected" })).length).toBe(rejectedBefore);
+        expect(await service().listPaymentLedgers({ order_id: o.orderId })).toHaveLength(0);
+        expect((await fin(o.orderId)).state).toBe("awaiting_payment");
+        expect(await reservedOf("Đen/M")).toBe(1);
+        expect(callsOf(txn)).toBe(0);
+        // VNPAY gửi lại cùng IPN sau khi bật → xác nhận đúng một lần.
+        expect((await ipn(api, params)).data).toEqual(R.success);
+        expect((await fin(o.orderId)).state).toBe("confirmed");
+        expect(await service().listPaymentLedgers({ order_id: o.orderId })).toHaveLength(1);
+      });
+
+      it("tắt VNPAY: đơn đã có IPN thất bại (không còn attempt mở) vẫn hủy đúng — trạng thái tiền đã rõ", async () => {
+        const o = await client.placeOrder([["Trắng/S", 1]], "vnpay");
+        expect((await ipn(api, signer.pay(o.paymentUrl, "cancelled"))).data).toEqual(R.success);
+        await withVnpayOff("keys", async () => {
+          expect((await expireHolds(container, { now: future(16 * MIN) })).cancelled).toEqual([o.orderId]);
+        });
+        expect(await reservedOf("Trắng/S")).toBe(0);
       });
     });
 

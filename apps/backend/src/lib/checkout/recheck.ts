@@ -22,6 +22,9 @@ export interface QueryGate {
   settle(raw: QueryStatusResult): Promise<void>;
 }
 
+/** Lý do khi không hỏi được VNPAY vì tắt/thiếu cấu hình (T-166) — ghi vào `payment_unknown.detail.reason`. */
+export const VNPAY_DISABLED_REASON = "vnpay_disabled";
+
 /** Không gọi querydr vì cổng từ chối (breaker mở/đang thử/bóp) — trạng thái tiền CHƯA RÕ, không được coi là "chưa trả". */
 export type DeferredQuery = { outcome: "deferred"; reason: string };
 
@@ -29,6 +32,11 @@ export type DeferredQuery = { outcome: "deferred"; reason: string };
  * Hỏi VNPAY (querydr) trạng thái attempt đang mở của đơn rồi đi CÙNG đường xử lý với IPN (inbox nguồn `query`).
  * `paid`/`failed` → xử lý như IPN; `not_paid`/`unknown` → không đổi gì (AT08: tra cứu không tự đổi trạng thái tiền).
  * Có `gate` → có thể trả `deferred` (không gọi).
+ *
+ * VNPAY tắt (`VNPAY_ENABLED=false` — cách giảm thiệt hại khi cổng lỗi, INCIDENT-RESPONSE §3) hoặc không có gateway mà đơn
+ * CÒN attempt mở (T-166): KHÔNG hỏi được = trạng thái tiền CHƯA RÕ, không bao giờ suy ra "chưa trả" — có `gate` (job
+ * expire-holds) → `deferred` lý do `vnpay_disabled` (giữ hàng như breaker mở); không có → `unknown` (hủy tay trả 409
+ * PAYMENT_PENDING). Đơn không còn attempt mở (`no_open_payment`, vd. IPN thất bại) vẫn `skipped` như trước.
  */
 export async function queryAndProcess(
   container: MedusaContainer,
@@ -46,9 +54,6 @@ export async function queryAndProcess(
   opts: { orderLockHeld?: boolean; gate?: QueryGate } = {},
 ): Promise<(QueryCheck & { raw?: QueryStatusResult }) | DeferredQuery> {
   const s = service(container);
-  const cfg = getVnpayConfig();
-  const gateway = getVnpayGateway();
-  if (!cfg || !gateway) return { outcome: "skipped", reason: "vnpay_disabled" };
   const [fin] = await s.listOrderFinances({ order_id: orderId });
   if (!fin) return { outcome: "skipped", reason: "no_order" };
   const [pa] = await s.listPaymentAttempts(
@@ -56,6 +61,13 @@ export async function queryAndProcess(
     { order: { created_at: "DESC" } },
   );
   if (!pa) return { outcome: "skipped", reason: "no_open_payment" };
+  const cfg = getVnpayConfig();
+  const gateway = getVnpayGateway();
+  if (!cfg || !gateway) {
+    return opts.gate
+      ? { outcome: "deferred", reason: VNPAY_DISABLED_REASON }
+      : { outcome: "unknown", reason: VNPAY_DISABLED_REASON };
+  }
   const refused = opts.gate ? await opts.gate.admit() : null;
   if (refused !== null) return { outcome: "deferred", reason: refused };
   let raw: QueryStatusResult;

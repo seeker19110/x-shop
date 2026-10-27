@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import { verifyNotificationWithRotation, type SecretUsed } from "../payment/vnpay-secrets";
 import type CheckoutModuleService from "../../modules/checkout/service";
-import { CHECKOUT_CONFIG, getVnpayConfig } from "./config";
+import { CHECKOUT_CONFIG, getVnpayIpnKeys } from "./config";
 import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 
@@ -65,13 +65,28 @@ export function warnIfPreviousSecret(
   }
 }
 
-/** IPN GET từ VNPAY: xác minh → inbox → xử lý → phản hồi `{RspCode, Message}`. */
+/**
+ * IPN GET từ VNPAY: xác minh → inbox → xử lý → phản hồi `{RspCode, Message}`. Xác minh bằng `getVnpayIpnKeys()` (T-166):
+ * VNPAY_ENABLED=false chỉ chặn tạo thanh toán mới — IPN của giao dịch đã tạo vẫn xác minh và ghi nhận (RUNBOOK §1). Không
+ * có khoá xác minh → 99 (VNPAY gửi lại sau, như khi bận khóa) và KHÔNG ghi gì (không inbox, không ngoại lệ, không tiền).
+ */
 export async function handleVnpayIpn(
   container: MedusaContainer,
   query: Record<string, string>,
 ): Promise<IpnResponse> {
-  const cfg = getVnpayConfig();
-  if (!cfg) return R.unknownError;
+  const cfg = getVnpayIpnKeys();
+  if (!cfg) {
+    try {
+      container
+        .resolve(ContainerRegistrationKeys.LOGGER)
+        .warn(
+          `[payment] IPN VNPAY tới khi không có khoá xác minh (VNPAY tắt, thiếu VNPAY_TMN_CODE/VNPAY_HASH_SECRET) — trả 99 để VNPAY gửi lại, không ghi nhận`,
+        );
+    } catch {
+      // log hỏng không chặn IPN
+    }
+    return R.unknownError;
+  }
   // Nhận khoá hiện tại hoặc khoá trước trong cửa sổ xoay (T-099).
   const verified = verifyNotificationWithRotation(cfg, query);
   if (!verified.ok) {
