@@ -742,7 +742,7 @@ medusaIntegrationTestRunner({
           const BODY = { attributes: { kind: "apparel", material: "lua" }, size_chart_id: null };
           const LEAK = /insert into|update\s+"|values\s*\(|\blua\b|Cotton|Việt Nam|user_[a-z0-9_]+/i;
 
-          async function runWithTrigger(sql: string, drop: string) {
+          async function runWithTrigger(sql: string, drop: string, payload: unknown = BODY) {
             const { id, attributesId } = await seededPolo();
             const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
             const logger = container.resolve(ContainerRegistrationKeys.LOGGER) as unknown as Record<
@@ -763,7 +763,7 @@ medusaIntegrationTestRunner({
             let err: unknown;
             try {
               err = await api
-                .post(`/admin/x/products/${id}/fashion`, BODY, { headers: admin })
+                .post(`/admin/x/products/${id}/fashion`, payload, { headers: admin })
                 .catch((e: unknown) => e);
             } finally {
               await pg.raw(drop);
@@ -786,6 +786,45 @@ medusaIntegrationTestRunner({
             expect(line).toContain(`attributes_id=${attributesId}`);
             expect(line).toContain("boom restore");
             expect(lines.filter((l) => LEAK.test(l))).toEqual([]);
+          });
+
+          it("CHECK thật chặn khôi phục thuộc tính (23514) → log/lỗi không chứa giá trị cột (detail của PG)", async () => {
+            const { err, lines } = await runWithTrigger(
+              `alter table fashion_product_attributes add constraint t155_chk check (material <> 'cotton') not valid;`,
+              "alter table fashion_product_attributes drop constraint if exists t155_chk;",
+            );
+            expect(status(err)).toBe(400);
+            const line = lines.find((l) => l.includes("Hoàn tác thuộc tính thời trang lỗi"));
+            expect(line).toBeDefined();
+            expect(line).toContain("code=23514");
+            expect(lines.filter((l) => /Failing row|detail:|cotton|Cotton|100%/i.test(l))).toEqual([]);
+            expect(JSON.stringify(body(err))).not.toMatch(/Failing row|detail:|cotton/i);
+          });
+
+          it("CHECK thật chặn tạo lại số đo cũ (23514) → log/lỗi không chứa số đo", async () => {
+            const MODEL = {
+              image_set: "moi",
+              height_cm: 173,
+              chest_cm: 91,
+              waist_cm: 77,
+              hip_cm: 99,
+              size_worn: "m",
+            };
+            const { err, lines } = await runWithTrigger(
+              `alter table fashion_model_measurement add constraint t155_chk2 check (height_cm <> 180) not valid;`,
+              "alter table fashion_model_measurement drop constraint if exists t155_chk2;",
+              { ...BODY, model_measurements: [MODEL] },
+            );
+            expect(status(err)).toBeGreaterThanOrEqual(400);
+            const line = lines.find((l) => l.includes("Hoàn tác số đo người mẫu lỗi"));
+            expect(line).toBeDefined();
+            expect(line).toContain("code=23514");
+            expect(
+              lines.filter((l) => /Failing row|detail:|\b(180|94|78|95)\b|Dữ liệu demo/i.test(l)),
+            ).toEqual([]);
+            expect(JSON.stringify(body(err))).not.toMatch(
+              /Failing row|detail:|\b(180|94|78|95)\b|Dữ liệu demo/i,
+            );
           });
 
           it("gắn lại bảng size lỗi → có log chỉ id + mã lỗi, không giá trị/PII", async () => {

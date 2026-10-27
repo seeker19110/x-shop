@@ -273,8 +273,10 @@ function safeErrorSummary(e: unknown): string {
   const parts = [e.name];
   const code = (e as { code?: unknown }).code;
   if (typeof code === "string" || typeof code === "number") parts.push(`code=${code}`);
-  const cut = e.message.lastIndexOf(" - ");
-  if (cut >= 0) parts.push(`pg=${e.message.slice(cut + 3).slice(0, 200)}`);
+  // Chỉ dòng ĐẦU: MikroORM nối "\n - detail: Failing row contains (...)" / "Key (col)=(value)" (chứa giá trị cột) vào message.
+  const head = e.message.split("\n")[0] ?? "";
+  const cut = head.lastIndexOf(" - ");
+  if (cut >= 0) parts.push(`pg=${head.slice(cut + 3).slice(0, 200)}`);
   return parts.join(" ");
 }
 
