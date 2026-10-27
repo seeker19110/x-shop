@@ -1,9 +1,10 @@
 import { readdirSync, readFileSync } from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
 import net from "node:net";
 import { dirname, join, relative, sep } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { can, ROLES, type Role } from "@x-shop/domain";
 import {
@@ -11,6 +12,7 @@ import {
   requiredPermissions,
   type AdminXRoute,
 } from "../../src/api/admin/x/permissions";
+import { forbiddenFields, nativeReadFieldPolicy } from "../../src/lib/admin-security/field-policy";
 import { NATIVE_ADMIN_ROUTES } from "../../src/lib/admin-security/native-permissions";
 import { resolveAdminRule } from "../../src/lib/admin-security/policy";
 import { installAccessLogServerHook, type HttpModuleLike } from "../../src/lib/log/http";
@@ -21,6 +23,7 @@ import { RBAC_MODULE } from "../../src/modules/rbac";
 import type RbacModuleService from "../../src/modules/rbac/service";
 import grantOwner from "../../src/scripts/grant-owner";
 import { createAdmin, createMfaAdmin, noThrow, type AdminAccount, type MfaAdmin } from "../helpers/auth";
+import { createPromotion } from "../helpers/checkout-fixtures";
 
 jest.setTimeout(300 * 1000);
 
@@ -78,12 +81,32 @@ function coreNativeGetRoutes(): string[] {
  * `@medusajs/dashboard/dist`, ánh xạ sang `METHOD /admin/...` theo mã `@medusajs/js-sdk/dist/esm/admin` mà dashboard phụ
  * thuộc (`:p` = tham số đường dẫn). `unmapped` ≠ [] = định dạng js-sdk đổi — test đỏ thay vì bỏ sót im lặng.
  */
-function dashboardNativeCalls(): { used: number; calls: Map<string, string>; unmapped: string[] } {
+function dashboardNativeCalls(): {
+  used: number;
+  calls: Map<string, string>;
+  unmapped: string[];
+  bundles: Record<string, number>;
+} {
   const dash = dirname(require.resolve("@medusajs/dashboard/package.json"));
+  // Bundle admin: dashboard lõi + plugin admin đã cài (`@medusajs/draft-order` — màn đơn nháp).
+  const bundleDirs: Record<string, string> = {
+    "@medusajs/dashboard": join(dash, "dist"),
+    "@medusajs/draft-order": join(
+      dirname(require.resolve("@medusajs/draft-order/package.json")),
+      ".medusa/server/src/admin",
+    ),
+  };
   const used = new Set<string>();
-  for (const f of readdirSync(join(dash, "dist")).filter((n) => /\.m?js$/.test(n)))
-    for (const m of readFileSync(join(dash, "dist", f), "utf8").matchAll(/sdk\.admin\.(\w+)\.(\w+)/g))
-      used.add(`${m[1]}.${m[2]}`);
+  const bundles: Record<string, number> = {};
+  for (const [name, dir] of Object.entries(bundleDirs)) {
+    const before = new Set<string>();
+    for (const f of readdirSync(dir).filter((n) => /\.m?js$/.test(n)))
+      for (const m of readFileSync(join(dir, f), "utf8").matchAll(/sdk\.admin\.(\w+)\.(\w+)/g)) {
+        before.add(`${m[1]}.${m[2]}`);
+        used.add(`${m[1]}.${m[2]}`);
+      }
+    bundles[name] = before.size;
+  }
   const sdkAdmin = join(dirname(require.resolve("@medusajs/js-sdk", { paths: [dash] })), "esm/admin");
   const index = readFileSync(join(sdkAdmin, "index.js"), "utf8");
   const propOf = new Map([...index.matchAll(/this\.(\w+) = new (\w+)\(/g)].map((m) => [m[2]!, m[1]!]));
@@ -106,8 +129,91 @@ function dashboardNativeCalls(): { used: number; calls: Map<string, string>; unm
       calls.set(key, `${/method:\s*"(\w+)"/.exec(call[3] ?? "")?.[1] ?? "GET"} ${path}`);
     }
   }
-  return { used: used.size, calls, unmapped: [...used].filter((k) => !calls.has(k)).sort() };
+  return { used: used.size, calls, unmapped: [...used].filter((k) => !calls.has(k)).sort(), bundles };
 }
+
+/** Thực thể chứa/dẫn tới PII khách, tiền, nhân sự — alias quan hệ tới chúng phải bị field-policy.ts chặn. */
+const SENSITIVE_ENTITIES = new Set([
+  "Order",
+  "Cart",
+  "Customer",
+  "Fulfillment",
+  "PaymentCollection",
+  "Payment",
+  "AccountHolder",
+  "OrderLineItem",
+  "LineItem",
+  "Return",
+  "User",
+  "Invite",
+]);
+
+interface LinkRel {
+  serviceName?: string;
+  entity?: string;
+  alias: string;
+}
+interface LinkDef {
+  isLink?: boolean;
+  serviceName?: string;
+  relationships?: LinkRel[];
+  extends?: {
+    serviceName: string;
+    entity?: string;
+    relationship: LinkRel;
+    fieldAlias?: Record<string, string | { path: string }>;
+  }[];
+}
+
+/**
+ * Alias quan hệ do link của Medusa thêm vào thực thể (`@medusajs/link-modules/dist/definitions` + `readonly`) mà dẫn tới
+ * thực thể nhạy cảm: alias quan hệ trực tiếp, và field alias có đoạn cuối là alias nhạy cảm của bảng nối
+ * (`Order.cart => cart_link.cart`). Trả `Thực thể.alias → Đích`.
+ */
+function sensitiveLinkAliases(): string[] {
+  const medusa = dirname(require.resolve("@medusajs/medusa/package.json"));
+  const dist = dirname(require.resolve("@medusajs/link-modules", { paths: [medusa] }));
+  // Nạp đúng bản link-modules mà @medusajs/medusa đang dùng (không phải phụ thuộc trực tiếp của backend).
+  const load = createRequire(join(dist, "index.js"));
+  const defs = [
+    ...Object.values(load("./definitions/index.js") as Record<string, LinkDef>),
+    ...Object.values(load("./definitions/readonly/index.js") as Record<string, LinkDef>),
+  ].filter((d) => d?.isLink);
+  const target = (r: LinkRel) => r.entity ?? r.serviceName ?? "";
+  // Alias trong bảng nối → các thực thể đích (một alias như `order` xuất hiện ở nhiều link).
+  const joinAliasTargets = new Map<string, Set<string>>();
+  for (const d of defs)
+    for (const r of d.relationships ?? [])
+      joinAliasTargets.set(r.alias, new Set([...(joinAliasTargets.get(r.alias) ?? []), target(r)]));
+  const out = new Set<string>();
+  for (const d of defs) {
+    for (const r of d.relationships ?? [])
+      if (SENSITIVE_ENTITIES.has(target(r))) out.add(`${d.serviceName}.${r.alias} → ${target(r)}`);
+    for (const e of d.extends ?? []) {
+      const from = e.entity ?? e.serviceName;
+      if (SENSITIVE_ENTITIES.has(target(e.relationship)))
+        out.add(`${from}.${e.relationship.alias} → ${target(e.relationship)}`);
+      for (const [alias, def] of Object.entries(e.fieldAlias ?? {})) {
+        const last = (typeof def === "string" ? def : def.path).split(".").pop() ?? "";
+        for (const t of joinAliasTargets.get(last) ?? [])
+          if (SENSITIVE_ENTITIES.has(t)) out.add(`${from}.${alias} → ${t}`);
+      }
+    }
+  }
+  return [...out].sort();
+}
+
+/**
+ * Route sau cờ tính năng (tắt ở dự án → không đăng ký, test HTTP không chạm tới): chốt quy tắc để đổi quyền là đỏ.
+ */
+const FLAGGED_ROUTE_RULES: Record<string, ReturnType<typeof resolveAdminRule>> = {
+  "/admin/translations": { kind: "permission", permission: "catalog.read", also: [], reauth: false },
+  "/admin/property-labels": { kind: "permission", permission: "catalog.read", also: [], reauth: false },
+  "/admin/locales": { kind: "any_role" },
+  "/admin/views": { kind: "any_role" },
+  "/admin/layouts": { kind: "any_role" },
+  "/admin/rbac": { kind: "permission", permission: "settings.manage", also: [], reauth: false },
+};
 
 /**
  * Route GET native Medusa CỐ Ý để đóng mặc định (403 với mọi vai trò, kể cả owner) — dashboard 2.22.1 không gọi; mỗi mục
@@ -345,9 +451,13 @@ medusaIntegrationTestRunner({
       const UNDECLARED = { kind: "deny", reason: "UNDECLARED_ROUTE" } as const;
 
       it("mọi route GET dashboard Medusa gọi (bundle + js-sdk) đều có trong cây route và đã khai trong bảng native", () => {
-        const { used, calls, unmapped } = dashboardNativeCalls();
+        const { used, calls, unmapped, bundles } = dashboardNativeCalls();
         expect(unmapped).toEqual([]);
         expect(used).toBeGreaterThanOrEqual(300);
+        // Cả hai bundle đều được quét (plugin đơn nháp gọi sdk.admin.draftOrder.*, customer.*, user.retrieve…).
+        expect(bundles["@medusajs/dashboard"]).toBeGreaterThanOrEqual(300);
+        expect(bundles["@medusajs/draft-order"]).toBeGreaterThanOrEqual(20);
+        expect(calls.get("draftOrder.list")).toBe("GET /admin/draft-orders");
         const gets = [...new Set([...calls.values()].filter((c) => c.startsWith("GET ")))].map((c) =>
           c.slice(4),
         );
@@ -384,6 +494,59 @@ medusaIntegrationTestRunner({
           "apps/backend/src/lib/admin-security/native-permissions.ts cho từng route thêm/bớt (PII → chỉ vai trò cần), " +
           "cập nhật bảng ở docs/specs/SPEC-admin.md rồi mới đổi NATIVE_GET_ROUTE_COUNT.";
         expect({ count: core.length, message }).toEqual({ count: NATIVE_GET_ROUTE_COUNT, message });
+      });
+
+      it("route sau cờ tính năng (translations, property-labels, locales, views, layouts, rbac): quy tắc đã chốt", () => {
+        const core = coreNativeGetRoutes();
+        const problems: string[] = [];
+        for (const [family, expected] of Object.entries(FLAGGED_ROUTE_RULES)) {
+          const routes = core.filter((r) => r === family || r.startsWith(`${family}/`));
+          if (routes.length === 0) problems.push(`${family}: không còn route trong Medusa`);
+          for (const r of routes) {
+            const actual = resolveAdminRule("GET", concretePath(r));
+            if (JSON.stringify(actual) !== JSON.stringify(expected))
+              problems.push(`${r}: ${JSON.stringify(actual)} ≠ ${JSON.stringify(expected)}`);
+          }
+        }
+        expect(problems).toEqual([]);
+      });
+
+      it("link Medusa: mọi alias dẫn tới đơn/giỏ/khách/vận đơn/thanh toán/người dùng nằm trong danh sách cấm fields", () => {
+        const aliases = sensitiveLinkAliases();
+        // Ca đã biết phải có trong kết quả quét (chống quét rỗng khi định dạng link đổi).
+        expect(aliases).toEqual(
+          expect.arrayContaining([
+            "Region.orders → Order",
+            "SalesChannel.orders → Order",
+            "Customer.orders → Order",
+            "ProductVariant.order_items → OrderLineItem",
+            "PaymentCollection.order → Order",
+            "OrderOrderPromotionPromotionLink.order → Order",
+          ]),
+        );
+        const policy = nativeReadFieldPolicy("/admin/regions", ["support"])!;
+        const notBlocked = aliases.filter((a) => {
+          const alias = a.split(" → ")[0]!.split(".").pop()!;
+          return forbiddenFields([alias], policy).length === 0;
+        });
+        expect(notBlocked).toEqual([]);
+        // Bảng nối (`order_link`, `payment_collection_link`, …) chặn theo họ `*_link`.
+        expect(forbiddenFields(["order_link", "promotion_link", "x_link"], policy)).toHaveLength(3);
+      });
+
+      it("không route admin native nào của Medusa tự đặt `disallowed` (cổng gán req.disallowed đè lên)", () => {
+        const root = join(dirname(require.resolve("@medusajs/medusa/package.json")), "dist/api/admin");
+        const offenders: string[] = [];
+        const walk = (dir: string) => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const full = join(dir, e.name);
+            if (e.isDirectory()) walk(full);
+            else if (e.name.endsWith(".js") && /\bdisallowed\b/.test(readFileSync(full, "utf8")))
+              offenders.push(relative(root, full));
+          }
+        };
+        walk(root);
+        expect(offenders).toEqual([]);
       });
 
       /**
@@ -653,6 +816,265 @@ medusaIntegrationTestRunner({
         expect(all.map((c, i) => ({ ...c, actual: results[i]!.status }))).toEqual(
           all.map((c) => ({ ...c, actual: c.expected })),
         );
+      });
+    });
+
+    describe("T-147 review: `?fields=` không mở quan hệ ngược tới PII đơn/khách (field-policy.ts)", () => {
+      const EMAIL = "khach-t147-fields@example.test";
+      const PHONE = "0912345678";
+      const STREET = "12 Duong Mau T147";
+      interface Fixture {
+        regionId: string;
+        salesChannelId: string;
+        locationId: string;
+        productId: string;
+        variantId: string;
+        inventoryItemId: string;
+        orderId: string;
+      }
+      let fx: Fixture;
+
+      beforeEach(async () => {
+        const region = await container
+          .resolve(Modules.REGION)
+          .createRegions({ name: "VN-T147F", currency_code: "vnd" });
+        const sc = await container.resolve(Modules.SALES_CHANNEL).createSalesChannels({ name: "kenh-t147f" });
+        const loc = await container
+          .resolve(Modules.STOCK_LOCATION)
+          .createStockLocations({ name: "kho-t147f" });
+        const [customer] = await container
+          .resolve(Modules.CUSTOMER)
+          .createCustomers([{ email: EMAIL, phone: PHONE, first_name: "Khach", last_name: "Fields" }]);
+        const [product] = await container.resolve(Modules.PRODUCT).createProducts([
+          {
+            title: "Ao T147F",
+            options: [{ title: "Size", values: ["M"] }],
+            variants: [{ title: "M", sku: "T147F-M", options: { Size: "M" } }],
+          },
+        ]);
+        const variant = product!.variants[0]!;
+        const inventory = container.resolve(Modules.INVENTORY);
+        const [item] = await inventory.createInventoryItems([{ sku: "T147F-M", title: "Ao T147F M" }]);
+        await inventory.createInventoryLevels([
+          { inventory_item_id: item!.id, location_id: loc.id, stocked_quantity: 5 },
+        ]);
+        const order = (await container.resolve(Modules.ORDER).createOrders({
+          email: EMAIL,
+          region_id: region.id,
+          sales_channel_id: sc.id,
+          customer_id: customer!.id,
+          currency_code: "vnd",
+          shipping_address: {
+            first_name: "Khach",
+            last_name: "Fields",
+            phone: PHONE,
+            address_1: STREET,
+            country_code: "vn",
+          },
+          items: [
+            {
+              title: "Ao",
+              quantity: 1,
+              unit_price: 100_000,
+              variant_id: variant.id,
+              product_id: product!.id,
+            },
+          ],
+        } as never)) as unknown as { id: string };
+        await createPromotion(container, "T147FIELDS", { limit: null, percent: 10 });
+        const [promo] = await container.resolve(Modules.PROMOTION).listPromotions({ code: "T147FIELDS" });
+        await container.resolve(ContainerRegistrationKeys.LINK).create([
+          { [Modules.ORDER]: { order_id: order.id }, [Modules.PROMOTION]: { promotion_id: promo!.id } },
+          {
+            [Modules.SALES_CHANNEL]: { sales_channel_id: sc.id },
+            [Modules.STOCK_LOCATION]: { stock_location_id: loc.id },
+          },
+          {
+            [Modules.PRODUCT]: { product_id: product!.id },
+            [Modules.SALES_CHANNEL]: { sales_channel_id: sc.id },
+          },
+          {
+            [Modules.PRODUCT]: { variant_id: variant.id },
+            [Modules.INVENTORY]: { inventory_item_id: item!.id },
+          },
+        ]);
+        fx = {
+          regionId: region.id,
+          salesChannelId: sc.id,
+          locationId: loc.id,
+          productId: product!.id,
+          variantId: variant.id,
+          inventoryItemId: item!.id,
+          orderId: order.id,
+        };
+      });
+
+      const leaks = (data: unknown) => {
+        const text = JSON.stringify(data ?? "");
+        return text.includes(EMAIL) || text.includes(PHONE) || text.includes(STREET);
+      };
+
+      /** URL dò của review T-147 (+ hai đường nghi ngờ qua hoàn tiền / nhà cung cấp thanh toán). */
+      const probes = (f: Fixture) => [
+        `/admin/regions?fields=id,orders.email,orders.shipping_address.*`,
+        `/admin/regions/${f.regionId}?fields=id,orders.email,orders.customer.phone`,
+        `/admin/regions?fields=+orders.email`,
+        `/admin/regions?fields=id&order=orders.email`,
+        `/admin/regions?fields=id,payment_providers.payment_collections.*`,
+        `/admin/sales-channels?fields=id,orders.email,orders.shipping_address.*`,
+        `/admin/sales-channels/${f.salesChannelId}?fields=id,orders.email,orders.customer.phone`,
+        `/admin/sales-channels?fields=id,carts.email`,
+        `/admin/stores?fields=id,default_sales_channel.orders.email`,
+        `/admin/refund-reasons?fields=id,refunds.payment.payment_collection.order.*`,
+        `/admin/stock-locations?fields=id,sales_channels.orders.email,sales_channels.orders.shipping_address.*`,
+        `/admin/products?fields=id,sales_channels.orders.email,sales_channels.orders.shipping_address.*`,
+        `/admin/products?fields=id,*variants.order_items`,
+        `/admin/products/${f.productId}/variants/${f.variantId}?fields=id,product.sales_channels.orders.email`,
+        `/admin/inventory-items/${f.inventoryItemId}?fields=id,variants.product.sales_channels.orders.email`,
+        `/admin/promotions?fields=id,order_link.order.email,order_link.order.shipping_address.*`,
+        `/admin/promotions?fields=id,ORDER_LINK.order.email`,
+        `/admin/users/me?fields=id,rbac_roles.users.email`,
+      ];
+
+      it("CSKH/kho/catalog: mọi URL dò → 403, không lộ email/SĐT/địa chỉ; audit forbidden_fields", async () => {
+        const actual: { role: string; url: string; status: number; leak: boolean }[] = [];
+        for (const role of ["support", "warehouse", "catalog_manager"] as const) {
+          for (const url of probes(fx)) {
+            const res = await call("GET", url, accounts[role].headers);
+            actual.push({ role, url, status: res.status, leak: leaks(res.data) });
+          }
+        }
+        expect(actual).toEqual(actual.map((a) => ({ ...a, status: 403, leak: false })));
+        const audit = container.resolve<AuditModuleService>(AUDIT_MODULE);
+        const { entries } = await audit.list(
+          { action: "rbac.denied", actor_id: accounts.warehouse.userId },
+          { limit: 50, offset: 0 },
+        );
+        const fieldDenial = entries.find(
+          (e) =>
+            (e.changes as { reason?: string } | null)?.reason === "forbidden_fields" &&
+            e.resource_id === "GET /admin/regions",
+        );
+        expect(fieldDenial).toMatchObject({
+          changes: {
+            reason: "forbidden_fields",
+            roles: ["warehouse"],
+            fields: expect.arrayContaining(["orders.email"]),
+          },
+        });
+        expect(JSON.stringify(entries)).not.toContain(EMAIL);
+      });
+
+      it("owner/nhân viên đơn/kế toán (order.read) vẫn đọc đơn và quan hệ đơn như thường", async () => {
+        for (const role of ["owner", "order_staff", "accountant"] as const) {
+          const orders = await call(
+            "GET",
+            "/admin/orders?fields=id,email,*shipping_address",
+            accounts[role].headers,
+          );
+          expect({ role, status: orders.status, leak: leaks(orders.data) }).toEqual({
+            role,
+            status: 200,
+            leak: true,
+          });
+          const region = await call(
+            "GET",
+            `/admin/regions/${fx.regionId}?fields=id,orders.email`,
+            accounts[role].headers,
+          );
+          expect({ role, status: region.status, leak: leaks(region.data) }).toEqual({
+            role,
+            status: 200,
+            leak: true,
+          });
+        }
+      });
+
+      it("màn dashboard hợp lệ của kho/catalog chạy với đúng `fields` dashboard gửi (200, không lộ PII)", async () => {
+        const screens = [
+          // @medusajs/dashboard src/routes/locations/location-list/constants.ts, location-detail/constants.ts
+          "/admin/stock-locations?fields=name,*sales_channels,*address,*fulfillment_sets,*fulfillment_sets.service_zones,*fulfillment_sets.service_zones.shipping_options,*fulfillment_sets.service_zones.shipping_options.shipping_profile",
+          `/admin/stock-locations/${fx.locationId}?fields=name,metadata,*sales_channels,*address,fulfillment_sets.type,fulfillment_sets.name,*fulfillment_sets.service_zones.geo_zones,*fulfillment_sets.service_zones,*fulfillment_sets.service_zones.shipping_options,*fulfillment_sets.service_zones.shipping_options.rules,*fulfillment_sets.service_zones.shipping_options.shipping_profile,*fulfillment_providers`,
+          // src/routes/inventory/inventory-detail/constants.ts
+          `/admin/inventory-items/${fx.inventoryItemId}?fields=*variants,*variants.product,*variants.options`,
+          // src/routes/products/product-detail/constants.ts
+          `/admin/products/${fx.productId}?fields=*categories,*shipping_profile,-variants`,
+          "/admin/products",
+          `/admin/products/${fx.productId}`,
+          "/admin/regions",
+          "/admin/sales-channels",
+          "/admin/stores",
+        ];
+        for (const role of ["warehouse", "catalog_manager"] as const) {
+          for (const url of screens) {
+            const res = await call("GET", url, accounts[role].headers);
+            expect({ role, url, status: res.status, leak: leaks(res.data) }).toEqual({
+              role,
+              url,
+              status: 200,
+              leak: false,
+            });
+          }
+        }
+      });
+
+      it("biến thể kèm tồn: nhân viên đơn chỉ nhận trường tồn kho (form vận đơn), không đọc catalog qua product/prices", async () => {
+        const base = `/admin/products/${fx.productId}/variants/${fx.variantId}`;
+        // Đúng `fields` form tạo vận đơn của dashboard (order-create-fulfillment-item.tsx).
+        const form = await call(
+          "GET",
+          `${base}?fields=*inventory,*inventory.location_levels,*inventory_items`,
+          accounts.order_staff.headers,
+        );
+        expect(form.status).toBe(200);
+        const variant = form.data.variant as Record<string, unknown>;
+        expect(variant.id).toBe(fx.variantId);
+        expect(variant.inventory).toEqual([
+          expect.objectContaining({ id: fx.inventoryItemId, location_levels: [expect.anything()] }),
+        ]);
+        // Trường mặc định ngoài allowlist bị Medusa gỡ (req.allowed) — không có giá/tuỳ chọn/sản phẩm.
+        for (const key of ["prices", "options", "product", "product_id", "barcode", "metadata"])
+          expect({ key, present: key in variant }).toEqual({ key, present: false });
+        for (const url of [
+          `${base}?fields=id,product.title,product.description`,
+          `${base}?fields=*product`,
+          `${base}?fields=+prices`,
+          `${base}?fields=id,inventory.variants.product.title`,
+          `${base}?fields=id&order=product.title`,
+        ]) {
+          const res = await call("GET", url, accounts.order_staff.headers);
+          expect({ url, status: res.status }).toEqual({ url, status: 403 });
+        }
+        // Có catalog.read (kho, catalog, owner): đọc đầy đủ như trước.
+        for (const role of ["warehouse", "catalog_manager", "owner"] as const) {
+          const res = await call("GET", `${base}?fields=id,product.title,*prices`, accounts[role].headers);
+          expect({ role, status: res.status }).toEqual({ role, status: 200 });
+          expect((res.data.variant as { product: { title: string } }).product.title).toBe("Ao T147F");
+        }
+      });
+
+      it("đồng thời: 36 request song song trộn vai trò × URL dò/hợp lệ → mỗi request đúng kết quả, không lộ PII", async () => {
+        const urls = [
+          `/admin/regions?fields=id,orders.email`,
+          `/admin/sales-channels?fields=id,orders.email`,
+          "/admin/regions",
+        ];
+        const cases = ROLES.flatMap((role) =>
+          urls.map((url, i) => ({
+            role,
+            url,
+            expected: i === 2 || ["owner", "order_staff", "accountant"].includes(role) ? 200 : 403,
+          })),
+        );
+        const all = [...cases, ...cases];
+        const results = await Promise.all(all.map((c) => call("GET", c.url, accounts[c.role].headers)));
+        expect(
+          all.map((c, i) => ({
+            ...c,
+            actual: results[i]!.status,
+            leak: c.expected === 403 && leaks(results[i]!.data),
+          })),
+        ).toEqual(all.map((c) => ({ ...c, actual: c.expected, leak: false })));
       });
     });
 

@@ -11,7 +11,8 @@ import { sendProblem } from "../http/problem";
 import { decodePathSegments, INVALID_PATH, rawRequestPath } from "../http/request-path";
 import { clientIpOf } from "../security/config";
 import { getAdminSessionPolicy, isSensitive } from "./config";
-import { isAdminPath, resolveAdminRule, strictestRule, type AdminRule } from "./policy";
+import { forbiddenFields, nativeReadFieldPolicy, requestedFields } from "./field-policy";
+import { isAdminPath, isAdminXPath, resolveAdminRule, strictestRule, type AdminRule } from "./policy";
 import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
 import { normalizeAdminPath, normalizeMethod } from "./route-match";
 import { checkAndTouchSession, evaluateMfa, mfaCompletedAtMs, type AdminAuthContext } from "./session";
@@ -198,12 +199,41 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
     }
   }
 
+  if (method === "GET" && !isAdminXPath(path)) {
+    const blocked = applyNativeFieldPolicy(req, path, roles);
+    if (blocked !== null) {
+      await auditDenied(req, method, path, rule, { reason: "forbidden_fields", fields: blocked, roles });
+      return deny(res, 403, "FORBIDDEN", { fields: blocked });
+    }
+  }
+
   (req as MedusaRequest & { x_admin_access?: AdminAccess }).x_admin_access = {
     userId: ctx.actor_id,
     roles,
     permission: rule.kind === "permission" ? rule.permission : null,
   };
   return next();
+}
+
+/** Thuộc tính request mà `validateAndTransformQuery` của Medusa 2.22.1 đọc (`req.disallowed ?? queryConfig.disallowed`). */
+type FieldFilteredRequest = MedusaRequest & { disallowed?: (string | RegExp)[]; allowed?: string[] };
+
+/**
+ * Chính sách trường cho route ĐỌC native (field-policy.ts, T-147 review): trường yêu cầu qua `fields`/`order` vi phạm →
+ * trả danh sách (nơi gọi 403 + audit); không vi phạm → gán `req.disallowed`/`req.allowed` để Medusa gỡ trường cấm khỏi
+ * trường MẶC ĐỊNH của route. Không route admin native nào của Medusa 2.22.1 tự đặt `disallowed` (rbac.spec.ts kiểm) nên
+ * gán đè không xoá giới hạn sẵn có.
+ */
+function applyNativeFieldPolicy(req: MedusaRequest, path: string, roles: readonly Role[]): string[] | null {
+  const policy = nativeReadFieldPolicy(path, roles);
+  if (policy === null) return null;
+  const requested = requestedFields(req.query as Record<string, unknown> | undefined);
+  const bad = requested === null ? ["(fields/order không hợp lệ)"] : forbiddenFields(requested, policy);
+  if (bad.length > 0) return [...new Set(bad)].slice(0, 10).map((f) => f.slice(0, 120));
+  const r = req as FieldFilteredRequest;
+  if (policy.disallowed.length > 0) r.disallowed = [...policy.disallowed];
+  if (policy.allowed !== null) r.allowed = [...policy.allowed];
+  return null;
 }
 
 /**

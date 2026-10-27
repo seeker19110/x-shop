@@ -56,10 +56,10 @@ Bảng nguồn: `apps/backend/src/lib/admin-security/native-permissions.ts`. Rou
 
 | Nhóm route đọc native | Quyền | owner | catalog_manager | order_staff | warehouse | support | accountant |
 |---|---|---|---|---|---|---|---|
-| Tham chiếu không PII: stores, regions, sales-channels, currencies, locales, plugins, return/refund-reasons, views, layouts | có ít nhất một vai trò | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Tham chiếu (trường riêng không PII; quan hệ ngược tới đơn/khách bị chặn bởi chính sách `fields` bên dưới): stores, regions, sales-channels, currencies, locales, plugins, return/refund-reasons, views, layouts | có ít nhất một vai trò | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Catalog: products, product-variants, categories, collections, tags, types, options, property-labels, translations, shipping-profiles, price-preferences | `catalog.read` | ✓ | ✓ | – | ✓ | – | – |
 | Bảng giá, khuyến mãi, chiến dịch | `price.write` | ✓ | ✓ | – | – | – | – |
-| Tồn kho, giữ hàng, kho hàng; biến thể kèm tồn của form tạo vận đơn (`/admin/products/:id/variants/:variant_id`) | `inventory.read` | ✓ | ✓ | ✓ | ✓ | – | – |
+| Tồn kho, giữ hàng, kho hàng; biến thể kèm tồn của form tạo vận đơn (`/admin/products/:id/variants/:variant_id` — vai trò thiếu `catalog.read` chỉ nhận trường tồn kho) | `inventory.read` | ✓ | ✓ | ✓ | ✓ | – | – |
 | Phương án giao (form tạo vận đơn) | `fulfillment.create` | ✓ | – | ✓ | – | – | – |
 | Đơn, đổi trả, khiếu nại, đổi hàng, đơn nháp, vận đơn; khách, nhóm khách (PII) | `order.read` | ✓ | – | ✓ | – | – | ✓ |
 | Thanh toán, payment collection | `payment.read` | ✓ | – | – | – | – | ✓ |
@@ -68,6 +68,12 @@ Bảng nguồn: `apps/backend/src/lib/admin-security/native-permissions.ts`. Rou
 | Cố ý đóng: `/admin/index/details`, `/admin/uploads/:id` (file private chỉ qua `/admin/x/files/:key`), `/admin/fulfillment-sets/:id/service-zones/:zone_id` | — | – | – | – | – | – | – |
 
 CSKH (`order.read_masked`) không đọc PII qua route native; xem đơn đã che qua `/admin/x/*`.
+
+**Chính sách trường (`?fields=`, `?order=`) — `apps/backend/src/lib/admin-security/field-policy.ts`.** Quyền theo path chưa đủ: route native của Medusa nhận `fields` tuỳ ý và remote query đi theo link, kể cả link chỉ đọc (`Region.orders`, `SalesChannel.orders`, `Promotion.order_link`, `RefundReason.refunds…`). Vì vậy:
+- Vai trò thiếu `order.read` (catalog_manager, warehouse, support, user chưa có vai trò ở `/admin/users/me`): yêu cầu trường có đoạn `order(s)`, `cart(s)`, `customer(s)`, `fulfillment(s)`, `*_address`, `payment*`, `refunds`, `captures`, `account_holder(s)`, `order_items`, `cart_items`, `usages`, `return(s)`, `claims`, `exchanges`, `user(s)`, `invite(s)` hoặc bảng nối `*_link` → 403 + audit `rbac.denied` lý do `forbidden_fields`. Medusa cũng gỡ các trường đó khỏi trường mặc định của route (`req.disallowed`).
+- Route biến thể kèm tồn, vai trò thiếu `catalog.read` (nhân viên đơn): chỉ `id, title, sku, manage_inventory, allow_backorder, inventory_quantity, inventory, inventory.location_levels, inventory_items`; trường khác → 403, trường mặc định ngoài danh sách bị gỡ (`req.allowed`).
+- Chọn 403 thay vì gỡ lặng lẽ để hành vi dò lộ rõ trong audit. `rbac.spec.ts` quét định nghĩa link của `@medusajs/link-modules`: alias mới dẫn tới đơn/giỏ/khách/vận đơn/thanh toán/người dùng chưa có trong danh sách cấm → đỏ.
+- Giới hạn: danh sách cấm theo link Medusa + quan hệ trong module đã rà (payment: `payment_collections`, `refunds`, `payments`); tham số lọc (`?orders[...]=`) do schema zod của từng route quyết định, chưa có kiểm riêng.
 
 Hạn chế đã biết của dashboard native (chấp nhận theo D-108):
 - Nhân viên đơn, kế toán, CSKH không đọc được catalog native (danh sách/chi tiết sản phẩm → 403); nhân viên đơn vẫn đọc được biến thể kèm tồn để tạo vận đơn.

@@ -13,14 +13,20 @@ import type { Permission } from "@x-shop/domain";
  * Mục ĐỌC dưới đây = mọi route GET mà dashboard Medusa 2.22.1 gọi (nguồn: `sdk.admin.*` trong bundle
  * `@medusajs/dashboard/dist` ánh xạ sang path qua `@medusajs/js-sdk/dist/esm/admin`, đối chiếu cây route
  * `@medusajs/medusa/dist/api/admin/**\/route.js`; test rbac.spec.ts quét lại cả hai nên nâng cấp Medusa thêm route là đỏ).
- * Nguyên tắc cấp đọc:
- *   - dữ liệu tham chiếu không PII mà khung dashboard/bộ lọc của nhiều vai trò cần (cửa hàng, vùng, tiền tệ, kênh bán,
- *     ngôn ngữ, plugin, lý do đổi trả/hoàn tiền, cấu hình cột) → `any_role` (vẫn phải có ít nhất một vai trò);
+ * Nguyên tắc cấp đọc (theo PATH):
+ *   - dữ liệu tham chiếu mà khung dashboard/bộ lọc của nhiều vai trò cần (cửa hàng, vùng, tiền tệ, kênh bán, ngôn ngữ,
+ *     plugin, lý do đổi trả/hoàn tiền, cấu hình cột) → `any_role` (vẫn phải có ít nhất một vai trò). Trường RIÊNG của các
+ *     thực thể này không có PII, nhưng chúng có quan hệ/link ngược tới đơn, giỏ, khách (`Region.orders`,
+ *     `SalesChannel.orders`, `RefundReason.refunds…`) — đọc được chỉ vì `field-policy.ts` chặn các quan hệ đó qua `?fields=`;
  *   - dữ liệu nghiệp vụ → quyền đọc của màn hình đó (catalog → `catalog.read`, tồn/kho → `inventory.read`, đơn/khách →
  *     `order.read`, thanh toán → `payment.read`, giá/khuyến mãi → `price.write`);
  *   - PII (khách, đơn kèm địa chỉ/SĐT, người dùng, lời mời, thông báo kèm người nhận, tìm kiếm toàn cục trả email khách/
  *     người dùng/khoá API) chỉ cho vai trò cần: `order.read` (đơn/khách) hoặc `user.manage`/`settings.manage` (owner).
  *     CSKH (`order.read_masked`) và kho/catalog KHÔNG đọc PII qua route native — CSKH xem đơn đã che qua `/admin/x/*`.
+ * Path chỉ là nửa đầu: route native nhận `?fields=` tuỳ ý và remote query đi theo link, nên cổng còn áp chính sách TRƯỜNG
+ * (`field-policy.ts`): vai trò thiếu `order.read` không mở được quan hệ tới đơn/giỏ/khách/vận đơn/thanh toán/người dùng ở
+ * bất kỳ route đọc native nào (403 nếu yêu cầu, gỡ khỏi trường mặc định); route biến thể kèm tồn chỉ trả trường tồn kho cho
+ * vai trò thiếu `catalog.read`.
  *
  * `deny`: route native đóng với MỌI vai trò, kể cả owner (T-044) — đi vòng sổ/duyệt của `/admin/x/*`:
  *   - `NATIVE_MONEY_ROUTE`: ghi tiền native (capture/refund/mark-as-paid/payment-collection/credit-line) lách duyệt hoàn
@@ -29,6 +35,9 @@ import type { Permission } from "@x-shop/domain";
  *     (D-012) → nhân viên hủy qua `POST /admin/x/orders/:id/cancel`;
  *   - `UNDECLARED_ROUTE`: đọc native chưa khai trong bảng (mặc định đóng, T-147).
  */
+/** Route biến thể kèm tồn — ngoại lệ đọc cho form tạo vận đơn native (giới hạn trường ở field-policy.ts). */
+export const NATIVE_VARIANT_INVENTORY_ROUTE = "/admin/products/:id/variants/:variant_id";
+
 export type NativeDenyReason = "NATIVE_MONEY_ROUTE" | "NATIVE_ORDER_CANCEL" | "UNDECLARED_ROUTE";
 
 export type NativeRule =
@@ -76,7 +85,8 @@ export const NATIVE_ADMIN_ROUTES: readonly NativeRoute[] = [
   { methods: R, path: "/admin/tax-regions/*", rule: p("settings.manage") },
   { methods: R, path: "/admin/fulfillment-providers/*", rule: p("settings.manage") },
   { methods: R, path: "/admin/shipping-option-types/*", rule: p("settings.manage") },
-  // Tham chiếu không PII cho khung dashboard + bộ lọc của mọi màn (T-147): header đọc cửa hàng (lỗi → vỡ cả khung), vùng/
+  // Tham chiếu cho khung dashboard + bộ lọc của mọi màn (T-147; quan hệ ngược tới đơn/khách bị field-policy.ts chặn với vai
+  // trò thiếu order.read): header đọc cửa hàng (lỗi → vỡ cả khung), vùng/
   // kênh bán ở bộ lọc đơn/sản phẩm, tiền tệ/ngôn ngữ, plugin (trang chi tiết đơn), lý do đổi trả/hoàn tiền (form đơn),
   // cấu hình cột/bố cục bảng (cờ view_configurations).
   { methods: R, path: "/admin/stores/*", rule: { kind: "any_role" } },
@@ -128,7 +138,8 @@ export const NATIVE_ADMIN_ROUTES: readonly NativeRoute[] = [
   // Kho hàng (địa chỉ kho của shop, không PII): màn tồn kho/giữ hàng, chi tiết đơn (kho của vận đơn), form tạo vận đơn.
   { methods: R, path: "/admin/stock-locations/*", rule: p("inventory.read") },
   // Form tạo vận đơn native (fulfillment.create) đọc biến thể kèm tồn từng kho → cùng quyền đọc tồn (đơn/kho/catalog).
-  { methods: R, path: "/admin/products/:id/variants/:variant_id", rule: p("inventory.read") },
+  // Vai trò thiếu catalog.read chỉ nhận trường tồn kho (field-policy.ts: VARIANT_INVENTORY_FIELDS).
+  { methods: R, path: NATIVE_VARIANT_INVENTORY_ROUTE, rule: p("inventory.read") },
   // Phương án giao: form tạo vận đơn native của nhân viên đơn (+ owner ở Cài đặt).
   { methods: R, path: "/admin/shipping-options/*", rule: p("fulfillment.create") },
   // Catalog / giá
