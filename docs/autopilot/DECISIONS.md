@@ -839,3 +839,10 @@
 - Chọn: Không nối: đo 36m39s > 20 phút (D-064); baseline integration ghi tay, --against vẫn chặn PR hạ baseline; mở lại khi chia shard test tích hợp
 - Lý do (tiêu chí chất lượng cuối): (2) đường lùi D-064 'miễn kèm lý do'; job 36 phút làm PR chậm và vượt timeout 30 phút của runner; ratchet --against vẫn bảo vệ baseline
 - Đường lùi: Thêm job coverage-integration chia shard khi đo ≤ 20 phút
+
+### D-120 · 2026-10-27T23:06:19+00:00 · T-140: lần nhập đối soát thứ hai chờ advisory lock bị statement_timeout 30 s cắt thành 500
+
+- Phương án: (1) lock_timeout cục bộ 10 s quanh câu chờ khoá, hết hạn trả 409 IMPORT_IN_PROGRESS + Retry-After · (2) SET LOCAL statement_timeout lớn hơn cho giao dịch nhập · (3) pg_try_advisory_xact_lock trả 409 ngay
+- Chọn: lock_timeout cục bộ 10 s quanh câu chờ khoá, hết hạn trả 409 IMPORT_IN_PROGRESS + Retry-After
+- Lý do (tiêu chí chất lượng cuối): (1) không treo Admin, không 500, chưa ghi gì; giữ giao ước 5 lần nhập song song (201+200×4) mà try-lock phá; nâng statement_timeout vẫn treo và vẫn 500
+- Đường lùi: Đổi importLockWaitMs hoặc bỏ lockImport
