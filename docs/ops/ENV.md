@@ -43,7 +43,9 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # Gốc URL storefront để dựng liên kết gửi khách — hiện là liên kết tra cứu đơn `<gốc>/tra-cuu-don/xac-thuc?token=…`
 # (T-149, D-089): token một lần phát hành LÚC GỬI ở bộ xử lý thông báo, không lưu trong outbox. http(s), không query/
 # fragment/thông tin đăng nhập; cho phép tiền tố đường dẫn; `/` cuối bị bỏ. Production BẮT BUỘC và phải https://; vắng
-# (dev/test) = http://localhost:3000 (DEV_STOREFRONT_URL trong env.ts, cổng mặc định của `next dev`).
+# (dev/test) = http://localhost:3000 (DEV_STOREFRONT_URL trong env.ts, cổng mặc định của `next dev`). Giá trị thô có
+# khoảng trắng/xuống dòng/tab, `\`, `@`, `?`, `#` bị từ chối lúc khởi động (hay gặp: newline thừa khi tạo từ file/echo);
+# gốc dùng thật được chuẩn hoá từ URL đã parse (scheme/host viết thường, bỏ cổng mặc định).
 STOREFRONT_URL=https://shop.example.vn
 # Tùy chọn
 # MEDUSA_BACKEND_URL=http://localhost:9000
