@@ -575,13 +575,14 @@ medusaIntegrationTestRunner({
         const released = new Promise<void>((r) => (release = r));
         let ready!: () => void;
         const acquired = new Promise<void>((r) => (ready = r));
-        const timer = setTimeout(release, autoReleaseMs);
         const done = db.transaction(async (trx) => {
           await trx.raw(sql, bindings as unknown as Knex.ValueDict[]);
           ready();
           await released;
         });
         await acquired;
+        // Đếm hạn tự nhả từ lúc ĐÃ giữ khoá (không tính thời gian giành khoá).
+        const timer = setTimeout(release, autoReleaseMs);
         return async () => {
           clearTimeout(timer);
           release();
@@ -654,8 +655,78 @@ medusaIntegrationTestRunner({
           await release();
         }
         expect(res.r.status).toBe(201);
-        expect(res.ms).toBeGreaterThanOrEqual(LOCK_WAIT + 1_400);
+        // Chờ khoá dòng LÂU HƠN hạn chờ khoá nhập mà không bị 55P03 → lock_timeout đã trả về mặc định sau khoá nhập.
+        expect(res.ms).toBeGreaterThan(LOCK_WAIT);
         expect(await settlementState(s.id)).toBe("settled");
+      });
+    });
+
+    describe("lock_timeout cục bộ không rò sang kết nối pool (T-140)", () => {
+      const poolMax = () =>
+        (
+          container.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION).client as unknown as {
+            pool: { max: number };
+          }
+        ).pool.max;
+      /**
+       * Giữ ĐỒNG THỜI mọi kết nối của pool (rào: mỗi giao dịch giữ kết nối tới khi đủ `pool.max` giao dịch cùng giữ) và đọc
+       * `lock_timeout` của từng phiên — kết nối vừa phục vụ lần nhập chắc chắn nằm trong số đó. `set_config(..., false)`
+       * (mức phiên) sẽ để lại `10s` sau commit.
+       */
+      async function poolLockTimeouts(): Promise<Array<{ lt: string; pid: number }>> {
+        const db = container.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION);
+        const max = poolMax();
+        let holding = 0;
+        let allHeld!: () => void;
+        const barrier = new Promise<void>((r) => (allHeld = r));
+        return Promise.all(
+          Array.from({ length: max }, () =>
+            db.transaction(async (trx) => {
+              const r = await trx.raw(
+                "select current_setting('lock_timeout') as lt, pg_backend_pid() as pid",
+              );
+              if (++holding === max) allHeld();
+              await barrier;
+              return r.rows[0] as { lt: string; pid: number };
+            }),
+          ),
+        );
+      }
+
+      it("sau lần nhập thành công (201) và sau 409, mọi kết nối pool vẫn lock_timeout mặc định (0)", async () => {
+        const db = container.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION);
+        const { o, s } = await deliveredCod();
+        const ok = await importCsv(
+          A("accountant"),
+          "ghn_cod",
+          csvOf(line(s.client_order_code, o.total, "cod")),
+        );
+        expect(ok.status).toBe(201);
+        const afterOk = await poolLockTimeouts();
+        expect(new Set(afterOk.map((r) => r.pid)).size).toBe(poolMax());
+        expect(afterOk.filter((r) => r.lt !== "0")).toEqual([]);
+
+        // Ca 409: giữ khoá nhập từ một giao dịch khác quá hạn chờ.
+        let release!: () => void;
+        const released = new Promise<void>((r) => (release = r));
+        let ready!: () => void;
+        const acquired = new Promise<void>((r) => (ready = r));
+        const holder = db.transaction(async (trx) => {
+          await trx.raw("select pg_advisory_xact_lock(hashtext(?))", ["x-settlement:ghn_cod"]);
+          ready();
+          await released;
+        });
+        await acquired;
+        let busy: Res;
+        try {
+          busy = await importCsv(A("accountant"), "ghn_cod", csvOf(line("MA-POOL-PROBE", 1_000, "cod")));
+        } finally {
+          release();
+          await holder;
+        }
+        expect(busy.status).toBe(409);
+        const afterBusy = await poolLockTimeouts();
+        expect(afterBusy.filter((r) => r.lt !== "0")).toEqual([]);
       });
     });
 

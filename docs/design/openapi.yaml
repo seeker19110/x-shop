@@ -1335,7 +1335,17 @@ paths:
               schema: { type: object, additionalProperties: true }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409":
+          description: |
+            `BATCH_CONFLICT` — mã batch hãng đã nhập với nội dung khác (không gọi lại). `IMPORT_IN_PROGRESS` — lần nhập khác
+            cùng nguồn giữ khoá quá 10 s; chưa ghi gì, gọi lại sau `Retry-After` giây (T-140).
+          headers:
+            Retry-After:
+              description: "Chỉ khi `IMPORT_IN_PROGRESS`: số giây nên chờ trước khi gọi lại."
+              schema: { type: integer }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
         "422": { $ref: "#/components/responses/Validation" }
   /admin/x/settlements/batches/{id}:
     get:
@@ -1782,7 +1792,7 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
     Conflict:
-      description: "Xung đột trạng thái/idempotency/khóa (`INSUFFICIENT_STOCK`, `IDEMPOTENCY_CONFLICT`, `BUSY_RETRY`, `INVALID_STATE`…)."
+      description: "Xung đột trạng thái/idempotency/khóa (`INSUFFICIENT_STOCK`, `IDEMPOTENCY_CONFLICT`, `BUSY_RETRY`, `INVALID_STATE`, `IMPORT_IN_PROGRESS`…)."
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }

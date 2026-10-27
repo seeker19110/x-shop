@@ -13,7 +13,8 @@ import {
  * (quyền `settlement.import`, MFA; kho → 403). Thân: `text/csv` hoặc multipart trường `file` (định dạng nội bộ GIẢ ĐỊNH
  * — modules/settlement/constants.ts). Một dòng sai → 422 cả file. Cùng chứng từ (băm nội dung chuẩn hoá) nhập lại → 200
  * bản đã có + `Idempotent-Replayed: true`; mới → 201 kèm dòng đã đối chiếu và chênh lệch mở ra. Mã batch hãng trùng mà
- * khác nội dung → 409 BATCH_CONFLICT.
+ * khác nội dung → 409 BATCH_CONFLICT. Lần nhập khác cùng nguồn giữ khoá quá `SETTLEMENT_CONFIG.importLockWaitMs` (10 s) →
+ * 409 IMPORT_IN_PROGRESS + `Retry-After`, chưa ghi gì (T-140).
  *
  * GET /admin/x/settlements/batches — danh sách batch (quyền `settlement.read`), mới nhất trước.
  */

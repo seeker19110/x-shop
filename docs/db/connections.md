@@ -126,10 +126,14 @@ CPU suốt lúc đo) — số đo là của máy dev quá tải, không phải p
   `INTERNAL`, Admin treo 30 s. Từ T-140 (`SettlementModuleService.lockImport`): `set_config('lock_timeout',
   SETTLEMENT_CONFIG.importLockWaitMs = 10 s, true)` chỉ quanh câu chờ khoá rồi `SET LOCAL lock_timeout TO DEFAULT` (khoá dòng
   `FOR UPDATE` phía sau giữ hành vi cũ); hết hạn chờ (`55P03`, hoặc `57014` nếu môi trường đặt `statement_timeout` < 10 s) →
-  409 `IMPORT_IN_PROGRESS` + `Retry-After: 10`, chưa ghi gì. 10 s ≈ 1,8 lần lần nhập trần đo trên máy quá tải, nhỏ hơn
+  409 `IMPORT_IN_PROGRESS` + `Retry-After: 10` + log warn (đo tần suất), chưa ghi gì. 10 s ≈ 1,8 lần lần nhập trần đo trên máy quá tải, nhỏ hơn
   hẳn `statement_timeout` 30 s, và chờ + nhập < 60 s timeout của Admin UI. Kiểm: `pnpm --filter @x-shop/backend
   test:integration -- settlement` (giữ khoá quá hạn → 409 sau ~10 s; nhả trước hạn → 201; khoá dòng vận đơn giữ > 10 s vẫn
   chờ → 201) và `pnpm --filter @x-shop/backend test -- settlement.unit`.
+- **Giả định RTT của hạn 10 s:** số đo trên là Postgres cục bộ (RTT ≈ 0). Lần nhập trần chạy ~5.073 câu tuần tự (phần lớn là
+  `UPDATE shipment` từng vận đơn) → mỗi 1 ms RTT tới DB cộng ~5 s: RTT 1 ms → lần nhập trần ~10–11 s, chạm hạn chờ — lần nhập
+  trần thứ hai song song có thể nhận 409 dù không có gì treo (chưa ghi gì, gọi lại được). Theo dõi log warn
+  `[settlement] … IMPORT_IN_PROGRESS`; nếu thường xuyên: tăng `importLockWaitMs` (vẫn < `statement_timeout`) hoặc gộp câu ghi.
 - Phương án đã cân nhắc cho lần nhập thứ hai: `pg_try_advisory_xact_lock` (409 ngay) — loại vì phá giao ước đã có: nhập cùng
   chứng từ song song (bấm hai lần) phải ra 201 + 200 bản đã nhập, hai batch khác nhau cùng đơn song song phải tuần tự hoá
   (`settlement.spec.ts` "đồng thời"); nâng `statement_timeout` cho giao dịch — loại vì vẫn treo và vẫn ra 500.

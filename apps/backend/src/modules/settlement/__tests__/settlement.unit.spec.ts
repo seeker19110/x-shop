@@ -205,8 +205,9 @@ describe("importBatch — chờ khoá nhập có hạn (T-140)", () => {
       { raw },
     );
     const db = { transaction: async (fn: (t: typeof trx) => Promise<unknown>) => fn(trx) };
-    const svc = new SettlementModuleService({ __pg_connection__: db as never });
-    return { svc, calls };
+    const logger = { warn: jest.fn() };
+    const svc = new SettlementModuleService({ __pg_connection__: db as never, logger: logger as never });
+    return { svc, calls, logger };
   }
 
   it("đặt lock_timeout cục bộ = hạn chờ TRƯỚC câu chờ khoá, trả về mặc định NGAY SAU khi giành được", async () => {
@@ -227,12 +228,20 @@ describe("importBatch — chờ khoá nhập có hạn (T-140)", () => {
   ])(
     "câu chờ khoá lỗi %s (%s) → SettlementError IMPORT_IN_PROGRESS, không chạy câu nào sau đó",
     async (code) => {
-      const { svc, calls } = fakeDb(Object.assign(new Error("canceling statement"), { code }));
+      const { svc, calls, logger } = fakeDb(Object.assign(new Error("canceling statement"), { code }));
       const err = (await svc.importBatch(input).catch((e: unknown) => e)) as SettlementError;
       expect(err).toBeInstanceOf(SettlementError);
       expect(err.code).toBe("IMPORT_IN_PROGRESS");
       expect(err.detail).toEqual({ source: "ghn_cod" });
+      expect(err.message).toContain(`khoảng ${Math.ceil(SETTLEMENT_CONFIG.importLockWaitMs / 1000)} giây`);
       expect(calls).toHaveLength(2);
+      // Log warn đo tần suất: đúng một dòng, có nguồn + mã lỗi, không dữ liệu chứng từ.
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const msg = String(logger.warn.mock.calls[0]![0]);
+      expect(msg).toContain("IMPORT_IN_PROGRESS");
+      expect(msg).toContain("ghn_cod");
+      expect(msg).toContain(`code=${code}`);
+      expect(msg).not.toContain(input.content_hash);
     },
   );
 
@@ -242,8 +251,9 @@ describe("importBatch — chờ khoá nhập có hạn (T-140)", () => {
       new Error("ECONNRESET"),
       null,
     ]) {
-      const { svc } = fakeDb(e);
+      const { svc, logger } = fakeDb(e);
       await expect(svc.importBatch(input)).rejects.toBe(e);
+      expect(logger.warn).not.toHaveBeenCalled();
     }
   });
 });

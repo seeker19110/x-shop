@@ -1,4 +1,5 @@
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
+import type { Logger } from "@medusajs/framework/types";
 import { generateEntityId } from "@medusajs/framework/utils";
 import type { SettlementState } from "@x-shop/domain";
 import {
@@ -19,7 +20,7 @@ import {
 } from "./constants";
 import type { SettlementRow } from "./csv";
 import { classifyLine, nextSettlementState, type SettlementTarget } from "./match";
-import { isNonEmpty, msToSecondsFloor } from "@x-shop/domain";
+import { isNonEmpty, msToSecondsCeil, msToSecondsFloor } from "@x-shop/domain";
 
 export const BATCH_TABLE = "x_settlement_batch";
 export const LINE_TABLE = "x_settlement_line";
@@ -264,9 +265,11 @@ const PRIORITY_RANK = `case x.priority when 'urgent' then 0 when 'high' then 1 w
  */
 export default class SettlementModuleService {
   protected readonly db: Knex;
+  protected readonly logger_?: Logger;
 
-  constructor({ __pg_connection__ }: { __pg_connection__: Knex }) {
+  constructor({ __pg_connection__, logger }: { __pg_connection__: Knex; logger?: Logger }) {
     this.db = __pg_connection__;
+    this.logger_ = logger;
   }
 
   /* ------------------------------------------------------------------ nhập batch */
@@ -296,9 +299,16 @@ export default class SettlementModuleService {
     } catch (e) {
       const code = (e as { code?: unknown } | null)?.code;
       if (code === "55P03" || code === "57014") {
+        // Đo tần suất ở production (T-140): nhiều dòng này = hạn chờ ngắn so với thời gian nhập thật (xem RTT ở
+        // docs/db/connections.md §5). Chỉ nguồn + mã lỗi, không dữ liệu chứng từ.
+        this.logger_?.warn(
+          `[settlement] Nhập ${source} trả IMPORT_IN_PROGRESS: chờ khoá quá ${SETTLEMENT_CONFIG.importLockWaitMs}ms (code=${code})`,
+        );
         throw new SettlementError(
           "IMPORT_IN_PROGRESS",
-          "Đang có một lần nhập đối soát khác cùng nguồn — thử lại sau ít phút",
+          `Đang có một lần nhập đối soát khác cùng nguồn — thử lại sau khoảng ${msToSecondsCeil(
+            SETTLEMENT_CONFIG.importLockWaitMs,
+          )} giây`,
           { source },
         );
       }

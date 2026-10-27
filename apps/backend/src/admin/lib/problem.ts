@@ -65,7 +65,8 @@ const MESSAGES: Record<string, string> = {
   NOT_FOUND: "Không tìm thấy bản ghi.",
   IDEMPOTENCY_CONFLICT: "Yêu cầu trùng khoá nhưng khác nội dung. Tải lại trang rồi thử lại.",
   BATCH_CONFLICT: "Mã batch của hãng đã nhập với nội dung khác.",
-  IMPORT_IN_PROGRESS: "Đang có một lần nhập đối soát khác cùng nguồn — chưa ghi gì. Thử lại sau ít phút.",
+  IMPORT_IN_PROGRESS:
+    "Đang có một lần nhập đối soát khác cùng nguồn — chưa ghi gì. Thử lại sau khoảng 10 giây.",
   EMPTY_FILE: "File rỗng.",
   EMPTY_BATCH: "File không có dòng dữ liệu nào.",
   IMPORT_HAS_ERRORS: "File nhập còn lỗi — sửa file rồi xem trước lại.",

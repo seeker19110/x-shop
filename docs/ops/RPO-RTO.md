@@ -8,7 +8,7 @@
 | ------------------------------------- | ----------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | PostgreSQL (nguồn sự thật)            | ≤ 15 phút                           | ≤ 2 giờ                                  | PITR production **chưa có** (chờ chủ dự án); bản logic `backup.sh`/`restore.sh` + đối chiếu sau mốc                        | 2026-10-25 `restore-drill.sh` (RTO 14–16 s, DB 78 KB); 2026-10-26 sao lưu/khôi phục 719 MB: 9,9 s + 12,2 s. **RPO: chưa** |
 | Redis (khoá, hàng đợi, workflow, cache) | Không áp dụng (không chứa dữ liệu nguồn) | ≤ 2 giờ                                  | Khởi động lại, Redis trống là đủ; job tạo lại việc từ Postgres ≤ 1 phút                                                    | 2026-10-25 `restore-drill.sh` bước 5 (tính đúng; thời gian chưa đo)                                         |
-| Read model catalog `catalog_variant_index` | Theo Postgres (dẫn xuất, tái dựng được) | ≤ 2 giờ; tái dựng đo **108–113 s** ở 50k SKU | Khôi phục cùng Postgres; hỏng/lệch → `pnpm --filter @x-shop/backend catalog:reindex`                                     | 2026-10-26 đo tái dựng 50.105 dòng (mục dưới); CI: `catalog-search`, `catalog-index-scale`                 |
+| Read model catalog `catalog_variant_index` | Theo Postgres (dẫn xuất, tái dựng được) | ≤ 2 giờ; tái dựng đo **108–113 s** ở 50k SKU (đo lại 2026-10-27: 60–69 s, ghi chú dưới) | Khôi phục cùng Postgres; hỏng/lệch → `pnpm --filter @x-shop/backend catalog:reindex`                                     | 2026-10-26 đo tái dựng 50.105 dòng (mục dưới); CI: `catalog-search`, `catalog-index-scale`                 |
 | File upload/media (ảnh Admin)         | ≤ 15 phút                           | ≤ 2 giờ                                  | **Chưa có** — ghi đĩa cục bộ `apps/backend/static/`, không sao lưu                                                         | **Chưa**                                                                                                  |
 
 ## PostgreSQL
@@ -46,6 +46,11 @@ Chỉ chứa thứ tạo lại được: khoá phân tán (Locking Module), hàn
 Dữ liệu: 10.024 sản phẩm / 50.105 biến thể (50.000 SKU tải + 105 demo), sinh bằng SQL qua `node scripts/ops/perf-dataset.mjs` (phương pháp: `docs/ops/perf/load-dataset.md` §Đo `catalog:reindex`). Máy: 4 CPU Intel Xeon @ 2,80 GHz (`nproc` = 4), 15,7 GiB RAM (`free -h`: 15 Gi), PostgreSQL 16.15 + Redis cục bộ, Node 22.22.0, Medusa 2.22.1. **Máy đang chịu tải song song** (phiên khác chạy test cùng lúc) — số đo là của máy dev dùng chung, không phải production. Đo lại: `node scripts/ops/perf-dataset.mjs --reindex-only` trên DB đã dựng.
 
 Kết luận: tái dựng ở 50k SKU ≈ 2 phút, xa dưới RTO 2 giờ.
+
+**Đo lại 2026-10-27 (T-140, `docs/db/connections.md` §5): 60,5 s và 69,4 s** cho cùng lệnh, cùng cỡ dữ liệu — nhanh hơn
+số trên. Hai lần đo khác nhau ở: máy ảo (CPU ghi nhận Xeon @ 2,30 GHz so với @ 2,80 GHz ở trên), phiên bản mã (sau
+T-121/T-137/T-142 sửa đường catalog), tải song song (loadavg 5–6 so với 1,7–2,7). **Chưa tách được nguyên nhân** → RTO giữ số
+lớn hơn (108–113 s) làm cận trên; số mới chỉ dùng để kết luận về `statement_timeout` (câu dài nhất ~70 ms).
 
 ## File upload / media
 
