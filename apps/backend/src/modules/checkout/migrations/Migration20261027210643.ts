@@ -7,9 +7,12 @@ import { Migration } from "@medusajs/framework/mikro-orm/migrations";
  *  - `order_finance.hold_check_attempts` (integer NOT NULL DEFAULT 0, CHECK ≥ 0): số lần chưa rõ/lỗi liên tiếp — số mũ
  *    của backoff.
  * Expand thuần: hai cột thêm mới, nullable/có DEFAULT hằng → INSERT của bản N−1 (không biết cột) vẫn chạy; PG ≥ 11 thêm
- * cột có DEFAULT hằng chỉ đổi catalog (không viết lại bảng). CHECK thêm bằng `NOT VALID` (khoá ngắn, không quét) rồi
- * `VALIDATE` (quét với khoá SHARE UPDATE EXCLUSIVE — ghi đơn vẫn chạy song song). Index `(state, hold_expires_at)` sẵn có
- * vẫn phục vụ truy vấn của job (lọc thêm trên tập nhỏ đơn quá hạn).
+ * cột có DEFAULT hằng chỉ đổi catalog (không viết lại bảng).
+ * Khoá: MikroORM chạy cả `up()` trong MỘT transaction, nên khoá ACCESS EXCLUSIVE của `ADD COLUMN` giữ tới khi commit —
+ * gồm cả lúc `VALIDATE` quét bảng; `NOT VALID` + `VALIDATE` ở đây KHÔNG rút ngắn khoá (chỉ giữ mẫu idempotent chung).
+ * Chấp nhận được vì quét `order_finance` chỉ đọc một cột integer vừa thêm (mọi dòng = 0): chặn đọc/ghi đơn trong thời gian
+ * quét — với bảng lớn nên chạy ngoài giờ cao điểm và đặt `lock_timeout` ở phiên migrate. Index `(state, hold_expires_at)`
+ * sẵn có vẫn phục vụ truy vấn của job (lọc thêm trên tập nhỏ đơn quá hạn).
  *
  * Tên lớp duy nhất trên mọi module (`src/modules/__tests__/migration-names.unit.spec.ts`).
  * Đường lùi: `down` bỏ CHECK và hai cột — chỉ mất lịch backoff (trạng thái tạm): mọi đơn quá hạn lại được xét mỗi lượt

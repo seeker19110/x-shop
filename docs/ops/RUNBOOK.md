@@ -59,7 +59,10 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
    WHERE order_id = '<order_id>' AND state = 'awaiting_payment';
   ```
 
-  Chỉ đặt NULL (không sửa `state`/`hold_check_attempts`). Đơn chưa rõ quá vài giờ (`hold_check_attempts` ≥ 8): đối chiếu trên
+  Cảnh báo tồn đọng: log WARN `[expire-holds] N đơn quá hạn chưa rõ thanh toán đang giữ hàng (ngưỡng 50)` mỗi lượt khi số đơn
+  quá hạn còn `awaiting_payment` đã hỏi ≥ 1 lần (`hold_check_attempts` ≥ 1) chạm ngưỡng (`HOLD_RECHECK_POLICY.backlogWarnAt`) —
+  thường là cổng trả mã 91/chữ ký sai hàng loạt (khoá/cấu hình VNPAY) → kiểm `detail->>'reason'` của `payment_unknown` (§14
+  bước 5) và đối chiếu với VNPAY trước khi làm gì khác. Chỉ đặt NULL (không sửa `state`/`hold_check_attempts`). Đơn chưa rõ quá vài giờ (`hold_check_attempts` ≥ 8): đối chiếu trên
   cổng merchant VNPAY theo `txn_ref`; CHƯA có đường hủy tay cho đơn `unknown` (Admin trả 409 PAYMENT_PENDING) — leo thang kỹ
   thuật, không sửa `state` bằng SQL.
 - Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (cờ cấu hình) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
