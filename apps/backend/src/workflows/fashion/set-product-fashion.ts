@@ -263,6 +263,14 @@ function safeErrorSummary(e: unknown): string {
   return parts.join(" ");
 }
 
+/**
+ * Lỗi thay cho lỗi DB thô khi ném ra khỏi bước: message chỉ có `safeErrorSummary`, KHÔNG gắn `cause` (handler HTTP ghi
+ * message/stack/chuỗi cause của lỗi 500 — lỗi thô sẽ đưa câu SQL kèm số đo vào log). API vẫn trả 500.
+ */
+function sanitizedError(what: string, e: unknown): MedusaError {
+  return new MedusaError(MedusaError.Types.UNEXPECTED_STATE, `${what}: ${safeErrorSummary(e)}`);
+}
+
 type MeasurementCompensation = {
   attributesId: string;
   createdIds: string[];
@@ -273,7 +281,7 @@ type MeasurementCompensation = {
  * Hoàn tác bước thay số đo: đưa số đo của `attributes_id` về ĐÚNG bản chụp — xoá mọi bản ghi không có trong bản chụp
  * (gồm cả bản lượt này đã tạo mà không kịp nhận id, vd. lệnh tạo đã commit nhưng client báo lỗi), rồi tạo lại bản thiếu.
  * An toàn vì workflow giữ khoá theo sản phẩm: không lượt nào khác ghi số đo của sản phẩm này trong lúc đó.
- * Lỗi → log (chỉ id, không số đo — PII) rồi ném lại để workflow báo bù trừ thất bại.
+ * Lỗi → log (chỉ id, không số đo — PII) rồi ném lỗi đã làm sạch (`sanitizedError`) để workflow báo bù trừ thất bại.
  */
 async function undoReplaceMeasurements(
   container: MedusaContainer,
@@ -296,7 +304,7 @@ async function undoReplaceMeasurements(
           `created_ids=${comp.createdIds.join(",") || "-"} previous_ids=${comp.previous.map((m) => m.id).join(",") || "-"}: ` +
           safeErrorSummary(e),
       );
-    throw e;
+    throw sanitizedError("Hoàn tác số đo người mẫu lỗi", e);
   }
 }
 
@@ -305,7 +313,7 @@ async function undoReplaceMeasurements(
  * không để lại bản soft-delete không ai dọn), nên bước chụp đủ cột bản cũ vào dữ liệu bù trừ và tạo lại cùng `id` khi
  * workflow lỗi ở bước sau (vd. `assertStillPublishableStep`). `restore*` của MedusaService chỉ gỡ soft-delete, không
  * cứu được bản ghi đã xoá cứng (T-144). Bước tự lỗi (tạo bản mới lỗi sau khi đã xoá) không được workflow bù trừ → tự
- * hoàn tác rồi ném lại.
+ * hoàn tác rồi ném lỗi đã làm sạch (không để lỗi DB thô kèm số đo tới log 500 của route).
  */
 const replaceMeasurementsStep = createStep(
   "x-replace-model-measurements",
@@ -346,9 +354,9 @@ const replaceMeasurementsStep = createStep(
             `[set-product-fashion] Thay số đo người mẫu lỗi (lỗi gốc trước khi hoàn tác lỗi): ` +
               `attributes_id=${comp.attributesId}: ${safeErrorSummary(e)}`,
           );
-        throw undoError;
+        throw undoError; // đã làm sạch trong undoReplaceMeasurements
       }
-      throw e;
+      throw sanitizedError("Thay số đo người mẫu lỗi", e);
     }
     return new StepResponse(undefined, comp);
   },

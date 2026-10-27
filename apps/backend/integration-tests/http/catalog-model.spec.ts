@@ -471,7 +471,8 @@ medusaIntegrationTestRunner({
           } finally {
             fashion.createModelMeasurements = origCreate;
           }
-          expect(r).toContain("statement timeout");
+          expect(r).toContain("Thay số đo người mẫu lỗi");
+          expect(r).not.toContain("statement timeout"); // lỗi thô không ra khỏi bước
           expect(await measurementRows(attributesId, true)).toEqual(before);
         });
 
@@ -491,7 +492,7 @@ medusaIntegrationTestRunner({
           } finally {
             fashion.createModelMeasurements = origCreate;
           }
-          expect(r).toContain("connection terminated");
+          expect(r).toContain("Thay số đo người mẫu lỗi");
           expect(await measurementRows(attributesId, true)).toEqual(before);
         });
 
@@ -645,6 +646,95 @@ medusaIntegrationTestRunner({
           for (const line of [undoLine!, origLine!]) {
             expect(line).not.toMatch(/insert into|values|\b(180|94|78|95|170)\b|Dữ liệu demo/i);
           }
+        });
+
+        describe("lỗi DB thật qua HTTP không lộ số đo vào log 500", () => {
+          const MODEL = {
+            image_set: "moi",
+            height_cm: 173,
+            chest_cm: 91,
+            waist_cm: 77,
+            hip_cm: 99,
+            size_worn: "m",
+          };
+          /** Chuỗi log đầy đủ như handler ghi: message, stack và cả chuỗi `cause`. */
+          const render = (x: unknown): string => {
+            if (typeof x === "string") return x;
+            if (x instanceof Error)
+              return `${x.name}: ${x.message}\n${x.stack ?? ""}\ncause: ${render(x.cause)}`;
+            try {
+              return JSON.stringify(x) ?? String(x);
+            } catch {
+              return String(x);
+            }
+          };
+
+          async function postWithTrigger(cond: string) {
+            const { id, attributesId } = await seededPolo();
+            const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+            const logger = container.resolve(ContainerRegistrationKeys.LOGGER) as unknown as Record<
+              string,
+              (...args: unknown[]) => unknown
+            >;
+            const orig = { error: logger.error!, warn: logger.warn! };
+            const lines: string[] = [];
+            for (const level of ["error", "warn"] as const) {
+              logger[level] = (...args: unknown[]) => {
+                lines.push(`${level} ${args.map(render).join(" ")}`);
+                return orig[level].apply(logger, args);
+              };
+            }
+            await pg.raw(`
+              create or replace function t144_leak() returns trigger language plpgsql as $$
+              begin
+                if ${cond} then raise exception 'boom %', tg_op; end if;
+                return new;
+              end $$;
+              create trigger t144_leak before insert on fashion_model_measurement
+                for each row execute function t144_leak();
+            `);
+            let err: unknown;
+            try {
+              err = await api
+                .post(
+                  `/admin/x/products/${id}/fashion`,
+                  { attributes: { kind: "apparel", material: "cotton" }, model_measurements: [MODEL] },
+                  { headers: admin },
+                )
+                .catch((e: unknown) => e);
+            } finally {
+              await pg.raw("drop trigger if exists t144_leak on fashion_model_measurement");
+              await pg.raw("drop function if exists t144_leak()");
+              Object.assign(logger, orig);
+            }
+            return { err, lines, attributesId };
+          }
+
+          // Số đo dạng phần tử danh sách giá trị SQL (`, 180,`) — không bắt nhầm số dòng/cột trong stack (`:91:52`).
+          const LEAK = /insert into|values\s*\(|[(,]\s*'?(173|91|77|99|180|94|78|95)'?\s*[,)]|Dữ liệu demo/i;
+
+          it("V1: chỉ insert số đo mới lỗi → 500, log không chứa SQL/số đo, số đo cũ được khôi phục", async () => {
+            const { attributesId } = await seededPolo();
+            const before = await measurementRows(attributesId);
+            const { err, lines } = await postWithTrigger("new.image_set = 'moi'");
+            expect(status(err)).toBe(500);
+            expect(JSON.stringify(body(err))).not.toMatch(LEAK);
+            expect(lines.some((l) => l.includes("Thay số đo người mẫu lỗi"))).toBe(true);
+            expect(lines.filter((l) => LEAK.test(l))).toEqual([]);
+            expect(await measurementRows(attributesId)).toEqual(before);
+          });
+
+          it("V2: insert mới và khôi phục bản cũ cùng lỗi → 500, log không chứa SQL/số đo (kể cả của người mẫu cũ)", async () => {
+            const { attributesId } = await seededPolo();
+            const [old] = await measurementRows(attributesId);
+            const { err, lines } = await postWithTrigger(
+              `new.image_set = 'moi' or new.id = '${String(old!.id)}'`,
+            );
+            expect(status(err)).toBe(500);
+            expect(JSON.stringify(body(err))).not.toMatch(LEAK);
+            expect(lines.some((l) => l.includes("Hoàn tác số đo người mẫu lỗi"))).toBe(true);
+            expect(lines.filter((l) => LEAK.test(l))).toEqual([]);
+          });
         });
 
         describe("khoá theo sản phẩm qua HTTP", () => {
