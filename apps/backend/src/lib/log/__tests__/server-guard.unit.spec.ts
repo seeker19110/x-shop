@@ -68,6 +68,24 @@ describe("hook server: request-target (T-145)", () => {
     expect(isAcceptedRequestTarget("GET", "/admin/customers/x?q=#")).toBe(false);
     expect(isAcceptedRequestTarget("GET", "/admin/customers/x?q=%23")).toBe(true);
     expect(isAcceptedRequestTarget("GET", undefined)).toBe(false);
+    // D-082: byte điều khiển/khoảng trắng/DEL/không ASCII thô → từ chối; dạng percent-encode vẫn nhận.
+    for (const bad of [
+      "/admin/customers/x\ty",
+      "/admin /customers",
+      "/a\u000cb",
+      "/a\u007f",
+      "/a\u00a0b",
+      "/a\ufeffb",
+      "/sp\u00e1n",
+    ])
+      expect(isAcceptedRequestTarget("GET", bad)).toBe(false);
+    for (const ok of [
+      "/a%09b",
+      "/a%20b",
+      "/s%C3%A1n",
+      "/x/webhooks/vnpay?vnp_OrderInfo=Thanh+toan%20don&vnp_Amount=100",
+    ])
+      expect(isAcceptedRequestTarget("GET", ok)).toBe(true);
   });
 
   it("URL tuyệt đối → 400 problem+json, listener gốc KHÔNG chạy, vẫn có log truy cập; origin-form và `OPTIONS *` tới listener", async () => {

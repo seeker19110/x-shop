@@ -572,3 +572,10 @@
 - Chọn: Job phút không chờ (waitMs 0), bận thì giao scheduleCatalogDrain chờ nền ≤300 s; mọi vòng chờ kiểm isDraining()
 - Lý do (tiêu chí chất lượng cuối): (1) không chặn khe job dùng chung (outbox, expire-holds) và không vượt trần tắt êm T-094; (3) không đổi cấu hình mọi job
 - Đường lùi: Quay về bỏ lượt khi bận (D-035)
+
+### D-082 · 2026-10-27T04:01:31+00:00 · Review T-145 INCONCLUSIVE (dò đường vòng đối nghịch bị bộ phân loại chặn); code đang đẩy có lỗ hổng RBAC đã tái hiện
+
+- Phương án: (1) Merge hotfix ngay + gia cố 🟢1 (từ chối byte ≤0x20/0x7F/≥0x80) + ghi việc rà bảo mật đối nghịch cho người · (2) Giữ hotfix chờ review CLEAN
+- Chọn: Merge hotfix ngay + gia cố 🟢1 (từ chối byte ≤0x20/0x7F/≥0x80) + ghi việc rà bảo mật đối nghịch cho người
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: giữ lại nghĩa là để lỗ hổng đã chứng minh trên PR; hotfix chỉ thu hẹp đầu vào, phần đã rà sạch (unit/tích hợp/đối chiếu parseurl); (2) đường lùi: revert từng commit
+- Đường lùi: Revert 2 commit T-145 nếu rà bảo mật thấy hồi quy

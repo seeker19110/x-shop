@@ -128,6 +128,10 @@ export function trackRawRequest(req: unknown, res: unknown, fallback: AppLogger)
 export function isAcceptedRequestTarget(method: unknown, target: unknown): boolean {
   if (typeof target !== "string") return false;
   if (target.includes("#") || target.includes("\\")) return false;
+  // Byte điều khiển/khoảng trắng/DEL/không ASCII thô đẩy parseurl sang đường url.parse chậm (hai cách parse trong stack) —
+  // client hợp lệ luôn percent-encode (RFC 3986/9112). Từ chối để mọi tầng chỉ còn một đường parse (review T-145, D-082).
+  // eslint-disable-next-line no-control-regex -- chủ đích khớp ký tự điều khiển
+  if (/[\u0000-\u0020\u007f-\uffff]/.test(target)) return false;
   if (target.startsWith("/")) return true;
   return target === "*" && typeof method === "string" && method.toUpperCase() === "OPTIONS";
 }
