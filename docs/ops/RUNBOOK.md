@@ -213,6 +213,10 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   migration chưa tương thích ngược, KHÔNG lùi ứng dụng khi chưa kiểm: chỉ lùi migration khi chưa có dữ liệu mới ghi vào cấu trúc mới,
   bằng `cd apps/backend && npx medusa db:rollback --modules <module>` (hoàn lại lô migration cuối của module; `down()` giữ dữ liệu — xem ghi
   chú trong từng file ở `apps/backend/src/modules/*/migrations/`). Ngược lại → sửa tiến (bản vá) thay vì lùi. Không sửa migration đã áp.
+  CI cưỡng chế (T-102, `scripts/check-migrations.mjs`): `pnpm check:migrations` — migration đã có trên nhánh đích giữ nguyên byte;
+  migration mới không DROP TABLE/COLUMN, RENAME, đổi kiểu, SET NOT NULL cột có sẵn, TRUNCATE, DELETE không WHERE trong `up()` trừ khi
+  file có chú thích `// @migration-contract: <lý do, nêu MigrationYYYYMMDDHHMMSS expand đã phát hành>`; `pnpm check:migrations:drift`
+  (cần Postgres) — model DML khớp migration (`medusa db:generate` không sinh gì).
 - **Ngưỡng quyết định lùi (đề xuất, chủ dự án duyệt — chưa có hạ tầng đo tự động):** trong 30 phút sau deploy, lùi nếu một trong:
   smoke §8.3 đỏ · tỷ lệ 5xx của `/store/x/*` > 2% trong 5 phút liên tiếp · p95 `POST /store/x/checkout/submit` vượt 2× số đo ở
   `docs/ops/perf/` trong 10 phút · có đơn đã đặt nhưng thiếu `order_finance`/`payment_attempt` (đối chiếu truy vấn §3.3.3). Người quyết
