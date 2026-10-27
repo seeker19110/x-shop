@@ -132,12 +132,12 @@ const PII_KEY_PARTS = [
   "ipaddress",
   "ipaddr",
 ];
-const PII_KEY_EXACT = new Set(["sdt", "tel", "mobile", "dob", "ten", "ip"]);
+const PII_KEY_EXACT = new Set(["sdt", "tel", "mobile", "dob", "ten", "ip", "ips"]);
 
-/** `true` nếu giá trị của trường tên `key` phải che toàn bộ. */
 /** Khoá kết thúc bằng `ip`/`ip_addr` có tiền tố (`customer_ip`, `user-ip`, `peerIp`, `vnp_IpAddr`): ngăn cách hoặc camelCase. */
 const IP_SUFFIX_KEY = /(?:[_\-. ]|[a-z0-9](?=I[pP](?:Addr|Address)?$))[iI][pP](?:[_\-. ]?[aA]ddr(?:ess)?)?$/;
 
+/** `true` nếu giá trị của trường tên `key` phải che toàn bộ. */
 export function isSensitiveKey(key: string): boolean {
   const k = norm(key);
   if (k === "") return false;
@@ -193,9 +193,9 @@ function luhn(digits: string): boolean {
 }
 
 const IPV4 = String.raw`\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?`;
-const IPV6 = String.raw`[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}`;
+const IPV6 = String.raw`[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{0,4}){2,7}`;
 /** IPv4 nhúng trong IPv6 (`::ffff:203.0.113.9`): phải thử trước IPV6 (nuốt `203` như nhóm hex rồi dừng ở `.`). */
-const IPV6_V4 = String.raw`[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){1,6}:\d{1,3}(?:\.\d{1,3}){3}`;
+const IPV6_V4 = String.raw`[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{0,4}){1,6}:\d{1,3}(?:\.\d{1,3}){3}`;
 const IP_ONE = String.raw`(?:${IPV6_V4}|${IPV4}|${IPV6})`;
 /** Phần tử cách nhau bằng `,` (kể cả mảng JSON `["a","b"]`, nháy thoát). */
 const IP_SEP = String.raw`(?:\\{0,7}["'])?\s{0,3},\s{0,3}(?:\\{0,7}["'])?`;
@@ -238,7 +238,7 @@ const RULES: Rule[] = [
   // Trường PII dạng `address=…` / `"address":"…"` trong văn bản (JSON, query, util.inspect).
   {
     re: new RegExp(
-      `(${QKEY})(?<![A-Za-z0-9_])(address(?:_?[12])?|addr|đ?[iị]a[ _-]?ch[iỉ]|street|full_?name|first_?name|last_?name|ho_?ten|h[oọ](?: v[aà])?[ _-]?t[eê]n|t[eê]n[ _-]?ng[uư][oờơ]i[ _-]?nh[aậ]n|recipient_?name|receiver_?name|customer_?name|phone(?:_?number)?|sdt|email|cccd|cmnd)\\1(\\s{0,8}[:=]\\s{0,8})(${ESC_QUOTED}|"[^"]{0,4096}"|'[^']{0,4096}'|[^&,;"'}\\n]{1,256})`,
+      `(${QKEY})(?<![A-Za-z0-9_])(address(?:_?[12])?|addr|[dđ][iị]a[ _-]?ch[iỉ]|street|full_?name|first_?name|last_?name|ho_?ten|h[oọ](?:[ _-]v[aà])?[ _-]?t[eê]n|t[eê]n[ _-]?ng[uư][oờơ]i[ _-]?nh[aậ]n|recipient_?name|receiver_?name|customer_?name|phone(?:_?number)?|sdt|email|cccd|cmnd)\\1(\\s{0,8}[:=]\\s{0,8})(${ESC_QUOTED}|"[^"]{0,4096}"|'[^']{0,4096}'|[^&,;"'}\\n]{1,256})`,
       "gi",
     ),
     to: (_m, q, key, sep, value) => {
@@ -279,6 +279,15 @@ const RULES: Rule[] = [
       // Khoá có thể có tiền tố ngăn bằng `_`/`-` (`vnp_IpAddr`, `customer_ip`, `x_forwarded_for`); giá trị có thể là mảng JSON.
       `(${QKEY})\\b((?:[a-z0-9]{1,16}[_-]){0,2}(?:client[_-]?ip|remote[_-]?(?:addr(?:ess)?|ip)|real[_-]?ip|forwarded[_-]?for|ip(?:[_-]?addr(?:ess)?)?))\\1(\\s{0,8}[:=]\\s{0,8})(\\[?\\s{0,3}\\\\{0,7}["']?)${IP_LIST}`,
       "gi",
+    ),
+    to: (_m, q, key, sep, quote) => `${q}${key}${q}${sep}${quote}[IP]`,
+  },
+  // Khoá IP camelCase trong văn bản (`"userIp":"…"`, `peerIp=`, `vnpIpAddr=`): luật trên không phân biệt hoa thường nên không
+  // thể nhận `Ip` viết hoa giữa khoá mà vẫn bỏ qua `skip=`; luật này phân biệt hoa thường (không cờ `i`).
+  {
+    re: new RegExp(
+      `(${QKEY})\\b([a-z][a-z0-9]{0,15}(?:Ip|IP)(?:Addr(?:ess)?)?|xForwardedFor)\\1(\\s{0,8}[:=]\\s{0,8})(\\[?\\s{0,3}\\\\{0,7}["']?)${IP_LIST}`,
+      "g",
     ),
     to: (_m, q, key, sep, quote) => `${q}${key}${q}${sep}${quote}[IP]`,
   },
@@ -671,10 +680,13 @@ function redactAddress(s: string): string {
 /** Che bí mật/PII trong một chuỗi. */
 export function redactText(input: string): string {
   // Chuẩn hoá NFKC (D-112; gồm NFC): chữ có dấu tách (NFD), NBSP, chữ số/`＠` toàn chiều rộng không được làm các mẫu trượt.
+  // ĐÁNH ĐỔI ĐÃ CHẤP NHẬN: log lưu dạng NFKC nên cả chữ không phải PII cũng đổi (`ﬁ`→`fi`, `½`→`1⁄2`, `™`→`TM`, katakana
+  // nửa chiều rộng→toàn chiều rộng).
   // Cắt → chuẩn hoá → cắt lại: NFKC có thể nở chuỗi (ký tự tương thích → nhiều ký tự), đầu ra không vượt `MAX_TEXT` + dấu cắt.
+  // N trong dấu cắt = phần bỏ trước chuẩn hoá (UTF-16 của đầu vào) + phần bỏ sau chuẩn hoá (ký tự sau NFKC).
   let s = (input.length > MAX_TEXT ? input.slice(0, MAX_TEXT) : input).normalize("NFKC");
-  const total = Math.max(input.length, s.length);
-  if (total > MAX_TEXT) s = `${s.slice(0, MAX_TEXT)}…[cắt ${total - MAX_TEXT} ký tự]`;
+  const dropped = Math.max(0, input.length - MAX_TEXT) + Math.max(0, s.length - MAX_TEXT);
+  if (dropped > 0) s = `${s.slice(0, MAX_TEXT)}…[cắt ${dropped} ký tự]`;
   s = hashFailingRows(scrubSqlValues(s));
   if (SQL_QUOTED.test(s) || SQL_UPPER.test(s) || looksLikeSelect(s)) {
     const memo = new Map<string, string>(); // literal lặp chỉ băm một lần

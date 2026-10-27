@@ -200,6 +200,12 @@ describe("NFKC: NBSP, toàn chiều rộng, giới hạn độ dài sau chuẩn 
     expect(out.length).toBeLessThan(MAX_TEXT + 64);
     expect(out).toContain("…[cắt");
   });
+  it("đúng trần sau chuẩn hoá: cắt lại và đếm phần bỏ sau NFKC (M8)", () => {
+    // MAX_TEXT ký tự, ký tự cuối "ﬁ" nở thành "fi" → dài MAX_TEXT + 1; phải cắt lại, N = 1.
+    expect(redactText(`${"x".repeat(MAX_TEXT - 1)}ﬁ`)).toBe(`${"x".repeat(MAX_TEXT - 1)}f…[cắt 1 ký tự]`);
+    // Đầu vào dài hơn trần: N = phần bỏ trước chuẩn hoá (đơn vị UTF-16 của đầu vào).
+    expect(redactText("x".repeat(MAX_TEXT + 5))).toBe(`${"x".repeat(MAX_TEXT)}…[cắt 5 ký tự]`);
+  });
   it("chuỗi đúng trần không bị cắt", () => {
     expect(redactText("x".repeat(MAX_TEXT))).toBe("x".repeat(MAX_TEXT));
   });
@@ -246,6 +252,18 @@ describe("luật T-136: khoá tiếng Việt có dấu, JSON thoát nháy, IP th
     expect(redactLog({ [k]: "giá trị" })).toEqual({ [k]: REDACTED });
   });
 
+  it("khoá IP camelCase và `ips` (M16): che giá trị, kể cả mảng", () => {
+    expect(
+      redactLog({
+        userIp: "203.0.113.1",
+        shipIpAddress: "203.0.113.2",
+        customerIP: "203.0.113.3",
+        ips: ["203.0.113.4"],
+      }),
+    ).toEqual({ userIp: REDACTED, shipIpAddress: REDACTED, customerIP: REDACTED, ips: REDACTED });
+    expect(redactLog({ skip: "a", ship: "b", tip: "c" })).toEqual({ skip: "a", ship: "b", tip: "c" });
+  });
+
   it.each(["shipping", "description", "tip", "recipe", "tên sản phẩm", "đơn hàng"])(
     "khoá %j không bị che nhầm",
     (k) => {
@@ -260,6 +278,18 @@ describe("luật T-136: khoá tiếng Việt có dấu, JSON thoát nháy, IP th
     [String.raw`{\"ip\":\"203.0.113.9\"}`, String.raw`{\"ip\":\"[IP]\"}`],
     ["ip=203.0.113.9 failed", "ip=[IP] failed"],
     ["ip=::ffff:203.0.113.9", "ip=[IP]"],
+    ["dia_chi=nha ABC", `dia_chi=${REDACTED}`],
+    ['{"dia_chi":"nha ABC"}', `{"dia_chi":"${REDACTED}"}`],
+    ["diachi=nha ABC", `diachi=${REDACTED}`],
+    ["DIA_CHI=nha ABC", `DIA_CHI=${REDACTED}`],
+    ["ho_va_ten=Nguyen A", `ho_va_ten=${REDACTED}`],
+    ["ho-va-ten: Nguyen A", `ho-va-ten: ${REDACTED}`],
+    ["ho ten: Nguyen A", `ho ten: ${REDACTED}`],
+    ['{"userIp":"203.0.113.61"}', '{"userIp":"[IP]"}'],
+    ["peerIp=203.0.113.62 ok", "peerIp=[IP] ok"],
+    ["vnpIpAddr=203.0.113.63&x=1", "vnpIpAddr=[IP]&x=1"],
+    ["clientIP: 2001:DB8::1A2B", "clientIP: [IP]"],
+    ["xForwardedFor=203.0.113.64", "xForwardedFor=[IP]"],
     ["x-forwarded-for: ::ffff:198.51.100.7, 203.0.113.2 end", "x-forwarded-for: [IP] end"],
     ["vnp_IpAddr=203.0.113.45&vnp_Amount=100", "vnp_IpAddr=[IP]&vnp_Amount=100"],
     ["x_forwarded_for=203.0.113.49", "x_forwarded_for=[IP]"],
@@ -279,12 +309,17 @@ describe("luật T-136: khoá tiếng Việt có dấu, JSON thoát nháy, IP th
     expect(redactText(input)).toBe(expected);
   });
 
-  it.each(["ip 10.0.0.12:5432", "ip: không có", "version 1.2.3.4", "ipsum=1.2.3.4", "tip=203.0.113.9"])(
-    "không che nhầm %j",
-    (input) => {
-      expect(redactText(input)).toBe(input);
-    },
-  );
+  it.each([
+    "ip 10.0.0.12:5432",
+    "ip: không có",
+    "version 1.2.3.4",
+    "ipsum=1.2.3.4",
+    "tip=203.0.113.9",
+    "skip=203.0.113.9",
+    "shipping=203.0.113.9",
+  ])("không che nhầm %j", (input) => {
+    expect(redactText(input)).toBe(input);
+  });
 });
 
 /** Ngân sách ReDoS cho các luật mới (T-136): đo CPU time, như bộ ca ở redact.unit.spec.ts. */
@@ -319,6 +354,10 @@ describe("luật T-136: chống ReDoS (CPU < 50 ms / 32K ký tự)", () => {
     ["JSON thoát: nhiều backslash", `password=${"\\".repeat(N)}`],
     ["IP: danh sách XFF lặp", "x-forwarded-for: 1.1.1.1,".repeat(N / 25)],
     ["IP: ip= lặp số", "ip=1.1.1.".repeat(N / 9)],
+    ["IP camelCase: userIp= lặp", "userIp=1.1.1.".repeat(N / 13)],
+    ["IP camelCase: chữ thường dài + Ip", `${"a".repeat(N)}Ip=`],
+    ["nhãn: ho_va_ten lặp", "ho_va_".repeat(N / 6)],
+    ["nhãn: dia_chi lặp", "dia_chi ".repeat(N / 8)],
   ];
   it.each(cases)("%s → < 50 ms", (_name, input) => {
     redactText(input.slice(0, 100));

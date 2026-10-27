@@ -479,6 +479,62 @@
       "value": "khach.fw\uff20example.test",
       "leak": ["khach.fw"],
       "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "address-key-dia_chi",
+      "kind": "address",
+      "value": "dia_chi=nha ABC",
+      "leak": ["nha ABC"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "address-key-dia_chi-json",
+      "kind": "address",
+      "value": "{\"dia_chi\":\"nha ABC\"}",
+      "leak": ["nha ABC"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "address-key-diachi",
+      "kind": "address",
+      "value": "diachi=nha ABC",
+      "leak": ["nha ABC"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "name-key-ho_va_ten",
+      "kind": "name",
+      "value": "ho_va_ten=Nguyen Van A",
+      "leak": ["Nguyen Van A"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "name-key-ho-va-ten",
+      "kind": "name",
+      "value": "ho-va-ten: Nguyen Van B",
+      "leak": ["Nguyen Van B"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-camel-userIp",
+      "kind": "ip",
+      "value": "\"userIp\":\"203.0.113.61\"",
+      "leak": ["203.0.113.61"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-camel-peerIp",
+      "kind": "ip",
+      "value": "{\"peerIp\":\"203.0.113.62\"}",
+      "leak": ["203.0.113.62"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-camel-vnpIpAddr",
+      "kind": "ip",
+      "value": "vnpIpAddr=203.0.113.63",
+      "leak": ["203.0.113.63"],
+      "scopes": ["backend"]
     }
   ],
   "negatives": [
@@ -502,6 +558,7 @@
     "Backend: SĐT `84.912.345.678` (chấm sau 84) và `(+84) 912 345 678` (ngoặc) không che — storefront nhận; lệch này chưa xử lý.",
     "Backend: CMND cách từ khoá > 16 ký tự, hoặc `cmt` theo sau bởi chữ khác ngoài ngăn cách/số/là không che; `CCCD 012345678` (9 số) không che theo nội dung; ngày sinh trong văn bản không che.",
     "Backend: `password:` ngay sau xuống dòng thoát trong JSON, và mật khẩu chứa dấu nháy kép thoát trong JSON thoát nháy, không che đủ.",
-    "Cả hai phía: NFKC đã xử lý NBSP, chữ số toàn chiều rộng và `\uff20`; ký tự Unicode khác NFKC không chuẩn hoá (ví dụ U+200B) chưa xử lý."
+    "Cả hai phía: NFKC đã xử lý NBSP, chữ số toàn chiều rộng và `\uff20`; ký tự Unicode khác NFKC không chuẩn hoá (ví dụ U+200B) chưa xử lý.",
+    "Backend: log lưu dạng NFKC nên chữ không phải PII cũng đổi (`ﬁ`→`fi`, `½`→`1⁄2`, `™`→`TM`, katakana nửa chiều rộng) — đánh đổi đã chấp nhận (D-112). Khoá số nhiều/danh sách IP kiểu `ipList` ngoài `ips` không che theo tên."
   ]
 }
