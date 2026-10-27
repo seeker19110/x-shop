@@ -1,4 +1,16 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, realpathSync, statSync } from "node:fs";
+import {
+  chmod,
+  chown,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -9,6 +21,7 @@ import {
   ULID_PATTERN,
   UPLOAD_MIME_EXTENSIONS,
 } from "../key";
+import { preparePrivateDir, type PrivateDirSystem } from "../private";
 import { ServerKeyedLocalFileService } from "../provider";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
@@ -499,5 +512,156 @@ describe("ServerKeyedLocalFileService — thư mục private tách khỏi webroo
     // Công khai: quyền như một file ghi thường (umask của tiến trình — provider gốc), không qua chmod 600.
     await writeFile(path.join(base, "doi-chung"), "x");
     expect(await modeOf(path.join(pub, pubRes.key))).toBe(await modeOf(path.join(base, "doi-chung")));
+  });
+
+  // Re-review T-141 🟢2: giết đột biến còn sống.
+  class FailingChmodService extends ServerKeyedLocalFileService {
+    readonly calls: string[] = [];
+    protected override chmodFile(filePath: string): Promise<void> {
+      this.calls.push(filePath);
+      return Promise.reject(Object.assign(new Error("EPERM: chmod bị từ chối"), { code: "EPERM" }));
+    }
+  }
+
+  it("chmod lỗi → upload private THẤT BẠI (không báo thành công cho file quyền rộng); upload công khai không chmod", async () => {
+    const svc = new FailingChmodService({}, { upload_dir: pub, private_upload_dir: priv });
+    await expect(
+      svc.upload({ filename: "x", mimeType: "text/csv", content: "a\n", access: "private" }),
+    ).rejects.toThrow(/EPERM/);
+    expect(svc.calls).toHaveLength(1);
+    await expect(
+      svc.upload({
+        filename: "a.png",
+        mimeType: "image/png",
+        content: PNG.toString("base64"),
+        access: "public",
+      }),
+    ).resolves.toMatchObject({ url: expect.stringContaining("/static/") });
+    expect(svc.calls).toHaveLength(1);
+  });
+
+  it("chmod lỗi → stream xuất private: promise THẤT BẠI (lỗi chmod sớm lúc mở file không làm sập tiến trình)", async () => {
+    const svc = new FailingChmodService({}, { upload_dir: pub, private_upload_dir: priv });
+    const { writeStream, promise } = await svc.getUploadStream({
+      filename: "x.csv",
+      mimeType: "text/csv",
+      access: "private",
+    });
+    writeStream.end("a\n");
+    await expect(promise).rejects.toThrow(/EPERM/);
+    expect(svc.calls).toHaveLength(2); // sớm (lúc mở) + bắt buộc (khi xong)
+  });
+
+  it("stream xuất private: quyền 600 NGAY khi file được mở, trước khi ghi xong (xuất PII ghi lâu)", async () => {
+    const svc = make({ upload_dir: pub, private_upload_dir: priv });
+    const { writeStream, promise, fileKey } = await svc.getUploadStream({
+      filename: "x.csv",
+      mimeType: "text/csv",
+      access: "private",
+    });
+    writeStream.write("email\n");
+    const file = path.join(priv, fileKey);
+    let mode = -1;
+    for (let i = 0; i < 100 && mode !== 0o600; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      mode = await modeOf(file).catch(() => -1);
+    }
+    expect(writeStream.writableFinished).toBe(false);
+    expect(mode).toBe(0o600);
+    writeStream.end("khach@example.test\n");
+    await promise;
+  });
+
+  it("đường dẫn thật được GHIM lúc khởi động: đổi symlink về sau không đổi nơi ghi", async () => {
+    const vol1 = path.join(base, "vol1");
+    const vol2 = path.join(base, "vol2");
+    await mkdir(vol1, { mode: 0o700 });
+    await mkdir(vol2, { mode: 0o700 });
+    await symlink(vol1, priv);
+    const svc = make({ upload_dir: pub, private_upload_dir: priv });
+    await rm(priv);
+    await symlink(vol2, priv);
+    const res = await svc.upload({ filename: "x", mimeType: "text/csv", content: "a\n", access: "private" });
+    expect(await readdir(vol1)).toEqual([res.key]);
+    expect(await readdir(vol2)).toEqual([]);
+    expect((await svc.getAsBuffer({ fileKey: res.key })).toString("utf8")).toBe("a\n");
+  });
+});
+
+/** Re-review T-141 🟢1 (D-104): chủ sở hữu + quyền truy cập thư mục private lúc khởi động. */
+describe("preparePrivateDir — chủ sở hữu và quyền truy cập", () => {
+  let base: string;
+  let pub: string;
+  let priv: string;
+
+  beforeEach(async () => {
+    base = await mkdtemp(path.join(tmpdir(), "xshop-owner-"));
+    pub = path.join(base, "static");
+    priv = path.join(base, "private");
+  });
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  const realStat = (p: string) => statSync(p);
+  const system = (over: Partial<PrivateDirSystem> = {}): PrivateDirSystem => ({
+    geteuid: () => 1000,
+    stat: (p) => ({ ...realStat(p), isDirectory: () => realStat(p).isDirectory(), uid: 1000 }),
+    access: () => undefined,
+    platform: "linux",
+    ...over,
+  });
+
+  it("thuộc đúng user đang chạy, đọc/ghi/duyệt được → nhận, trả đường dẫn thật", () => {
+    expect(preparePrivateDir(pub, priv, system())).toBe(realpathSync(priv));
+  });
+
+  it("thư mục 700 thuộc user KHÁC (vd. điểm mount root, fsGroup) → từ chối lúc khởi động", () => {
+    const other = system({
+      stat: (p) => ({ ...realStat(p), isDirectory: () => true, mode: 0o40700, uid: 0 }),
+    });
+    expect(() => preparePrivateDir(pub, priv, other)).toThrow(/thuộc uid 0.*uid 1000/);
+  });
+
+  it("không có geteuid (vd. Windows) → bỏ qua kiểm chủ sở hữu", () => {
+    const noEuid = system({
+      geteuid: undefined,
+      stat: (p) => ({ ...realStat(p), isDirectory: () => true, mode: 0o40700, uid: 4242 }),
+    });
+    expect(() => preparePrivateDir(pub, priv, noEuid)).not.toThrow();
+  });
+
+  it("user chạy không đọc/ghi/duyệt được → từ chối; kiểm đủ R|W|X trên đường dẫn thật", () => {
+    const calls: Array<[string, number]> = [];
+    const denied = system({
+      access: (p, mode) => {
+        calls.push([p, mode]);
+        throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+      },
+    });
+    expect(() => preparePrivateDir(pub, priv, denied)).toThrow(/không đọc\/ghi\/duyệt được/);
+    expect(calls).toEqual([[realpathSync(priv), fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK]]);
+  });
+
+  it("thư mục thật của user hiện tại (không tiêm) → nhận", () => {
+    expect(preparePrivateDir(pub, priv)).toBe(realpathSync(priv));
+  });
+
+  it("thư mục thật thuộc uid khác (chown thật khi tiến trình là root) → từ chối", async () => {
+    await mkdir(priv, { mode: 0o700 });
+    const euid = process.geteuid?.() ?? -1;
+    // Root (môi trường agent/CI container): chown thật sang `nobody` (65534). Không phải root thì không chown được — ca
+    // tiêm stat ở trên đại diện; ở đây chỉ còn kiểm thư mục của chính mình được nhận.
+    const owner = euid === 0 ? 65534 : euid;
+    await chown(priv, owner, owner).catch(() => undefined);
+    const outcome = (() => {
+      try {
+        preparePrivateDir(pub, priv);
+        return "nhận";
+      } catch (err) {
+        return (err as Error).message;
+      }
+    })();
+    expect(outcome).toEqual(euid === 0 ? expect.stringMatching(/thuộc uid 65534/) : "nhận");
   });
 });

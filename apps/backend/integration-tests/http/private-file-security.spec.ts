@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readdirSync, readlinkSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -312,48 +321,65 @@ medusaIntegrationTestRunner({
         }
       });
 
-      it("client ngắt kết nối sớm (khi request còn ở cổng admin hoặc đang stream) → không rò fd trong thư mục private", async () => {
-        // Review T-141 🟠: `close` của response phát TRƯỚC khi route gắn listener → pipe vào response đã huỷ, Promise treo,
-        // fd mở mãi (tái hiện 3/10). Server test chạy trong cùng process → đếm fd qua /proc/self/fd.
-        const openFdsInto = (dir: string) =>
-          readdirSync("/proc/self/fd").filter((fd) => {
-            try {
-              return readlinkSync(`/proc/self/fd/${fd}`).startsWith(dir);
-            } catch {
-              return false;
-            }
-          }).length;
-        const ok = await get(fileUrl(privateKey), owner.headers);
-        expect(ok.status).toBe(200);
-        const baseline = openFdsInto(PRIVATE_DIR);
-        const delays = [0, 1, 2, 3, 5, 8, 12, 20, 30, 50, 0, 1, 2, 3, 5, 8, 12, 20, 30, 50];
-        for (const d of delays) {
-          await new Promise<void>((done) => {
-            const req = http.request({
-              host: base.hostname,
-              port: Number(base.port),
-              path: fileUrl(privateKey),
-              method: "GET",
-              headers: owner.headers,
+      // Đếm fd cần procfs (Linux — máy dev, CI ubuntu). Nền tảng không có /proc (macOS, Windows): bỏ qua CÓ LÝ DO thay vì
+      // xanh giả; trên Linux ca này luôn chạy và tự kiểm bộ đếm fd thấy được file trong thư mục private (bên dưới).
+      const HAS_PROCFS = existsSync("/proc/self/fd");
+      // Bỏ qua chỉ khi nền tảng không có /proc/self/fd (không đếm được fd) — `it.skip` có điều kiện, có lý do.
+      const itWithProcfs = HAS_PROCFS ? it : it.skip;
+      itWithProcfs(
+        "client ngắt kết nối sớm (khi request còn ở cổng admin hoặc đang stream) → không rò fd trong thư mục private",
+        async () => {
+          // Review T-141 🟠: `close` của response phát TRƯỚC khi route gắn listener → pipe vào response đã huỷ, Promise treo,
+          // fd mở mãi (tái hiện 3/10). Server test chạy trong cùng process → đếm fd qua /proc/self/fd.
+          const dirReal = realpathSync(PRIVATE_DIR);
+          const openFdsInto = (dir: string) =>
+            readdirSync("/proc/self/fd").filter((fd) => {
+              try {
+                return readlinkSync(`/proc/self/fd/${fd}`).startsWith(`${dir}/`);
+              } catch {
+                return false;
+              }
+            }).length;
+          // Bộ đếm phải THẤY fd mở vào thư mục private (đường dẫn thật) — không thì "0 rò" là xanh giả.
+          const probeBefore = openFdsInto(dirReal);
+          const probe = openSync(join(dirReal, privateKey), "r");
+          try {
+            expect(openFdsInto(dirReal)).toBe(probeBefore + 1);
+          } finally {
+            closeSync(probe);
+          }
+          const ok = await get(fileUrl(privateKey), owner.headers);
+          expect(ok.status).toBe(200);
+          const baseline = openFdsInto(dirReal);
+          const delays = [0, 1, 2, 3, 5, 8, 12, 20, 30, 50, 0, 1, 2, 3, 5, 8, 12, 20, 30, 50];
+          for (const d of delays) {
+            await new Promise<void>((done) => {
+              const req = http.request({
+                host: base.hostname,
+                port: Number(base.port),
+                path: fileUrl(privateKey),
+                method: "GET",
+                headers: owner.headers,
+              });
+              req.on("error", () => {});
+              req.on("response", (r) => r.resume());
+              req.end();
+              setTimeout(() => {
+                req.destroy();
+                done();
+              }, d);
             });
-            req.on("error", () => {});
-            req.on("response", (r) => r.resume());
-            req.end();
-            setTimeout(() => {
-              req.destroy();
-              done();
-            }, d);
-          });
-        }
-        let leaked = openFdsInto(PRIVATE_DIR) - baseline;
-        for (let i = 0; i < 30 && leaked > 0; i++) {
-          await new Promise((r) => setTimeout(r, 100));
-          leaked = openFdsInto(PRIVATE_DIR) - baseline;
-        }
-        expect({ leaked, of: delays.length }).toEqual({ leaked: 0, of: delays.length });
-        // Server vẫn phục vụ bình thường sau loạt ngắt kết nối.
-        expect((await get(fileUrl(privateKey), owner.headers)).body).toBe(CSV);
-      });
+          }
+          let leaked = openFdsInto(dirReal) - baseline;
+          for (let i = 0; i < 30 && leaked > 0; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            leaked = openFdsInto(dirReal) - baseline;
+          }
+          expect({ leaked, of: delays.length }).toEqual({ leaked: 0, of: delays.length });
+          // Server vẫn phục vụ bình thường sau loạt ngắt kết nối.
+          expect((await get(fileUrl(privateKey), owner.headers)).body).toBe(CSV);
+        },
+      );
     });
   },
 });

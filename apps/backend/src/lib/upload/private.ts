@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Permission } from "@x-shop/domain";
 
@@ -75,24 +75,60 @@ export function realpathLoose(p: string): string {
  *  1. rời thư mục công khai theo chữ (trước khi tạo gì trên đĩa);
  *  2. tạo nếu chưa có với quyền 700;
  *  3. rời thư mục công khai SAU KHI theo symlink (`realpath`) — symlink từ PRIVATE_UPLOAD_DIR vào `static/` bị từ chối;
- *  4. thư mục có sẵn mà mở cho group/other (bit 077) → từ chối, không tự `chmod` thư mục do người vận hành tạo.
- * Trả đường dẫn thật để provider ghi/đọc đúng nơi đã kiểm. Thông báo lỗi không chứa đường dẫn.
+ *  4. thư mục có sẵn mà mở cho group/other (bit 077) → từ chối, không tự `chmod` thư mục do người vận hành tạo;
+ *  5. thư mục phải THUỘC user đang chạy (euid) và user đó đọc/ghi/duyệt được (D-104) — thư mục 700 của user khác (điểm mount
+ *     root, `fsGroup`…) bị từ chối lúc khởi động thay vì lỗi ở lần xuất đầu tiên.
+ * Trả đường dẫn thật để provider ghi/đọc đúng nơi đã kiểm (ghim — đổi symlink về sau không đổi nơi ghi). Thông báo lỗi
+ * không chứa đường dẫn.
  */
-export function preparePrivateDir(publicDir: string, privateDir: string): string {
+export interface PrivateDirSystem {
+  /** `undefined` khi nền tảng không có khái niệm euid (Windows) → bỏ qua kiểm chủ sở hữu. */
+  geteuid: (() => number) | undefined;
+  stat: (p: string) => { isDirectory(): boolean; mode: number; uid: number };
+  /** Ném lỗi khi thiếu quyền (như `fs.accessSync`). */
+  access: (p: string, mode: number) => void;
+  platform: NodeJS.Platform;
+}
+
+const NODE_SYSTEM: PrivateDirSystem = {
+  geteuid: process.geteuid?.bind(process),
+  stat: (p) => statSync(p),
+  access: (p, mode) => accessSync(p, mode),
+  platform: process.platform,
+};
+
+export function preparePrivateDir(
+  publicDir: string,
+  privateDir: string,
+  system: PrivateDirSystem = NODE_SYSTEM,
+): string {
   const lexical = privateDirProblem(publicDir, privateDir);
   if (lexical !== null) throw new Error(`File provider local: private_upload_dir ${lexical}`);
   mkdirSync(privateDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   const real = realpathSync(privateDir);
-  const st = statSync(real);
+  const st = system.stat(real);
   if (!st.isDirectory()) throw new Error("File provider local: private_upload_dir không phải thư mục");
   const resolved = privateDirProblem(realpathLoose(publicDir), real);
   if (resolved !== null) {
     throw new Error(`File provider local: private_upload_dir (sau khi theo symlink) ${resolved}`);
   }
-  if (process.platform !== "win32" && (st.mode & 0o077) !== 0) {
+  if (system.platform !== "win32" && (st.mode & 0o077) !== 0) {
     throw new Error(
       `File provider local: private_upload_dir mở quyền cho group/other (${(st.mode & 0o777).toString(8)}) — chmod 700`,
     );
+  }
+  if (system.geteuid !== undefined) {
+    const euid = system.geteuid();
+    if (st.uid !== euid) {
+      throw new Error(
+        `File provider local: private_upload_dir thuộc uid ${st.uid}, không phải user chạy backend (uid ${euid}) — chown`,
+      );
+    }
+  }
+  try {
+    system.access(real, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK);
+  } catch {
+    throw new Error("File provider local: private_upload_dir không đọc/ghi/duyệt được bởi user chạy backend");
   }
   return real;
 }

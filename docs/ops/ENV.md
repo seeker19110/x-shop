@@ -56,9 +56,17 @@ STOREFRONT_URL=https://shop.example.vn
 # Đổi thư mục = file cũ không còn tải được (chuyển file sang thư mục mới trước). Server và worker phải thấy CÙNG thư mục
 # (worker ghi file xuất, server phục vụ) — nhiều máy: dùng chung volume hoặc chờ kho S3-compatible (T-154).
 # Nâng cấp từ bản trước T-141: file `static/private-*` cũ VẪN công khai — chuyển sang thư mục này rồi xoá khỏi `static/`.
-# Lúc khởi động provider: chưa có → tạo với quyền 700; có sẵn mà mở quyền group/other → TỪ CHỐI khởi động (không tự chmod —
-# sửa bằng `chmod 700`); kiểm rời `static/` cả sau khi theo symlink (`realpath`). File private ghi ra quyền 600. Thư mục
-# dev cũ tạo trước bản này có thể là 755 → `chmod 700 apps/backend/private-uploads` (hoặc xoá).
+# Lúc khởi động provider: chưa có → tạo với quyền 700; có sẵn mà mở quyền group/other, KHÔNG thuộc user chạy backend
+# (euid), hoặc user đó không đọc/ghi/duyệt được → TỪ CHỐI khởi động (không tự chmod/chown — sửa `chmod 700`/`chown`); kiểm
+# rời `static/` cả sau khi theo symlink (`realpath`), đường dẫn thật được ghim lúc khởi động. File private ghi ra quyền 600.
+# Thư mục dev cũ tạo trước bản này có thể là 755 → `chmod 700 apps/backend/private-uploads` (hoặc xoá).
+# Triển khai: MỌI tiến trình dựng File Module phải thấy cùng volume và cùng giá trị biến — server, worker, script
+# `medusa exec` (`seed`, `seed:catalog`, `rbac:grant-owner`, `catalog:reindex`) và cả `medusa db:migrate` (đã kiểm
+# 2026-10-27 qua `pnpm check:schema`: migrate dựng provider và tạo thư mục). Thiếu volume ở job migrate/script → thư mục
+# bị tạo trên đĩa tạm của container (vô hại nhưng gây nhầm) hoặc lỗi quyền làm job dừng.
+# Trỏ biến vào THƯ MỤC CON trong volume (vd. volume gắn ở `/var/lib/xshop`, biến = `/var/lib/xshop/private-uploads`) để
+# provider tự tạo với quyền 700 và đúng chủ. KHÔNG trỏ thẳng vào điểm mount: điểm mount Docker thường thuộc root quyền 755,
+# volume Kubernetes có `fsGroup` mở quyền group (2770/775) → backend từ chối khởi động.
 PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # Tùy chọn
 # MEDUSA_BACKEND_URL=http://localhost:9000

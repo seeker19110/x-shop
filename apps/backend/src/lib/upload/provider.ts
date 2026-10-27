@@ -48,7 +48,13 @@ export class ServerKeyedLocalFileService extends LocalFileService {
    * lớp thứ hai khi thư mục bị nới quyền về sau. Lỗi chmod → thao tác ghi thất bại (không để file quyền rộng mà báo thành công).
    */
   private async restrict(key: string): Promise<void> {
-    if (this.isPrivateKey(key)) await chmod(path.join(this.privateUploadDir_, key), PRIVATE_FILE_MODE);
+    if (this.isPrivateKey(key))
+      await this.chmodFile(path.join(this.privateUploadDir_, key), PRIVATE_FILE_MODE);
+  }
+
+  /** Điểm tiêm cho test (chmod lỗi → thao tác ghi phải thất bại). */
+  protected chmodFile(filePath: string, mode: number): Promise<void> {
+    return chmod(filePath, mode);
   }
 
   /** URL công khai giữ nguyên; file private → route admin. */
