@@ -39,6 +39,19 @@ export const RETRYABLE_CODES: readonly CheckoutErrorCode[] = [
   "LOCK_UNAVAILABLE",
 ];
 
+/**
+ * Mã lỗi TẠM của checkout cho job/outbox (T-093): RETRYABLE_CODES + thanh toán đang chờ, bị giới hạn tần suất, lỗi nội
+ * bộ chưa rõ. Mã khác (validate, hết hàng, không huỷ được…) là quyết định nghiệp vụ — thử lại không đổi kết quả.
+ */
+export function isTransientCheckoutCode(code: CheckoutErrorCode): boolean {
+  return (
+    RETRYABLE_CODES.includes(code) ||
+    code === "PAYMENT_PENDING" ||
+    code === "RATE_LIMITED" ||
+    code === "INTERNAL"
+  );
+}
+
 /** Giây gợi ý chờ trước khi gửi lại khi hạ tầng khóa (Redis) mất — đặc tả §13.2 "tạm dừng checkout cần giữ tồn". */
 export const LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS = 60;
 

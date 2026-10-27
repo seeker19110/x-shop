@@ -9,6 +9,8 @@
  * Hàm thuần — không đọc đồng hồ/RNG toàn cục khi caller đã tiêm.
  */
 
+import { isTransientCheckoutCode, readCheckoutError } from "../checkout/errors";
+
 /** RNG trả số trong [0, 1). Tiêm vào để test tất định; mặc định `Math.random`. */
 export type Random = () => number;
 
@@ -102,25 +104,48 @@ const numberProp = (o: Record<string, unknown>, k: string): number | null => {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 };
 
+/** Lỗi nội bộ của dự án/Medusa: `status` của chúng là mã trả cho client của TA, không phải phản hồi của bên ngoài. */
+const INTERNAL_ERROR_NAMES = new Set(["CheckoutError", "ShippingError", "GhnError", "MedusaError"]);
+
+/**
+ * Quyết định vĩnh viễn/tạm của MỘT tầng lỗi, theo thứ tự ưu tiên (null = tầng này không nói gì, xét tầng `cause`):
+ *  1. `PermanentError`, hoặc lỗi tự khai cờ `permanent` kiểu boolean (GhnError, ShippingError…) → theo cờ;
+ *  2. CheckoutError (kể cả bản đã tuần tự hoá qua workflow) → theo mã (`isTransientCheckoutCode`);
+ *  3. `ZodError` → vĩnh viễn (validate);
+ *  4. CHỈ lỗi đại diện phản hồi HTTP của bên ngoài (không thuộc lớp lỗi nội bộ) mới suy từ `status`/`statusCode`:
+ *     4xx không phải 408/429 → vĩnh viễn; 408/429/5xx → tạm.
+ */
+function decidePermanent(cur: object): boolean | null {
+  if (cur instanceof PermanentError) return true;
+  const o = cur as Record<string, unknown>;
+  if (typeof o.permanent === "boolean") return o.permanent;
+  const checkout = readCheckoutError(cur);
+  if (checkout) return !isTransientCheckoutCode(checkout.code);
+  if (o.name === "ZodError") return true;
+  if (typeof o.name === "string" && INTERNAL_ERROR_NAMES.has(o.name)) return null;
+  const status = numberProp(o, "status") ?? numberProp(o, "statusCode");
+  if (status === null) return null;
+  if (isPermanentStatus(status)) return true;
+  return isTransientStatus(status) ? false : null;
+}
+
 /**
  * Phân loại một lỗi bất kỳ ném từ bộ xử lý job/outbox, đi theo chuỗi `cause` (tối đa 5 tầng — adapter bọc lỗi để che PII
- * vẫn giữ được mã gốc): `PermanentError`, `ZodError`, cờ `permanent === true`, hoặc `status`/`statusCode` 4xx không phải
- * 408/429 → vĩnh viễn. `retryAfterMs` (số hữu hạn ≥ 0) ở bất kỳ tầng nào → yêu cầu chờ. Còn lại: tạm thời.
+ * vẫn giữ được mã gốc). Tầng NÔNG NHẤT có quyết định thắng (`decidePermanent`); không tầng nào quyết → tạm thời.
+ * `retryAfterMs` (số hữu hạn ≥ 0) lấy ở tầng nông nhất có giá trị hợp lệ.
  */
 export function retryInfoOf(error: unknown): RetryInfo {
-  let permanent = false;
+  let permanent: boolean | null = null;
   let retryAfterMs: number | null = null;
   let cur: unknown = error;
   for (let depth = 0; depth < 5 && typeof cur === "object" && cur !== null; depth++) {
     const o = cur as Record<string, unknown>;
-    if (cur instanceof PermanentError || o.name === "ZodError" || o.permanent === true) permanent = true;
-    const status = numberProp(o, "status") ?? numberProp(o, "statusCode");
-    if (status !== null && isPermanentStatus(status)) permanent = true;
+    permanent ??= decidePermanent(cur);
     const after = numberProp(o, "retryAfterMs");
     if (retryAfterMs === null && after !== null && after >= 0) retryAfterMs = after;
     cur = o.cause;
   }
-  return { permanent, retryAfterMs };
+  return { permanent: permanent ?? false, retryAfterMs };
 }
 
 /* ---------------------------------------------------------------- retry phía dịch vụ (BE-REL-003) */
@@ -135,7 +160,8 @@ export interface RetryPolicy extends BackoffPolicy {
 /**
  * Quyết định của caller cho một lỗi:
  *  - `{ retry: false }` — vĩnh viễn, hoặc tạm thời nhưng không nên thử ngay (429 không kèm `Retry-After`);
- *  - `processed: "no"` — chắc chắn bên kia chưa xử lý (429 kèm `Retry-After`) → retry được cả thao tác không idempotent;
+ *  - `processed: "no"` — bên kia chưa xử lý (429 kèm `Retry-After`, theo RFC 6585 §4; từng vendor: chưa xác minh)
+ *    → retry được cả thao tác không idempotent;
  *  - `processed: "maybe"` — timeout/5xx/lỗi mạng → chỉ retry thao tác idempotent.
  */
 export type RetryDecision =

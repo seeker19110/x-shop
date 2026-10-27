@@ -11,6 +11,9 @@ import {
   type RetryPolicy,
 } from "../retry";
 import { OUTBOX_POLICY, outboxBackoffMs, outboxNextDelayMs } from "../policy";
+import { CheckoutError } from "../../checkout/errors";
+import { GhnError } from "../../shipping/ghn-client";
+import { ShippingError } from "../../shipping/shipments";
 
 /**
  * T-093 — ARC-RES-002, BE-JOB-003, BE-REL-003: hàm delay (mũ, jitter, trần), Retry-After, phân loại lỗi, retry phía dịch
@@ -195,6 +198,76 @@ describe("phân loại lỗi — vĩnh viễn vs tạm thời", () => {
     const loop: Record<string, unknown> = { message: "vòng" };
     loop.cause = loop;
     expect(retryInfoOf(loop)).toEqual({ permanent: false, retryAfterMs: null });
+  });
+
+  it("retryInfoOf: retryAfterMs ở cả hai tầng → tầng nông nhất thắng; tầng nông âm → lấy tầng sâu hợp lệ", () => {
+    const inner = Object.assign(new Error("vendor 429"), { status: 429, retryAfterMs: 600_000 });
+    const outer = Object.assign(new Error("bọc", { cause: inner }), { retryAfterMs: 5_000 });
+    expect(retryInfoOf(outer)).toEqual({ permanent: false, retryAfterMs: 5_000 });
+    const badOuter = Object.assign(new Error("bọc", { cause: inner }), { retryAfterMs: -1 });
+    expect(retryInfoOf(badOuter).retryAfterMs).toBe(600_000);
+  });
+});
+
+describe("retryInfoOf — lỗi nội bộ của dự án không bị suy từ `status` (review T-093)", () => {
+  it("CheckoutError theo mã: BUSY_RETRY/PAYMENT_PENDING/LOCK_UNAVAILABLE/SHIPPING_UNAVAILABLE/RATE_LIMITED/INTERNAL tạm; mã nghiệp vụ vĩnh viễn", () => {
+    for (const code of [
+      "BUSY_RETRY",
+      "PAYMENT_PENDING",
+      "LOCK_UNAVAILABLE",
+      "SHIPPING_UNAVAILABLE",
+      "RATE_LIMITED",
+      "INTERNAL",
+    ] as const) {
+      expect(retryInfoOf(new CheckoutError(code))).toEqual({ permanent: false, retryAfterMs: null });
+      // Bọc qua `cause` (vd adapter che PII) vẫn giữ quyết định.
+      expect(retryInfoOf(new Error("bọc", { cause: new CheckoutError(code) })).permanent).toBe(false);
+    }
+    for (const code of ["VALIDATION", "INSUFFICIENT_STOCK", "NOT_CANCELLABLE", "NOT_FOUND"] as const) {
+      expect(retryInfoOf(new CheckoutError(code)).permanent).toBe(true);
+      expect(retryInfoOf(new Error("bọc", { cause: new CheckoutError(code) })).permanent).toBe(true);
+    }
+  });
+
+  it("ShippingError theo cờ: BUSY_RETRY/PROVIDER_UNAVAILABLE/FULFILLMENT_BLOCKED tạm; PROVIDER_REJECTED/VALIDATION vĩnh viễn", () => {
+    for (const code of ["BUSY_RETRY", "PROVIDER_UNAVAILABLE", "FULFILLMENT_BLOCKED"] as const) {
+      const e = new ShippingError(code, "x");
+      expect(e.permanent).toBe(false);
+      expect(retryInfoOf(e).permanent).toBe(false);
+      expect(retryInfoOf(new Error("bọc", { cause: e })).permanent).toBe(false);
+    }
+    for (const code of ["PROVIDER_REJECTED", "VALIDATION", "NOT_FOUND"] as const) {
+      expect(retryInfoOf(new ShippingError(code, "x")).permanent).toBe(true);
+    }
+  });
+
+  it("GhnError unavailable 401/403 tự khai permanent=false → tạm, kể cả bọc qua cause; rejected → vĩnh viễn", () => {
+    for (const status of [401, 403, 429, 503]) {
+      const e = new GhnError("unavailable", "x", { status });
+      expect(e.permanent).toBe(false);
+      expect(retryInfoOf(e).permanent).toBe(false);
+      expect(retryInfoOf(new Error("bọc", { cause: e })).permanent).toBe(false);
+    }
+    expect(retryInfoOf(new GhnError("rejected", "x", { status: 400 })).permanent).toBe(true);
+    expect(retryInfoOf(new Error("bọc", { cause: new GhnError("not_served", "x") })).permanent).toBe(true);
+  });
+
+  it("cờ permanent boolean thắng status; tầng nông nhất có quyết định thắng tầng sâu", () => {
+    expect(retryInfoOf(Object.assign(new Error("x"), { status: 400, permanent: false })).permanent).toBe(
+      false,
+    );
+    expect(retryInfoOf(Object.assign(new Error("x"), { status: 503, permanent: true })).permanent).toBe(true);
+    // Lỗi HTTP bên ngoài 503 bọc một 422 sâu hơn → tầng nông (503, tạm) quyết.
+    const deep = Object.assign(new Error("422"), { status: 422 });
+    expect(retryInfoOf(Object.assign(new Error("503", { cause: deep }), { status: 503 })).permanent).toBe(
+      false,
+    );
+    // Tầng nông không nói gì (Error thường) → tầng sâu quyết.
+    expect(retryInfoOf(new Error("bọc", { cause: deep })).permanent).toBe(true);
+    // Lớp lỗi nội bộ không có cờ/mã nhận dạng được → không suy từ status (không thành vĩnh viễn nhầm).
+    expect(retryInfoOf(Object.assign(new Error("x"), { name: "MedusaError", status: 400 })).permanent).toBe(
+      false,
+    );
   });
 });
 

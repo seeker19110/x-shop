@@ -445,7 +445,9 @@ medusaIntegrationTestRunner({
         expect(first.status).toBe(400);
         expect(first.headers["retry-after"]).toBeUndefined();
         let limited: Res<Record<string, unknown>> | null = null;
-        for (let i = 0; i < 400 && !limited; i += 50) {
+        // Cửa sổ cố định 10 s của route bắt đầu từ callback ĐẦU TIÊN của file (không reset được từ ngoài): đợt dội có thể
+        // vắt qua ranh giới cửa sổ. Gửi tới 700 (≥ 2·300 + 1) → dù vắt qua một ranh giới, một cửa sổ vẫn nhận > 300.
+        for (let i = 0; i < 700 && !limited; i += 50) {
           const batch = await Promise.all(Array.from({ length: 50 }, () => callback({ OrderCode: "x" })));
           limited = batch.find((r) => r.status === 429) ?? null;
         }

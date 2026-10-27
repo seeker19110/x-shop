@@ -64,6 +64,15 @@ export class ShippingError extends Error {
     super(message);
     this.status = STATUS[code];
   }
+
+  /** Cho job/outbox (T-093): khoá bận, hãng tạm sập, chưa ghi nhận xuất kho được (gọi lại an toàn) là lỗi tạm. */
+  get permanent(): boolean {
+    return !(
+      this.code === "BUSY_RETRY" ||
+      this.code === "PROVIDER_UNAVAILABLE" ||
+      this.code === "FULFILLMENT_BLOCKED"
+    );
+  }
 }
 
 type AuditCtx = Pick<AuditEntryInput, "actor_type" | "actor_id" | "request_id" | "ip_hash">;

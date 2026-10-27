@@ -20,9 +20,10 @@ import { getGhnConfig, GHN_RETRY_POLICY, SHIPPING_CONFIG, type GhnRuntimeConfig 
  *
  * Retry phía dịch vụ (T-093 — BE-REL-003, BE-INT-007): `withRetry` tối đa 3 lần, backoff mũ + full jitter, trần tổng
  * thời gian chờ (`GHN_RETRY_POLICY`), tôn trọng `Retry-After`. Thao tác idempotent (báo phí, tra cứu) retry lỗi tạm
- * (5xx/408/lỗi mạng/429 có `Retry-After`); tạo/hủy vận đơn (không idempotent) CHỈ retry 429 có `Retry-After` (hãng chắc
- * chắn chưa xử lý) — timeout không retry tự động mà tra lại theo client_order_code (S-303). 401/403 (sai token) và 429
- * không kèm `Retry-After` không retry ngay.
+ * (5xx/408/lỗi mạng/429 có `Retry-After`); tạo/hủy vận đơn (không idempotent) CHỈ retry 429 có `Retry-After` — coi là
+ * hãng chưa xử lý theo ngữ nghĩa RFC 6585 §4; hành vi thật của GHN với 429 (chưa xác minh — docs/research mục 7).
+ * Timeout không retry tự động mà tra lại theo client_order_code (S-303). 401/403 (sai token) và 429 không kèm
+ * `Retry-After` không retry ngay.
  *
  * Idempotency-Key: tài liệu GHN đã nghiên cứu (docs/research/2026-10-24-stack.md mục 7) KHÔNG nêu header idempotency nào
  * → KHÔNG gửi `Idempotency-Key` (không bịa header). Khoá idempotency tự nhiên là `client_order_code` = `<display_ref>-S1`

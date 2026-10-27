@@ -279,9 +279,12 @@ export async function dispatchOutbox(
     handlers?: Record<string, OutboxHandler>;
     /** RNG cho jitter (test tiêm để tất định). */
     random?: Random;
+    /** Đồng hồ khi không tiêm `now` (mặc định giờ thật) — test tiêm để mô phỏng lượt chạy dài. */
+    clock?: () => Date;
   } = {},
 ): Promise<DispatchSummary> {
-  const now = opts.now ?? new Date();
+  const clock = opts.clock ?? (() => new Date());
+  const now = opts.now ?? clock();
   const s = service(container);
   const handlers = { ...DEFAULT_OUTBOX_HANDLERS, ...opts.handlers };
   const summary: DispatchSummary = { sent: [], retried: [], dead: [] };
@@ -330,7 +333,9 @@ export async function dispatchOutbox(
         await markDead(event, message, "max_attempts");
       } else {
         const delay = outboxNextDelayMs(failed, info.retryAfterMs, opts.random);
-        await s.markOutboxFailed(event.id, message, new Date(now.getTime() + delay));
+        // Hẹn tính từ LÚC LỖI (không phải đầu lượt): lượt dài vẫn chờ đủ Retry-After/backoff. `now` tiêm → mốc cố định.
+        const failedAt = opts.now ?? clock();
+        await s.markOutboxFailed(event.id, message, new Date(failedAt.getTime() + delay));
         summary.retried.push(event.event_key);
       }
     }
