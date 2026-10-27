@@ -811,3 +811,17 @@
 - Chọn: Tách task mới T-163 (CI chạy test tích hợp của base trên schema của HEAD); T-102 chỉ đóng DB-MIG-001/003/008 phần CI
 - Lý do (tiêu chí chất lượng cuối): (3) lát nhỏ, đảo ngược được; job gate đã ~26/30 phút nên cần đo/thiết kế job riêng; T-102 đã đủ lớn
 - Đường lùi: Gộp T-163 vào T-102
+
+### D-116 · 2026-10-27T20:10:56+00:00 · T-161: đơn quá hạn khi breaker querydr mở; ngân sách querydr; trần lookup
+
+- Phương án: (1) Giữ như unknown (không hủy khi chưa xác minh), ngân sách querydr 144000/ngày, lookup 1000 trong 3000 · (2) Bỏ qua không đổi trạng thái; ngân sách mặc định 10000 · (3) Hủy sau hạn cứng rồi hoàn qua late_payment
+- Chọn: Giữ như unknown (không hủy khi chưa xác minh), ngân sách querydr 144000/ngày, lookup 1000 trong 3000
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: hủy chưa xác minh biến IPN lạc thành hoàn tiền, trái RUNBOOK §1; querydr không tính phí theo lượt, ngân sách 10000 bị nghẽn đầu hàng đốt hết sau ~100 phút rồi đóng băng hủy cả ngày; lookup cần ≥9 cặp mã đơn+SĐT thật mới đốt hết 1000 (rate limit 5/giờ/SĐT)
+- Đường lùi: Sửa OUTBOX_BREAKER_POLICY / subBudgets
+
+### D-117 · 2026-10-27T20:10:56+00:00 · T-142: CATALOG_REVALIDATE_URLS ở production
+
+- Phương án: (1) Chỉ https (URL nội bộ từng bản storefront cần TLS) · (2) Cho phép http với host mạng riêng/loopback (HMAC giữ toàn vẹn)
+- Chọn: Chỉ https (URL nội bộ từng bản storefront cần TLS)
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn: phân loại mạng riêng dễ sai (DNS, IPv6, proxy), thân webhook lộ danh sách sản phẩm đổi; (2) đường lùi rẻ nếu vận hành không dựng được TLS
+- Đường lùi: Nới schema env cho http + host private
