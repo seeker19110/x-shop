@@ -100,11 +100,15 @@ module.exports = defineConfig({
       },
     },
     // File Module: provider local bọc lại — tên lưu `<ULID><đuôi theo MIME>` do server sinh, không dùng tên client
-    // (BE-FILE-003, T-100). Thay mặc định `@medusajs/medusa/file-local` của defineConfig.
+    // (BE-FILE-003, T-100). Thay mặc định `@medusajs/medusa/file-local` của defineConfig. File private (xuất PII, chunk
+    // nhập) ở PRIVATE_UPLOAD_DIR — ngoài `static/` công khai — và chỉ tải qua GET /admin/x/files/:key (T-141). Ảnh công
+    // khai giữ `static/` + URL `/static/…` mặc định.
     {
       resolve: "@medusajs/medusa/file",
       options: {
-        providers: [{ resolve: "./src/lib/upload", id: "local" }],
+        providers: [
+          { resolve: "./src/lib/upload", id: "local", options: { private_upload_dir: env.privateUploadDir } },
+        ],
       },
     },
     // Module tùy biến: checkout attempt, idempotency, quote, ledger, inbox/outbox, ngoại lệ (docs/design/checkout-flow.md).

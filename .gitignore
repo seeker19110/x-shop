@@ -15,4 +15,6 @@ playwright-report/
 test-results/
 .claude/worktrees/
 docs/ops/perf/*-latest.json
+# File private của provider local khi dev/test (PRIVATE_UPLOAD_DIR mặc định — T-141): xuất PII, không commit.
+apps/backend/private-uploads/
 __pycache__/

@@ -1,7 +1,14 @@
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { extensionForMime, generateUploadKey, ULID_PATTERN, UPLOAD_MIME_EXTENSIONS } from "../key";
+import {
+  extensionForMime,
+  generateUploadKey,
+  isPrivateFileKey,
+  mimeForFileKey,
+  ULID_PATTERN,
+  UPLOAD_MIME_EXTENSIONS,
+} from "../key";
 import { ServerKeyedLocalFileService } from "../provider";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
@@ -203,5 +210,208 @@ describe("ServerKeyedLocalFileService", () => {
     const keys = results.map((r) => r.key);
     expect(new Set(keys).size).toBe(50);
     expect((await readdir(pub)).sort()).toEqual([...keys].sort());
+  });
+});
+
+/**
+ * T-141 (BE-FILE-005, hỗ trợ BE-FILE-004): file private nằm ngoài thư mục công khai `static/`, chỉ tải qua route admin có
+ * xác thực + phân quyền `GET /admin/x/files/:key`. URL do provider trả cho file private trỏ về route đó, không về `/static`.
+ */
+describe("isPrivateFileKey / mimeForFileKey (khoá file private hợp lệ — chống path traversal + chống đoán)", () => {
+  const ULID = "01J9ZQ8Y3M4N5P6Q7R8S9T0VWX";
+  const OK = `private-1730000000000-${ULID}.csv`;
+
+  it.each([
+    [OK, "text/csv"],
+    [`private-1730000000000-${ULID}.json`, "application/json"],
+    [`private-1730000000000-${ULID}.png`, "image/png"],
+    [`private-1730000000000-${ULID}.jpg`, "image/jpeg"],
+  ])("%p hợp lệ → %p", (key, mime) => {
+    expect(isPrivateFileKey(key)).toBe(true);
+    expect(mimeForFileKey(key)).toBe(mime);
+  });
+
+  it.each([
+    "",
+    " ",
+    undefined,
+    null,
+    42,
+    `1730000000000-${ULID}.png`, // file công khai
+    `private-1730000000000-${ULID}`, // thiếu đuôi
+    `private-1730000000000-${ULID}.CSV`,
+    `private-1730000000000-${ULID}.html`,
+    `private-1730000000000-${ULID}.csv.html`,
+    `private-1730000000000-${ULID}.csv/`,
+    `private-1730000000000-${ULID.toLowerCase()}.csv`,
+    `private-1730000000000-${ULID.slice(1)}.csv`,
+    `private-173000000000-${ULID}.csv`, // 12 chữ số
+    `private-1730000000000-${ULID}.csv\u0000`,
+    `private-1730000000000-${ULID}.csv\n`,
+    `../private-1730000000000-${ULID}.csv`,
+    `private-1730000000000-${ULID}/../../../etc/passwd`,
+    "private-../../etc/passwd",
+    "../../etc/passwd",
+    "/etc/passwd",
+    "..\\..\\windows\\win.ini",
+    `%2e%2e%2fprivate-1730000000000-${ULID}.csv`,
+    `sub/private-1730000000000-${ULID}.csv`,
+    `private-1730000000000-${"I".repeat(26)}.csv`, // I/L/O/U không thuộc Crockford base32
+  ])("%p → không phải khoá private", (key) => {
+    expect(isPrivateFileKey(key)).toBe(false);
+  });
+
+  it("khoá do chính provider sinh luôn khớp mẫu (1000 lần)", () => {
+    for (let i = 0; i < 1000; i++) {
+      expect(isPrivateFileKey(`private-${Date.now()}-${generateUploadKey("text/csv")}`)).toBe(true);
+    }
+  });
+
+  it("mimeForFileKey: đuôi ngoài allowlist → null", () => {
+    expect(mimeForFileKey("x.html")).toBeNull();
+    expect(mimeForFileKey("x")).toBeNull();
+    expect(mimeForFileKey(undefined)).toBeNull();
+  });
+});
+
+describe("ServerKeyedLocalFileService — thư mục private tách khỏi webroot (T-141)", () => {
+  let base: string;
+  let pub: string;
+  let priv: string;
+
+  beforeEach(async () => {
+    base = await mkdtemp(path.join(tmpdir(), "xshop-private-"));
+    pub = path.join(base, "static");
+    priv = path.join(base, "private");
+  });
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  const make = (opts: Record<string, unknown>) => new ServerKeyedLocalFileService({}, opts);
+
+  it("thiếu private_upload_dir → từ chối khởi tạo (mặc định của Medusa là `static/` công khai)", () => {
+    expect(() => make({ upload_dir: pub })).toThrow(/private_upload_dir/);
+    expect(() => make({ upload_dir: pub, private_upload_dir: "" })).toThrow(/private_upload_dir/);
+    expect(() => make({ upload_dir: pub, private_upload_dir: "   " })).toThrow(/private_upload_dir/);
+  });
+
+  it.each([
+    ["trùng thư mục công khai", (p: string) => p],
+    ["nằm trong thư mục công khai", (p: string) => path.join(p, "private")],
+    ["nằm trong thư mục công khai (qua `..`)", (p: string) => path.join(p, "a", "..", "b")],
+    ["chứa thư mục công khai", (p: string) => path.dirname(p)],
+  ])("private_upload_dir %s → từ chối khởi tạo", (_label, privOf) => {
+    expect(() => make({ upload_dir: pub, private_upload_dir: privOf(pub) })).toThrow(/private_upload_dir/);
+  });
+
+  it("không có upload_dir: thư mục công khai mặc định `<cwd>/static` cũng được đối chiếu", () => {
+    expect(() => make({ private_upload_dir: path.join(process.cwd(), "static", "private") })).toThrow(
+      /private_upload_dir/,
+    );
+    expect(() => make({ private_upload_dir: priv })).not.toThrow();
+  });
+
+  it("upload private → file trong thư mục private (không có trong `static/`), URL trỏ route admin có kiểm quyền", async () => {
+    const svc = make({
+      upload_dir: pub,
+      private_upload_dir: priv,
+      backend_url: "http://localhost:9000/static",
+    });
+    const res = await svc.upload({
+      filename: "khach-hang.csv",
+      mimeType: "text/csv",
+      content: "email\nkhach@example.test\n",
+      access: "private",
+    });
+    expect(isPrivateFileKey(res.key)).toBe(true);
+    expect(res.url).toBe(`http://localhost:9000/admin/x/files/${res.key}`);
+    expect(res.url).not.toContain("/static");
+    expect(await readdir(base)).toEqual(["private"]);
+    expect(await readdir(priv)).toEqual([res.key]);
+  });
+
+  it("upload công khai giữ nguyên hành vi: `static/` + URL `/static/<khoá>`", async () => {
+    const svc = make({
+      upload_dir: pub,
+      private_upload_dir: priv,
+      backend_url: "http://localhost:9000/static",
+    });
+    const res = await svc.upload({
+      filename: "a.png",
+      mimeType: "image/png",
+      content: PNG.toString("base64"),
+      access: "public",
+    });
+    expect(res.url).toBe(`http://localhost:9000/static/${res.key}`);
+    expect(await svc.getPresignedDownloadUrl({ fileKey: res.key })).toBe(res.url);
+  });
+
+  it("getPresignedDownloadUrl: private → route admin (không /static); không tồn tại → NOT_FOUND", async () => {
+    const svc = make({
+      upload_dir: pub,
+      private_upload_dir: priv,
+      backend_url: "https://api.example.vn/static",
+    });
+    const res = await svc.upload({ filename: "x", mimeType: "text/csv", content: "a\n", access: "private" });
+    expect(await svc.getPresignedDownloadUrl({ fileKey: res.key })).toBe(
+      `https://api.example.vn/admin/x/files/${res.key}`,
+    );
+    await svc.delete({ fileKey: res.key });
+    await expect(svc.getPresignedDownloadUrl({ fileKey: res.key })).rejects.toThrow(/not found/i);
+  });
+
+  it("getUploadStream private (xuất CSV/JSON native) → URL và kết quả promise đều trỏ route admin", async () => {
+    const svc = make({
+      upload_dir: pub,
+      private_upload_dir: priv,
+      backend_url: "http://localhost:9000/static",
+    });
+    const { writeStream, promise, fileKey, url } = await svc.getUploadStream({
+      filename: "1730000000000-customer-exports.json",
+      mimeType: "application/json",
+      access: "private",
+    });
+    writeStream.end("[]");
+    const done = await promise;
+    expect(url).toBe(`http://localhost:9000/admin/x/files/${fileKey}`);
+    expect(done).toEqual({ key: fileKey, url });
+    expect(await readdir(priv)).toEqual([fileKey]);
+  });
+
+  it("getUploadStream không khai `access` (mặc định của workflow xuất Medusa) → private", async () => {
+    const svc = make({ upload_dir: pub, private_upload_dir: priv });
+    const { writeStream, promise, fileKey } = await svc.getUploadStream({
+      filename: "x.csv",
+      mimeType: "text/csv",
+    });
+    writeStream.end("a\n");
+    await promise;
+    expect(isPrivateFileKey(fileKey)).toBe(true);
+    expect(await readdir(base)).toEqual(["private"]);
+  });
+
+  it("đồng thời: 30 upload private + 30 công khai → mỗi loại đúng thư mục, URL đúng loại", async () => {
+    const svc = make({
+      upload_dir: pub,
+      private_upload_dir: priv,
+      backend_url: "http://localhost:9000/static",
+    });
+    const results = await Promise.all(
+      Array.from({ length: 60 }, (_, i) =>
+        svc.upload({
+          filename: "../../etc/passwd",
+          mimeType: i % 2 ? "text/csv" : "image/png",
+          content: i % 2 ? `a\n${i}\n` : PNG.toString("base64"),
+          access: i % 2 ? "private" : "public",
+        }),
+      ),
+    );
+    const priv30 = results.filter((_, i) => i % 2);
+    const pub30 = results.filter((_, i) => !(i % 2));
+    expect((await readdir(priv)).sort()).toEqual(priv30.map((r) => r.key).sort());
+    expect((await readdir(pub)).sort()).toEqual(pub30.map((r) => r.key).sort());
+    for (const r of priv30) expect(r.url).toBe(`http://localhost:9000/admin/x/files/${r.key}`);
+    for (const r of pub30) expect(r.url).toBe(`http://localhost:9000/static/${r.key}`);
   });
 });

@@ -37,6 +37,34 @@ export function extensionForMime(mimeType: unknown): string | null {
 /** ULID Crockford base32, 26 ký tự. */
 export const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
+/** Tiền tố khoá file private của provider local Medusa (`delete`/`getAsBuffer`… chọn thư mục theo tiền tố này). */
+export const PRIVATE_KEY_PREFIX = "private-";
+
+/**
+ * Khoá file private ĐÚNG như provider này sinh (T-141): `private-<Date.now() 13 chữ số>-<ULID><đuôi trong allowlist>`.
+ * Một đoạn duy nhất — không `/`, `\`, `..`, ký tự điều khiển, chữ thường/hoa lẫn lộn — nên không thể trỏ ra ngoài thư mục
+ * private; 80 bit ngẫu nhiên của ULID làm khoá không đoán được. Mọi chuỗi khác (kể cả khoá file công khai) → không hợp lệ.
+ */
+export const PRIVATE_FILE_KEY_PATTERN = new RegExp(
+  `^${PRIVATE_KEY_PREFIX}\\d{13}-[0-9A-HJKMNP-TV-Z]{26}(?:${Object.values(UPLOAD_MIME_EXTENSIONS)
+    .map((ext) => ext.replace(".", "\\."))
+    .join("|")})$`,
+);
+
+export function isPrivateFileKey(key: unknown): key is string {
+  return typeof key === "string" && PRIVATE_FILE_KEY_PATTERN.test(key);
+}
+
+/** MIME theo đuôi chuẩn của khoá (nghịch đảo allowlist); đuôi lạ → `null`. */
+export function mimeForFileKey(key: unknown): string | null {
+  if (typeof key !== "string") return null;
+  const dot = key.lastIndexOf(".");
+  if (dot < 0) return null;
+  const ext = key.slice(dot);
+  const hit = Object.entries(UPLOAD_MIME_EXTENSIONS).find(([, e]) => e === ext);
+  return hit ? hit[0] : null;
+}
+
 /**
  * Sinh tên lưu `<ULID><đuôi>` cho file có loại `mimeType`. Không nhận tên gốc làm tham số — không thể vô tình dùng.
  * @throws MedusaError INVALID_DATA khi MIME ngoài allowlist (gồm rỗng).

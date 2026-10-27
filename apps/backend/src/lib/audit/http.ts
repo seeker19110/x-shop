@@ -232,6 +232,15 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
   },
   // --- Truy cập dữ liệu nhạy cảm (đối soát, PII khách qua route native) ---
   {
+    // Tải file private (T-141): file xuất PII khách/đơn — coi là PII. Đích = khoá file (không chứa dữ liệu người dùng).
+    method: "GET",
+    pattern: "/admin/x/files/:key",
+    event: SECURITY_EVENTS.DATA_ACCESSED,
+    scope: "admin",
+    target: seg("private_file", 3),
+    details: { dataset: "private_file", pii: true },
+  },
+  {
     method: "GET",
     pattern: "/admin/x/settlements/batches/:id",
     event: SECURITY_EVENTS.DATA_ACCESSED,

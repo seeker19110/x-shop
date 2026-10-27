@@ -47,6 +47,17 @@ XS_TRUSTED_PROXIES=10.0.0.0/8
 # khoảng trắng/xuống dòng/tab, `\`, `@`, `?`, `#` bị từ chối lúc khởi động (hay gặp: newline thừa khi tạo từ file/echo);
 # gốc dùng thật được chuẩn hoá từ URL đã parse (scheme/host viết thường, bỏ cổng mặc định).
 STOREFRONT_URL=https://shop.example.vn
+# Thư mục file PRIVATE của File Module (T-141, BE-FILE-005): xuất khách hàng/đơn (PII), xuất tồn/sản phẩm, chunk nhập sản
+# phẩm. Phải RỜI thư mục công khai `static/` (Express phục vụ `/static`) — không trùng, không nằm trong, không chứa nó; không
+# ký tự điều khiển. Production BẮT BUỘC, đường dẫn tuyệt đối trên volume bền, chỉ user chạy backend đọc/ghi được (vd.
+# `install -d -m 700`); vắng (dev/test) = `<cwd>/private-uploads` (đã gitignore). Sai → in tên biến, thoát mã 1. File
+# private KHÔNG có URL công khai: chỉ tải qua `GET /admin/x/files/<khoá>` (đăng nhập admin + `settings.manage` + MFA, ghi
+# audit `data.accessed`); link trong thông báo xuất của Medusa trỏ về route này. Ảnh sản phẩm vẫn ở `static/` như cũ.
+# Đổi thư mục = file cũ không còn tải được (chuyển file sang thư mục mới trước). Server và worker phải thấy CÙNG thư mục
+# (worker ghi file xuất, server phục vụ) — nhiều máy: dùng chung volume hoặc chờ kho S3-compatible (T-154).
+# Nâng cấp từ bản trước T-141: file `static/private-*` cũ VẪN công khai — chuyển sang thư mục này rồi xoá khỏi `static/`.
+# Kiểm đường dẫn theo chữ (không theo symlink): đừng trỏ symlink từ đây vào `static/`.
+PRIVATE_UPLOAD_DIR=/var/lib/xshop/private-uploads
 # Tùy chọn
 # MEDUSA_BACKEND_URL=http://localhost:9000
 # MEDUSA_WORKER_MODE=shared   # shared | server | worker (production tách server và worker)

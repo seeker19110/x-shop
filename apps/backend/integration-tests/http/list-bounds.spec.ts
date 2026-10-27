@@ -99,6 +99,7 @@ const GET_ROUTES: Record<string, Bound> = {
     kind: "export",
     why: "xuất toàn catalog cùng định dạng nhập (vòng nhập/xuất) — đọc theo lô 100 sản phẩm; quyền catalog.read",
   },
+  "get /admin/x/files/{key}": { kind: "single", why: "tải MỘT file private theo khoá (T-141)" },
   "get /admin/x/imports/{id}": { kind: "single", why: "chi tiết một job nhập" },
   "get /admin/x/products/{id}/publish-check": { kind: "single", why: "kết quả kiểm một sản phẩm" },
   "get /admin/x/reports/summary": { kind: "single", why: "số tổng hợp, không trả danh sách bản ghi" },

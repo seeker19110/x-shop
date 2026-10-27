@@ -1,5 +1,7 @@
+import path from "node:path";
 import { z } from "zod";
 import { parseTrustedProxies, TRUSTED_PROXY_KEYWORDS } from "./security/client-ip";
+import { privateDirProblem } from "./upload/private";
 
 /**
  * Cấu hình môi trường của backend, kiểm bằng zod khi nạp `medusa-config.ts` (BASE-CFG-002).
@@ -35,7 +37,18 @@ export const PRODUCTION_REQUIRED = [
   "XS_TRUSTED_PROXIES",
   // Gốc URL storefront để dựng liên kết gửi khách (liên kết tra cứu đơn — T-149); thiếu thì thư trỏ về localhost.
   "STOREFRONT_URL",
+  // Thư mục file private (xuất PII, chunk nhập — T-141): đường dẫn tuyệt đối ngoài `static/`, trên volume bền của máy chủ.
+  "PRIVATE_UPLOAD_DIR",
 ] as const;
+
+/**
+ * Thư mục file private khi chạy dev/test mà không đặt PRIVATE_UPLOAD_DIR: `<cwd>/private-uploads` (cạnh `static/`, không
+ * nằm trong nó; đã gitignore).
+ */
+export const DEV_PRIVATE_UPLOAD_DIRNAME = "private-uploads";
+
+/** Thư mục công khai mà Medusa phục vụ ở `/static` (express-loader: `path.join(rootDir, "static")`). */
+export const publicStaticDir = (cwd: string = process.cwd()): string => path.join(cwd, "static");
 
 /** Storefront khi chạy dev/test mà không đặt STOREFRONT_URL (`next dev` mặc định cổng 3000). */
 export const DEV_STOREFRONT_URL = "http://localhost:3000";
@@ -213,6 +226,14 @@ const schema = z
     AUTH_CORS: optionalText.pipe(corsList.optional()),
     MEDUSA_BACKEND_URL: optionalText.pipe(urlWithProtocol(["http:", "https:"], "http(s)://").optional()),
     STOREFRONT_URL: optionalText.pipe(baseUrl.optional()),
+    // Thư mục file private (T-141, BE-FILE-005): không ký tự điều khiển; rời thư mục công khai `static/` (kiểm ở superRefine).
+    PRIVATE_UPLOAD_DIR: optionalText.pipe(
+      z
+        .string()
+        // eslint-disable-next-line no-control-regex -- chặn đúng ký tự điều khiển (NUL, xuống dòng…) trong đường dẫn
+        .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), { message: "không được chứa ký tự điều khiển" })
+        .optional(),
+    ),
     // Proxy tin cậy (LB, storefront) được phép báo IP khách qua X-Forwarded-For. Vắng = không tin header nào (SEC03).
     XS_TRUSTED_PROXIES: optionalText.pipe(
       z
@@ -317,6 +338,17 @@ const schema = z
         });
       }
     }
+    if (env.PRIVATE_UPLOAD_DIR !== undefined) {
+      const problem = privateDirProblem(publicStaticDir(), env.PRIVATE_UPLOAD_DIR);
+      if (problem !== null) ctx.addIssue({ code: "custom", path: ["PRIVATE_UPLOAD_DIR"], message: problem });
+      else if (env.NODE_ENV === "production" && !path.isAbsolute(env.PRIVATE_UPLOAD_DIR)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["PRIVATE_UPLOAD_DIR"],
+          message: "phải là đường dẫn tuyệt đối khi NODE_ENV=production",
+        });
+      }
+    }
     const ghnMode = env.GHN_MODE ?? (env.NODE_ENV === "production" ? undefined : "mock");
     if (ghnMode === "sandbox" || ghnMode === "live") {
       for (const key of GHN_REQUIRED) {
@@ -414,6 +446,10 @@ const schema = z
       },
       // STOREFRONT_URL đã chuẩn hoá ở schema; production đã bắt buộc biến nên mặc định dev không áp ở production.
       storefrontUrl: env.STOREFRONT_URL ?? DEV_STOREFRONT_URL,
+      // Production đã bắt buộc biến (tuyệt đối) nên mặc định dev không áp ở production.
+      privateUploadDir: path.resolve(
+        env.PRIVATE_UPLOAD_DIR ?? path.join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME),
+      ),
       orderLookupSecret:
         env.ORDER_LOOKUP_SECRET ?? (env.NODE_ENV === "production" ? "" : ORDER_LOOKUP_DEV_SECRET),
       vnpay: env.VNPAY_ENABLED

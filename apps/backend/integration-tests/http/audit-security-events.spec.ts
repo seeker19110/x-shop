@@ -12,6 +12,7 @@ import { SECURITY_EVENTS } from "../../src/lib/audit/events";
 import { outcomeOfStatus } from "../../src/lib/audit/http";
 import { hashIdentifier } from "../../src/lib/audit/record";
 import { SecurityAuditRecord } from "../../src/lib/audit/schema";
+import { DEV_PRIVATE_UPLOAD_DIRNAME } from "../../src/lib/env";
 import { AUDIT_MODULE } from "../../src/modules/audit";
 import type { AuditEntry, AuditListFilter } from "../../src/modules/audit/service";
 import type AuditModuleService from "../../src/modules/audit/service";
@@ -53,16 +54,16 @@ medusaIntegrationTestRunner({
       const stale = await redis.keys(`${KEY_PREFIX}rl:*`);
       if (stale.length > 0) await redis.del(...stale);
     });
-    // Xuất native (`POST /admin/customers/export`) ghi file qua file provider cục bộ vào `static/` — dọn file do suite tạo
-    // để test không để lại dữ liệu xuất trong cây làm việc.
-    const staticDir = join(process.cwd(), "static");
+    // Xuất native (`POST /admin/customers/export`) ghi file private qua file provider cục bộ vào PRIVATE_UPLOAD_DIR (T-141;
+    // vắng → `<cwd>/private-uploads`) — dọn file do suite tạo để test không để lại dữ liệu xuất trên máy.
+    const privateDir = process.env.PRIVATE_UPLOAD_DIR || join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME);
     const exportFiles = () =>
-      existsSync(staticDir) ? readdirSync(staticDir).filter((f) => /^private-.*\.json$/.test(f)) : [];
+      existsSync(privateDir) ? readdirSync(privateDir).filter((f) => /^private-.*\.json$/.test(f)) : [];
     const before = new Set(exportFiles());
     afterAll(async () => {
       await redis.quit();
       await sleep(500);
-      for (const f of exportFiles()) if (!before.has(f)) rmSync(join(staticDir, f), { force: true });
+      for (const f of exportFiles()) if (!before.has(f)) rmSync(join(privateDir, f), { force: true });
     });
 
     const call = (method: string, url: string, headers: Record<string, string> = {}, data?: unknown) =>

@@ -43,6 +43,9 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
     also: ["price.write", "inventory.adjust"],
   },
   { method: "GET", path: "/admin/x/exports/products.csv", permission: "catalog.read" },
+  // File private (T-141, BE-FILE-005): xuất khách hàng/đơn/tồn (PII) + chunk nhập — cùng quyền với route xuất native tạo
+  // ra chúng (mặc định `settings.manage`, nhạy cảm → MFA). lib/upload/private.ts PRIVATE_FILE_PERMISSION.
+  { method: "GET", path: "/admin/x/files/:key", permission: "settings.manage" },
   // Vai trò (T-023)
   { method: "GET", path: "/admin/x/users/:id/roles", permission: "user.manage" },
   { method: "POST", path: "/admin/x/users/:id/roles", permission: "user.manage", reauth: true },

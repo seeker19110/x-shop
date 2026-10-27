@@ -754,6 +754,42 @@ paths:
               schema: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/x/files/{key}:
+    get:
+      tags: [Admin security]
+      operationId: adminDownloadPrivateFile
+      summary: "Tải file private (xuất khách hàng/đơn/tồn/sản phẩm, chunk nhập)"
+      description: |
+        File private nằm ngoài thư mục công khai `static/` (`PRIVATE_UPLOAD_DIR`) và không có URL công khai; link trong thông báo
+        xuất của Medusa trỏ về route này (T-141). Quyền + MFA kiểm TRƯỚC khi chạm khoá: 401/403 như nhau dù file có hay không.
+        Khoá sai mẫu, không có hoặc đã xoá → cùng một 404.
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: settings.manage
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^private-[0-9]{13}-[0-9A-HJKMNP-TV-Z]{26}\\.(jpg|png|webp|avif|csv|json)$"
+      responses:
+        "200":
+          description: "Nội dung file (tải về)."
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            Cache-Control: { $ref: "#/components/headers/PrivateNoStore" }
+          content:
+            text/csv:
+              schema: { type: string }
+            application/json:
+              schema: { type: string }
+            image/*:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
   # ---------------------------------------------------------------- admin: orders
   /admin/x/orders/{id}/confirm-cod:
     post:

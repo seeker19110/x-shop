@@ -231,6 +231,7 @@ describe("env VNPAY_HASH_SECRET_PREVIOUS (zod)", () => {
       ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
       XS_TRUSTED_PROXIES: "10.0.0.0/8",
       STOREFRONT_URL: "https://shop.example.vn",
+      PRIVATE_UPLOAD_DIR: "/var/lib/xshop/private-uploads",
       STORE_CORS: "https://shop.example.vn",
       ADMIN_CORS: "https://admin.example.vn",
       AUTH_CORS: "https://admin.example.vn",

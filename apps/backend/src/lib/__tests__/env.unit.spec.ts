@@ -1,5 +1,7 @@
+import path from "node:path";
 import {
   DEV_CORS_DEFAULTS,
+  DEV_PRIVATE_UPLOAD_DIRNAME,
   DEV_STOREFRONT_URL,
   GHN_REQUIRED,
   formatEnvProblems,
@@ -27,6 +29,7 @@ const production = {
   ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
   XS_TRUSTED_PROXIES: "10.0.0.0/8",
   STOREFRONT_URL: "https://shop.example.vn/",
+  PRIVATE_UPLOAD_DIR: "/var/lib/xshop/private-uploads",
   STORE_CORS: "https://shop.example.vn",
   ADMIN_CORS: "https://admin.example.vn,http://localhost:9000",
   AUTH_CORS: "https://admin.example.vn,/\\.example\\.vn$/",
@@ -392,5 +395,50 @@ describe("STOREFRONT_URL (T-149 — gốc liên kết gửi khách)", () => {
       const r = parseEnv({ ...production, STOREFRONT_URL: raw });
       expect(r.ok && r.env.storefrontUrl).toBe(base);
     }
+  });
+});
+
+describe("PRIVATE_UPLOAD_DIR (T-141 — file private ngoài thư mục công khai)", () => {
+  const cwdStatic = path.join(process.cwd(), "static");
+
+  it("dev/test vắng → `<cwd>/private-uploads` (cạnh static, không nằm trong); đặt → đường dẫn đã resolve", () => {
+    const dev = parseEnv({ DATABASE_URL: DB });
+    expect(dev.ok && dev.env.privateUploadDir).toBe(path.join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME));
+    const rel = parseEnv({ DATABASE_URL: DB, PRIVATE_UPLOAD_DIR: "./tmp/../riêng tư" });
+    expect(rel.ok && rel.env.privateUploadDir).toBe(path.resolve("riêng tư"));
+    const prod = parseEnv(production);
+    expect(prod.ok && prod.env.privateUploadDir).toBe("/var/lib/xshop/private-uploads");
+    expect(parseEnv({ DATABASE_URL: DB, PRIVATE_UPLOAD_DIR: "   " }).ok).toBe(true); // rỗng = không đặt
+  });
+
+  it.each([
+    ["trùng static", cwdStatic],
+    ["trong static", path.join(cwdStatic, "private")],
+    ["trong static (tương đối)", "static/private"],
+    ["trong static (qua `..`)", path.join(cwdStatic, "a", "..", "b")],
+    ["chứa static", process.cwd()],
+    ["chứa static (gốc hệ thống)", "/"],
+  ])("%s → lỗi đúng tên biến, không in giá trị", (_label, value) => {
+    const problems = problemsOf({ DATABASE_URL: DB, PRIVATE_UPLOAD_DIR: value });
+    expect(problems.map((p) => p.variable)).toEqual(["PRIVATE_UPLOAD_DIR"]);
+    expect(formatEnvProblems(problems)).not.toContain(value === "/" ? "//" : value);
+  });
+
+  it.each(["/srv/a\u0000b", "/srv/a\nb", "/srv/\tx", "/srv/x\u007f"])(
+    "ký tự điều khiển %j → lỗi",
+    (value) => {
+      expect(variablesOf({ DATABASE_URL: DB, PRIVATE_UPLOAD_DIR: value })).toEqual(["PRIVATE_UPLOAD_DIR"]);
+    },
+  );
+
+  it("production: bắt buộc, phải tuyệt đối", () => {
+    expect(PRODUCTION_REQUIRED).toContain("PRIVATE_UPLOAD_DIR");
+    expect(variablesOf({ ...production, PRIVATE_UPLOAD_DIR: undefined })).toEqual(["PRIVATE_UPLOAD_DIR"]);
+    expect(variablesOf({ ...production, PRIVATE_UPLOAD_DIR: "private-uploads" })).toEqual([
+      "PRIVATE_UPLOAD_DIR",
+    ]);
+    expect(variablesOf({ ...production, PRIVATE_UPLOAD_DIR: path.join(cwdStatic, "p") })).toEqual([
+      "PRIVATE_UPLOAD_DIR",
+    ]);
   });
 });
