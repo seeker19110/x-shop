@@ -320,24 +320,26 @@ export const CATALOG_COMPENSATION_FAILED_KIND = "catalog_compensation_failed";
 export type CompensationStep = "attributes" | "size_chart" | "measurements";
 
 /**
- * Khoá tuần tự hoá việc mở ngoại lệ `catalog_compensation_failed` giữa các sản phẩm: `openOpsExceptionIfNoneActive`
- * (INSERT … WHERE NOT EXISTS) yêu cầu người gọi tự tuần tự hoá — khoá theo sản phẩm của workflow không đủ khi hai sản
- * phẩm cùng lỗi bù trừ một lúc (đo được 10 lời gọi song song → tới 9 ngoại lệ đang mở). Luôn lấy SAU khoá sản phẩm,
+ * Khoá tuần tự hoá việc mở ngoại lệ `catalog_compensation_failed`: `openOpsExceptionIfNoneActive`
+ * (INSERT … WHERE NOT EXISTS) yêu cầu người gọi tự tuần tự hoá — khoá theo sản phẩm của workflow không đủ (vd. bước số
+ * đo tự hoàn tác lỗi rồi bù trừ của workflow lại lỗi, hoặc lời gọi không qua workflow; đo được 10 lời gọi song song
+ * không khoá → tới 9 ngoại lệ đang mở). Một khoá cho cả kind: chỉ giữ trong một INSERT. Luôn lấy SAU khoá sản phẩm,
  * không bao giờ ngược lại → không deadlock.
  */
 const COMPENSATION_EXCEPTION_LOCK = `x-shop:ops-exception:${CATALOG_COMPENSATION_FAILED_KIND}`;
 
 /**
- * Mở ngoại lệ `catalog_compensation_failed` nếu CHƯA có cái đang mở/đang xử lý cùng kind (lỗi lặp lại không tạo trùng;
- * xử lý xong mà tái diễn thì mở lại). `detail` CHỈ gồm mã bước, id (sản phẩm/thuộc tính/bảng size) và `safeErrorSummary`
- * — KHÔNG giá trị thuộc tính/số đo (PII), KHÔNG `e.message` thô. Không lấy được khoá (Redis lỗi/bận quá hạn) → vẫn mở
- * không khoá (thà có thể trùng còn hơn mất dấu). Mở lỗi → chỉ log (an toàn), KHÔNG ném: người gọi vẫn ném lỗi bù trừ
- * gốc, lỗi mở ngoại lệ không được che nó.
+ * Mở ngoại lệ `catalog_compensation_failed` nếu sản phẩm này CHƯA có cái đang mở/đang xử lý (dedupe theo kind +
+ * `detail.product_id`, D-101): lỗi lặp lại ở cùng sản phẩm không tạo trùng; sản phẩm khác lỗi có ngoại lệ riêng (đóng
+ * ngoại lệ của A không làm mất dấu B); xử lý xong mà tái diễn thì mở lại. `detail` CHỈ gồm mã bước, id (sản phẩm/thuộc
+ * tính/bảng size) và `safeErrorSummary` — KHÔNG giá trị thuộc tính/số đo (PII), KHÔNG `e.message` thô. Không lấy được
+ * khoá (Redis lỗi/bận quá hạn) → vẫn mở không khoá (thà có thể trùng còn hơn mất dấu). Mở lỗi → chỉ log (an toàn), KHÔNG
+ * ném: người gọi vẫn ném lỗi bù trừ gốc, lỗi mở ngoại lệ không được che nó.
  */
 export async function openCompensationException(
   container: MedusaContainer,
   step: CompensationStep,
-  ids: Record<string, string | null>,
+  ids: { product_id: string } & Record<string, string | null>,
   e: unknown,
 ): Promise<void> {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
@@ -347,6 +349,7 @@ export async function openCompensationException(
       dedupe_key: `${CATALOG_COMPENSATION_FAILED_KIND}:${randomUUID()}`,
       priority: "high",
       detail: { step, ...ids, error: safeErrorSummary(e) },
+      active_scope: ["product_id"],
     });
   let ran = false;
   try {
@@ -395,7 +398,7 @@ async function compensating(
   container: MedusaContainer,
   step: CompensationStep,
   what: string,
-  ids: Record<string, string | null>,
+  ids: { product_id: string } & Record<string, string | null>,
   fn: () => Promise<void>,
 ): Promise<void> {
   try {

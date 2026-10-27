@@ -995,7 +995,8 @@ export default class SettlementModuleService {
   /**
    * Dashboard ngoại lệ (§5.5, S-406): ngoại lệ vận hành còn mở (ops_exception) + chênh lệch đối soát còn mở + COD đã
    * giao chưa đối soát đủ — một danh sách có owner/vai trò phụ trách, ưu tiên, thời điểm mở và tuổi; ưu tiên cao trước,
-   * cũ trước.
+   * cũ trước. `reference`: mã chứng từ (settlement), mã vận đơn (cod); ops chỉ có ở `catalog_compensation_failed` = id
+   * sản phẩm lệch (D-101) — các kind ops khác null.
    */
   async listExceptions(
     filter: ExceptionFilter,
@@ -1007,7 +1008,9 @@ export default class SettlementModuleService {
     by_kind: Array<{ source: string; kind: string; count: number; amount: number }>;
   }> {
     const union = `
-      select 'ops' as source, o.id, o.kind, o.order_id, null::text as reference, o.amount::bigint as amount,
+      select 'ops' as source, o.id, o.kind, o.order_id,
+             case when o.kind = 'catalog_compensation_failed' then o.detail->>'product_id' end as reference,
+             o.amount::bigint as amount,
              o.priority, o.state, o.owner, o.created_at as opened_at, o.due_at
         from ops_exception o where o.deleted_at is null and o.state in ('open', 'in_progress')
       union all

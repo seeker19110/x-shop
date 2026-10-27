@@ -346,3 +346,44 @@ redrive mà không sửa nguyên nhân sẽ lại `dead` ngay.
    Không redrive hàng loạt `WHERE state='dead'` khi chưa xem từng `type`. Không đổi `payload`, không xoá dòng.
 4. Xác nhận: sau ≤ 1 phút dòng thành `sent` (truy vấn bước 1 không còn nó); rồi đóng `ops_exception` tương ứng trong Admin với ghi chú nguyên
    nhân + việc đã làm. Dòng quay lại `dead` → leo thang cho kỹ thuật (§0), không lặp redrive.
+
+## 13. Ngoại lệ `catalog_compensation_failed` — sản phẩm lệch sau khi hoàn tác lỗi
+
+last_drilled: chưa diễn tập (chỉ chạy trong test tích hợp `catalog-model`, trigger PG giả lập lỗi).
+
+Mô hình thật (`apps/backend/src/workflows/fashion/set-product-fashion.ts`, D-095/D-101): lưu dữ liệu thời trang của một sản phẩm
+(`POST /admin/x/products/:id/fashion` — thuộc tính, bảng size, số đo người mẫu) lỗi ở bước sau thì workflow hoàn tác các bước trước.
+Hoàn tác cũng lỗi → sản phẩm có thể đang mang **một phần** dữ liệu mới (thuộc tính đã đổi, bảng size đã gỡ, số đo thiếu/thừa so với
+trước). Hệ thống ghi log ERROR và mở `ops_exception` loại này, ưu tiên `high`, owner mặc định `owner`; mỗi sản phẩm tối đa một ngoại
+lệ đang mở (lỗi lặp lại không tạo trùng; sản phẩm khác có ngoại lệ riêng). `detail` chỉ có id + mã lỗi — không có giá trị thuộc tính
+hay số đo (số đo người mẫu là PII).
+
+1. Tìm sản phẩm: dashboard ngoại lệ (Admin → Ngoại lệ, lọc "Hoàn tác dữ liệu sản phẩm lỗi") — cột tham chiếu là id sản phẩm; hoặc
+
+   ```sql
+   SELECT id, created_at, detail->>'product_id' AS product_id, detail->>'step' AS step, detail->>'error' AS error,
+          detail->>'attributes_id' AS attributes_id
+     FROM ops_exception
+    WHERE kind = 'catalog_compensation_failed' AND state IN ('open', 'in_progress') AND deleted_at IS NULL
+    ORDER BY created_at;
+   ```
+
+   Log tương ứng: dòng `[set-product-fashion] Hoàn tác … lỗi: product_id=<id> …: <mã lỗi>` (cùng thời điểm `created_at`).
+   `step`: `attributes` (thuộc tính), `size_chart` (gắn lại bảng size — `from`/`to` là id bảng size), `measurements` (số đo người mẫu).
+   `error` chỉ gồm tên lỗi + mã Postgres/constraint (vd. `code=23514 constraint=…`, `code=57014` hết giờ) — đủ để biết lỗi tạm hay lỗi
+   dữ liệu. Không thấy log/ngoại lệ mở được (`Không mở được ngoại lệ catalog_compensation_failed`) → tìm theo log.
+2. Sửa nguyên nhân trước nếu là lỗi dữ liệu/ràng buộc (constraint mới, DB hết chỗ…); lỗi tạm (mất kết nối, hết giờ) thì bỏ qua bước này.
+3. Đưa sản phẩm về đúng: người quản lý catalog mở sản phẩm trong Admin, kiểm thuộc tính thời trang, bảng size, số đo người mẫu so với dữ
+   liệu đúng (ảnh/phiếu người mẫu gốc) và **gửi lại toàn bộ** dữ liệu thời trang (lưu lại form = `POST /admin/x/products/:id/fashion`
+   với đủ thuộc tính, `size_chart_id`, `model_measurements` — thay toàn bộ, không vá từng phần). Không sửa thẳng bảng
+   `fashion_*` bằng SQL.
+4. Kiểm điều kiện xuất bản: `GET /admin/x/products/:id/publish-check` → `ready: true`. Sản phẩm đang `published` mà chưa đạt → chuyển
+   `draft` cho tới khi đủ dữ liệu (khách không thấy trang thiếu bảng size/chất liệu).
+5. Đóng ngoại lệ kèm ghi chú nguyên nhân + việc đã làm. Admin chưa có nút đóng ngoại lệ vận hành (`ops_exception`) — tạm thời:
+
+   ```sql
+   UPDATE ops_exception SET state = 'resolved', updated_at = now()
+    WHERE id = '<id>' AND kind = 'catalog_compensation_failed' AND state IN ('open', 'in_progress');
+   ```
+
+   Sản phẩm đó lỗi lại sau khi đóng → ngoại lệ mới được mở; cùng sản phẩm lặp lại nhiều lần → leo thang cho kỹ thuật (§0).

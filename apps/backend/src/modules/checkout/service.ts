@@ -488,15 +488,27 @@ class CheckoutModuleService extends MedusaService({
   }
 
   /**
-   * Mở ngoại lệ chỉ khi CHƯA có ngoại lệ đang hoạt động (open/in_progress) cùng `kind`. Khác `openOpsException`
-   * (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại. Người gọi tự tuần tự hoá (khoá riêng).
+   * Mở ngoại lệ chỉ khi CHƯA có ngoại lệ đang hoạt động (open/in_progress) cùng `kind` — và, nếu có `active_scope`,
+   * cùng giá trị các khoá đó trong `detail` (vd. `["product_id"]`: mỗi sản phẩm một ngoại lệ đang mở; mặc định: một
+   * ngoại lệ cho cả kind). Phạm vi lấy từ chính `input.detail` nên không thể lệch với dòng được ghi. Khác
+   * `openOpsException` (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại. Người gọi tự tuần tự hoá
+   * (khoá riêng) — INSERT … WHERE NOT EXISTS không chặn hai lời gọi song song.
    */
-  async openOpsExceptionIfNoneActive(input: OpsExceptionInput, em?: SqlEntityManager): Promise<boolean> {
+  async openOpsExceptionIfNoneActive(
+    input: OpsExceptionInput & { active_scope?: readonly string[] },
+    em?: SqlEntityManager,
+  ): Promise<boolean> {
+    // SQL NULL (không phải chuỗi JSON 'null' — `'null'::jsonb IS NULL` là false) = không lọc theo detail.
+    const scope =
+      input.active_scope !== undefined && input.active_scope.length > 0
+        ? json(Object.fromEntries(input.active_scope.map((k) => [k, input.detail?.[k] ?? null])))
+        : null;
     const rows = await this.exec(
       `INSERT INTO ops_exception (id, kind, dedupe_key, order_id, amount, priority, due_at, detail)
        SELECT ?, ?::text, ?, ?, ?, ?, ?, ?::jsonb
         WHERE NOT EXISTS (
-          SELECT 1 FROM ops_exception WHERE kind = ?::text AND state IN ('open', 'in_progress') AND deleted_at IS NULL)
+          SELECT 1 FROM ops_exception WHERE kind = ?::text AND state IN ('open', 'in_progress') AND deleted_at IS NULL
+             AND (?::jsonb IS NULL OR detail @> ?::jsonb))
        ON CONFLICT DO NOTHING RETURNING id`,
       [
         generateEntityId(undefined, "opx"),
@@ -508,6 +520,8 @@ class CheckoutModuleService extends MedusaService({
         input.due_at ?? null,
         json(input.detail ?? null),
         input.kind,
+        scope,
+        scope,
       ],
       em,
     );

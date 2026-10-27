@@ -7,6 +7,7 @@ import { kindLabel } from "../../src/admin/lib/labels";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "../../src/lib/catalog/constants";
 import { loadProductSources } from "../../src/lib/catalog/product-source";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
+import { OPS_EXCEPTION_KINDS } from "../../src/modules/checkout/models/constants";
 import { FASHION_MODULE } from "../../src/modules/fashion";
 import type FashionModuleService from "../../src/modules/fashion/service";
 import { DEMO_PRODUCTS } from "../../src/scripts/catalog-demo-data";
@@ -937,6 +938,7 @@ medusaIntegrationTestRunner({
               "image_exception_reason",
             ] as const;
 
+            const sorted = (xs: Iterable<string>) => [...xs].sort();
             type Row = { id: string; state: string; priority: string; detail: Record<string, unknown> };
             async function exceptions(): Promise<Row[]> {
               const { rows } = (await pgc().raw(
@@ -1016,6 +1018,7 @@ medusaIntegrationTestRunner({
                 }),
               ]);
               expect(kindLabel(res.data.items[0].kind)).toBe("Hoàn tác dữ liệu sản phẩm lỗi");
+              expect(res.data.items[0].reference).toBe((await seededPolo()).id);
               expect(JSON.stringify(res.data.items)).not.toMatch(/cotton|Việt Nam|boom|Failing row/i);
 
               const warehouse = (await adminHeaders(api, container, { roles: ["warehouse"] })).headers;
@@ -1175,23 +1178,127 @@ medusaIntegrationTestRunner({
               expect((await exceptions()).map((x) => [x.id, x.state])).toEqual([[opened!.id, "resolved"]]);
             });
 
-            it("nhiều sản phẩm lỗi bù trừ cùng lúc → đúng 1 ngoại lệ đang mở (khoá tuần tự hoá INSERT … WHERE NOT EXISTS)", async () => {
-              const counts: number[] = [];
+            it("10 lời gọi song song cho 2 sản phẩm → đúng 1 ngoại lệ đang mở MỖI sản phẩm (khoá tuần tự hoá INSERT … WHERE NOT EXISTS)", async () => {
+              const perRound: string[][] = [];
               for (let round = 0; round < 5; round++) {
                 await pgc().raw(`delete from ops_exception where kind = ?`, [KIND]);
                 await Promise.all(
                   Array.from({ length: 10 }, (_, i) =>
                     openCompensationException(
                       container,
-                      "attributes",
-                      { product_id: `prod_t156_${round}_${i}`, attributes_id: null },
+                      i % 3 === 0 ? "measurements" : "attributes",
+                      { product_id: `prod_t156_${round}_${i % 2}`, attributes_id: null },
                       Object.assign(new Error("boom"), { code: "P0001" }),
                     ),
                   ),
                 );
-                counts.push((await exceptions()).length);
+                perRound.push(sorted((await exceptions()).map((r) => String(r.detail.product_id))));
               }
-              expect(counts).toEqual([1, 1, 1, 1, 1]);
+              expect(perRound).toEqual(
+                Array.from({ length: 5 }, (_, round) => [`prod_t156_${round}_0`, `prod_t156_${round}_1`]),
+              );
+            });
+
+            it("D-101: hai sản phẩm lệch → hai ngoại lệ; lặp lại ở A không trùng; đóng của A thì của B vẫn mở; dashboard hiện product_id", async () => {
+              const all = await container
+                .resolve(Modules.PRODUCT)
+                .listProducts({ status: "published" } as never, { take: 200 });
+              const srcs = await loadProductSources(container, { id: all.map((p) => p.id) });
+              const withChart = srcs.filter((s) => s.sizeChart && s.attributes);
+              const a = withChart.find((s) => s.handle === "ao-polo-nam")!;
+              const b = withChart.find((s) => s.handle !== "ao-polo-nam")!;
+              expect(b).toBeDefined();
+              const originals = new Map<string, Record<string, string | null>>();
+              for (const p of [a, b]) originals.set(p.attributes!.id, await attrRow(p.attributes!.id));
+              // Mọi lần khôi phục thuộc tính (về giá trị khác 't156x') đều lỗi — bước đầu (đặt 't156x') thì qua.
+              const trigger = [
+                `create or replace function t156_two() returns trigger language plpgsql as $$
+                 begin if new.material is distinct from 't156x' then raise exception 'boom two'; end if; return new; end $$;
+                 create trigger t156_two before update on fashion_product_attributes
+                   for each row execute function t156_two();`,
+                "drop trigger if exists t156_two on fashion_product_attributes; drop function if exists t156_two();",
+              ] as const;
+              const payload = { attributes: { kind: "apparel", material: "t156x" }, size_chart_id: null };
+              const failOnce = async (ids: string[]) => {
+                await pgc().raw(trigger[0]);
+                try {
+                  for (const id of ids) {
+                    const err = await api
+                      .post(`/admin/x/products/${id}/fashion`, payload, { headers: admin })
+                      .catch((e: unknown) => e);
+                    expect(status(err)).toBe(400);
+                  }
+                } finally {
+                  await pgc().raw(trigger[1]);
+                }
+                for (const [attrId, row] of originals) await putAttrRow(attrId, row);
+              };
+
+              await failOnce([a.id, b.id]);
+              const rows = await exceptions();
+              expect(sorted(rows.map((r) => String(r.detail.product_id)))).toEqual(sorted([a.id, b.id]));
+              expect(rows.every((r) => r.state === "open" && r.detail.step === "attributes")).toBe(true);
+
+              // Dashboard: reference = id sản phẩm lệch (tìm ra sản phẩm mà không cần mở detail).
+              const res = await api.get(`/admin/x/reports/exceptions?kind=${KIND}`, { headers: admin });
+              expect(res.status).toBe(200);
+              expect(sorted((res.data.items as { reference: string }[]).map((i) => i.reference))).toEqual(
+                sorted([a.id, b.id]),
+              );
+
+              // A lỗi lại → vẫn một ngoại lệ đang mở cho A.
+              await failOnce([a.id]);
+              expect((await exceptions()).map((r) => r.id).sort()).toEqual(rows.map((r) => r.id).sort());
+
+              // Đóng ngoại lệ của A → của B vẫn mở (không mất dấu B); A lỗi lại sau đó → mở ngoại lệ mới cho A.
+              const rowA = rows.find((r) => r.detail.product_id === a.id)!;
+              const rowB = rows.find((r) => r.detail.product_id === b.id)!;
+              await pgc().raw(`update ops_exception set state = 'resolved' where id = ?`, [rowA.id]);
+              expect((await exceptions()).find((r) => r.id === rowB.id)?.state).toBe("open");
+              await failOnce([a.id]);
+              const open = (await exceptions()).filter((r) => r.state === "open");
+              expect(sorted(open.map((r) => String(r.detail.product_id)))).toEqual(sorted([a.id, b.id]));
+              expect(open.map((r) => r.id)).toContain(rowB.id);
+              expect(open.map((r) => r.id)).not.toContain(rowA.id);
+            });
+
+            it("tương thích indexer: không truyền active_scope → vẫn một ngoại lệ đang mở cho cả kind dù detail khác", async () => {
+              const checkout = container.resolve(CHECKOUT_MODULE) as unknown as {
+                openOpsExceptionIfNoneActive: (i: Record<string, unknown>) => Promise<boolean>;
+              };
+              const opened = [];
+              for (const pid of ["prod_x1", "prod_x2"]) {
+                opened.push(
+                  await checkout.openOpsExceptionIfNoneActive({
+                    kind: KIND,
+                    dedupe_key: `${KIND}:compat-${pid}`,
+                    detail: { product_id: pid },
+                  }),
+                );
+              }
+              expect(opened).toEqual([true, false]);
+              // Có active_scope → phạm vi theo product_id: prod_x2 được mở, prod_x1 thì không (đã có).
+              const scoped = [];
+              for (const pid of ["prod_x2", "prod_x1"]) {
+                scoped.push(
+                  await checkout.openOpsExceptionIfNoneActive({
+                    kind: KIND,
+                    dedupe_key: `${KIND}:scoped-${pid}`,
+                    detail: { product_id: pid },
+                    active_scope: ["product_id"],
+                  }),
+                );
+              }
+              expect(scoped).toEqual([true, false]);
+            });
+
+            it("hàng rào: CHECK ops_exception.kind trên DB thật = OPS_EXCEPTION_KINDS", async () => {
+              const { rows } = (await pgc().raw(
+                `select pg_get_constraintdef(oid) as def from pg_constraint where conname = 'ops_exception_kind_check'`,
+              )) as { rows: { def: string }[] };
+              expect(rows).toHaveLength(1);
+              const kinds = [...rows[0]!.def.matchAll(/'([^']+)'::text/g)].map((m) => m[1]!);
+              expect(sorted(kinds)).toEqual(sorted(OPS_EXCEPTION_KINDS));
             });
 
             it("Redis lỗi khi lấy khoá mở ngoại lệ → vẫn mở (không mất dấu), log cảnh báo", async () => {
