@@ -372,7 +372,7 @@ describe("drainCatalogIndex — đang tắt (T-137, D-081)", () => {
   });
 
   it("tín hiệu tắt khi lượt hẹn đang chờ: không chạy lại dù có yêu cầu gộp", async () => {
-    const { owners, index, container } = setup();
+    const { state, owners, index, container } = setup();
     scheduleCatalogDrain(container, 0);
     await jest.advanceTimersByTimeAsync(500);
     scheduleCatalogDrain(container); // yêu cầu gộp trong lúc chờ
@@ -385,5 +385,9 @@ describe("drainCatalogIndex — đang tắt (T-137, D-081)", () => {
     scheduleCatalogDrain(container, 0);
     await jest.advanceTimersByTimeAsync(100);
     expect(owners).toHaveLength(2);
+    // Dọn: nhả khoá để lượt hẹn vừa mở kết thúc — không để lượt nền treo (biến module) sang test khác.
+    state.held = false;
+    await jest.advanceTimersByTimeAsync(DRAIN_WAIT_SLICE_MS * 2);
+    expect(index.claimDirty).toHaveBeenCalled();
   });
 });
