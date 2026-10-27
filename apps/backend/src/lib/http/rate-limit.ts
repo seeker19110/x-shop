@@ -1,6 +1,7 @@
 /**
  * Giới hạn tần suất nhẹ trong bộ nhớ tiến trình (cửa sổ cố định theo khóa). Dùng cho webhook công khai để chặn dội
- * request rẻ tiền; không thay cho giới hạn ở edge/proxy. Mỗi instance đếm riêng.
+ * request rẻ tiền; không thay cho giới hạn ở edge/proxy. Mỗi instance đếm riêng — chạy N bản sao thì hạn mức thật
+ * thành N× (ARC-RES-005): route mới dùng bộ đếm chung `lib/http/webhook-rate-limit.ts` (T-095), không dùng lớp này.
  */
 export class FixedWindowLimiter {
   private readonly hits = new Map<string, { windowStart: number; count: number }>();

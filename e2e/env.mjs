@@ -2,10 +2,17 @@
  * Cấu hình dùng chung cho E2E (run.mjs, playwright.config.ts, mock-vnpay.mjs). Mọi giá trị là KHÓA TEST-ONLY, không
  * phải bí mật: chỉ có ý nghĩa với DB `xshop_e2e`, cổng cục bộ và cổng VNPAY giả lập — không dùng ở nơi khác.
  */
-export const PORTS = { backend: 9100, storefront: 3100, mockVnpay: 3300 };
+/**
+ * Hai bản sao backend (T-095, ARC-RES-005): `backend` (9100, MEDUSA_WORKER_MODE mặc định — nhận HTTP + chạy job) và
+ * `backendB` (9101, chỉ nhận HTTP — như production tách server/worker), cùng DB + Redis DB 7. Storefront và cổng VNPAY
+ * giả lập gọi backend qua bộ cân bằng tải round-robin `backendLb` (9110, e2e/lb.mjs, không sticky session).
+ */
+export const PORTS = { backend: 9100, backendB: 9101, backendLb: 9110, storefront: 3100, mockVnpay: 3300 };
 
 export const URLS = {
   backend: `http://localhost:${PORTS.backend}`,
+  backendB: `http://localhost:${PORTS.backendB}`,
+  backendLb: `http://localhost:${PORTS.backendLb}`,
   storefront: `http://localhost:${PORTS.storefront}`,
   mockVnpay: `http://localhost:${PORTS.mockVnpay}`,
 };
@@ -33,7 +40,7 @@ export function backendEnv() {
     STORE_CORS: URLS.storefront,
     ADMIN_CORS: URLS.backend,
     AUTH_CORS: URLS.backend,
-    MEDUSA_BACKEND_URL: URLS.backend,
+    MEDUSA_BACKEND_URL: URLS.backendLb,
     VNPAY_ENABLED: "true",
     VNPAY_MODE: "mock",
     VNPAY_TMN_CODE: VNPAY.tmnCode,
@@ -50,7 +57,7 @@ export function storefrontEnv(publishableKey) {
   return {
     NEXT_PUBLIC_SITE_URL: URLS.storefront,
     NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: publishableKey,
-    MEDUSA_BACKEND_URL: URLS.backend,
+    MEDUSA_BACKEND_URL: URLS.backendLb,
     XS_DATA_SOURCE: "backend",
   };
 }

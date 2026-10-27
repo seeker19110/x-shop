@@ -1,5 +1,17 @@
-export const PORTS: { backend: number; storefront: number; mockVnpay: number };
-export const URLS: { backend: string; storefront: string; mockVnpay: string };
+export const PORTS: {
+  backend: number;
+  backendB: number;
+  backendLb: number;
+  storefront: number;
+  mockVnpay: number;
+};
+export const URLS: {
+  backend: string;
+  backendB: string;
+  backendLb: string;
+  storefront: string;
+  mockVnpay: string;
+};
 export const E2E_DB_NAME: string;
 export const ADMIN_DB_URL: string;
 export const DATABASE_URL: string;

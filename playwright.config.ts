@@ -2,8 +2,10 @@ import { defineConfig, devices } from "@playwright/test";
 import { backendEnv, PORTS, storefrontEnv, URLS } from "./e2e/env.mjs";
 
 /**
- * E2E (T-022). Chạy qua `pnpm e2e` (e2e/run.mjs dựng DB + seed + build rồi gọi Playwright). Ba tiến trình do
- * `webServer` bật/tắt: backend Medusa (cổng 9100), storefront `next start` (3100), cổng VNPAY giả lập (3300).
+ * E2E (T-022). Chạy qua `pnpm e2e` (e2e/run.mjs dựng DB + seed + build rồi gọi Playwright). Các tiến trình do
+ * `webServer` bật/tắt: HAI bản sao backend Medusa (9100, 9101 — cùng DB/Redis, T-095/ARC-RES-005), bộ cân bằng tải
+ * round-robin không sticky trước hai bản (9110, e2e/lb.mjs), storefront `next start` (3100, gọi backend qua 9110), cổng
+ * VNPAY giả lập (3300, IPN qua 9110). Mọi luồng UI vì thế rải request qua hai tiến trình backend.
  * Một worker, tuần tự: các luồng dùng chung một DB/kho.
  */
 const publishableKey = process.env.E2E_PUBLISHABLE_KEY;
@@ -41,7 +43,8 @@ export default defineConfig({
     {
       name: "mobile",
       use: { ...devices["Pixel 7"] },
-      testIgnore: [/a11y-reflow\.spec\.ts$/, /keyboard-flow\.spec\.ts$/],
+      // scale-out: kịch bản hai bản sao (API + một luồng UI) không phụ thuộc viewport — chạy một lần ở desktop.
+      testIgnore: [/a11y-reflow\.spec\.ts$/, /keyboard-flow\.spec\.ts$/, /scale-out\.spec\.ts$/],
     },
   ],
   webServer: [
@@ -61,6 +64,24 @@ export default defineConfig({
       env: stringEnv(backendEnv()),
       reuseExistingServer: false,
       timeout: 120_000,
+    },
+    {
+      // Bản sao thứ hai: cùng mã/build/DB/Redis, chỉ nhận HTTP (job định kỳ chạy ở bản thứ nhất).
+      name: "backend-b",
+      command: `pnpm exec medusa start -p ${PORTS.backendB}`,
+      cwd: "apps/backend",
+      url: `${URLS.backendB}/health`,
+      env: stringEnv({ ...backendEnv(), MEDUSA_WORKER_MODE: "server" }),
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
+      name: "backend-lb",
+      command: "node e2e/lb.mjs",
+      url: `${URLS.backendLb}/__lb/health`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
     },
     {
       name: "storefront",

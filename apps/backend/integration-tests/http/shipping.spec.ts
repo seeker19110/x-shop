@@ -439,14 +439,14 @@ medusaIntegrationTestRunner({
     });
 
     describe("T-093 — callback dồn dập: 429 của chính ta kèm Retry-After", () => {
-      // Đặt CUỐI file: bộ đếm của route là bộ nhớ tiến trình theo IP — vượt ngưỡng ở đây không ảnh hưởng test trước.
-      it("vượt 300 callback/10 s/IP → 429 RATE_LIMITED + Retry-After (giây, 1–10); trong ngưỡng không có Retry-After", async () => {
+      // Đặt CUỐI file: bộ đếm theo IP (Postgres, chung mọi bản sao — T-095) — vượt ngưỡng ở đây không ảnh hưởng test trước.
+      it("vượt 300 callback/10 s/IP → 429 RATE_LIMITED + Retry-After (giây, 1–20); trong ngưỡng không có Retry-After", async () => {
         const first = await callback({ OrderCode: "x" });
         expect(first.status).toBe(400);
         expect(first.headers["retry-after"]).toBeUndefined();
         let limited: Res<Record<string, unknown>> | null = null;
-        // Cửa sổ cố định 10 s của route bắt đầu từ callback ĐẦU TIÊN của file (không reset được từ ngoài): đợt dội có thể
-        // vắt qua ranh giới cửa sổ. Gửi tới 700 (≥ 2·300 + 1) → dù vắt qua một ranh giới, một cửa sổ vẫn nhận > 300.
+        // Cửa sổ 10 s theo đồng hồ (không reset được từ ngoài): đợt dội có thể vắt qua ranh giới cửa sổ. Gửi tới 700
+        // (≥ 2·300 + 1) → dù vắt qua một ranh giới, số hiệu dụng của cửa sổ trượt vẫn vượt 300.
         for (let i = 0; i < 700 && !limited; i += 50) {
           const batch = await Promise.all(Array.from({ length: 50 }, () => callback({ OrderCode: "x" })));
           limited = batch.find((r) => r.status === 429) ?? null;
@@ -456,7 +456,7 @@ medusaIntegrationTestRunner({
         const after = Number(limited!.headers["retry-after"]);
         expect(Number.isInteger(after)).toBe(true);
         expect(after).toBeGreaterThanOrEqual(1);
-        expect(after).toBeLessThanOrEqual(10);
+        expect(after).toBeLessThanOrEqual(20); // cửa sổ trượt: sau đợt dội có thể tới 2 cửa sổ (D-037)
       });
     });
   },

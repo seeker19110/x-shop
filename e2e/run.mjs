@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * `pnpm e2e` — dựng môi trường E2E từ đầu rồi chạy Playwright (Playwright tự bật/tắt backend, storefront, cổng VNPAY
- * giả lập qua `webServer` trong playwright.config.ts):
+ * `pnpm e2e` — dựng môi trường E2E từ đầu rồi chạy Playwright (Playwright tự bật/tắt hai bản sao backend + bộ cân bằng
+ * tải, storefront, cổng VNPAY giả lập qua `webServer` trong playwright.config.ts):
  *   1. build packages/domain (mock VNPAY dùng bản dist)
  *   2. DB riêng `xshop_e2e` (drop + create mỗi lần) + Redis DB số 7 làm sạch
  *   3. migrate + seed nền + seed catalog demo (apps/backend/src/scripts) + nâng tồn demo (boost-stock.mjs)
