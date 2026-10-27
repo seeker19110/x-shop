@@ -1268,6 +1268,74 @@ medusaIntegrationTestRunner({
         }
       });
 
+      it("họ đơn hàng, vai trò thiếu catalog.read: không vòng sang catalog nháp qua link; màn đơn của dashboard vẫn 200", async () => {
+        const DRAFT = "Ao T147F";
+        // Đúng `fields` dashboard 2.22.1 gửi (src/routes/orders/order-list/const.ts, order-detail/constants.ts).
+        const LIST =
+          "id,status,created_at,email,display_id,custom_display_id,payment_status,fulfillment_status,total,currency_code,*customer,*sales_channel,*payment_collections,*shipping_address";
+        const DETAIL =
+          "id,status,created_at,canceled_at,email,display_id,custom_display_id,currency_code,metadata,total,credit_line_total,item_subtotal,item_total,item_tax_total,original_item_tax_total,item_discount_total,shipping_subtotal,original_total,original_tax_total,subtotal,discount_total,discount_subtotal,shipping_total,shipping_tax_total,original_shipping_tax_total,shipping_discount_total,tax_total,refundable_total,order_change,*customer,*items,*items.variant,*items.variant.product,*items.variant.options,+items.variant.manage_inventory,*items.variant.inventory_items.inventory,+items.variant.inventory_items.required_quantity,+summary,*shipping_address,*billing_address,*sales_channel,*promotions,*shipping_methods,*credit_lines,*fulfillments,+fulfillments.shipping_option.service_zone.fulfillment_set.type,*fulfillments.items,*fulfillments.labels,*fulfillments.labels,*payment_collections,*payment_collections.payment_sessions,*payment_collections.payments,*payment_collections.payments.refunds,*payment_collections.payments.refunds.refund_reason,region.automatic_taxes";
+        for (const role of ["order_staff", "accountant"] as const) {
+          for (const url of [
+            "/admin/orders?fields=id,sales_channel.products_link.product.title,sales_channel.products_link.product.description",
+            `/admin/orders/${fx.orderId}?fields=id,sales_channel.products_link.product.title`,
+            `/admin/orders/${fx.orderId}?fields=id,items.variant.product.collection.products.title`,
+          ]) {
+            const res = await call("GET", url, accounts[role].headers);
+            expect({
+              role,
+              url,
+              status: res.status,
+              draft: JSON.stringify(res.data).includes(DRAFT),
+            }).toEqual({
+              role,
+              url,
+              status: 403,
+              draft: false,
+            });
+          }
+          const list = await call("GET", `/admin/orders?fields=${LIST}`, accounts[role].headers);
+          expect({ role, status: list.status }).toEqual({ role, status: 200 });
+          const detail = await call(
+            "GET",
+            `/admin/orders/${fx.orderId}?fields=${DETAIL}`,
+            accounts[role].headers,
+          );
+          expect({ role, status: detail.status }).toEqual({ role, status: 200 });
+          // Tên sản phẩm của DÒNG HÀNG vẫn hiển thị (SPEC-admin: dòng hàng có sản phẩm là hợp lệ).
+          const items = (detail.data.order as { items: { variant: { product: { title: string } } }[] }).items;
+          expect(items[0]!.variant.product.title).toBe(DRAFT);
+        }
+        // Có catalog.read (owner): vẫn được yêu cầu catalog qua kênh bán.
+        const owner = await call(
+          "GET",
+          `/admin/orders/${fx.orderId}?fields=id,sales_channel.products_link.product.title`,
+          accounts.owner.headers,
+        );
+        expect(owner.status).toBe(200);
+      });
+
+      it("bảng mức tồn (màn chi tiết tồn kho) của nhân viên đơn: `+stock_locations.id,+stock_locations.name` → 200", async () => {
+        const res = await call(
+          "GET",
+          `/admin/inventory-items/${fx.inventoryItemId}/location-levels?fields=+stock_locations.id,+stock_locations.name`,
+          accounts.order_staff.headers,
+        );
+        expect(res.status).toBe(200);
+        expect(res.data.inventory_levels).toEqual([
+          expect.objectContaining({
+            location_id: fx.locationId,
+            stock_locations: [expect.objectContaining({ id: fx.locationId, name: "kho-t147f" })],
+          }),
+        ]);
+        const bad = await call(
+          "GET",
+          `/admin/inventory-items/${fx.inventoryItemId}/location-levels?fields=+stock_locations.sales_channels.products_link.product.title`,
+          accounts.order_staff.headers,
+        );
+        expect(bad.status).toBe(403);
+      });
+
       it("đồng thời: 36 request song song trộn vai trò × URL dò/hợp lệ → mỗi request đúng kết quả, không lộ PII", async () => {
         const urls = [
           `/admin/regions?fields=id,orders.email`,

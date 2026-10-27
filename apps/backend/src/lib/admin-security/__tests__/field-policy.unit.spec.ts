@@ -36,7 +36,50 @@ describe("nativeFieldPolicy", () => {
         expect.arrayContaining([...CATALOG_FIELD_SEGMENTS]),
       );
     }
-    expect(nativeFieldPolicy("/admin/orders/o1", ["order_staff"])).toBeNull();
+    expect(nativeFieldPolicy("/admin/orders/o1", ["order_staff", "warehouse"])).toBeNull();
+    // Họ đơn hàng: tên sản phẩm của dòng hàng được, vòng sang catalog khác (link, số nhiều, lồng ngoài items.) bị cấm.
+    for (const role of ["order_staff", "accountant"] as const) {
+      const p = nativeFieldPolicy("/admin/orders", [role])!;
+      expect(p.allowed).toBeNull();
+      expect(
+        forbiddenFields(
+          [
+            "items.variant",
+            "items.variant.product",
+            "items.variant.options",
+            "items.variant.inventory_items.inventory",
+            "item.variant.product",
+            "items.product_title",
+            "sales_channel",
+            "payment_collections.payments.refunds.refund_reason",
+          ],
+          p,
+        ),
+      ).toEqual([]);
+      expect(
+        forbiddenFields(
+          [
+            "sales_channel.products_link.product.title",
+            "sales_channel.products_link",
+            "promotions.application_method.target_rules.values",
+            "items.variant.product.collection.products.title",
+            "items.variant.product.variants.sku",
+            "shipping_methods.shipping_option.shipping_profile.products_link",
+            "region.something.product",
+            "fulfillments.items.variant",
+          ],
+          p,
+        ),
+      ).toEqual([
+        "sales_channel.products_link.product.title",
+        "sales_channel.products_link",
+        "items.variant.product.collection.products.title",
+        "items.variant.product.variants.sku",
+        "shipping_methods.shipping_option.shipping_profile.products_link",
+        "region.something.product",
+        "fulfillments.items.variant",
+      ]);
+    }
     expect(nativeFieldPolicy("/admin/sales-channels", ["warehouse"])?.disallowed).not.toContain("product");
   });
 
@@ -52,6 +95,12 @@ describe("nativeFieldPolicy", () => {
       expect(nativeFieldPolicy(path, ["order_staff"])?.allowed).toEqual([...INVENTORY_ITEM_FIELDS]);
     expect(nativeFieldPolicy("/admin/inventory-items", ["warehouse"])?.allowed).toBeNull();
     expect(INVENTORY_ITEM_FIELDS).not.toContain("variants");
+    // Bảng mức tồn của dashboard: `+stock_locations.id,+stock_locations.name`.
+    const levels = nativeFieldPolicy("/admin/inventory-items/i1/location-levels", ["order_staff"])!;
+    expect(
+      forbiddenFields(requestedFields({ fields: "+stock_locations.id,+stock_locations.name" })!, levels),
+    ).toEqual([]);
+    expect(forbiddenFields(["stock_locations.address"], levels)).toEqual(["stock_locations.address"]);
   });
 
   it("họ đơn hàng, vai trò thiếu order.read (kho ghi vận đơn) → trường tối thiểu, không email/khách/địa chỉ", () => {

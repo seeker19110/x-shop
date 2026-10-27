@@ -118,6 +118,10 @@ export const INVENTORY_ITEM_FIELDS: readonly string[] = [
   "location_id",
   "incoming_quantity",
   "available_quantity",
+  // Bảng mức tồn của màn chi tiết tồn kho: `fields=+stock_locations.id,+stock_locations.name` (tên kho, không PII).
+  "stock_locations",
+  "stock_locations.id",
+  "stock_locations.name",
 ];
 
 /** Đơn trả về cho vai trò thiếu `order.read` (kho tạo/giao vận đơn native): không email, khách, địa chỉ, dòng hàng, tiền. */
@@ -171,6 +175,22 @@ const inFamily = (prefix: string, path: string) => path === prefix || path.start
 /** `path` thuộc họ đơn hàng (đơn, vận đơn, đổi trả, khách, thanh toán…). */
 export const isOrderFamilyPath = (path: string) => ORDER_FAMILIES.some(([prefix]) => inFamily(prefix, path));
 
+/**
+ * Họ đơn hàng, vai trò thiếu `catalog.read` (nhân viên đơn, kế toán): tên sản phẩm/biến thể của DÒNG HÀNG là hợp lệ
+ * (`items.variant.product`; `item.variant.product` ở `/admin/orders/:id/line-items`), nhưng không được đi vòng sang catalog
+ * khác — `sales_channel.products_link.product.*` từng trả sản phẩm nháp. Cấm: mọi bảng nối `*_link`; đoạn số nhiều
+ * (`products`, `variants`, `product_variants` — liệt kê sản phẩm khác); `product`/`variant`/`product_variant` lồng (có `.`
+ * phía trước) mà KHÔNG nằm dưới `items.`/`item.`. Biểu thức cuối chỉ khớp đường dẫn đầy đủ (luôn cần `.`), nên không chặn một đoạn
+ * đơn lẻ khi Medusa thử từng đoạn.
+ */
+export const ORDER_FAMILY_CATALOG_RULES: readonly (string | RegExp)[] = [
+  ...PII_FIELD_PATTERNS,
+  "products",
+  "variants",
+  "product_variants",
+  /^(?!items?\.).*\.(?:product|variant|product_variant)(?:\.|$)/,
+];
+
 export interface FieldPolicy {
   /** Đoạn/biểu thức cấm — gán `req.disallowed` (Medusa gỡ khỏi cả trường mặc định). */
   disallowed: (string | RegExp)[];
@@ -188,7 +208,7 @@ export function nativeFieldPolicy(path: string, roles: readonly Role[]): FieldPo
   const orderFamily = isOrderFamilyPath(path);
   const disallowed: (string | RegExp)[] = [
     ...(orderRead ? [] : [...PII_FIELD_SEGMENTS, ...PII_FIELD_PATTERNS]),
-    ...(catalogRead || orderFamily ? [] : CATALOG_FIELD_SEGMENTS),
+    ...(catalogRead ? [] : orderFamily ? ORDER_FAMILY_CATALOG_RULES : CATALOG_FIELD_SEGMENTS),
   ];
   let allowed: string[] | null = null;
   if (!orderRead && orderFamily) {
