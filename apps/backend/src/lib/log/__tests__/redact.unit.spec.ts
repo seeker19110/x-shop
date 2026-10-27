@@ -85,10 +85,16 @@ describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
     redactText(input.slice(0, 100)); // làm nóng regex
     // Thời gian CPU (không phải wall-clock): cổng chạy song song nhiều tiến trình làm wall-clock vượt trần dù regex
     // không backtrack (63 ms khi máy tải nặng); backtracking thảm hoạ vẫn tốn hàng trăm ms CPU nên vẫn bị bắt.
-    const t0 = process.cpuUsage();
-    redactText(input);
-    const d = process.cpuUsage(t0);
-    expect((d.user + d.system) / 1000).toBeLessThan(50);
+    // Lấy MIN của 3 lần: CPU của tiến trình gồm cả GC — một lần GC lớn lúc cổng tải nặng từng đẩy 1 lần đo lên 168 ms
+    // dù regex tuyến tính; backtracking thảm hoạ thì lần nào cũng chậm nên min vẫn vượt trần.
+    let best = Infinity;
+    for (let run = 0; run < 3; run++) {
+      const t0 = process.cpuUsage();
+      redactText(input);
+      const d = process.cpuUsage(t0);
+      best = Math.min(best, (d.user + d.system) / 1000);
+    }
+    expect(best).toBeLessThan(50);
   });
 });
 
