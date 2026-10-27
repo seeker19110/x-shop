@@ -8,6 +8,7 @@ import {
   OUTBOX_RUN_LIMITS,
   type OutboxBreakerPolicy,
 } from "../breaker";
+import { validateOutboxPayload } from "../payload";
 import { OUTBOX_POLICY } from "../policy";
 import { fakeOutboxDb } from "./fake-outbox-store";
 
@@ -196,6 +197,42 @@ describe("breaker — hết nguội → half-open → thành công thì đóng",
     expectNoLoss(db, h.calls);
   });
 
+  it("lượt thử nhận lỗi VĨNH VIỄN = dịch vụ đã trả lời → closed (D-111); sự kiện đó dead, phần còn lại gửi tiếp", async () => {
+    const { db, h } = await tripped();
+    let n = 0;
+    const handler: OutboxHandler = async (_c, e) => {
+      h.calls.push(e.id);
+      if (n++ === 0) throw new CheckoutError("VALIDATION");
+    };
+    const r = await run(db, at(60_000), { "test.x": handler });
+    expect(r.dead).toHaveLength(1);
+    expect(r.sent).toHaveLength(5);
+    expect(r.deferred).toEqual([]);
+    expect(h.calls).toHaveLength(6);
+    expect(db.breakers.get(KEY)).toMatchObject({
+      state: "closed",
+      consecutive_failures: 0,
+      open_until: null,
+    });
+    expect(db.logs.some((l) => l.level === "info" && l.message.includes("đóng breaker"))).toBe(true);
+    expect(breakerExceptions(db)).toHaveLength(1);
+  });
+
+  it("lỗi vĩnh viễn NGOÀI lượt thử vẫn trung lập: không xoá đếm lỗi liên tiếp", async () => {
+    const db = fakeOutboxDb(events(4));
+    const seq = ["fail", "fail", "permanent", "fail"];
+    let i = 0;
+    const handler: OutboxHandler = async () => {
+      const m = seq[i++];
+      if (m === "fail") throw new Error("ESP 503");
+      if (m === "permanent") throw new CheckoutError("VALIDATION");
+    };
+    const r = await run(db, T0, { "test.x": handler });
+    expect(r.dead).toEqual(["test.x:e03"]);
+    expect(db.breakers.get(KEY)).toMatchObject({ state: "open", consecutive_failures: 3 });
+    expect(breakerExceptions(db)).toHaveLength(1);
+  });
+
   it("ngoại lệ cũ đã xử lý xong mà breaker mở lại → ngoại lệ mới", async () => {
     const { db, h } = await tripped();
     breakerExceptions(db)[0]!.state = "resolved";
@@ -376,6 +413,40 @@ describe("trần mỗi lượt chạy", () => {
 
   it("mặc định production: trần 100 vòng / 50 lượt gọi", () => {
     expect(OUTBOX_RUN_LIMITS).toEqual({ maxIterations: 100, maxCalls: 50 });
+  });
+});
+
+describe("loại sự kiện trùng khoá Object.prototype (dữ liệu trong DB không được trúng prototype)", () => {
+  const PROTO_TYPES = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"];
+
+  it("không có bộ xử lý riêng → chỉ ghi log + sent; không qua breaker; lượt chạy không sập", async () => {
+    const db = fakeOutboxDb(PROTO_TYPES.map((type, i) => ({ id: `x${i}`, type })));
+    const r = await dispatchOutbox(db.container, { now: T0, breakerPolicy: POLICY });
+    expect(r.sent.sort()).toEqual(PROTO_TYPES.map((t, i) => `${t}:x${i}`).sort());
+    expect(r.dead).toEqual([]);
+    expect(db.breakers.size).toBe(0);
+    expect(db.outbox.every((x) => x.state === "sent")).toBe(true);
+  });
+
+  it("bộ xử lý khai RIÊNG cho loại `constructor` thì được dùng (khoá riêng của opts.handlers)", async () => {
+    const db = fakeOutboxDb([{ id: "c1", type: "constructor" }]);
+    const seen: string[] = [];
+    const own: OutboxHandler = async (_c, e) => {
+      seen.push(e.id);
+    };
+    const r = await dispatchOutbox(db.container, {
+      now: T0,
+      breakerPolicy: POLICY,
+      handlers: { constructor: own },
+    });
+    expect(seen).toEqual(["c1"]);
+    expect(r.sent).toEqual(["constructor:c1"]);
+    expect(db.breakers.size).toBe(0); // thành công, chưa từng lỗi → không có dòng breaker
+  });
+
+  it("validateOutboxPayload: loại trùng khoá prototype chỉ qua kiểm chung, không ném", () => {
+    for (const t of PROTO_TYPES) expect(validateOutboxPayload(t, { a: 1 })).toEqual({ ok: true });
+    expect(validateOutboxPayload("constructor", { password: "x" }).ok).toBe(false);
   });
 });
 

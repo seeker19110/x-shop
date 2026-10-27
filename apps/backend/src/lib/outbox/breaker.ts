@@ -6,8 +6,8 @@
  *     chạm trần thì dừng lượt, sự kiện còn lại chờ lượt sau (không nhận nên không mất).
  *  2. Theo BREAKER (một adapter/bộ xử lý, `breakerKeyOf`): `failureThreshold` sự kiện KHÁC NHAU lỗi tạm liên tiếp →
  *     `open` trong `cooldownMs`, không gọi dịch vụ ngoài; hết nguội → `half_open`, đúng MỘT lượt thử (probe) toàn hệ
- *     thống; thành công → `closed`, lỗi → `open` lại. Một sự kiện thử lại nhiều lần chỉ tính một (đã có backoff/trần
- *     lần riêng — một sự kiện hỏng không được chặn cả adapter).
+ *     thống; thành công hoặc lỗi VĨNH VIỄN (dịch vụ đã trả lời — D-111) → `closed`, lỗi tạm → `open` lại. Một sự kiện
+ *     thử lại nhiều lần chỉ tính một (đã có backoff/trần lần riêng — một sự kiện hỏng không được chặn cả adapter).
  *  3. Theo NGÂN SÁCH cửa sổ (ngày UTC, đếm ở `rate_limit_counter`): ≥ 80 % → cảnh báo (log một lần), ≥ 90 % → bóp
  *     (mỗi lượt chạy tối đa `throttledCallsPerRun` lượt gọi cho breaker đó), vượt 100 % → `open` tới hết cửa sổ.
  *
@@ -262,15 +262,18 @@ export class BreakerRun {
     return { kind: "call", probe };
   }
 
-  /** Lượt gọi thành công: half_open → closed; closed → xoá đếm lỗi. */
+  /**
+   * Dịch vụ đã trả lời: lượt gọi thành công, hoặc lượt thử half-open nhận lỗi vĩnh viễn (D-111 — dispatcher chỉ gọi cho
+   * lỗi vĩnh viễn khi đó là lượt thử). half_open → closed; closed → xoá đếm lỗi.
+   */
   async onSuccess(key: string): Promise<void> {
     if (await this.store.recordJobBreakerSuccess(key)) {
-      this.hooks.info(`[breaker] ${key}: lượt thử thành công — đóng breaker`);
+      this.hooks.info(`[breaker] ${key}: lượt thử có trả lời — đóng breaker`);
     }
   }
 
   /**
-   * Lỗi TẠM của sự kiện `eventId` (lỗi vĩnh viễn không nói gì về sức khoẻ adapter — không gọi hàm này). `half_open`
+   * Lỗi TẠM của sự kiện `eventId` (lỗi vĩnh viễn không phải tín hiệu adapter hỏng — không gọi hàm này). `half_open`
    * (lượt thử lỗi) → mở lại; `closed` đủ `failureThreshold` sự kiện khác nhau lỗi liên tiếp → mở.
    */
   async onFailure(key: string, eventId: string, now: Date): Promise<void> {

@@ -354,7 +354,12 @@ export async function dispatchOutbox(
   const clock = opts.clock ?? (() => new Date());
   const now = opts.now ?? clock();
   const s = service(container);
-  const handlers = { ...DEFAULT_OUTBOX_HANDLERS, ...opts.handlers };
+  // Map (không phải object thường): loại sự kiện là dữ liệu trong DB — `constructor`/`__proto__`/`toString` không được trúng
+  // khoá của Object.prototype. `Object.entries` chỉ lấy khoá riêng.
+  const handlers = new Map<string, OutboxHandler>([
+    ...Object.entries(DEFAULT_OUTBOX_HANDLERS),
+    ...Object.entries(opts.handlers ?? {}),
+  ]);
   const summary: DispatchSummary = { sent: [], retried: [], dead: [], deferred: [], stopped: null };
   const policy = opts.breakerPolicy ?? OUTBOX_BREAKER_POLICY;
   const limits = opts.runLimits ?? OUTBOX_RUN_LIMITS;
@@ -402,8 +407,9 @@ export async function dispatchOutbox(
       await markDead(event, check.reason, "invalid_payload");
       continue;
     }
-    const handler = handlers[event.type];
+    const handler = handlers.get(event.type);
     const key = breakerKeyOf(event.type);
+    let probe = false;
     if (handler) {
       const admission = await breaker.admit(key, opts.now ?? clock());
       if (admission.kind === "defer") {
@@ -411,6 +417,7 @@ export async function dispatchOutbox(
         summary.deferred.push(event.event_key);
         continue;
       }
+      probe = admission.probe;
     }
     let ok = false;
     try {
@@ -427,6 +434,9 @@ export async function dispatchOutbox(
       if (info.permanent) {
         // 4xx nghiệp vụ / validate: thử lại không đổi được kết quả → DLQ ngay (BE-JOB-003).
         await markDead(event, message, "permanent_error");
+        // Lượt thử half-open nhận lỗi vĩnh viễn = dịch vụ đã TRẢ LỜI → đóng breaker (D-111). Ngoài lượt thử: trung lập
+        // (lỗi của riêng sự kiện, không nói gì về sức khoẻ adapter).
+        if (handler && probe) await breaker.onSuccess(key);
       } else {
         if (failed >= OUTBOX_POLICY.maxAttempts) {
           await markDead(event, message, "max_attempts");

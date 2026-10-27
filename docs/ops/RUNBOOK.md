@@ -412,7 +412,7 @@ sao), ngân sách lượt gọi theo ngày UTC ở `rate_limit_counter` (bucket 
 lỗi tạm liên tiếp → mở 5 phút; ngân sách ngày `outbox.notify` 3 000, loại khác 10 000 — 80 % log WARN, 90 % bóp còn 5 lượt gọi/lượt
 chạy, vượt 100 % → mở tới 00:00 UTC hôm sau. Breaker mở → mở ngoại lệ này (ưu tiên `high`, owner `owner`, một ngoại lệ đang mở mỗi
 breaker). **Không mất sự kiện**: sự kiện bị hoãn vẫn `pending`/`failed` trong `outbox_event`, `attempts` không đổi, `next_attempt_at`
-= hết nguội. Hết nguội → đúng một lượt thử (half-open); thành công → đóng, lỗi → mở thêm một kỳ.
+= hết nguội. Hết nguội → đúng một lượt thử (half-open); thành công hoặc lỗi vĩnh viễn (dịch vụ đã trả lời, D-111) → đóng, lỗi tạm → mở thêm một kỳ.
 
 1. Xem breaker và lý do (`detail.reason`: `consecutive_failures` | `budget_exhausted`):
 
