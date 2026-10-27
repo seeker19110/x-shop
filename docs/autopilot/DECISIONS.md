@@ -733,3 +733,10 @@
 - Chọn: Giữ fail-fast lúc khởi động; ghi rõ mọi tiến trình backend (server, worker, migrate) phải mount volume PRIVATE_UPLOAD_DIR (GO-NO-GO)
 - Lý do (tiêu chí chất lượng cuối): (1) mặc định an toàn: cấu hình sai lộ ra ngay khi deploy thay vì lúc khách xuất file; (3) đơn giản
 - Đường lùi: Chuyển preparePrivateDir sang lazy trong provider
+
+### D-105 · 2026-10-27T14:08:50+00:00 · T-158: helper ops exception hết lock_timeout (55P03) thì làm gì
+
+- Phương án: (1) Ghi thêm một lần không khoá trong giao dịch mới (có thể trùng, không mất dấu) · (2) Ném lỗi, người gọi chỉ log (mất dấu khi DB nghẽn)
+- Chọn: Ghi thêm một lần không khoá trong giao dịch mới (có thể trùng, không mất dấu)
+- Lý do (tiêu chí chất lượng cuối): (1) mất dấu ngoại lệ vận hành tệ hơn trùng (nguyên tắc T-156/D-101); ca hiếm khi DB nghẽn
+- Đường lùi: Bỏ nhánh ghi dự phòng khi 55P03
