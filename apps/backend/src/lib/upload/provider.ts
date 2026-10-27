@@ -20,10 +20,33 @@ import { preparePrivateDir, PRIVATE_FILE_MODE, privateFileUrl } from "./private"
  * Thư mục private được tạo lúc khởi tạo với quyền 700 (có sẵn mà mở cho group/other → từ chối), kiểm rời `static/` cả sau
  * khi theo symlink; file private hạ về quyền 600.
  */
+/** Cảnh báo một lần khi provider local khởi tạo (dev/test): kho này chỉ đúng cho MỘT tiến trình/máy. */
+export const LOCAL_STORAGE_WARNING =
+  "File lưu trên đĩa cục bộ (FILE_STORAGE=local) — chỉ đúng cho một tiến trình; nhiều bản sao/worker riêng cần FILE_STORAGE=s3 (docs/ops/ENV.md)";
+
+function warnNotShared(deps: unknown): void {
+  let logger: { warn?: (msg: string) => void } | undefined;
+  try {
+    // Container của Medusa là proxy awilix: thiếu đăng ký thì ném lỗi khi đọc.
+    logger = (deps as { logger?: { warn?: (msg: string) => void } } | null)?.logger;
+  } catch {
+    logger = undefined;
+  }
+  if (typeof logger?.warn === "function") logger.warn(LOCAL_STORAGE_WARNING);
+}
+
 export class ServerKeyedLocalFileService extends LocalFileService {
   static override identifier = "localfs-server-key";
 
-  constructor(deps: unknown, options: LocalFileServiceOptions) {
+  constructor(deps: unknown, options: LocalFileServiceOptions & { node_env?: string }) {
+    // T-154: đĩa cục bộ không dùng chung giữa các bản sao (ảnh upload ở A không có ở B). Production bắt buộc FILE_STORAGE=s3
+    // (lib/env đã chặn); đây là lớp thứ hai nếu provider local bị đăng ký bằng cách khác.
+    if ((options?.node_env ?? process.env.NODE_ENV) === "production") {
+      throw new Error(
+        "File provider local: không dùng ở production — file trên đĩa từng máy, bản sao khác không đọc được (FILE_STORAGE=s3)",
+      );
+    }
+    warnNotShared(deps);
     const privateDir =
       typeof options?.private_upload_dir === "string" ? options.private_upload_dir.trim() : "";
     if (privateDir === "") {

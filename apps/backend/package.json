@@ -19,11 +19,13 @@
     "test:integration": "TEST_TYPE=integration:http NODE_OPTIONS=\"--experimental-vm-modules --max-old-space-size=3072\" jest --silent=false --maxWorkers=1 --forceExit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1156.0",
     "@medusajs/admin-sdk": "2.22.1",
     "@medusajs/admin-shared": "2.22.1",
     "@medusajs/cli": "2.22.1",
     "@medusajs/dashboard": "2.22.1",
     "@medusajs/draft-order": "2.22.1",
+    "@medusajs/file-s3": "2.22.1",
     "@medusajs/framework": "2.22.1",
     "@medusajs/medusa": "2.22.1",
     "@medusajs/ui": "4.2.8",
