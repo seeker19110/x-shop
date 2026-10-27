@@ -36,11 +36,19 @@ export const CATALOG_REVALIDATE_POLICY = {
   /** Hạn một lần POST tới storefront — ngắn vì bộ xử lý chạy trong khe outbox-dispatch dùng chung (D-081). */
   requestTimeoutMs: 2_000,
   /**
-   * Storefront không trả lời (timeout/lỗi kết nối) → trong khoảng này mọi lần gửi của tiến trình thất bại NGAY (tạm thời,
-   * hẹn lại sau phần còn lại), không chờ mạng: một lượt dispatcher chỉ mất tối đa một `requestTimeoutMs` cho cả loạt dòng
-   * catalog, sự kiện khác (thanh toán, thông báo) không xếp hàng sau chúng.
+   * Bộ ngắt THEO TỪNG URL: một bản storefront lỗi tạm (timeout, không kết nối được, 5xx/408/429) hoặc trả lời chậm hơn
+   * `slowResponseMs` → trong khoảng này mọi lần gửi tới URL đó thất bại NGAY (tạm thời, hẹn lại sau phần còn lại; dài hơn
+   * nếu `Retry-After` đòi), không chờ mạng. Bản khoẻ vẫn nhận bình thường.
    */
   unavailableCooldownMs: 30_000,
+  /** Phản hồi chậm hơn ngưỡng này (kể cả 2xx) cũng mở ngắt — không để storefront chậm giữ khe dispatcher. */
+  slowResponseMs: 1_000,
+  /**
+   * Trong MỘT lượt outbox-dispatch: tối đa bấy nhiêu dòng catalog gửi theo tag riêng; dòng kế tiếp gửi MỘT webhook tag
+   * `catalog` (phủ mọi dòng còn lại của lượt — thành công thì các dòng sau xong không cần mạng); hỏng thì phần còn lại của
+   * lượt thất bại tạm ngay. Mỗi lượt gọi mạng tối đa `maxNetworkRowsPerRun + 1` lần (D-081).
+   */
+  maxNetworkRowsPerRun: 3,
   /** Trần chờ theo `Retry-After` của storefront. */
   maxRetryAfterMs: 3600_000,
 } as const;
@@ -233,14 +241,24 @@ export class RevalidateHttpError extends Error {
   }
 }
 
-/** Mốc (Date.now) tới đó storefront coi như không trả lời — xem `unavailableCooldownMs`. Theo tiến trình. */
-let unavailableUntil = 0;
+interface UrlBreaker {
+  /** Mốc (ms, theo `now` của lần gửi) tới đó URL bị ngắt. */
+  until: number;
+  /** Đã từng ngắt và chưa có lần gửi thành công → lần thành công kế tiếp phải là tag `catalog` (gửi bù). */
+  tripped: boolean;
+}
 
-/** Ngắt gửi khi storefront không trả lời: lỗi tạm thời (không `status`), `retryAfterMs` = thời gian ngắt còn lại. */
+/** Bộ ngắt theo URL (theo tiến trình) — xem `unavailableCooldownMs`. */
+const breakers = new Map<string, UrlBreaker>();
+
+/** URL đang bị ngắt: lỗi tạm thời (không `status`), `retryAfterMs` = thời gian ngắt còn lại. */
 export class RevalidateUnavailableError extends Error {
   override readonly name = "RevalidateUnavailableError";
-  constructor(readonly retryAfterMs: number) {
-    super(`[catalog-revalidate] Storefront không trả lời gần đây — tạm ngưng gửi ${retryAfterMs} ms`);
+  constructor(
+    readonly retryAfterMs: number,
+    host = "storefront",
+  ) {
+    super(`[catalog-revalidate] ${host} lỗi/chậm gần đây — tạm ngưng gửi ${retryAfterMs} ms`);
   }
 }
 
@@ -258,29 +276,44 @@ const hostOf = (url: string): string => {
   }
 };
 
+/** Lỗi tạm thời của một URL (không phản hồi, 5xx/408/429) — mở ngắt. 4xx khác là lỗi cấu hình/giao thức, không ngắt. */
+const isTransientError = (e: Error): boolean =>
+  !(e instanceof RevalidateHttpError) || isTransientStatus(e.status);
+
 /**
  * POST webhook đã ký tới MỌI URL cấu hình (mỗi bản storefront một URL — cache của Next nằm trong từng tiến trình). Mỗi URL
- * một nonce/chữ ký riêng. Thành công khi mọi URL trả 2xx; không thì ném: còn URL lỗi tạm thời → ném lỗi tạm (retry gửi lại
- * cả lô — revalidate idempotent), chỉ còn lỗi vĩnh viễn → ném lỗi vĩnh viễn (outbox `dead`).
+ * một nonce/chữ ký riêng và một bộ ngắt riêng. URL vừa hồi sau ngắt nhận tag `catalog` (gửi bù cho các dòng đã dead/bỏ lỡ
+ * trong lúc nó sập). Thành công khi mọi URL trả 2xx; không thì ném: còn URL lỗi tạm thời (kể cả đang ngắt) → ném lỗi tạm
+ * (retry gửi lại cả lô — revalidate idempotent), chỉ còn lỗi vĩnh viễn → ném lỗi vĩnh viễn (outbox `dead`).
  */
 export async function sendRevalidation(
   config: RevalidateConfig,
   input: { id: string; tags: string[] },
   deps: SendDeps = {},
 ): Promise<void> {
-  const remaining = unavailableUntil - Date.now();
-  if (remaining > 0) throw new RevalidateUnavailableError(remaining);
   const fetchImpl = deps.fetch ?? fetch;
   const now = deps.now ?? new Date();
+  const nowMs = now.getTime();
   const makeNonce = deps.nonce ?? (() => randomBytes(18).toString("base64url"));
-  const body = JSON.stringify({ id: input.id, tags: input.tags });
+  const { requestTimeoutMs, slowResponseMs, unavailableCooldownMs, maxRetryAfterMs } =
+    CATALOG_REVALIDATE_POLICY;
   const results = await Promise.allSettled(
     config.urls.map(async (url) => {
-      const timestamp = String(msToSecondsFloor(now.getTime()));
+      const breaker = breakers.get(url);
+      if (breaker && breaker.until > nowMs) {
+        // Dòng bị từ chối trong lúc ngắt có thể chết trước khi URL hồi → lần thành công kế tiếp phải gửi bù `catalog`.
+        breaker.tripped = true;
+        throw new RevalidateUnavailableError(breaker.until - nowMs, hostOf(url));
+      }
+      const tags = breaker?.tripped === true ? [protocol.CATALOG_TAG] : input.tags;
+      const body = JSON.stringify({ id: input.id, tags });
+      const timestamp = String(msToSecondsFloor(nowMs));
       const nonce = makeNonce();
-      let res: Response;
+      const startedAt = Date.now();
+      let error: Error | null = null;
+      let retryAfterMs: number | null = null;
       try {
-        res = await fetchImpl(url, {
+        const res = await fetchImpl(url, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -295,27 +328,36 @@ export async function sendRevalidation(
           },
           body,
           redirect: "error",
-          signal: AbortSignal.timeout(CATALOG_REVALIDATE_POLICY.requestTimeoutMs),
+          signal: AbortSignal.timeout(requestTimeoutMs),
         });
+        if (!res.ok) {
+          retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"), now, maxRetryAfterMs);
+          error = new RevalidateHttpError(
+            `[catalog-revalidate] ${hostOf(url)} trả ${res.status}`,
+            res.status,
+            retryAfterMs,
+          );
+        }
       } catch (e) {
         // Mạng/timeout: không có status → `retryInfoOf` coi là tạm thời.
-        throw new Error(`[catalog-revalidate] Không gửi được tới ${hostOf(url)}: ${(e as Error).message}`);
+        error = new Error(`[catalog-revalidate] Không gửi được tới ${hostOf(url)}: ${(e as Error).message}`);
       }
-      if (res.ok) return;
-      throw new RevalidateHttpError(
-        `[catalog-revalidate] ${hostOf(url)} trả ${res.status}`,
-        res.status,
-        parseRetryAfterMs(res.headers.get("retry-after"), now, CATALOG_REVALIDATE_POLICY.maxRetryAfterMs),
-      );
+      const slow = Date.now() - startedAt > slowResponseMs;
+      if ((error !== null && isTransientError(error)) || slow) {
+        breakers.set(url, {
+          until: nowMs + Math.max(unavailableCooldownMs, retryAfterMs ?? 0),
+          // Chậm nhưng đã nhận (2xx) thì không cần gửi bù; mọi trường hợp khác giữ/bật cờ gửi bù.
+          tripped: error !== null || breaker?.tripped === true,
+        });
+      } else if (error === null) {
+        breakers.delete(url); // thành công (đã kèm gửi bù nếu vừa hồi) → đóng ngắt
+      }
+      if (error !== null) throw error;
     }),
   );
   const errors = results.flatMap((r) => (r.status === "rejected" ? [r.reason as Error] : []));
-  // Chỉ lỗi KHÔNG có phản hồi (timeout, từ chối kết nối) mới ngắt: 4xx/5xx trả về nhanh, không giữ khe dispatcher.
-  if (errors.some((e) => !(e instanceof RevalidateHttpError))) {
-    unavailableUntil = Date.now() + CATALOG_REVALIDATE_POLICY.unavailableCooldownMs;
-  } else if (errors.length === 0) unavailableUntil = 0;
   if (errors.length === 0) return;
-  throw errors.find((e) => !(e instanceof RevalidateHttpError) || isTransientStatus(e.status)) ?? errors[0];
+  throw errors.find(isTransientError) ?? errors[0];
 }
 
 /**
@@ -358,21 +400,41 @@ export async function flushRevalidationWindow(
 export const catalogRevalidateHandler = async (
   container: MedusaContainer,
   event: OutboxClaim,
-  ctx: { now: Date },
+  ctx: { now: Date; runState?: Map<string, unknown> },
 ): Promise<void> => {
   const config = getRevalidateConfig();
   if (config === null) return;
+  // Trần gọi mạng mỗi lượt dispatch (`maxNetworkRowsPerRun`): trạng thái theo lượt do dispatcher cấp (`runState`).
+  const run = (ctx.runState?.get(RUN_STATE_KEY) as RunBudget | undefined) ?? { calls: 0, coveredAll: false };
+  ctx.runState?.set(RUN_STATE_KEY, run);
+  if (run.coveredAll) return; // lượt này đã gửi thành công tag `catalog` — phủ dòng này
+  const max = CATALOG_REVALIDATE_POLICY.maxNetworkRowsPerRun;
+  if (run.calls > max) {
+    throw new RevalidateUnavailableError(
+      CATALOG_REVALIDATE_POLICY.unavailableCooldownMs,
+      "lượt dispatch (đã hết trần)",
+    );
+  }
+  run.calls += 1;
+  const collapse = run.calls > max;
   const tags =
-    event.payload.scope === "all"
+    collapse || event.payload.scope === "all"
       ? [protocol.CATALOG_TAG]
       : await tagsForProducts(container, [String(event.payload.product_id)]);
   await sendRevalidation(config, { id: event.event_key, tags }, { now: ctx.now });
+  if (collapse) run.coveredAll = true;
 };
+
+const RUN_STATE_KEY = CATALOG_REVALIDATE_EVENT;
+interface RunBudget {
+  calls: number;
+  coveredAll: boolean;
+}
 
 /** Chỉ cho test: xoá trạng thái cửa sổ + cấu hình đã nạp. */
 export function resetRevalidateStateForTests(): void {
   for (const w of windows.values()) if (w.timer) clearTimeout(w.timer);
   windows.clear();
   cachedConfig = null;
-  unavailableUntil = 0;
+  breakers.clear();
 }

@@ -1,4 +1,5 @@
 import { createServer, type Server, type Socket } from "node:net";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import type { MedusaContainer } from "@medusajs/framework/types";
@@ -406,6 +407,7 @@ describe("sendRevalidation — chữ ký + phân loại lỗi", () => {
       },
     ).catch((x: unknown) => x);
     expect(retryInfoOf(mixed).permanent).toBe(false);
+    resetRevalidateStateForTests(); // 502 vừa mở ngắt sf-b — ca dưới xét phân loại, không xét ngắt
     const perm = await sendRevalidation(
       cfg,
       { id: "e", tags: ["catalog"] },
@@ -750,33 +752,285 @@ describe("storefront treo không chặn khe outbox-dispatch dùng chung (review 
   }, 30_000);
 });
 
-describe("ngắt khi storefront không trả lời", () => {
-  it("lỗi mạng mở ngắt (lần sau lỗi tạm ngay, không gọi mạng); 5xx/4xx không mở ngắt; thành công đóng", async () => {
-    const down = fakeFetch(() => new TypeError("fetch failed"));
-    await expect(
-      sendRevalidation(CONFIG, { id: "e", tags: ["catalog"] }, { fetch: down.fetch }),
-    ).rejects.toThrow("sf-a.test");
-    const next = fakeFetch();
-    const e = await sendRevalidation(CONFIG, { id: "e", tags: ["catalog"] }, { fetch: next.fetch }).catch(
-      (x: unknown) => x,
-    );
-    expect(e).toBeInstanceOf(RevalidateUnavailableError);
-    expect(retryInfoOf(e).permanent).toBe(false);
-    expect(retryInfoOf(e).retryAfterMs).toBeGreaterThan(0);
-    expect(next.calls).toHaveLength(0);
+describe("ngắt theo URL khi storefront lỗi tạm/chậm (review T-142 vòng 2)", () => {
+  const body = (c: { body: string }) => JSON.parse(c.body) as { tags: string[] };
+  const at = (ms: number) => new Date(T0.getTime() + ms);
+  const COOL = CATALOG_REVALIDATE_POLICY.unavailableCooldownMs;
 
-    resetRevalidateStateForTests();
-    for (const status of [503, 401]) {
+  it("lỗi mạng, 5xx, 408, 429 mở ngắt (lần sau lỗi tạm ngay, không gọi mạng); 4xx khác không mở", async () => {
+    for (const failure of [() => new TypeError("fetch failed"), () => 503, () => 502, () => 408, () => 429]) {
+      resetRevalidateStateForTests();
       await sendRevalidation(
         CONFIG,
         { id: "e", tags: ["catalog"] },
-        { fetch: fakeFetch(() => status).fetch },
+        { fetch: fakeFetch(failure).fetch, now: T0 },
       ).catch(() => undefined);
+      const next = fakeFetch();
+      const e = await sendRevalidation(
+        CONFIG,
+        { id: "e", tags: ["catalog"] },
+        { fetch: next.fetch, now: at(1000) },
+      ).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(RevalidateUnavailableError);
+      expect(String(e)).toContain("sf-a.test");
+      expect(retryInfoOf(e)).toEqual({ permanent: false, retryAfterMs: COOL - 1000 });
+      expect(next.calls).toHaveLength(0);
     }
-    const ok = fakeFetch();
-    await sendRevalidation(CONFIG, { id: "e", tags: ["catalog"] }, { fetch: ok.fetch });
-    expect(ok.calls).toHaveLength(1);
+    for (const status of [400, 401, 409, 413]) {
+      resetRevalidateStateForTests();
+      await sendRevalidation(
+        CONFIG,
+        { id: "e", tags: ["catalog"] },
+        { fetch: fakeFetch(() => status).fetch, now: T0 },
+      ).catch(() => undefined);
+      const ok = fakeFetch();
+      await sendRevalidation(CONFIG, { id: "e", tags: ["catalog:list"] }, { fetch: ok.fetch, now: at(1000) });
+      expect(ok.calls.map(body)).toEqual([{ id: "e", tags: ["catalog:list"] }]);
+    }
   });
+
+  it("Retry-After dài hơn thời gian ngắt → ngắt theo Retry-After", async () => {
+    await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["catalog"] },
+      { fetch: fakeFetch(() => 503, "120").fetch, now: T0 },
+    ).catch(() => undefined);
+    const e = await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["catalog"] },
+      { fetch: fakeFetch().fetch, now: at(COOL + 1) },
+    ).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(RevalidateUnavailableError);
+  });
+
+  it("hết ngắt, gửi thành công đầu tiên mang tag `catalog` (gửi bù dòng đã dead lúc sập); lần sau về tag thường", async () => {
+    await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["catalog:list"] },
+      { fetch: fakeFetch(() => 503).fetch, now: T0 },
+    ).catch(() => undefined);
+    const probe = fakeFetch();
+    await sendRevalidation(
+      CONFIG,
+      { id: "e1", tags: ["catalog:list", "product:a"] },
+      { fetch: probe.fetch, now: at(COOL + 1) },
+    );
+    expect(probe.calls.map(body)).toEqual([{ id: "e1", tags: ["catalog"] }]);
+    for (const c of probe.calls) expect(verify(c, at(COOL + 1).getTime())).toMatchObject({ ok: true });
+    const after = fakeFetch();
+    await sendRevalidation(
+      CONFIG,
+      { id: "e2", tags: ["product:a"] },
+      { fetch: after.fetch, now: at(COOL + 2) },
+    );
+    expect(after.calls.map(body)).toEqual([{ id: "e2", tags: ["product:a"] }]);
+  });
+
+  it("lần thăm dò hỏng lại → vẫn giữ cờ gửi bù cho lần thành công sau", async () => {
+    await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["x"] },
+      { fetch: fakeFetch(() => 503).fetch, now: T0 },
+    ).catch(() => undefined);
+    await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["x"] },
+      { fetch: fakeFetch(() => 500).fetch, now: at(COOL + 1) },
+    ).catch(() => undefined);
+    const ok = fakeFetch();
+    await sendRevalidation(
+      CONFIG,
+      { id: "e3", tags: ["product:a"] },
+      { fetch: ok.fetch, now: at(2 * COOL + 2) },
+    );
+    expect(ok.calls.map(body)).toEqual([{ id: "e3", tags: ["catalog"] }]);
+  });
+
+  it("phản hồi chậm hơn ngưỡng (kể cả 2xx) mở ngắt; 2xx chậm không cần gửi bù", async () => {
+    const slow = (async () => {
+      await new Promise((r) => setTimeout(r, CATALOG_REVALIDATE_POLICY.slowResponseMs + 100));
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    await sendRevalidation(CONFIG, { id: "e", tags: ["x"] }, { fetch: slow, now: T0 });
+    const next = fakeFetch();
+    const e = await sendRevalidation(
+      CONFIG,
+      { id: "e", tags: ["x"] },
+      { fetch: next.fetch, now: at(10) },
+    ).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(RevalidateUnavailableError);
+    expect(next.calls).toHaveLength(0);
+    // Dòng bị từ chối trong lúc ngắt → lần thành công sau gửi bù `catalog`.
+    const ok = fakeFetch();
+    await sendRevalidation(
+      CONFIG,
+      { id: "e4", tags: ["product:a"] },
+      { fetch: ok.fetch, now: at(COOL + 20) },
+    );
+    expect(ok.calls.map(body)).toEqual([{ id: "e4", tags: ["catalog"] }]);
+  });
+
+  it("theo từng URL: một bản chết không chặn bản khoẻ (bản khoẻ vẫn nhận mỗi lần, lỗi chung vẫn là tạm)", async () => {
+    const cfg = { secret: SECRET, urls: ["http://sf-a.test/x", "http://sf-b.test/x"] };
+    await sendRevalidation(
+      cfg,
+      { id: "e", tags: ["x"] },
+      {
+        fetch: fakeFetch((u) => (u.includes("sf-a") ? new TypeError("down") : 200)).fetch,
+        now: T0,
+      },
+    ).catch(() => undefined);
+    for (let i = 1; i <= 3; i++) {
+      const f = fakeFetch();
+      const e = await sendRevalidation(
+        cfg,
+        { id: `e${i}`, tags: ["product:a"] },
+        { fetch: f.fetch, now: at(i * 1000) },
+      ).catch((x: unknown) => x);
+      expect(f.calls.map((c) => c.url)).toEqual(["http://sf-b.test/x"]);
+      expect(f.calls.map(body)).toEqual([{ id: `e${i}`, tags: ["product:a"] }]);
+      expect(e).toBeInstanceOf(RevalidateUnavailableError);
+      expect(retryInfoOf(e).permanent).toBe(false);
+    }
+  });
+});
+
+describe("trần gọi mạng mỗi lượt dispatch (review T-142 vòng 2 🟠)", () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+    resetRevalidateStateForTests();
+  });
+  const rows = (n: number): OutboxClaim[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `obx_${i}`,
+      event_key: `${CATALOG_REVALIDATE_EVENT}:p:1:prod_${i}`,
+      aggregate_id: `prod_${i}`,
+      type: CATALOG_REVALIDATE_EVENT,
+      payload: { scope: "product", product_id: `prod_${i}` },
+      attempts: 0,
+    }));
+
+  async function run(queue: OutboxClaim[], fetchImpl: typeof fetch, handles: Record<string, string>) {
+    process.env.DATABASE_URL ??= "postgres://xshop:xshop@localhost:5432/xshop";
+    process.env.CATALOG_REVALIDATE_SECRET = SECRET;
+    process.env.CATALOG_REVALIDATE_URLS = "http://sf-a.test/api/revalidate";
+    resetRevalidateStateForTests();
+    const svc = {
+      claimDueOutbox: jest.fn(async () => queue.shift() ?? null),
+      markOutboxSent: jest.fn(async () => undefined),
+      markOutboxFailed: jest.fn(async () => undefined),
+      openOpsException: jest.fn(async () => true),
+      openOpsExceptionIfNoneActive: jest.fn(async () => true),
+    };
+    const s = setup({ handles });
+    const container = {
+      resolve: (k: string) => (k === CHECKOUT_MODULE ? svc : s.container.resolve(k)),
+    } as unknown as MedusaContainer;
+    const realFetch = global.fetch;
+    global.fetch = fetchImpl;
+    try {
+      return await dispatchOutbox(container, {});
+    } finally {
+      global.fetch = realFetch;
+    }
+  }
+
+  it("8 dòng, storefront khoẻ: 3 dòng gửi tag riêng, dòng 4 gửi MỘT `catalog` phủ phần còn lại; 4 lần gọi mạng, cả 8 sent", async () => {
+    const f = fakeFetch();
+    const handles = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`prod_${i}`, `h${i}`]));
+    const summary = await run(rows(8), f.fetch, handles);
+    expect(summary.sent).toHaveLength(8);
+    expect(f.calls.map((c) => JSON.parse(c.body).tags)).toEqual([
+      ["catalog:list", "product:h0"],
+      ["catalog:list", "product:h1"],
+      ["catalog:list", "product:h2"],
+      ["catalog"],
+    ]);
+  });
+
+  it("webhook `catalog` của lượt hỏng (4xx) → phần còn lại của lượt lỗi tạm ngay, không gọi mạng thêm", async () => {
+    let n = 0;
+    const f = fakeFetch(() => (++n <= 3 ? 200 : 401));
+    const summary = await run(rows(7), f.fetch, {});
+    expect(f.calls).toHaveLength(4);
+    expect(summary.sent).toHaveLength(3);
+    expect(summary.dead).toHaveLength(1); // dòng gửi `catalog` nhận 401
+    expect(summary.retried).toHaveLength(3); // phần dư: tạm, hẹn lại
+  });
+});
+
+describe("S2: storefront trả 5xx CHẬM không chặn khe dispatcher (review T-142 vòng 2)", () => {
+  const saved = { ...process.env };
+  let server: HttpServer;
+  let port = 0;
+  beforeAll(async () => {
+    server = createHttpServer((_q, res) => {
+      setTimeout(() => {
+        res.writeHead(503);
+        res.end();
+      }, 1_900);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    port = (server.address() as AddressInfo).port;
+  });
+  afterAll(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+    resetRevalidateStateForTests();
+  });
+
+  it("5 dòng catalog (503 sau 1,9 s) trước 1 sự kiện khác: sự kiện khác chạy sau ≤ một lần chờ, không phải 5 lần", async () => {
+    process.env.DATABASE_URL ??= "postgres://xshop:xshop@localhost:5432/xshop";
+    process.env.CATALOG_REVALIDATE_SECRET = SECRET;
+    process.env.CATALOG_REVALIDATE_URLS = `http://127.0.0.1:${port}/api/revalidate`;
+    resetRevalidateStateForTests();
+    const queue: OutboxClaim[] = [
+      ...Array.from({ length: 5 }, (_, i) => ({
+        id: `obx_${i}`,
+        event_key: `${CATALOG_REVALIDATE_EVENT}:p:1:prod_${i}`,
+        aggregate_id: `prod_${i}`,
+        type: CATALOG_REVALIDATE_EVENT,
+        payload: { scope: "product", product_id: `prod_${i}` },
+        attempts: 0,
+      })),
+      {
+        id: "obx_9",
+        event_key: "other:1",
+        aggregate_id: "x_1",
+        type: "review.other",
+        payload: {},
+        attempts: 0,
+      },
+    ];
+    const svc = {
+      claimDueOutbox: jest.fn(async () => queue.shift() ?? null),
+      markOutboxSent: jest.fn(async () => undefined),
+      markOutboxFailed: jest.fn(async () => undefined),
+      openOpsException: jest.fn(async () => true),
+      openOpsExceptionIfNoneActive: jest.fn(async () => true),
+    };
+    const s = setup({ handles: {} });
+    const container = {
+      resolve: (k: string) => (k === CHECKOUT_MODULE ? svc : s.container.resolve(k)),
+    } as unknown as MedusaContainer;
+    const t0 = Date.now();
+    let otherAt = -1;
+    const summary = await dispatchOutbox(container, {
+      handlers: {
+        "review.other": async () => {
+          otherAt = Date.now() - t0;
+        },
+      },
+    });
+    expect(otherAt).toBeGreaterThanOrEqual(1_900);
+    expect(otherAt).toBeLessThan(CATALOG_REVALIDATE_POLICY.requestTimeoutMs + 1_000);
+    expect(summary.retried).toHaveLength(5);
+    expect(summary.sent).toEqual(["other:1"]);
+  }, 30_000);
 });
 
 describe("dòng catalog.revalidate chết → MỘT ngoại lệ đang mở, ưu tiên thường (review T-142 🟠2)", () => {

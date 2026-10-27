@@ -244,6 +244,11 @@ export async function codConfirmTimeout(
  */
 export interface OutboxHandlerContext {
   now: Date;
+  /**
+   * Trạng thái dùng chung giữa các lần gọi bộ xử lý trong CÙNG một lượt `dispatchOutbox` (mới mỗi lượt) — vd. trần gọi
+   * mạng mỗi lượt của `catalog.revalidate` (T-142, D-081). Khoá theo loại sự kiện.
+   */
+  runState: Map<string, unknown>;
 }
 
 export type OutboxHandler = (
@@ -303,6 +308,7 @@ export async function dispatchOutbox(
   const s = service(container);
   const handlers = { ...DEFAULT_OUTBOX_HANDLERS, ...opts.handlers };
   const summary: DispatchSummary = { sent: [], retried: [], dead: [] };
+  const runState = new Map<string, unknown>();
 
   const markDead = async (event: OutboxClaim, message: string, reason: DeadReason) => {
     await s.markOutboxFailed(event.id, message, null);
@@ -341,7 +347,7 @@ export async function dispatchOutbox(
       continue;
     }
     try {
-      await (handlers[event.type] ?? logHandler)(container, event, { now: opts.now ?? clock() });
+      await (handlers[event.type] ?? logHandler)(container, event, { now: opts.now ?? clock(), runState });
       await s.markOutboxSent(event.id);
       summary.sent.push(event.event_key);
     } catch (e) {

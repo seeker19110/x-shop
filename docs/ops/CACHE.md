@@ -63,9 +63,14 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
   gửi nằm trong outbox (retry backoff, quá 8 lần hoặc 4xx → `dead`). Dòng `catalog.revalidate` chết mở MỘT ngoại lệ
   `outbox_dead` đang mở cho loại này (`openOpsExceptionIfNoneActive`, phạm vi `type`, ưu tiên `normal` — dữ liệu vẫn tươi
   lại theo TTL), không mỗi dòng một ngoại lệ; loại sự kiện khác giữ hành vi cũ.
-- **Không chặn khe outbox-dispatch dùng chung (D-081):** mỗi POST có hạn 2 giây; storefront không trả lời (timeout/từ chối
-  kết nối) → ngắt 30 giây trong tiến trình: mọi lần gửi catalog sau đó thất bại NGAY (tạm thời, hẹn lại sau phần ngắt còn
-  lại), nên một lượt dispatcher chỉ mất tối đa một timeout cho cả loạt dòng catalog; 4xx/5xx trả về nhanh, không ngắt.
+- **Không chặn khe outbox-dispatch dùng chung (D-081):** mỗi POST có hạn 2 giây. Bộ ngắt THEO TỪNG URL (trong tiến trình):
+  lỗi tạm (timeout, không kết nối được, 5xx, 408, 429) hoặc phản hồi chậm hơn 1 giây (kể cả 2xx) → ngắt URL đó 30 giây (lâu
+  hơn nếu `Retry-After` đòi): mọi lần gửi tới URL đó thất bại NGAY (tạm thời, hẹn lại sau phần ngắt còn lại); bản storefront
+  khoẻ vẫn nhận bình thường; 4xx khác (lỗi khoá/giao thức) không ngắt. Hết ngắt, lần gửi thành công đầu tiên tới URL đó
+  mang tag `catalog` (gửi bù cho các dòng đã dead/bị từ chối trong lúc sập). Thêm trần mỗi lượt dispatch: tối đa 3 dòng
+  catalog gửi tag riêng, dòng thứ 4 gửi MỘT webhook `catalog` phủ phần còn lại của lượt (thành công → các dòng sau xong không
+  gọi mạng; hỏng → phần còn lại lỗi tạm ngay). Một lượt vì vậy gọi mạng tối đa 4 lần, thực tế chỉ một lần chờ khi storefront
+  lỗi/chậm (đo: 5 dòng gặp 503 sau 1,9 giây → sự kiện khác chạy sau 1,9 giây thay vì 9,5 giây).
 - **Gộp + trần tần suất** (`CATALOG_REVALIDATE_POLICY`): cửa sổ 2 giây; mỗi (sản phẩm, cửa sổ) đúng một dòng outbox (khoá sự
   kiện chứa mốc cửa sổ, idempotent); quá 20 sản phẩm trong một cửa sổ → một dòng "cả catalog". Cuối cửa sổ tiến trình gửi
   MỘT webhook gộp các dòng rồi đánh dấu `sent` — chỉ các dòng có trong bản chụp lúc gửi; dòng ghi xong giữa lúc gửi được gửi
@@ -79,7 +84,9 @@ Nguyên tắc chung: chỉ cache dữ liệu **công khai**; mọi thứ gắn v
   idempotent).
 - **Trước khi chạy nhiều bản storefront (bắt buộc):** cache dữ liệu của Next nằm trong từng tiến trình → phải liệt kê URL
   nội bộ của TỪNG bản trong `CATALOG_REVALIDATE_URLS` (backend gửi tới mọi URL) hoặc chuyển sang cache handler dùng chung;
-  gửi qua LB chỉ làm mới một bản.
+  gửi qua LB chỉ làm mới một bản. Production bắt buộc https cho mọi URL trong `CATALOG_REVALIDATE_URLS` (D-117: giữ
+  https-only — HMAC đã bảo đảm toàn vẹn nhưng chọn cách chặt hơn) → URL nội bộ của từng bản storefront phải có TLS (chứng
+  chỉ nội bộ/mesh) trước khi scale.
 - **Giới hạn đã biết:** bộ nhớ nonce chỉ nằm trong RAM của từng tiến trình: request bị phát lại sang bản khác, hoặc tới chính
   bản đó sau khi restart (còn trong cửa sổ 300 giây), vẫn được nhận — hậu quả chỉ là một lần revalidate thừa (không đổi dữ
   liệu). Đổi handle: tag tính theo handle hiện tại → URL handle cũ còn bản cũ tới TTL. `catalog:list` được làm mới ở mọi cửa
