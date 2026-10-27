@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { inspect } from "node:util";
 import { knex } from "@medusajs/framework/mikro-orm/knex";
+import { PostgreSqlPlatform } from "@medusajs/framework/mikro-orm/postgresql";
 import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText, shortHash } from "../redact";
 
 /**
@@ -58,6 +61,24 @@ describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
     ["SQL knex: E-string lặp", 'insert into "t" (E\'\\'.repeat(N / 20)],
     ["SQL knex: nháy kép lẻ lặp", 'insert into "t" ("\n    at '.repeat(N / 26)],
     ["SQL knex: nháy đơn + ' - ' lặp", 'insert into "t" (\' - '.repeat(N / 21)],
+    // Review T-151 vòng 3: trần khoảng trắng 64, CTE, call, Failing row, biên đã thoát, ngân sách quét.
+    [
+      "SQL: update + khoảng trắng 63 lặp",
+      `update${" ".repeat(63)}"t"${" ".repeat(63)}as${" ".repeat(63)}`.repeat(N / 200),
+    ],
+    [
+      "SQL: select from where + khoảng trắng 63 lặp",
+      `select${" ".repeat(63)}a from b where${" ".repeat(63)}c `.repeat(N / 150),
+    ],
+    ["SQL: with ( dài lặp", `with v (${"a".repeat(1000)}`.repeat(N / 1008)],
+    ["SQL: call lặp", "call p ".repeat(N / 7)],
+    ["Failing row contains ( lặp", "Failing row contains (".repeat(N / 22)],
+    ["Failing row + biên thoát lặp", "Failing row contains (a, b)\\n - detail: ".repeat(N / 40)],
+    ["SQL: biên detail thoát lặp", 'insert into "t" ( - \\n - detail: '.repeat(N / 34)],
+    ["Medusa unique: with k: v, lặp", "with a: b, ".repeat(N / 11)],
+    ["Medusa unique: with k: v dài không kết", `with a: ${"b".repeat(250)}, `.repeat(N / 260)],
+    ["Medusa FK: relationship lặp", `You tried to set relationship ${"a: b,".repeat(40)}`.repeat(N / 230)],
+    ["SQL: ngân sách quét", `"insert into "t" ( - \n$$ E'`.repeat(N / 27)],
     ["SQL knex: select danh sách rất dài", `select ${'"p0"."c", '.repeat(N / 10)} from "t" where "h" = 1`],
   ];
   it.each(cases)("%s → < 50 ms", (_name, input) => {
@@ -285,6 +306,11 @@ describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
         `insert into "t" ${REDACTED} - boom`,
       ],
       [`insert into "t" ("a","b") values (E'a''b\\\\', 9431) - boom`, `insert into "t" ${REDACTED} - boom`],
+      // `''` trong E-string rồi `\'`: không được rơi về nháy thường giữa chừng.
+      [
+        `insert into "t" ("a","b") values (E'a''b\\' - x', 9431) - boom`,
+        `insert into "t" ${REDACTED} - boom`,
+      ],
       [
         `insert into "t" ("a","b") select $$x - y\n    at q$$, 9431 - boom`,
         `insert into "t" ${REDACTED} - boom`,
@@ -431,6 +457,280 @@ describe("giá trị bind trong lỗi SQL của knex/pg (T-151)", () => {
   });
 });
 
+/**
+ * Review T-151 vòng 3: MikroORM nối `\n - detail: …`/`\n - hint: …` vào message; SQL viết tay nhiều dòng qua MikroORM
+ * `execute` (`formatQuery` chèn giá trị); băm hai lần; định danh có schema; các đột biến còn sống.
+ */
+describe("giá trị trong lỗi DB qua MikroORM (review T-151 vòng 3)", () => {
+  const ROW_LEAK = /fmm_1|\b173\b|\b91\b|Nguyễn|Lê Lợi|0912345678|khach@example\.test|1234567|ofin_1|order_1/;
+  const stack = (m: string) => `CheckConstraintViolationException: ${m}\n    at f (/a.js:1:1)`;
+
+  it("🔴1 CHECK: giữ dòng lỗi chính, băm từng giá trị của `Failing row contains (…)`", () => {
+    const msg =
+      `insert into "fashion_model_measurement" ("id", "image_set", "height_cm", "chest_cm") values ('fmm_1', 'moi', 173, 91) - ` +
+      `new row for relation "fashion_model_measurement" violates check constraint "fmm_height"\n - detail: Failing row contains (fmm_1, moi, null, 173, 91).`;
+    expect(redactText(stack(msg))).toBe(
+      stack(
+        `insert into "fashion_model_measurement" ${REDACTED} - new row for relation "fashion_model_measurement" violates check constraint "fmm_height"\n` +
+          ` - detail: Failing row contains (${shortHash("fmm_1")}, ${shortHash("moi")}, null, ${shortHash("173")}, ${shortHash("91")}).`,
+      ),
+    );
+  });
+
+  it("🔴1 CHECK có JSON họ tên/địa chỉ, unique, deadlock + hint: không lộ, không mất lỗi chính", () => {
+    const cases: [string, string[]][] = [
+      [
+        `update "order_finance" set "total" = -5 where "id" = 'ofin_1' - new row for relation "order_finance" violates check constraint "order_finance_total_nonneg"\n` +
+          ` - detail: Failing row contains (ofin_1, order_1, -5, {"total": 1234567}, {"name": "Nguyễn Văn A", "line1": "12 Lê Lợi"}, {"phone": "0912345678"}).`,
+        [
+          `update "order_finance" set ${REDACTED} - new row`,
+          "violates check constraint",
+          " - detail: Failing row contains (",
+        ],
+      ],
+      [
+        `insert into "customer" ("id", "email") values ('cus_1', 'khach@example.test') - duplicate key value violates unique constraint "IDX_customer_email_unique"\n` +
+          ` - detail: Key (email, has_account)=(khach@example.test, f) already exists.`,
+        [
+          `- duplicate key value violates unique constraint "IDX_customer_email_unique"`,
+          `Key (email, has_account)=(${shortHash("khach@example.test")}, ${shortHash("f")}) already exists.`,
+        ],
+      ],
+      [
+        `update "t" set "a" = 1234567 where "id" = 'x' - deadlock detected\n - detail: Process 1 waits for ShareLock on transaction 2; blocked by process 3.\n - hint: See server log for query details.`,
+        [`update "t" set ${REDACTED} - deadlock detected\n - detail: Process 1`, "\n - hint: See server log"],
+      ],
+      [
+        `insert into "t" ("h") values (173) - chiều cao vượt ngưỡng\n - detail: giá trị gửi lên không hợp lệ\n - hint: kiểm tra dữ liệu`,
+        [
+          `insert into "t" ${REDACTED} - chiều cao vượt ngưỡng\n - detail: giá trị gửi lên không hợp lệ\n - hint: kiểm tra dữ liệu`,
+        ],
+      ],
+    ];
+    for (const [msg, keep] of cases) {
+      for (const text of [stack(msg), JSON.stringify({ message: msg, stack: stack(msg) })]) {
+        const out = redactText(text);
+        expect(out).not.toMatch(ROW_LEAK);
+        // Dạng JSON: `"` → `\"`, xuống dòng → `\n` (biên thoát cũng phải nhận).
+        for (const k of keep) expect(out).toContain(text === stack(msg) ? k : JSON.stringify(k).slice(1, -1));
+      }
+    }
+  });
+
+  it("🔴1 trường riêng của lỗi pg/MikroORM (detail/hint/where/internalQuery) qua redactLog cũng đã che", () => {
+    const err = Object.assign(
+      new Error(`insert into "t" ("h") values (173) - violates check constraint "c"`),
+      {
+        detail: `Failing row contains (fmm_1, 173, {"name": "Nguyễn Văn A"}, (1,2)), x).`,
+        hint: "gọi lại 0912345678",
+        where: `SQL statement "insert into t (a) values (1234567)"\nPL/pgSQL function f() line 1 at SQL statement`,
+        internalQuery: `update "t" set "a" = 1234567 where "id" = 'ofin_1'`,
+      },
+    );
+    const out = redactLog(err) as Record<string, string>;
+    expect(JSON.stringify(out)).not.toMatch(ROW_LEAK);
+    expect(out.detail).toBe(
+      `Failing row contains (${["fmm_1", "173", '{"name": "Nguyễn Văn A"}', "(1,2))", "x"].map(shortHash).join(", ")}).`,
+    );
+    expect(out.message).toBe(`insert into "t" ${REDACTED} - violates check constraint "c"`);
+    expect(out.internalQuery).toBe(`update "t" set ${REDACTED}`);
+  });
+
+  it("Failing row: giá trị chứa `)`/xuống dòng — băm tới `)` cuối trước biên; không có `)` → băm tới biên", () => {
+    expect(redactText(`Failing row contains (a), b\nc 0x9431).\n    at f (/a.js:1:1)`)).toBe(
+      `Failing row contains (${shortHash("a)")}, ${shortHash("b\nc 0x9431")}).\n    at f (/a.js:1:1)`,
+    );
+    expect(redactText(`Failing row contains (Nguyễn, 173\n    at f (/a.js:1:1)`)).toBe(
+      `Failing row contains (${shortHash("Nguyễn")}, ${shortHash("173")}\n    at f (/a.js:1:1)`,
+    );
+  });
+
+  it("Medusa dbErrorMapper (unique/FK) chép giá trị khoá vào văn xuôi → băm từng giá trị, giữ tên cột", () => {
+    expect(redactText("Fashion model measurement with height_cm: 173, hip_cm: 139, already exists.")).toBe(
+      `Fashion model measurement with height_cm: ${shortHash("173")}, hip_cm: ${shortHash("139")}, already exists.`,
+    );
+    expect(redactText("Product with handle: ao-thun, external_id: 9431, already exists.")).toBe(
+      `Product with handle: ${shortHash("ao-thun")}, external_id: ${shortHash("9431")}, already exists.`,
+    );
+    // Cột PII (`email: …`) đã bị luật theo tên che trước → không lộ (băm của `[REDACTED]`).
+    expect(redactText("Customer with email: khach@example.test, already exists.")).not.toContain(
+      "khach@example.test",
+    );
+    expect(
+      redactText(
+        "You tried to set relationship order_id: order_1,cart_id: cart_9, but such entity does not exist",
+      ),
+    ).toBe(
+      `You tried to set relationship order_id: ${shortHash("order_1")},cart_id: ${shortHash("cart_9")}, but such entity does not exist`,
+    );
+    const once = redactText("Fashion model measurement with height_cm: 173, already exists.");
+    expect(redactText(once)).toBe(once);
+    // Câu văn có "with" nhưng không đúng mẫu → giữ nguyên.
+    expect(redactText("Đơn with note: giao sau, đã tồn tại")).toBe("Đơn with note: giao sau, đã tồn tại");
+  });
+
+  it("🟠1 che hai lần (describeError → logger) giữ nguyên `[h:…]`: còn đối chiếu được", () => {
+    const obj = {
+      name: "UniqueConstraintViolationException",
+      message: `insert into "customer" ("id", "email") values ('cus_1', 'khach@example.test') - duplicate key value violates unique constraint "x"\n - detail: Key (email)=(khach@example.test) already exists.`,
+      detail: "Key (email)=(khach@example.test) already exists.",
+      row: "Failing row contains (cus_1, khach@example.test).",
+    };
+    const logged = redactText(`[http] POST /x trace_id=t: ${JSON.stringify(redactLog(obj))}`);
+    expect(logged.match(/\[h:[0-9a-f]{8}\]/g)).toEqual([
+      shortHash("khach@example.test"),
+      shortHash("khach@example.test"),
+      shortHash("cus_1"),
+      shortHash("khach@example.test"),
+    ]);
+    for (const t of [
+      `insert into "t" ("a") values (1) - invalid input syntax 'Nguyễn'`,
+      `Key (email)=(khach@example.test) already exists.`,
+      `Failing row contains (fmm_1, 173).`,
+    ]) {
+      const once = redactText(t);
+      expect(redactText(once)).toBe(once);
+    }
+  });
+
+  it("🔴2 SQL viết tay nhiều dòng thụt lề, định danh có schema, CTE, call, select không from", () => {
+    const cases: [string, string][] = [
+      [
+        `UPDATE checkout_attempt\n         SET state = 'ready', quote = '{"total":1234567}'::jsonb\n         WHERE id = 'ofin_1' - boom`,
+        `UPDATE checkout_attempt\n         SET ${REDACTED} - boom`,
+      ],
+      [
+        `INSERT INTO order_finance\n         (id, total)\n       VALUES ('ofin_1', 1234567)\n       ON CONFLICT DO NOTHING - boom`,
+        `INSERT INTO order_finance ${REDACTED} - boom`,
+      ],
+      [`DELETE FROM t\n         WHERE a = 1234567 - boom`, `DELETE FROM t ${REDACTED} - boom`],
+      [
+        `SELECT a\n       FROM t\n       WHERE a = 1234567 - boom`,
+        `SELECT ${REDACTED} FROM t ${REDACTED} - boom`,
+      ],
+      [
+        `insert into "public"."t" ("a") values (1234567) - boom`,
+        `insert into "public"."t" ${REDACTED} - boom`,
+      ],
+      [`update "public"."t" set "a" = 1234567 - boom`, `update "public"."t" set ${REDACTED} - boom`],
+      [
+        `select "a" from "public"."t" where "a" = 1234567 - boom`,
+        `select ${REDACTED} from "public"."t" ${REDACTED} - boom`,
+      ],
+      [`update "t" set ("a","b") = (1234567, 'x') - boom`, `update "t" set ${REDACTED} - boom`],
+      [`insert into "t" values(1234567) - boom`, `insert into "t" ${REDACTED} - boom`],
+      [
+        `with "v" ("a") as (values (1234567, 'Nguyễn')) insert into "t" select * from "v" - boom`,
+        `with "v" ("a") as ( ${REDACTED} - boom`,
+      ],
+      [
+        `WITH hit AS (\n  INSERT INTO c (id) VALUES ('ofin_1') RETURNING count\n) SELECT hit.count FROM hit - boom`,
+        `WITH hit AS ( ${REDACTED} - boom`,
+      ],
+      [
+        `merge into "t" using "s" on "t"."id" = "s"."id" when matched then update set "a" = 1234567 - boom`,
+        `merge into "t" ${REDACTED} - boom`,
+      ],
+      [`call proc(1234567) - boom`, `call proc ${REDACTED} - boom`],
+      [
+        `select pg_advisory_xact_lock(hashtext('order_1')) - canceling statement due to lock timeout`,
+        `select ${REDACTED} - canceling statement due to lock timeout`,
+      ],
+      [`select 1234567 / 0 as x - division by zero`, `select ${REDACTED} - division by zero`],
+      [
+        `select x.* from (select * from "t" where "a" = 1234567) x - boom`,
+        `select ${REDACTED} from ( ${REDACTED} - boom`,
+      ],
+      [
+        JSON.stringify(
+          JSON.stringify({
+            m: `insert into "t" ("a") values (1234567) - boom`,
+          }),
+        ),
+        "",
+      ],
+    ];
+    for (const [input, expected] of cases) {
+      const out = redactText(input);
+      expect(out).not.toMatch(ROW_LEAK);
+      if (expected !== "") expect(out).toBe(expected);
+    }
+  });
+
+  it("🔴2 mọi câu SQL viết tay của module (formatQuery của MikroORM, như `execute`) đều bị che", () => {
+    const platform = new PostgreSqlPlatform();
+    const files = [
+      "modules/checkout/service.ts",
+      "modules/notify/service.ts",
+      "modules/shipping/service.ts",
+      "modules/returns/service.ts",
+      "modules/settlement/service.ts",
+      "modules/catalog-index/service.ts",
+      "lib/checkout/locks.ts",
+    ];
+    const params = Array.from({ length: 64 }, (_, k) =>
+      k % 3 === 0 ? `SECRET${k}x` : k % 3 === 1 ? 94_310_000 + k : JSON.stringify({ phone: "0912345678", k }),
+    );
+    let n = 0;
+    for (const f of files) {
+      const src = readFileSync(join(__dirname, "../../..", f), "utf8");
+      for (const m of src.matchAll(/`(\s*(?:INSERT|UPDATE|DELETE|SELECT|WITH)\b[^`]*)`/gi)) {
+        const sql = m[1]!.replace(/\$\{[^{}]*\}/g, "1");
+        if (!sql.includes("?")) continue;
+        n += 1;
+        const out = redactText(
+          `DriverException: ${platform.formatQuery(sql, params)} - boom\n    at f (/a.js:1:1)`,
+        );
+        expect([f, sql.slice(0, 60), out]).toEqual([
+          f,
+          sql.slice(0, 60),
+          expect.not.stringMatching(/SECRET\d|9431\d{4}|0912345678/),
+        ]);
+        expect(out.endsWith(" - boom\n    at f (/a.js:1:1)")).toBe(true);
+      }
+    }
+    expect(n).toBeGreaterThan(60);
+  });
+
+  describe("đột biến còn sống ở vòng 2", () => {
+    it("biên `[errors N]` (AggregateError) tách vùng câu", () => {
+      expect(
+        redactText(
+          `insert into "t" ("a") values (1)\n[errors 0] error: insert into "u" ("b") values (2) - x`,
+        ),
+      ).toBe(`insert into "t" ${REDACTED}\n[errors 0] error: insert into "u" ${REDACTED} - x`);
+    });
+
+    it('`"` lẻ trong phần lỗi không nuốt biên dòng stack phía sau', () => {
+      const text = `insert into "t" ("a") values (1) - boom "x\n    at f (/a.js:1:1)\nCaused by: error: insert into "u" ("b") values (2) - y`;
+      expect(redactText(text)).toBe(
+        `insert into "t" ${REDACTED} - boom "x\n    at f (/a.js:1:1)\nCaused by: error: insert into "u" ${REDACTED} - y`,
+      );
+    });
+
+    it("bảng trần: `where` quá xa `from` (> 2048) là câu văn, không che", () => {
+      const t = `select x from catalog ${"lorem ".repeat(400)} where price = 5`;
+      expect(redactText(t)).toBe(t);
+    });
+
+    it("`from` thuộc câu ghi phía sau không biến chữ select phía trước thành câu SQL", () => {
+      expect(
+        redactText(`Please select an option; error: insert into "t" ("a") select "b" from "u" - boom`),
+      ).toBe(`Please select an option; error: insert into "t" ${REDACTED} - boom`);
+    });
+
+    it("hết ngân sách quét → đóng an toàn: bỏ toàn bộ phần sau, vẫn nhanh", () => {
+      const v = `"insert into "t" ( - \n$$ E'`.repeat(1200);
+      const t0 = process.cpuUsage();
+      const out = redactText(v);
+      const d = process.cpuUsage(t0);
+      expect((d.user + d.system) / 1000).toBeLessThan(50);
+      // Không có trần: mỗi câu được quét riêng (đầu ra ~320 ký tự); có trần: dừng sau câu thứ ba.
+      expect(out.length).toBeLessThan(200);
+      expect(out.endsWith(`insert into "t" ${REDACTED}`)).toBe(true);
+    });
+  });
+});
 describe("khoá API tiền tố và mã OTP/MFA (review T-090)", () => {
   it.each([
     ["key sk_live_51HxYzAbCdEfGh123456", `key ${REDACTED}`],

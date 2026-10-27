@@ -1,10 +1,14 @@
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import seedXShop from "../../src/scripts/seed";
+import { createLogger } from "../../src/lib/log/logger";
+import { CHECKOUT_MODULE } from "../../src/modules/checkout";
+import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import { adminHeaders, noThrow, storeHeaders } from "../helpers/auth";
 import { createTestProduct } from "../helpers/catalog";
+import { setProductFashionWorkflow } from "../../src/workflows/fashion/set-product-fashion";
 
 jest.setTimeout(180 * 1000);
 
@@ -130,6 +134,265 @@ medusaIntegrationTestRunner({
       expect(logged).toContain(String(res.data.trace_id));
       expect(logged).not.toMatch(/user_qa_t144|9431|Nguyễn|Lý do riêng/);
       if (attributesId !== "") expect(logged).not.toContain(attributesId);
+    });
+    /**
+     * Review T-151 vòng 3, ca A: SQL viết tay NHIỀU DÒNG của module checkout chạy qua MikroORM `execute` (`formatQuery`
+     * chèn giá trị vào chuỗi) — trigger làm câu lỗi, lỗi đi qua logger dự án.
+     */
+    it("vòng 3 ca A: SQL nhiều dòng của checkout + CHECK/NOT NULL/unique thật qua MikroORM execute → log sạch, giữ lỗi chính", async () => {
+      const c = getContainer();
+      const pg = c.resolve<{ raw(sql: string): Promise<unknown> }>(ContainerRegistrationKeys.PG_CONNECTION);
+      const svc = c.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
+      const lines: string[] = [];
+      const logger = createLogger({
+        service: "t",
+        version: "0",
+        env: "test",
+        level: "error",
+        write: (l) => lines.push(l),
+      });
+      const finance = (orderId: string, ref: string, total: number) => ({
+        order_id: orderId,
+        display_ref: ref,
+        checkout_attempt_id: "chk_t151_secret",
+        cart_id: "cart_t151",
+        total,
+        payment_method: "cod" as const,
+        policy_version: "v1",
+        quote: { total },
+        address: { name: "Nguyễn Văn Tbm" },
+        contact: { name: "Nguyễn Văn Tbm" },
+      });
+      // Dòng order_finance `preparing` để UPDATE order_finance đầu tiên của finalizeAttempt thành công.
+      await svc.insertOrderFinance(finance("order_t151_secret", "XS-T151A", 1234567));
+      // Ràng buộc THẬT qua MikroORM `execute` (không qua dbErrorMapper của Medusa): CHECK, NOT NULL, unique — message có
+      // `\n - detail: Failing row contains (…)`/`Key (…)=(…)`.
+      const constraintErrors: unknown[] = [];
+      for (const input of [
+        finance("order_t151_secret3", "XS-T151C", -1234567),
+        finance("order_t151_secret4", "XS-T151D", null as never),
+        finance("order_t151_secret", "XS-T151E", 1234567),
+      ]) {
+        try {
+          await svc.insertOrderFinance(input);
+          constraintErrors.push(new Error("câu lệnh phải lỗi"));
+        } catch (e) {
+          constraintErrors.push(e);
+        }
+      }
+      const expectedMain = [
+        'violates check constraint \\"order_finance_total_nonneg\\"\\n - detail: Failing row contains ([h:',
+        "violates not-null constraint\\n - detail: Failing row contains ([h:",
+        'duplicate key value violates unique constraint \\"IDX_order_finance_order_id_unique\\"\\n - detail: Key (order_id)=([h:',
+      ];
+      constraintErrors.forEach((e, i) => {
+        lines.length = 0;
+        logger.error("ghi DB thất bại", e as Error);
+        expect(lines[0]).toContain(`INSERT INTO order_finance [REDACTED] - `);
+        expect(lines[0]).toContain(expectedMain[i]);
+        expect(lines[0]).not.toMatch(/chk_t151_secret|order_t151_secret|1234567|Nguyễn/);
+      });
+      await pg.raw(
+        "create function t151a_boom() returns trigger language plpgsql as $$ begin raise exception 'boom t151a'; end $$",
+      );
+      await pg.raw(
+        "create trigger t151a_ca before update on checkout_attempt for each statement execute function t151a_boom()",
+      );
+      await pg.raw(
+        "create trigger t151a_ob before update on outbox_event for each statement execute function t151a_boom()",
+      );
+      await pg.raw(
+        "create trigger t151a_of before insert on order_finance for each statement execute function t151a_boom()",
+      );
+      const errors: unknown[] = [];
+      const catching = async (run: () => Promise<unknown>) => {
+        try {
+          await run();
+          errors.push(new Error("câu lệnh phải lỗi"));
+        } catch (e) {
+          errors.push(e);
+        }
+      };
+      try {
+        await catching(() =>
+          svc.finalizeAttempt(
+            {
+              attempt_id: "chk_t151_secret",
+              order_id: "order_t151_secret",
+              cart_id: "cart_t151",
+              cart_version: 1,
+              order_state: "placed",
+              hold_expires_at: null,
+              cod_confirm_by: null,
+              outbox: { event_key: "t151", type: "t", payload: {} },
+            },
+            { total: 1234567, recipient: "Nguyễn Văn Tbm" },
+          ),
+        );
+        await catching(() => svc.reopenRetryableAttempt("chk_t151_secret", ["BUSY_RETRY"], new Date()));
+        await catching(() =>
+          svc.markOutboxFailed("obx_t151_secret", "gửi lỗi cho Nguyễn Văn Tbm, đơn 1234567", new Date()),
+        );
+        await catching(() => svc.insertOrderFinance(finance("order_t151_secret2", "XS-T151B", 7654321)));
+      } finally {
+        await pg.raw(
+          "drop trigger t151a_ca on checkout_attempt; drop trigger t151a_ob on outbox_event; drop trigger t151a_of on order_finance; drop function t151a_boom();",
+        );
+      }
+      expect(errors).toHaveLength(4);
+      for (const e of errors) {
+        lines.length = 0;
+        logger.error("ghi DB thất bại", e as Error);
+        const line = lines[0]!;
+        expect(line).toContain("boom t151a");
+        expect(line).toMatch(
+          /(?:UPDATE checkout_attempt|UPDATE outbox_event|INSERT INTO order_finance)[^"]{0,40}\[REDACTED\]/,
+        );
+        expect(line).not.toMatch(/chk_t151_secret|order_t151_secret|obx_t151_secret|1234567|7654321|Nguyễn/);
+      }
+    });
+
+    /**
+     * Review T-151 vòng 3, ca B/C: MikroORM nối `\n - detail: …`/`\n - hint: …` vào message và chép `detail` thành trường
+     * riêng; Postgres đặt cả hàng vi phạm (`Failing row contains (…)`) hoặc khoá (`Key (…)=(…)`) vào detail.
+     */
+    const MEASURE = {
+      image_set: "moi-t151x",
+      height_cm: 173,
+      chest_cm: 131,
+      waist_cm: 127,
+      hip_cm: 139,
+      size_worn: "m",
+    };
+    const MEASURE_LEAK = /(?<![\w:.])(?:173|131|127|139)(?![\w:])|moi-t151x/;
+    async function postFashionWith(setup: string, teardown: string, measurements: Record<string, unknown>[]) {
+      const container = getContainer();
+      const pg = container.resolve<{ raw(sql: string): Promise<unknown> }>(
+        ContainerRegistrationKeys.PG_CONNECTION,
+      );
+      const admin = (await adminHeaders(api, container)).headers;
+      const p = await createTestProduct(container);
+      await pg.raw(setup);
+      const lines: string[] = [];
+      const write = jest.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+        lines.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write);
+      let res: Awaited<ReturnType<typeof api.post>>;
+      try {
+        res = await api.post(
+          `/admin/x/products/${p.id}/fashion`,
+          {
+            attributes: { kind: "apparel", material: "cotton" },
+            model_measurements: measurements,
+          },
+          { headers: admin, ...noThrow },
+        );
+        await new Promise((r) => setTimeout(r, 200));
+      } finally {
+        write.mockRestore();
+        await pg.raw(teardown);
+      }
+      const logged = lines.filter((l) => l.includes('"level":"error"')).join("");
+      return { status: res.status, logged, body: res.data };
+    }
+
+    it("vòng 3 ca B: CHECK thật → 500, log giữ lỗi chính, băm `Failing row contains`", async () => {
+      const { status, logged } = await postFashionWith(
+        "alter table fashion_model_measurement add constraint t151_chk check (height_cm <> 173) not valid",
+        "alter table fashion_model_measurement drop constraint t151_chk",
+        [MEASURE],
+      );
+      expect(status).toBe(500);
+      expect(logged).toContain('violates check constraint \\\\\\"t151_chk\\\\\\"');
+      expect(logged).toMatch(/Failing row contains \(\[h:[0-9a-f]{8}\], \[h:[0-9a-f]{8}\]/);
+      expect(logged).not.toMatch(MEASURE_LEAK);
+    });
+
+    /**
+     * NOT NULL/unique: Medusa trả 400 (log chỉ ghi dòng info không kèm lỗi) → kiểm thêm lỗi THẬT của MikroORM (chạy workflow
+     * trực tiếp) qua logger dự án: giữ lỗi chính + tên ràng buộc, hàng/khoá trong detail đã băm.
+     */
+    async function workflowErrorLine(
+      setup: string,
+      teardown: string,
+      measurements: Record<string, unknown>[],
+    ) {
+      const container = getContainer();
+      const pg = container.resolve<{ raw(sql: string): Promise<unknown> }>(
+        ContainerRegistrationKeys.PG_CONNECTION,
+      );
+      const p = await createTestProduct(container);
+      const lines: string[] = [];
+      const logger = createLogger({
+        service: "t",
+        version: "0",
+        env: "test",
+        level: "error",
+        write: (l) => lines.push(l),
+      });
+      await pg.raw(setup);
+      let thrown: unknown = new Error("workflow phải lỗi");
+      try {
+        await setProductFashionWorkflow(container).run({
+          input: {
+            product_id: p.id,
+            attributes: { kind: "apparel", material: "cotton" },
+            model_measurements: measurements as never,
+          },
+        });
+      } catch (e) {
+        thrown = e;
+      } finally {
+        await pg.raw(teardown);
+      }
+      logger.error("ghi DB thất bại", thrown as Error); // có thể là object thường
+      return lines[0]!;
+    }
+
+    it("vòng 3: NOT NULL thật qua route (400) và workflow (dbErrorMapper) → log không lộ", async () => {
+      const { chest_cm: _omit, ...withoutChest } = MEASURE;
+      const setup = "alter table fashion_model_measurement alter column chest_cm set not null";
+      const teardown = "alter table fashion_model_measurement alter column chest_cm drop not null";
+      const { status, logged, body } = await postFashionWith(setup, teardown, [withoutChest]);
+      expect(status).toBe(400);
+      expect(logged + JSON.stringify(body)).not.toMatch(MEASURE_LEAK);
+      const line = await workflowErrorLine(setup, teardown, [withoutChest]);
+      // Medusa `dbErrorMapper` đổi NOT NULL thành thông điệp không mang giá trị.
+      expect(line).toContain("Cannot set field 'chest_cm' of Fashion model measurement to null");
+      expect(line).not.toMatch(MEASURE_LEAK);
+    });
+
+    it("vòng 3: unique thật qua route (400) và workflow (dbErrorMapper chép giá trị) → giá trị đã băm", async () => {
+      const setup = "create unique index t151_uq on fashion_model_measurement (height_cm, hip_cm)";
+      const teardown = "drop index t151_uq";
+      const twins = [MEASURE, { ...MEASURE, size_worn: "l" }];
+      const { status, logged, body } = await postFashionWith(setup, teardown, twins);
+      expect(status).toBe(400);
+      expect(logged).not.toMatch(MEASURE_LEAK);
+      void body; // phản hồi 400 của Medusa chép giá trị người gửi vào message — ngoài phạm vi log (báo cáo)
+      const line = await workflowErrorLine(setup, teardown, twins);
+      // Medusa `dbErrorMapper` chép giá trị khoá vào văn xuôi → luật riêng băm từng giá trị.
+      expect(line).toMatch(
+        /Fashion model measurement with height_cm: \[h:[0-9a-f]{8}\], hip_cm: \[h:[0-9a-f]{8}\], already exists\./,
+      );
+      expect(line).not.toMatch(MEASURE_LEAK);
+    });
+
+    it("vòng 3 ca C: raise … using detail, hint → giữ lỗi chính, detail và hint", async () => {
+      const { status, logged } = await postFashionWith(
+        "create function t151c_boom() returns trigger language plpgsql as $$ begin if NEW.height_cm = 173 then " +
+          "raise exception 'chiều cao vượt ngưỡng' using detail = 'giá trị gửi lên không hợp lệ', hint = 'kiểm tra dữ liệu'; " +
+          "end if; return NEW; end $$; " +
+          "create trigger t151c_tg before insert on fashion_model_measurement for each row execute function t151c_boom()",
+        "drop trigger t151c_tg on fashion_model_measurement; drop function t151c_boom();",
+        [MEASURE],
+      );
+      expect(status).toBe(500);
+      expect(logged).toContain("[REDACTED] - chiều cao vượt ngưỡng");
+      expect(logged).toContain(" - detail: giá trị gửi lên không hợp lệ");
+      expect(logged).toContain(" - hint: kiểm tra dữ liệu");
+      expect(logged).not.toMatch(MEASURE_LEAK);
     });
   },
 });
