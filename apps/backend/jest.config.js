@@ -8,14 +8,9 @@ if (process.env.TEST_TYPE?.startsWith("integration")) {
   // scripts/dev-services.sh — trùng giá trị của job CI; không phải bí mật (tài khoản DB thử nghiệm cục bộ).
   process.env.DATABASE_URL ||= "postgres://xshop:xshop@localhost:5432/xshop";
   process.env.REDIS_URL ||= "redis://localhost:6379";
-  // Hai lần chạy song song (worktree, máy dev) dùng chung Redis DB 0 thì tranh khóa `x-shop:seed-catalog`/hàng đợi
-  // của nhau → treo tới timeout. URL không ghi DB index → mỗi lần chạy một DB 1–12 theo pid (13–15 để cho
-  // scripts/ops). URL đã ghi index (vd `/3`) giữ nguyên.
-  const redis = new URL(process.env.REDIS_URL);
-  if (redis.pathname === "" || redis.pathname === "/") {
-    redis.pathname = `/${1 + (process.pid % 12)}`;
-    process.env.REDIS_URL = redis.toString();
-  }
+  // Hai lần chạy đồng thời (worktree, máy dev) chung một Redis DB thì tranh khoá/hàng đợi BullMQ của nhau. DB index do
+  // globalSetup (integration-tests/global-setup.ts, T-146/D-077) giành ĐỘC QUYỀN bằng SET NX EX có gia hạn rồi ghi vào
+  // REDIS_URL cho worker; globalTeardown trả. Không còn chọn theo `pid % 12` (hai pid cách nhau 12 trùng DB).
   // MFA TOTP native cần khoá mã hoá bí mật (Auth Module đọc AUTH_MFA_ENCRYPTION_KEY) — giá trị CHỈ cho test cục bộ/CI.
   process.env.AUTH_MFA_ENCRYPTION_KEY ||= "x-shop-test-only-mfa-encryption-key-0123456789";
   // @medusajs/test-utils tạo DB tạm từ DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD; CI và dev chỉ đặt DATABASE_URL.
@@ -49,6 +44,10 @@ module.exports = {
   moduleFileExtensions: ["js", "ts", "json"],
   modulePathIgnorePatterns: ["dist/", "<rootDir>/.medusa/"],
   setupFiles: ["./integration-tests/setup.ts"],
+  ...(process.env.TEST_TYPE?.startsWith("integration") && {
+    globalSetup: "./integration-tests/global-setup.ts",
+    globalTeardown: "./integration-tests/global-teardown.ts",
+  }),
   // Coverage nhánh (QA-COV-001) — chỉ bật khi chạy `--coverage` (`pnpm test:coverage`). Provider v8: transform là
   // @swc/jest nên instrument kiểu babel-istanbul không áp. Mọi file .ts của src (kể cả chưa có test → 0 %); .tsx của
   // Admin UI không thuộc phạm vi Jest (moduleFileExtensions). Ngưỡng: ratchet theo coverage-baseline.json ở gốc repo
@@ -67,5 +66,9 @@ if (process.env.TEST_TYPE === "integration:http") {
 } else if (process.env.TEST_TYPE === "integration:modules") {
   module.exports.testMatch = ["**/src/modules/*/__tests__/**/*.[jt]s"];
 } else if (process.env.TEST_TYPE === "unit") {
-  module.exports.testMatch = ["**/src/**/__tests__/**/*.unit.spec.[jt]s"];
+  module.exports.testMatch = [
+    "**/src/**/__tests__/**/*.unit.spec.[jt]s",
+    // Hạ tầng test (giành Redis DB của globalSetup, T-146) — test đơn vị dùng Redis giả.
+    "<rootDir>/integration-tests/__tests__/*.unit.spec.[jt]s",
+  ];
 }
