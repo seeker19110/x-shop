@@ -43,15 +43,20 @@ async function okJson<T>(res: APIResponse, step: string): Promise<T> {
 }
 
 test.describe("T-095 — hai bản sao backend, không sticky session", () => {
-  test("bộ cân bằng tải luân phiên từng request qua hai bản sao", async ({ request }) => {
+  test("bộ cân bằng tải rải request qua cả hai bản sao (không sticky)", async ({ request }) => {
+    // Không đòi luân phiên tuyệt đối: request nền của storefront (ISR, revalidate) có thể chen qua bộ cân bằng tải giữa
+    // hai request của test. Chỉ đòi cả hai bản đều phục vụ request của test và bộ đếm của LB tăng ít nhất bằng số đã gửi.
+    const s0 = await lbStats(request);
     const replicas: string[] = [];
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < 6; i += 1) {
       const res = await request.get(`${URLS.backendLb}/health`);
       expect(res.status()).toBe(200);
       replicas.push(res.headers()["x-e2e-replica"] ?? "?");
     }
+    const s1 = await lbStats(request);
     expect(new Set(replicas)).toEqual(new Set(["a", "b"]));
-    for (let i = 1; i < replicas.length; i += 1) expect(replicas[i]).not.toBe(replicas[i - 1]);
+    expect(s1.a - s0.a + (s1.b - s0.b)).toBeGreaterThanOrEqual(replicas.length);
+    expect(s1.errors - s0.errors).toBe(0);
   });
 
   test("Store API: mỗi bước sang bản khác — giỏ (A) → báo giá (B) → đặt (A) → gửi lại cùng khoá (B) ra đúng một đơn", async ({

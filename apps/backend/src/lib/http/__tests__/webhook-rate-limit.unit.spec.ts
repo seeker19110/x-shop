@@ -12,7 +12,7 @@ import {
  * hạn mức là tổng chung, không phải mỗi bản một hạn mức. MemoryCounter có cùng ngữ nghĩa với `hitRateCounter` (Postgres).
  * Đồng hồ tiêm — không phụ thuộc giờ thật.
  */
-const { limit, windowMs } = WEBHOOK_RATE_LIMITS.ghnCallbackIp;
+const { limit } = WEBHOOK_RATE_LIMITS.ghnCallbackIp;
 // Ranh giới cửa sổ 10 s.
 const W = new Date("2026-10-27T03:00:00.000Z").getTime();
 const at = (ms: number) => new Date(W + ms);
@@ -37,11 +37,26 @@ describe("consumeWebhookRate — bộ đếm chung giữa các bản sao", () =>
     expect(decisions.filter((d) => d.allowed)).toHaveLength(limit);
     const blocked = denied(decisions);
     expect(blocked).toHaveLength(400 - limit);
-    for (const d of blocked) {
-      expect(Number.isInteger(d.retryAfterSeconds)).toBe(true);
-      expect(d.retryAfterSeconds).toBeGreaterThanOrEqual(1);
-      expect(d.retryAfterSeconds).toBeLessThanOrEqual((2 * windowMs) / 1000);
+    // Retry-After tất định (now = giây thứ 1 của cửa sổ, cửa sổ trước rỗng): lượt thứ k bị chặn được qua khi sang cửa sổ
+    // kế, lúc `1·M + k·(M − e) ≤ 300·M` ⇔ e ≥ M − ⌊299·M / k⌋. Lượt 301: 9 s + 67 ms → 10 s; lượt 400: 9 s + 2 525 ms → 12 s.
+    const afters = blocked.map((d) => d.retryAfterSeconds).sort((x, y) => x - y);
+    expect(afters[0]).toBe(10);
+    expect(afters[afters.length - 1]).toBe(12);
+    for (const s of afters) expect(Number.isInteger(s)).toBe(true);
+  });
+
+  it("Retry-After lượt 301 ở 50 ms đầu cửa sổ = 11 giây (tính cho lượt kế tiếp ĐƯỢC ĐẾM)", async () => {
+    const shared = new MemoryCounter();
+    const hit = hitOf(shared);
+    for (let i = 0; i < limit; i += 1) {
+      expect((await consumeWebhookRate(hit, "ghnCallbackIp", "203.0.113.7", at(50))).allowed).toBe(true);
     }
+    // e ≥ 10 000 − ⌊299·10 000 / 301⌋ = 67 ms của cửa sổ kế → 9 950 + 67 = 10 017 ms → 11 s. Nếu tính như lượt KHÔNG đếm
+    // (PEEK_OVER) sẽ ra 9 950 + 34 ms → 10 s.
+    expect(await consumeWebhookRate(hit, "ghnCallbackIp", "203.0.113.7", at(50))).toEqual({
+      allowed: false,
+      retryAfterSeconds: 11,
+    });
   });
 
   it("được phép: dưới ngưỡng ở cả hai bản sao (tổng = limit) → mọi lượt qua; lượt kế tiếp ở bản nào cũng bị chặn", async () => {
