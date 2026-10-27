@@ -77,6 +77,23 @@ describe("analytics: bộ mẫu PII dùng chung", () => {
   });
 });
 
+describe("NFKC: NBSP và toàn chiều rộng (D-112)", () => {
+  it.each([
+    "0912\u00a0345\u00a0678",
+    "\uff10\uff19\uff11\uff12\uff13\uff14\uff15\uff16\uff17\uff18",
+    "a.b\uff20example.test",
+  ])("nhận %j", (v) => {
+    expect(looksLikePii(v)).toBe(true);
+  });
+  it("ký tự nở khi chuẩn hoá không làm chậm (CPU < 50 ms)", () => {
+    const input = "\ufdfa".repeat(32_000);
+    const t0 = process.cpuUsage();
+    looksLikePii(input);
+    const d = process.cpuUsage(t0);
+    expect((d.user + d.system) / 1000).toBeLessThan(50);
+  });
+});
+
 describe("chuẩn hoá NFC (D-112)", () => {
   it.each(["Phường Dịch Vọng, Quận Cầu Giấy", "chứng minh nhân dân số 271234567", "Số 5 ngõ 12 Láng Hạ"])(
     "dạng tách dấu của %j được nhận như dạng NFC",
@@ -98,6 +115,8 @@ describe("CMND 9 số: nhận diện khi có từ khoá, không nhận số ti�
     "chứng minh nhân dân số 271234567",
     "chung minh thu 271234567",
     "CMND 271-234-567",
+    "cmt số 123456789",
+    "CMT #123456789",
   ])("nhận %j", (v) => {
     expect(looksLikePii(v)).toBe(true);
   });
@@ -108,6 +127,9 @@ describe("CMND 9 số: nhận diện khi có từ khoá, không nhận số ti�
     "CMND không hợp lệ",
     "CMND 12345",
     "CMND 1234567890123",
+    "chứng minh được lỗi ở đơn 123456789",
+    "[cmt] refund 250000000 VND",
+    "cmtx 123456789",
   ])("không nhận %j", (v) => {
     expect(looksLikePii(v)).toBe(false);
   });

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { createLogger, exceptionFields } from "../logger";
-import { isSensitiveKey, REDACTED, redactLog, redactText } from "../redact";
+import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText } from "../redact";
 
 /**
  * T-136 (D-065, D-066): bộ mẫu PII dùng chung `scripts/fixtures/pii-samples.json` — mọi mẫu `scopes ∋ backend` đi qua mọi
@@ -32,9 +32,9 @@ const samples = fixture.samples.filter((s) => s.scopes.includes("backend"));
 /** Lỗi nếu bất kỳ đoạn `leak` nào còn trong `out` (thô hoặc dạng đã thoát JSON). */
 function leaked(s: Sample, out: string): string[] {
   const escaped = (x: string) => JSON.stringify(x).slice(1, -1);
-  const o = out.normalize("NFC");
+  const o = out.normalize("NFKC");
   return s.leak.filter((l) => {
-    const n = l.normalize("NFC");
+    const n = l.normalize("NFKC");
     return o.includes(n) || o.includes(escaped(n));
   });
 }
@@ -170,6 +170,41 @@ describe("CMND 9 số: che khi có từ khoá, không che số tiền (D-066)", 
   });
 });
 
+describe("CMND: từ khoá chặt hơn (review T-136)", () => {
+  it.each([
+    ["cmt 123456789", "cmt [CMND]"],
+    ["CMT: 123456789", "CMT: [CMND]"],
+    ["cmt số 123456789", "cmt số [CMND]"],
+    ["CMT #123456789", "CMT #[CMND]"],
+  ])("%j → %j", (i, e) => {
+    expect(redactText(i)).toBe(e);
+  });
+  it.each([
+    "chứng minh được lỗi ở đơn 123456789",
+    "[cmt] refund 250000000 VND",
+    "cmtx 123456789",
+    "cmt refund 250000000",
+  ])("không che %j", (i) => {
+    expect(redactText(i)).toBe(i);
+  });
+});
+
+describe("NFKC: NBSP, toàn chiều rộng, giới hạn độ dài sau chuẩn hoá", () => {
+  it("NBSP trong SĐT và chữ số/＠ toàn chiều rộng", () => {
+    expect(redactText("0912\u00a0345\u00a0678")).toBe("[PHONE]");
+    expect(redactText("\uff10\uff19\uff11\uff12\uff13\uff14\uff15\uff16\uff17\uff18")).toBe("[PHONE]");
+    expect(redactText("a.b\uff20example.test")).toBe("[EMAIL]");
+  });
+  it("ký tự nở khi chuẩn hoá (U+FDFA → 18 ký tự) không làm đầu ra vượt trần MAX_TEXT", () => {
+    const out = redactText("\ufdfa".repeat(MAX_TEXT));
+    expect(out.length).toBeLessThan(MAX_TEXT + 64);
+    expect(out).toContain("…[cắt");
+  });
+  it("chuỗi đúng trần không bị cắt", () => {
+    expect(redactText("x".repeat(MAX_TEXT))).toBe("x".repeat(MAX_TEXT));
+  });
+});
+
 describe("chuẩn hoá NFC (D-112)", () => {
   it("dạng tách dấu cho kết quả như dạng NFC", () => {
     for (const v of [
@@ -199,6 +234,12 @@ describe("luật T-136: khoá tiếng Việt có dấu, JSON thoát nháy, IP th
     "ip",
     "client_ip",
     "remoteAddr",
+    "customer_ip",
+    "user-ip",
+    "peerIp",
+    "vnp_IpAddr",
+    "Họ và tên",
+    "Tên người nhận",
     "X-Forwarded-For",
   ])("khoá %j là nhạy cảm", (k) => {
     expect(isSensitiveKey(k)).toBe(true);
@@ -218,6 +259,19 @@ describe("luật T-136: khoá tiếng Việt có dấu, JSON thoát nháy, IP th
     [String.raw`{\"email\":\"a b\"}`, String.raw`{\"email\":\"${REDACTED}\"}`],
     [String.raw`{\"ip\":\"203.0.113.9\"}`, String.raw`{\"ip\":\"[IP]\"}`],
     ["ip=203.0.113.9 failed", "ip=[IP] failed"],
+    ["ip=::ffff:203.0.113.9", "ip=[IP]"],
+    ["x-forwarded-for: ::ffff:198.51.100.7, 203.0.113.2 end", "x-forwarded-for: [IP] end"],
+    ["vnp_IpAddr=203.0.113.45&vnp_Amount=100", "vnp_IpAddr=[IP]&vnp_Amount=100"],
+    ["x_forwarded_for=203.0.113.49", "x_forwarded_for=[IP]"],
+    [
+      String.raw`"x-forwarded-for": ["203.0.113.50","198.51.100.51"]`,
+      String.raw`"x-forwarded-for": ["[IP]"]`,
+    ],
+    ["new_password=Abc#1 ok", `new_password=${REDACTED} ok`],
+    ["Mật khẩu mới: Abc#1", `Mật khẩu mới: ${REDACTED}`],
+    ["Họ và tên: Bùi Thanh Tâm", `Họ và tên: ${REDACTED}`],
+    ["Tên người nhận: Võ Gia Bảo", `Tên người nhận: ${REDACTED}`],
+    ["Địa chỉ: 25 Lý Thường Kiệt", `Địa chỉ: ${REDACTED}`],
     ["client_ip: 203.0.113.9:443", "client_ip: [IP]"],
     ["x-forwarded-for: 198.51.100.1, 203.0.113.2 , 192.0.2.3 end", "x-forwarded-for: [IP] end"],
     ["remote_address=::1", "remote_address=[IP]"],

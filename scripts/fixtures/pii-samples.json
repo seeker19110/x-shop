@@ -24,7 +24,6 @@
       "leak": ["an_nguyen-02"],
       "scopes": ["backend", "storefront"]
     },
-
     {
       "id": "phone-local",
       "kind": "phone",
@@ -81,7 +80,6 @@
       "leak": ["2345 678"],
       "scopes": ["backend", "storefront"]
     },
-
     {
       "id": "address-street",
       "kind": "address",
@@ -117,7 +115,6 @@
       "leak": ["Tân Lập", "Đan Phượng"],
       "scopes": ["backend", "storefront"]
     },
-
     {
       "id": "name-key-camel",
       "kind": "name",
@@ -153,7 +150,6 @@
       "leak": ["Quỳnh Anh", "Phạm"],
       "scopes": ["backend"]
     },
-
     {
       "id": "cccd-compact",
       "kind": "cccd",
@@ -204,7 +200,6 @@
       "leak": ["012 345 678"],
       "scopes": ["backend", "storefront"]
     },
-
     {
       "id": "card-visa",
       "kind": "card",
@@ -233,7 +228,6 @@
       "leak": ["378282246310005"],
       "scopes": ["backend"]
     },
-
     {
       "id": "token-jwt",
       "kind": "token",
@@ -269,7 +263,6 @@
       "leak": ["rt-Zm9vYmFyYmF6"],
       "scopes": ["backend"]
     },
-
     {
       "id": "password-eq",
       "kind": "password",
@@ -319,7 +312,6 @@
       "leak": ["matkhau-bi-mat"],
       "scopes": ["backend"]
     },
-
     {
       "id": "nfd-address",
       "kind": "address",
@@ -356,6 +348,62 @@
       "scopes": ["backend", "storefront"]
     },
     {
+      "id": "ip-v4mapped",
+      "kind": "ip",
+      "value": "ip=::ffff:203.0.113.9",
+      "leak": ["203.0.113", "113.9"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-v4mapped-xff",
+      "kind": "ip",
+      "value": "x-forwarded-for: ::ffff:198.51.100.7, 203.0.113.2",
+      "leak": ["198.51.100", "203.0.113"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-key-vnp",
+      "kind": "ip",
+      "value": "vnp_IpAddr=203.0.113.45",
+      "leak": ["203.0.113.45"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-key-customer",
+      "kind": "ip",
+      "value": "customer_ip=203.0.113.46",
+      "leak": ["203.0.113.46"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-key-user",
+      "kind": "ip",
+      "value": "user_ip: 203.0.113.47",
+      "leak": ["203.0.113.47"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-key-peer",
+      "kind": "ip",
+      "value": "peer_ip=203.0.113.48",
+      "leak": ["203.0.113.48"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-key-xff-underscore",
+      "kind": "ip",
+      "value": "x_forwarded_for=203.0.113.49",
+      "leak": ["203.0.113.49"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "ip-xff-json-array",
+      "kind": "ip",
+      "value": "\"x-forwarded-for\": [\"203.0.113.50\",\"198.51.100.51\"]",
+      "leak": ["203.0.113.50", "198.51.100.51"],
+      "scopes": ["backend"]
+    },
+    {
       "id": "ip-kv",
       "kind": "ip",
       "value": "client_ip=203.0.113.45",
@@ -375,6 +423,62 @@
       "value": "remote_addr=2001:db8::1a2b",
       "leak": ["2001:db8::1a2b"],
       "scopes": ["backend"]
+    },
+    {
+      "id": "name-label-hovaten",
+      "kind": "name",
+      "value": "Họ và tên: Bùi Thanh Tâm",
+      "leak": ["Bùi Thanh Tâm"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "name-label-recipient-vi",
+      "kind": "name",
+      "value": "Tên người nhận: Võ Gia Bảo",
+      "leak": ["Võ Gia Bảo"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "address-label-vi",
+      "kind": "address",
+      "value": "Địa chỉ: 25 Lý Thường Kiệt",
+      "leak": ["Lý Thường Kiệt"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "password-vi-new",
+      "kind": "password",
+      "value": "Mật khẩu mới: Moi#Mat2026",
+      "leak": ["Moi#Mat2026"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "password-new-en",
+      "kind": "password",
+      "value": "new_password=Moi#Mat2026b",
+      "leak": ["Moi#Mat2026b"],
+      "scopes": ["backend"]
+    },
+    {
+      "id": "phone-nbsp",
+      "kind": "phone",
+      "value": "0912\u00a0345\u00a0678",
+      "leak": ["345 678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "phone-fullwidth",
+      "kind": "phone",
+      "value": "\uff10\uff19\uff11\uff12\uff13\uff14\uff15\uff16\uff17\uff18",
+      "leak": ["912345678"],
+      "scopes": ["backend", "storefront"]
+    },
+    {
+      "id": "email-fullwidth-at",
+      "kind": "email",
+      "value": "khach.fw\uff20example.test",
+      "leak": ["khach.fw"],
+      "scopes": ["backend", "storefront"]
     }
   ],
   "negatives": [
@@ -387,11 +491,17 @@
     "amount=271234567 currency=VND",
     "ts 1761472800000",
     "4111111111111112",
-    "ip 10.0.0.12:5432"
+    "ip 10.0.0.12:5432",
+    "chứng minh được lỗi ở đơn 123456789",
+    "[cmt] refund 250000000 VND"
   ],
   "negativesBackendOnly": ["Thử lại 3 Lần", "quận"],
   "knownGaps": [
     "Họ tên viết tự do trong thông điệp (không có khoá `họ tên`/`full_name`…) không nhận ra được bằng mẫu — không đưa họ tên vào thông điệp log.",
-    "IPv4/IPv6 trần trong văn bản (không đi sau khoá ip/client_ip/remote_addr/x-forwarded-for) không che: trùng chuỗi phiên bản và host DB nội bộ."
+    "IPv4/IPv6 trần trong văn bản (không đi sau khoá ip/client_ip/remote_addr/x-forwarded-for) không che: trùng chuỗi phiên bản và host DB nội bộ.",
+    "Backend: SĐT `84.912.345.678` (chấm sau 84) và `(+84) 912 345 678` (ngoặc) không che — storefront nhận; lệch này chưa xử lý.",
+    "Backend: CMND cách từ khoá > 16 ký tự, hoặc `cmt` theo sau bởi chữ khác ngoài ngăn cách/số/là không che; `CCCD 012345678` (9 số) không che theo nội dung; ngày sinh trong văn bản không che.",
+    "Backend: `password:` ngay sau xuống dòng thoát trong JSON, và mật khẩu chứa dấu nháy kép thoát trong JSON thoát nháy, không che đủ.",
+    "Cả hai phía: NFKC đã xử lý NBSP, chữ số toàn chiều rộng và `\uff20`; ký tự Unicode khác NFKC không chuẩn hoá (ví dụ U+200B) chưa xử lý."
   ]
 }

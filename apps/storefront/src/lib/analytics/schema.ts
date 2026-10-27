@@ -70,7 +70,7 @@ const CCCD_RE = /(?:^|[^\p{L}\p{N}])0\d{2}(?:[ .-]?\d{3}){3}(?![\p{L}\p{N}])/u;
  * Khoảng giữa từ khóa và số ≤ 16 ký tự không chứa chữ số/xuống dòng ("CMND số", "chứng minh nhân dân số").
  */
 const CMND_RE =
-  /(?:^|[^\p{L}\p{N}])(?:cmnd|cmtnd|cmt|chứng minh(?: nhân dân| thư)?|chung minh(?: nhan dan| thu)?)[^\d\n]{0,16}\d{3}[ .-]?\d{3}[ .-]?\d{3}(?!\d)/iu;
+  /(?:^|[^\p{L}\p{N}])(?:(?:cmnd|cmtnd|chứng minh nhân dân|chứng minh thư|chung minh nhan dan|chung minh thu)[^\d\n]{0,16}|cmt[\s:.#-]{1,4}(?:(?:số|so|là|la)[\s:.#-]{1,4})?)\d{3}[ .-]?\d{3}[ .-]?\d{3}(?!\d)/iu;
 /** Từ khóa địa chỉ VN (không dấu và có dấu) và dạng số nhà `12/3`, `số 5`. */
 const ADDRESS_RE =
   /(?:^|[\s,])(?:số|so|đường|duong|phố|pho|ngõ|ngo|ngách|ngach|hẻm|hem|phường|phuong|quận|quan|huyện|huyen|xã|tỉnh|tinh|thành phố|tp\.?)(?=[\s\d.,]|$)|\d{1,9}\/\d{1,9}|\d{1,9}\s{0,8}[,]\s{0,8}\p{L}/iu;
@@ -82,8 +82,8 @@ const HOUSE_NAME_RE = /(?:^|[\s,(])\d+[a-zA-Z]?\s+\p{Lu}\p{Ll}/u;
 
 /** `true` nếu chuỗi giống email, số điện thoại, CCCD/CMND hoặc địa chỉ (T-090: thêm CCCD + SĐT lẫn trong văn bản; T-136: CMND theo từ khóa). */
 export function looksLikePii(raw: string): boolean {
-  // NFC (D-112): chữ có dấu dạng tách (NFD) không được làm mẫu địa chỉ/từ khóa trượt.
-  const s = raw.normalize("NFC");
+  // NFKC (D-112; gồm NFC): chữ có dấu tách (NFD), NBSP, chữ số/`＠` toàn chiều rộng không được làm mẫu trượt.
+  const s = raw.normalize("NFKC");
   if (EMAIL_RE.test(s)) return true;
   const compact = s.replace(/[\s.()-]/g, "");
   if (PHONE_RE.test(compact) && /^\+?\d+$/.test(compact)) return true;
