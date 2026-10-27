@@ -1,5 +1,4 @@
 import { writeSync } from "node:fs";
-import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Lỗi ngoài mọi request (BASE-ERR-002, T-088): `unhandledRejection` / `uncaughtException` → ghi MỘT dòng JSON có cấu trúc ra
@@ -34,7 +33,9 @@ function exceptionFields(reason: unknown): Record<string, string> {
     return {
       "exception.type": reason.name || "Error",
       "exception.message": reason.message,
-      ...(isNonEmpty(reason.stack) ? { "exception.stacktrace": reason.stack } : {}),
+      ...(typeof reason.stack === "string" && reason.stack !== ""
+        ? { "exception.stacktrace": reason.stack }
+        : {}),
     };
   }
   let message: string;
