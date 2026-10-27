@@ -635,3 +635,10 @@
 - Chọn: Bắt buộc giây ở mọi đầu vào (một helper, đúng RFC 3339 §5.6)
 - Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn, một nguồn sự thật; chưa có dữ liệu/tài liệu nào dùng dạng thiếu giây; lỗi 422 nêu trường + ví dụ nên người nhập biết sửa
 - Đường lùi: Nới regex giây tuỳ chọn trong parseRfc3339 cho CSV
+
+### D-091 · 2026-10-27T08:25:49+00:00 · T-149 câu hỏi mở: ký giả trong runOrderLookup; redrive muộn phát token mới; token trùng nếu 2 thư cùng giây
+
+- Phương án: (1) Giữ: không ký giả (hai nhánh không khớp vẫn chạy cùng bước); redrive phát token mới hạn 15 phút từ lúc gửi; chấp nhận token trùng cùng giây (một link đổi được); STOREFRONT_URL bắt buộc ở production vào danh sách G7 · (2) Thêm ký giả; dead sự kiện lookup cũ hơn N phút; thêm nonce vào token (đổi packages/domain)
+- Chọn: Giữ: không ký giả (hai nhánh không khớp vẫn chạy cùng bước); redrive phát token mới hạn 15 phút từ lúc gửi; chấp nhận token trùng cùng giây (một link đổi được); STOREFRONT_URL bắt buộc ở production vào danh sách G7
+- Lý do (tiêu chí chất lượng cuối): (1) không lộ tồn tại đơn qua thời gian (nhánh khớp đã chậm hơn vì ghi DB, chênh lệch thật nằm ở outbox bất đồng bộ); token chỉ mở đúng đơn, một lần, gửi về chủ đơn nên phát mới khi redrive không mở rộng quyền; (3) không đổi domain cho ca hiếm
+- Đường lùi: Thêm nonce vào issueOrderToken; lọc sự kiện order.lookup_link quá hạn trong dispatcher
