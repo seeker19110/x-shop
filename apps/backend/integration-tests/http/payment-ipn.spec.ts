@@ -323,5 +323,43 @@ medusaIntegrationTestRunner({
         expect(await nativePaymentStatuses(o.orderId)).toEqual([]);
       });
     });
+
+    describe("T-168 — attempt `failed` mang mã của thông báo thất bại, tiền về với mã khác (đơn CHƯA hủy)", () => {
+      it("đơn vẫn xác nhận như thường; attempt giữ `failed` + mã cũ (không ghi đè); mở payment_unknown attempt_txn_conflict", async () => {
+        const o = await client.placeOrder([["Đen/S", 1]], "vnpay");
+        const failed = gateway.mock.pay(o.paymentUrl, "failed");
+        const tFail = failed.get("vnp_TransactionNo")!;
+        expect((await ipn(api, failed)).data).toEqual(R.success);
+        const [pa0] = await service().listPaymentAttempts({ order_id: o.orderId });
+        expect(pa0).toMatchObject({ state: "failed", provider_txn_no: tFail });
+        expect((await finance(o.orderId)).state).toBe("awaiting_payment");
+
+        const paid = gateway.mock.pay(o.paymentUrl, "success");
+        const tPaid = paid.get("vnp_TransactionNo")!;
+        expect((await ipn(api, paid)).data).toEqual(R.success);
+        expect((await finance(o.orderId)).state).toBe("confirmed");
+        expect((await ledger(o.orderId)).map((r) => [r.amount, r.provider_txn_id])).toEqual([
+          [o.total, tPaid],
+        ]);
+        const [pa1] = await service().listPaymentAttempts({ order_id: o.orderId });
+        expect(pa1).toMatchObject({ state: "failed", provider_txn_no: tFail });
+        const conflict = await exceptions(o.orderId, "payment_unknown");
+        expect(conflict.map((e) => [e.priority, e.amount, e.state])).toEqual([["high", o.total, "open"]]);
+        expect(conflict[0]!.detail).toMatchObject({
+          reason: "attempt_txn_conflict",
+          provider_txn_id: tPaid,
+          attempt_provider_txn_no: tFail,
+          attempt_state: "failed",
+          order_state: "awaiting_payment",
+        });
+        expect(await exceptions(o.orderId, "late_payment")).toHaveLength(0);
+        // Gửi lại → 02, không mở thêm ngoại lệ, không đổi attempt.
+        expect((await ipn(api, paid)).data).toEqual(R.alreadyConfirmed);
+        expect(await exceptions(o.orderId, "payment_unknown")).toHaveLength(1);
+        expect((await service().listPaymentAttempts({ order_id: o.orderId }))[0]).toMatchObject({
+          provider_txn_no: tFail,
+        });
+      });
+    });
   },
 });

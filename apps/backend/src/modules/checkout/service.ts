@@ -843,8 +843,10 @@ class CheckoutModuleService extends MedusaService({
    *    đối soát VNPAY (join `provider_txn_no = payment_ledger.provider_txn_id`) cần mã này (T-168, D-122);
    *  - đã mang đúng mã này → không đổi gì (`unchanged`);
    *  - `failed` đang mang mã KHÁC (thông báo thất bại có mã, hoặc giao dịch thành công thứ hai) → KHÔNG ghi đè, trả
-   *    `conflict` để người gọi mở ngoại lệ. Attempt `captured` mang mã khác (AT36 — khoản thu thứ hai của đơn đã xác
-   *    nhận) giữ hành vi cũ: không đổi, không mở thêm (đã có ngoại lệ `overpayment`).
+   *    `conflict` để người gọi mở ngoại lệ (mọi quyết định của đơn, không riêng `late_payment`). Attempt `captured` mang
+   *    mã khác (giao dịch thành công thứ hai) giữ hành vi cũ: không đổi, không mở `attempt_txn_conflict` — chỉ có ngoại lệ
+   *    theo quyết định (`overpayment` nếu đơn đã xác nhận — AT36; `late_payment` nếu đơn đã hủy); khoản thu đó chưa gắn
+   *    attempt nên hoàn qua cổng/đối soát chưa tìm được — xử lý ở T-169.
    * Câu UPDATE có điều kiện `provider_txn_no IS NULL` nên hai khoản thu khác mã đua nhau chỉ một bên gắn được.
    */
   private async linkAttemptToCapture(

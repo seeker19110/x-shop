@@ -53,9 +53,9 @@ Lỗi ở bước 8–10 → bước bù trừ của workflow: xóa reservation 
 2. Inbox: event_key = `txn_ref|transactionNo|responseCode|transactionStatus`; đã xử lý → trả lại kết quả cũ (lặp 20 lần → 1 bút toán).
 3. Tìm payment_attempt theo txn_ref → không có → `01`. Số tiền ≠ attempt.amount → `04` + exception.
 4. Khóa `order:<id>`. Không thành công → attempt `failed` (nếu chuyển hợp lệ), `00`.
-5. Thành công: INSERT ledger capture (UNIQUE provider_txn_id) — va → đã ghi → `02`. Rồi `decideOnCapture(order.state, total, ledgerAfter, amount)`:
+5. Thành công: INSERT ledger capture (UNIQUE provider_txn_id) — va → đã ghi → `02`. Gắn mã giao dịch vào attempt (T-168, với MỌI quyết định bên dưới): attempt còn mở → `captured` + `provider_txn_no`; attempt `failed` chưa có mã → ghi `provider_txn_no`, GIỮ `failed` (hoàn qua cổng + đối soát VNPAY tìm được giao dịch gốc); attempt `failed` đang mang mã KHÁC → không ghi đè, `payment_unknown` lý do `attempt_txn_conflict`; attempt `captured` mang mã khác → không đổi, không có `attempt_txn_conflict` (T-169). Rồi `decideOnCapture(order.state, total, ledgerAfter, amount)`:
    - `confirm_order` → order_finance `confirmed`, payment collection native đánh dấu đã thu (API module payment, không qua webhook native), outbox `order.confirmed`; `overpaid > 0` → exception `overpayment`.
-   - `exception late_payment` (đơn đã hủy) → exception, KHÔNG phục hồi đơn/giao hàng (AT09). Attempt đã `failed` chưa có mã → ghi `provider_txn_no` của khoản thu, GIỮ `failed` (T-168: hoàn qua cổng + đối soát VNPAY tìm được giao dịch gốc); attempt `failed` đang mang mã KHÁC → không ghi đè, `payment_unknown` lý do `attempt_txn_conflict`. `late_payment` đóng khi tiền của đơn đã hủy được trả lại hết (ledger ròng = 0).
+   - `exception late_payment` (đơn đã hủy) → exception, KHÔNG phục hồi đơn/giao hàng (AT09). `late_payment` đóng khi tiền của đơn đã hủy được trả lại hết (ledger ròng = 0).
    - `exception overpayment` (đơn đã xác nhận, giao dịch thật thứ hai) → exception, không xác nhận lại (AT36).
    - `record_only` (thu thiếu) → exception `payment_unknown` để CSKH xử lý.
 6. Trả `00` (hoặc `02` khi đơn đã xác nhận trước đó bởi đúng giao dịch này).
