@@ -61,6 +61,22 @@ describe("acquireOrdered và tắt êm (T-174)", () => {
     expect(l.owners.get("k1")).toBe("OTHER");
   });
 
+  it("nhiều khoá: k2 bị giữ, bật cờ tắt → BUSY_RETRY, k1 đã lấy được nhả, không còn lease", async () => {
+    const l = new FakeLocking();
+    await l.acquire("k2", { ownerId: "OTHER" });
+    const p = acquireOrdered(l, ["k1", "k2"], { ...opts("job"), abortWhenDraining: true }).catch(
+      (e: unknown) => e,
+    );
+    await jest.advanceTimersByTimeAsync(100);
+    expect(l.owners.get("k1")).toBe("job");
+    shutdownState().draining = true;
+    await jest.advanceTimersByTimeAsync(200);
+    expect(((await p) as CheckoutError).code).toBe("BUSY_RETRY");
+    expect(l.owners.has("k1")).toBe(false);
+    expect(l.owners.get("k2")).toBe("OTHER");
+    expect(activeLeaseCount()).toBe(0);
+  });
+
   it("không tắt → chờ như cũ tới hết waitMs rồi BUSY_RETRY", async () => {
     const l = await heldByOther();
     const start = Date.now();
