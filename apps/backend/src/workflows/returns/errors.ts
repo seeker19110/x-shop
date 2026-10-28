@@ -37,7 +37,8 @@ export const RETURNS_ERROR_STATUS = {
   PAYMENT_NOT_UNVERIFIED: 409,
   /**
    * T-173: hoàn theo trả hàng (`return_id`) không từ chối được — bản `rejected` vẫn chiếm chỉ mục duy nhất theo yêu cầu
-   * trả nên yêu cầu trả sẽ kẹt. Kèm `next_steps` (duyệt → thực hiện → hủy khi `failed` → tạo lại theo `return_id`).
+   * trả nên yêu cầu trả sẽ kẹt. Kèm `next_steps` tính theo cách hoàn + trạng thái (`returnRefundNextSteps` của domain) và
+   * `evidence_required`.
    */
   RETURN_REFUND_NOT_REJECTABLE: 409,
 } as const;

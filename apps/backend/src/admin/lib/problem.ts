@@ -2,6 +2,8 @@
  * Lỗi API Admin (`application/problem+json`, đặc tả §9.1) → thông điệp tiếng Việt cho người dùng + lỗi theo dòng/cột
  * của file CSV. Thuần (không React/fetch) để test đơn vị.
  */
+import { returnRefundHint } from "./refund-actions";
+
 export interface RowError {
   /** Dòng trong file (1 = header); `null` khi server không nêu. */
   line: number | null;
@@ -60,8 +62,6 @@ const MESSAGES: Record<string, string> = {
     "Yêu cầu hoàn này đã hết lượt thử. Hủy yêu cầu (ghi lý do) rồi tạo yêu cầu mới, thường là hoàn ngoài hệ thống.",
   REFUND_PROVIDER_UNCONFIRMED:
     "Chưa xác nhận được với cổng thanh toán là yêu cầu chưa được hoàn — chưa hủy được. Thử lại sau ít phút.",
-  RETURN_REFUND_NOT_REJECTABLE:
-    "Hoàn theo trả hàng không từ chối được (số tiền do kiểm định chốt). Duyệt rồi thực hiện; cần đổi cách hoàn thì khi yêu cầu ở trạng thái thất bại, hủy (ghi lý do) rồi tạo lại theo trả hàng.",
   BUSY_RETRY: "Hệ thống đang bận xử lý đơn này. Thử lại sau vài giây.",
   INVALID_STATE: "Trạng thái hiện tại không cho phép thao tác này. Tải lại để xem trạng thái mới nhất.",
   NOT_FOUND: "Không tìm thấy bản ghi.",
@@ -125,6 +125,11 @@ export function describeProblem(error: AdminApiError): ProblemView {
         action: "none",
         message: detail.length ? `Dữ liệu không hợp lệ: ${detail.join("; ")}` : "Dữ liệu không hợp lệ.",
       };
+    }
+    case "RETURN_REFUND_NOT_REJECTABLE": {
+      // Bước tiếp do server tính theo cách hoàn + trạng thái (T-173); thân thiếu/hỏng → coi như không có bước (tải lại).
+      const steps = Array.isArray(error.body.next_steps) ? error.body.next_steps : [];
+      return { action: "none", message: returnRefundHint(steps, error.body.evidence_required === true) };
     }
     default:
       return { action: "none", message: MESSAGES[error.code] ?? error.message };

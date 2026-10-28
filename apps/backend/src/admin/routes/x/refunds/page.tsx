@@ -476,10 +476,9 @@ const RefundsPage = (): ReactNode => {
                             Từ chối
                           </Button>
                         )}
-                        {a.rejectBlocked && (
+                        {a.rejectHint !== null && (
                           <Text size="xsmall" className="text-ui-fg-subtle">
-                            Hoàn theo trả hàng không từ chối được — duyệt rồi thực hiện; đổi cách hoàn: hủy
-                            khi thất bại rồi tạo lại.
+                            {a.rejectHint}
                           </Text>
                         )}
                         {a.execute && (

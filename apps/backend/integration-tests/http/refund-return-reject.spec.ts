@@ -93,8 +93,11 @@ medusaIntegrationTestRunner({
       (await pg()("x_refund").where({ return_id: retId }).whereNotIn("state", ["rejected", "cancelled"]))
         .length;
 
-    /** Đơn VNPAY đã giao 1 món 730.000 → trả → kiểm định đạt → hoàn 700.000 `provider` ở `requested` (kho tạo). */
-    async function inspectedReturnWithRequestedRefund() {
+    /**
+     * Đơn VNPAY đã giao 1 món 730.000 → trả → kiểm định đạt → hoàn 700.000 ở `requested` (kho tạo): `provider`, hoặc
+     * `manual` khi cổng hoàn tắt lúc kiểm định (cùng nhánh với đơn COD — hoàn tay không tự vào `failed`).
+     */
+    async function inspectedReturnWithRequestedRefund(method: "provider" | "manual" = "provider") {
       const o = await flow.deliveredOrder([["Đen/M", 1]], "vnpay");
       const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
         entity: "order",
@@ -114,6 +117,7 @@ medusaIntegrationTestRunner({
       const retId = created.data.return.id as string;
       expect((await flow.admin(`/admin/x/returns/${retId}/approve`, A("support"))).status).toBe(200);
       expect((await flow.admin(`/admin/x/returns/${retId}/receive`, A("warehouse"))).status).toBe(200);
+      if (method === "manual") setRefundGatewayForTest(new DisabledRefundGateway());
       const inspected = await flow.admin(`/admin/x/returns/${retId}/inspect`, A("warehouse"), {
         lines: [{ line_id: line, restock_quantity: 1, damaged_quantity: 0 }],
       });
@@ -121,16 +125,22 @@ medusaIntegrationTestRunner({
         reason: "return",
         return_id: retId,
         amount: 700_000,
-        method: "provider",
+        method,
         state: "requested",
       });
       return { o, retId, refundId: inspected.data.refund.id as string };
     }
 
+    /** Bước tiếp theo cách hoàn + trạng thái (T-173 review): provider đủ đường hủy/tạo lại; manual chỉ duyệt/thực hiện. */
+    const PROVIDER_REQUESTED = ["approve", "execute", "cancel", "recreate"];
     const expectNotRejectable = (
       res: { status: number; data: Record<string, unknown> },
       refundId: string,
       retId: string,
+      next: { state: string; steps: string[]; evidence?: boolean } = {
+        state: "requested",
+        steps: PROVIDER_REQUESTED,
+      },
     ) =>
       expect({ status: res.status, data: res.data }).toMatchObject({
         status: 409,
@@ -138,7 +148,9 @@ medusaIntegrationTestRunner({
           code: "RETURN_REFUND_NOT_REJECTABLE",
           refund_id: refundId,
           return_id: retId,
-          next_steps: ["approve", "execute", "cancel", "recreate"],
+          state: next.state,
+          next_steps: next.steps,
+          evidence_required: next.evidence ?? false,
         },
       });
 
@@ -182,11 +194,16 @@ medusaIntegrationTestRunner({
 
         // Đường thường: duyệt → thực hiện → hoàn đủ, yêu cầu trả đóng.
         expect((await approve(refundId)).data.refund.state).toBe("approved");
+        // Đã duyệt: bỏ bước duyệt.
+        expectNotRejectable(await reject(refundId), refundId, retId, {
+          state: "approved",
+          steps: ["execute", "cancel", "recreate"],
+        });
         expect((await execute(refundId)).data.outcome).toBe("succeeded");
         expect(mock.totalRefunded()).toBe(700_000);
         expect((await returns().getReturn(retId))!.state).toBe("closed");
-        // Bản đã duyệt/đã hoàn: từ chối vẫn 409 cùng mã (không phải INVALID_STATE chung chung).
-        expectNotRejectable(await reject(refundId), refundId, retId);
+        // Đã hoàn (kết thúc): vẫn 409 cùng mã, không còn bước nào.
+        expectNotRejectable(await reject(refundId), refundId, retId, { state: "succeeded", steps: [] });
       });
 
       it("cách mới theo hướng dẫn: cổng tắt → duyệt → thực hiện (failed, chưa gửi) → hủy → mở lại → hoàn tay; không vượt, không hai bản mở", async () => {
@@ -197,6 +214,10 @@ medusaIntegrationTestRunner({
         expect((await approve(refundId)).status).toBe(200);
         expect((await execute(refundId)).data.code).toBe("REFUND_PROVIDER_DISABLED");
         expect(await returns().getRefund(refundId)).toMatchObject({ state: "failed", attempts: 0 });
+        expectNotRejectable(await reject(refundId), refundId, retId, {
+          state: "failed",
+          steps: ["execute", "cancel", "recreate"],
+        });
         // failed vẫn giữ tiền → chưa mở lại được.
         const acc = await createMfaAdmin(rawApi as unknown as HttpClient, container, {
           roles: ["accountant"],
@@ -239,14 +260,94 @@ medusaIntegrationTestRunner({
       it("2 lệnh từ chối ∥ 1 lệnh duyệt cùng lúc → hai từ chối 409 cùng mã, duyệt thắng; một audit duyệt, không bản mở thứ hai", async () => {
         const { o, retId, refundId } = await inspectedReturnWithRequestedRefund();
         const [r1, r2, ok] = await Promise.all([reject(refundId), reject(refundId), approve(refundId)]);
-        expectNotRejectable(r1, refundId, retId);
-        expectNotRejectable(r2, refundId, retId);
+        // Từ chối đọc trạng thái trước hoặc sau khi duyệt thắng → bước tiếp khớp đúng trạng thái nó đã đọc.
+        for (const r of [r1, r2]) {
+          const approved = r.data.state === "approved";
+          expectNotRejectable(r, refundId, retId, {
+            state: approved ? "approved" : "requested",
+            steps: approved ? ["execute", "cancel", "recreate"] : PROVIDER_REQUESTED,
+          });
+        }
         expect(ok).toMatchObject({ status: 200, data: { changed: true, refund: { state: "approved" } } });
         expect(await returns().getRefund(refundId)).toMatchObject({ state: "approved" });
         expect(await auditCount(refundId, "refund.approved")).toBe(1);
         expect(await auditCount(refundId, "refund.rejected")).toBe(0);
         expect(await liveOfReturn(retId)).toBe(1);
         expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 0, held: 700_000, rows: 1 });
+      });
+    });
+
+    describe("hoàn tay (manual/COD) và dữ liệu cũ đã `rejected` trước T-173", () => {
+      it("manual `requested` → 409 chỉ duyệt + thực hiện kèm chứng từ (không hủy/tạo lại); làm theo → hoàn xong, yêu cầu trả đóng", async () => {
+        const { o, retId, refundId } = await inspectedReturnWithRequestedRefund("manual");
+        expectNotRejectable(await reject(refundId), refundId, retId, {
+          state: "requested",
+          steps: ["approve", "execute"],
+          evidence: true,
+        });
+        expect((await approve(refundId)).status).toBe(200);
+        expectNotRejectable(await reject(refundId), refundId, retId, {
+          state: "approved",
+          steps: ["execute"],
+          evidence: true,
+        });
+        // Thiếu chứng từ → 422, vẫn approved (không bao giờ thành failed → không có đường hủy).
+        expect((await execute(refundId)).data.code).toBe("VALIDATION");
+        expect(await returns().getRefund(refundId)).toMatchObject({ state: "approved" });
+        expect((await execute(refundId, "CK-T173-002")).data.outcome).toBe("succeeded");
+        expect((await returns().getReturn(retId))!.state).toBe("closed");
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 700_000, held: 0, rows: 1 });
+        expectNotRejectable(await reject(refundId), refundId, retId, { state: "succeeded", steps: [] });
+        expect(mock.calls).toBe(0);
+      });
+
+      it("hoàn theo trả hàng đã `rejected` (trước T-173): từ chối lại → 200 idempotent; gỡ bằng SQL ở RUNBOOK §7 → mở lại theo return_id", async () => {
+        const { o, retId, refundId } = await inspectedReturnWithRequestedRefund();
+        // Dựng dữ liệu cũ như mã trước T-173 đã ghi (requested → rejected), không qua API mới.
+        await pg()("x_refund").where({ id: refundId }).update({
+          state: "rejected",
+          rejected_by: staff.accountant.userId,
+          rejected_at: new Date(),
+          reject_reason: "Từ chối trước T-173",
+        });
+        const again = await reject(refundId);
+        expect(again).toMatchObject({ status: 200, data: { refund: { id: refundId, state: "rejected" } } });
+        expect(again.data.refund.reject_reason).toBeTruthy();
+        expect(await auditCount(refundId, "refund.rejected")).toBe(0);
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 0, held: 0, rows: 1 });
+
+        const acc = await createMfaAdmin(rawApi as unknown as HttpClient, container, {
+          roles: ["accountant"],
+        });
+        const reopen = () =>
+          flow.admin(
+            "/admin/x/refunds",
+            acc.headers,
+            { order_id: o.orderId, reason: "return", return_id: retId },
+            { "Idempotency-Key": key() },
+          );
+        // Đây là chỗ kẹt: bản rejected vẫn chiếm chỉ mục theo yêu cầu trả.
+        expect(await reopen()).toMatchObject({ status: 409, data: { code: "INVALID_STATE" } });
+
+        // Câu SQL gỡ ở RUNBOOK §7 (chép nguyên văn) — chỉ khớp bản rejected có return_id.
+        const unstick = `UPDATE x_refund SET state='cancelled', cancelled_by=rejected_by, cancelled_at=rejected_at, cancel_reason=coalesce(reject_reason,'legacy reject (T-173)') WHERE id=? AND state='rejected' AND return_id IS NOT NULL`;
+        const res = (await pg().raw(unstick, [refundId])) as { rowCount: number };
+        expect(res.rowCount).toBe(1);
+        expect((await pg().raw(unstick, [refundId])) as { rowCount: number }).toMatchObject({ rowCount: 0 });
+        expect(await returns().getRefund(refundId)).toMatchObject({
+          state: "cancelled",
+          cancelled_by: staff.accountant.userId,
+          cancel_reason: "Từ chối trước T-173",
+        });
+
+        const fresh = await reopen();
+        expect(fresh).toMatchObject({
+          status: 201,
+          data: { refund: { reason: "return", return_id: retId, amount: 700_000 } },
+        });
+        expect(await reopen()).toMatchObject({ status: 409, data: { code: "INVALID_STATE" } });
+        expect(await liveOfReturn(retId)).toBe(1);
+        expect(await moneyOf(o.orderId)).toEqual({ captured: 730_000, succeeded: 0, held: 700_000, rows: 2 });
       });
     });
 

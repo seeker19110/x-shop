@@ -1,3 +1,4 @@
+import * as domain from "@x-shop/domain";
 import {
   REFUND_STATES,
   RETURN_REASONS,
@@ -12,13 +13,15 @@ import {
   refundStateLabel,
 } from "../labels";
 import { PAGE_SIZE, pageInfo } from "../pagination";
-import { AdminApiError, describeProblem } from "../problem";
+import { AdminApiError, describeProblem, toApiError } from "../problem";
 import { checkReceive, initialReceiveDrafts } from "../receive";
 import {
   isRetryExhausted,
+  isReturnRefund,
   recreateRefundBody,
   REFUND_MAX_ATTEMPTS,
   refundActions,
+  returnRefundNextSteps,
   type RefundLike,
 } from "../refund-actions";
 
@@ -130,29 +133,83 @@ describe("refundActions", () => {
     expect(refundActions(base, { myId: null }).selfCreated).toBe(false);
   });
 
-  it("requested theo trả hàng (reason=return hoặc có return_id): không nút từ chối, thay bằng hướng dẫn; vẫn duyệt được (T-173)", () => {
+  it("requested theo trả hàng (reason=return hoặc có return_id): không nút từ chối, thay bằng hướng dẫn theo cách hoàn; vẫn duyệt được (T-173)", () => {
     for (const patch of [
-      { reason: "return", return_id: "xret_1" },
-      { reason: "return", return_id: null },
-      { reason: "other", return_id: "xret_1" },
+      { reason: "return", return_id: "xret_1", method: "provider" },
+      { reason: "return", return_id: null, method: "provider" },
+      { reason: "other", return_id: "xret_1", method: "provider" },
     ]) {
-      expect({ patch, a: refundActions(at(patch), { myId: "u2" }) }).toMatchObject({
+      const a = refundActions(at(patch), { myId: "u2" });
+      expect({ patch, approve: a.approve, reject: a.reject }).toEqual({
         patch,
-        a: { approve: true, reject: false, rejectBlocked: true },
+        approve: true,
+        reject: false,
       });
+      expect(a.rejectHint).toContain("tạo lại theo trả hàng");
     }
+    // Hoàn tay (COD, cổng tắt) không tự vào failed → hướng dẫn KHÔNG nói hủy/tạo lại, mà nói kèm mã chứng từ.
+    const manual = refundActions(at({ reason: "return", return_id: "xret_1", method: "manual" }));
+    expect(manual).toMatchObject({ approve: true, reject: false });
+    expect(manual.rejectHint).toContain("thực hiện kèm mã chứng từ");
+    expect(manual.rejectHint).not.toContain("tạo lại");
     // Hoàn hủy đơn / lý do khác vẫn từ chối được; trạng thái khác requested: không nút, không hướng dẫn.
     for (const reason of ["cancellation", "other"]) {
-      expect(refundActions(at({ reason }))).toMatchObject({ reject: true, rejectBlocked: false });
+      expect(refundActions(at({ reason }))).toMatchObject({ reject: true, rejectHint: null });
     }
     expect(refundActions(at({ state: "failed", reason: "return", return_id: "xret_1" }))).toMatchObject({
       reject: false,
-      rejectBlocked: false,
+      rejectHint: null,
       cancel: true,
     });
-    expect(describeProblem(new AdminApiError(409, "RETURN_REFUND_NOT_REJECTABLE", "x")).message).toContain(
-      "tạo lại theo trả hàng",
+  });
+
+  it("thông điệp 409 RETURN_REFUND_NOT_REJECTABLE theo next_steps của server; thân thiếu/hỏng → bảo tải lại", () => {
+    const msg = (body: object) =>
+      describeProblem(toApiError(409, { code: "RETURN_REFUND_NOT_REJECTABLE", title: "x", ...body })).message;
+    const provider = msg({
+      next_steps: ["approve", "execute", "cancel", "recreate"],
+      evidence_required: false,
+    });
+    expect(provider).toContain("Duyệt rồi thực hiện;");
+    expect(provider).toContain("hủy (ghi lý do) rồi tạo lại theo trả hàng");
+    const manual = msg({ next_steps: ["approve", "execute"], evidence_required: true });
+    expect(manual).toContain("Duyệt rồi thực hiện kèm mã chứng từ.");
+    expect(manual).not.toContain("tạo lại");
+    expect(msg({ next_steps: ["cancel", "recreate"] })).toContain(
+      "Hủy (ghi lý do) rồi tạo lại theo trả hàng.",
     );
+    expect(msg({ next_steps: ["execute"] })).toMatch(/Thực hiện\.$/);
+    for (const body of [{ next_steps: [] }, {}, { next_steps: "approve" }, { next_steps: ["xoá"] }]) {
+      const m = msg(body);
+      expect(m).toContain("đã kết thúc");
+      expect(m).not.toContain("Duyệt");
+    }
+  });
+
+  it("isReturnRefund / returnRefundNextSteps của Admin là bản sao đúng của domain (khoá mọi trạng thái × cách hoàn × lượt)", () => {
+    for (const reason of ["return", "cancellation", "other", ""]) {
+      for (const return_id of ["xret_1", "", null, undefined]) {
+        expect({ reason, return_id, v: isReturnRefund({ reason, return_id }) }).toEqual({
+          reason,
+          return_id,
+          v: domain.isReturnRefund({ reason, return_id }),
+        });
+      }
+    }
+    for (const state of [...REFUND_STATES, "", "lạ"]) {
+      for (const method of ["provider", "manual", ""]) {
+        for (const attempts of [0, 1, 2, 3, 4, Number.NaN]) {
+          for (const max of [1, 3]) {
+            const r = { method, state, attempts };
+            expect({ r, max, s: returnRefundNextSteps(r, max) }).toEqual({
+              r,
+              max,
+              s: domain.returnRefundNextSteps(r, max),
+            });
+          }
+        }
+      }
+    }
   });
 
   it("approved/unknown: thực hiện; failed còn lượt: thử lại + hủy", () => {
