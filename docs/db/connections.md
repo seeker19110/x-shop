@@ -141,10 +141,23 @@ CPU suốt lúc đo) — số đo là của máy dev quá tải, không phải p
 **Khoá ghi index khi rebuild (T-167, D-076).** Trước T-167 `rebuildCatalogIndex` giữ khoá `x-shop:catalog-index` (Locking
 Module/Redis) suốt lúc đọc nguồn → mọi đồng bộ theo sự kiện chờ tới hết rebuild, trễ quá 60 s (§7.4). Từ T-167 rebuild
 đọc nguồn và dựng dòng NGOÀI khoá ghi (khoá riêng `x-shop:catalog-index:rebuild` chỉ tuần tự hoá các rebuild với nhau), chỉ
-giữ khoá ghi trong giao dịch `replaceAll`. Không mất thay đổi xen giữa: mốc `since` = đồng hồ DB lấy trước mọi lần đọc;
-`replaceProducts` ghi mốc vào `catalog_index_write_log` cùng giao dịch; `replaceAll` giữ nguyên dòng hiện tại của sản phẩm
-có mốc ≥ `since` (gồm "xoá hết dòng" — sản phẩm xoá/ẩn, không dòng ma); thay đổi chưa kịp đồng bộ còn dấu bẩn → lượt xả
-kế tiếp; ảnh chụp có `since` cũ hơn ảnh chụp đã áp (dòng `'*'` của write log) → không ghi.
+giữ khoá ghi trong giao dịch `replaceAll`. Mốc `since` = đồng hồ DB lấy trước mọi lần đọc; `replaceProducts` ghi mốc vào
+`catalog_index_write_log` cùng giao dịch; `replaceAll` giữ nguyên dòng hiện tại của sản phẩm có mốc ≥ `since` (gồm "xoá
+hết dòng" — sản phẩm xoá/ẩn, không dòng ma) và **đánh dấu bẩn lại** các sản phẩm đó trong cùng giao dịch, rồi rebuild hẹn
+một lượt xả ngay; thay đổi chưa kịp đồng bộ còn dấu bẩn → lượt xả kế tiếp; ảnh chụp có `since` cũ hơn ảnh chụp đã áp (dòng
+`'*'` của write log) → không ghi.
+
+**Phạm vi đảm bảo.** Không thay đổi nào bị ghi đè **vĩnh viễn**; nhưng ngay sau khi rebuild commit, sản phẩm được giữ bản
+đồng bộ có thể tạm cũ cho tới lượt xả hẹn sau rebuild (cỡ một lần đồng bộ sản phẩm). Lý do: mốc write log là lúc GHI, một
+lượt đồng bộ có thể đã đọc nguồn TRƯỚC `since` rồi ghi SAU `since`; nếu trước `since` có thay đổi KHÔNG phát sự kiện (price
+list tới giờ hiệu lực, bảng màu/size, link kho↔kênh — đúng loại job `*/30` phải bắt) thì bản giữ lại thiếu thay đổi đó, và
+không có dấu bẩn nào khác sửa lại. Đánh dấu bẩn lại sản phẩm giữ lại (review T-167 🔴1) đóng lỗ đó; hàng rào:
+`catalog-index-scale.spec.ts` "T-167 (review 🔴1)".
+
+**Giới hạn: rebuild do dấu `'*'`** (sự kiện không truy được phạm vi: xoá danh mục, đổi/xoá price list) chạy NGAY TRONG lượt
+xả (`drainCatalogIndex`). Trong lúc rebuild đó (~50 s ở 50k SKU), lượt xả theo sự kiện của cùng tiến trình (lượt hẹn gộp
+`scheduleCatalogDrain`) chờ nó xong; lượt xả của job mỗi phút và của tiến trình khác thì không bị chặn (khoá ghi rảnh). Số
+0,39–0,46 s dưới đây chỉ đúng cho rebuild gọi trực tiếp (job `x-catalog-index-rebuild`, `catalog:reindex`, seed).
 
 Đo 2026-10-27 trên DB riêng `PERF_DB_NAME=xshop_perf_t167 PERF_ORDERS=1000 node scripts/ops/perf-dataset.mjs` (10.024 sản
 phẩm / 50.105 dòng; cùng máy 4 CPU, loadavg 1 phút 4,4–5,6), script đo tạm qua `medusa exec`: bọc `acquire`/`release` của
@@ -158,7 +171,8 @@ SKU ở nguồn rồi gọi `syncCatalogProducts` cho sản phẩm đó; DB đã
 | T-167 lần 2 | 46,9 s | **2,4 s** | 111 / 2.925 | **0,46 s** | mới (`kept = 1`) |
 
 111 câu trong khoá = giao dịch `replaceAll` (BEGIN, 6 câu write log/chốt, DELETE, 101 INSERT theo lô 500, COMMIT) + đếm
-kiểm cuối. Cả hai lần T-167: bảng đủ 50.105 dòng = kỳ vọng, giá SKU sửa giữa chừng đúng giá mới sau rebuild — `replaceAll`
+kiểm cuối (đo trước bản sửa review 🔴1; bản sửa thêm một câu đánh dấu bẩn trong giao dịch khi có sản phẩm giữ lại). Cả
+hai lần T-167: bảng đủ 50.105 dòng = kỳ vọng, giá SKU sửa giữa chừng đúng giá mới sau rebuild — `replaceAll`
 ngoài khoá đọc không gây sai lệch, không cần đường lùi của D-076. Thời gian giữ khoá tăng theo số dòng (ghi cả bảng ~50 ms
 / 1.000 dòng), không theo thời gian đọc nguồn. Hàng rào (không dùng đồng hồ): `catalog-index-scale.spec.ts` "T-167: khoá
 ghi chỉ giữ lúc thay bảng" đỏ nếu câu đọc nguồn chạy trong khoá, nếu số câu trong khoá vượt ⌈dòng/500⌉ + 12 hoặc tỉ lệ
