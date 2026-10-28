@@ -44,12 +44,30 @@ function containerOf(service: Record<string, unknown>, locking: LockingLike): Me
   } as unknown as MedusaContainer;
 }
 
+/**
+ * Tiến đồng hồ giả từng bước 10 ms tới khi `p` xong (tối đa `maxMs`): backoff của acquireOrdered có jitter ngẫu nhiên
+ * (đến ~1,5 x 80 ms/lần), nên số mili giây cần tiến để thấy kết quả không cố định — không đoán một bước tiến cố định.
+ */
+async function settle<T>(p: Promise<T>, maxMs: number): Promise<T> {
+  let done = false;
+  void p.then(
+    () => (done = true),
+    () => (done = true),
+  );
+  for (let t = 0; t < maxMs && !done; t += 10) await jest.advanceTimersByTimeAsync(10);
+  expect(done).toBe(true);
+  return p;
+}
+
 beforeEach(() => {
   resetShutdownStateForTest();
   jest.useFakeTimers();
+  // Jitter backoff của acquireOrdered cố định (0,5 → đúng `delay`): thời điểm thử lại lặp lại được.
+  jest.spyOn(Math, "random").mockReturnValue(0.5);
 });
 afterEach(() => {
   jest.useRealTimers();
+  jest.restoreAllMocks();
   resetShutdownStateForTest();
   expect(activeLeaseCount()).toBe(0);
 });
@@ -67,8 +85,7 @@ describe("job chờ khoá khi tắt (T-174)", () => {
     const p = expireHolds(containerOf(service, locking), { now: new Date() });
     await jest.advanceTimersByTimeAsync(300);
     shutdownState().draining = true;
-    await jest.advanceTimersByTimeAsync(200);
-    const r = await p;
+    const r = await settle(p, 1_000);
     expect(r.skipped).toEqual(["ord_1"]);
     expect(r.cancelled).toEqual([]);
     expect(Date.now() - start).toBeLessThan(1_000);
@@ -85,8 +102,7 @@ describe("job chờ khoá khi tắt (T-174)", () => {
     const p = reconcileAttempts(containerOf(service, locking), { now: new Date() });
     await jest.advanceTimersByTimeAsync(100);
     shutdownState().draining = true;
-    await jest.advanceTimersByTimeAsync(100);
-    const r = await p;
+    const r = await settle(p, 500);
     expect(r.skipped).toEqual(["att_1"]);
     expect(service.claimStaleAttempt).not.toHaveBeenCalled();
     expect(Date.now() - start).toBeLessThan(500);
