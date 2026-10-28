@@ -65,16 +65,39 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
   (`HOLD_RECHECK_POLICY.backlogWarnAt`). Đơn quá hạn chưa tới lượt xét lần nào không tính. Thường là cổng trả mã 91/chữ ký sai
   hàng loạt (khoá/cấu hình VNPAY), breaker mở kéo dài hoặc VNPAY đang tắt → kiểm `detail->>'reason'` của `payment_unknown` (§14
   bước 5) và đối chiếu với VNPAY trước khi làm gì khác. Chỉ đặt NULL (không sửa `state`/`hold_check_attempts`). Đơn chưa rõ quá vài giờ (`hold_check_attempts` ≥ 8): đối chiếu trên
-  cổng merchant VNPAY theo `txn_ref`; CHƯA có đường hủy tay cho đơn `unknown` (Admin trả 409 PAYMENT_PENDING) — leo thang kỹ
-  thuật, không sửa `state` bằng SQL.
+  cổng merchant VNPAY theo `txn_ref`, rồi đi §1.1 — không sửa `state` bằng SQL.
 - `VNPAY_ENABLED=false` (T-166) chỉ chặn TẠO thanh toán VNPAY mới (quote/submit trả lỗi phương thức chưa bật). Đơn VNPAY đang
   chờ: `x-expire-holds` không querydr, không hủy — giữ hàng như breaker mở (`payment_unknown` lý do `vnpay_disabled`, hẹn lại 1
-  phút, không tăng backoff); hủy tay trả 409 PAYMENT_PENDING; đơn đã có IPN thất bại (không còn attempt mở) vẫn hủy bình thường.
+  phút, không tăng backoff); hủy thường (`/cancel`) trả 409 PAYMENT_PENDING — dùng §1.1; đơn đã có IPN thất bại (không còn attempt mở) vẫn hủy bình thường.
   IPN vẫn xác minh bằng `VNPAY_TMN_CODE`/`VNPAY_HASH_SECRET` (+ `_PREVIOUS`) — phải giữ các biến này khi tắt; production tắt mà
   thiếu khoá (hoặc dùng khoá giả dev) → IPN trả 99 để VNPAY gửi lại, không ghi inbox/tiền, log WARN `[payment] IPN VNPAY tới khi
   không có khoá xác minh`. Bật lại → lượt kế tiếp hỏi lại từng đơn.
 - Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (`VNPAY_ENABLED=false`, giữ khoá) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
 - Xác nhận: không còn attempt `unknown` quá hạn chưa có owner trong `ops_exception`.
+
+### 1.1 Hủy từng đơn có thanh toán chưa xác minh (T-165, D-118)
+Dùng khi một đơn `awaiting_payment` có attempt `unknown` (hoặc `pending` đã quá hạn giữ hàng) mà cổng vẫn không trả lời rõ,
+và đã đối chiếu tay trên cổng merchant VNPAY theo `txn_ref` rằng KHÔNG có giao dịch thành công. Từng đơn, không hàng loạt.
+1. Người làm: **owner** (quyền `payment.override`, phiên đã qua MFA). Vai trò khác — kể cả kế toán — nhận 403; muốn cấp thêm
+   là đổi ma trận vai trò (`packages/domain/src/access/rbac.ts`) có quyết định.
+2. Lấy `order_id` + `txn_ref` (truy vấn `order_finance` ở trên, hoặc `payment_unknown` → `detail.txn_ref`); tra `txn_ref` trên
+   cổng merchant; ghi lại mã đối chiếu thấy trên cổng (mã giao dịch/mã tra cứu — 6–64 ký tự `[A-Za-z0-9_.:-]`).
+3. Gọi (một `Idempotency-Key` mới cho mỗi đơn; mất mạng → gửi lại ĐÚNG khóa + nội dung đó):
+
+   ```bash
+   curl -sS -X POST "$BACKEND_URL/admin/x/orders/<order_id>/cancel-unverified" \
+     -H "Authorization: Bearer <token phiên owner đã MFA>" -H "Content-Type: application/json" \
+     -H "Idempotency-Key: $(uuidgen)" \
+     -d '{"reason":"Đã tra txn_ref trên cổng merchant: không có giao dịch thành công","merchant_ref":"<mã trên cổng>"}'
+   ```
+
+4. Kết quả: 200 `state=cancelled` → đơn hủy, hàng nhả, attempt `failed`, `payment_unknown` của đơn `resolved`
+   (`detail.resolution = cancelled_unverified`, `merchant_ref`, `resolved_by`), audit `order.cancelled_unverified`, khách thấy
+   "Cửa hàng đã hủy đơn". 409 `NOT_AWAITING_PAYMENT` (`state`): đơn đã xác nhận (tiền về trước — kể cả do lần hỏi cổng cuối
+   của chính lệnh này) hoặc đã hủy → không làm gì thêm. 409 `PAYMENT_NOT_UNVERIFIED` (`reason`): `hold_active` (khách còn
+   trong hạn trả — chờ), `no_open_payment` (đã có kết quả thất bại — job tự hủy, hoặc `/cancel`), `payment_received` (đã có
+   tiền — dùng `/cancel` để mở hoàn tiền). 409 `BUSY_RETRY`: gửi lại cùng khóa sau vài giây.
+5. Nếu tiền vẫn về sau đó (IPN/querydr thành công): đơn KHÔNG phục hồi; hệ thống ghi khoản thu + `late_payment` → §7.
 
 ## 2. Hãng vận chuyển lỗi (GHN)
 - Tạo vận đơn timeout → hệ thống tra theo `client_order_code` trước khi tạo lại (không tạo tay vận đơn mới khi chưa tra).
@@ -268,6 +291,9 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 
 ## 7. Tiền đến sau khi hủy / thu dư
 - `ops_exception late_payment|overpayment`: kế toán xác minh trên cổng → tạo refund (một refund, retry cùng id) → ghi chú khách. Không phục hồi đơn, không giao thay thế khi chưa có xác nhận mới của khách.
+- Gồm cả đơn đã hủy chưa xác minh (§1.1) mà tiền về sau. Hiện hoàn qua cổng (`method` `provider`/`auto`) cho khoản thu đến sau
+  khi đơn đã hủy trả 422 `REFUND_METHOD_UNAVAILABLE` (attempt đã `failed` không mang mã giao dịch — chờ sửa, báo cáo T-165)
+  → tạo refund `method: "manual"`, hoàn ngoài hệ thống rồi `execute` kèm `evidence_ref` (mã chứng từ chuyển khoản).
 
 ## 8. Deploy
 

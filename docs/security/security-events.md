@@ -93,7 +93,7 @@ Kết quả: success · failure (4xx khác 401/403, 5xx). 401/403 ở `/admin` k
 ### 3.4 Hành động admin nghiệp vụ (đã có trước T-091, cùng bảng)
 
 `refund.requested|approved|rejected|cancelled|succeeded|failed|unknown`, `return.requested|approved|rejected|received|inspected`,
-`order.cancelled`, `inventory.adjusted`, `settlement.batch.imported`, `settlement.discrepancy.resolved`,
+`order.cancelled`, `order.cancelled_unverified` (T-165: owner hủy đơn thanh toán chưa xác minh — lý do, `merchant_ref`, attempt), `inventory.adjusted`, `settlement.batch.imported`, `settlement.discrepancy.resolved`,
 `catalog.import.previewed|committed|commit_rejected|commit_failed`. Kết quả mặc định theo tên (`defaultOutcomeOf`:
 `refund.failed`, `catalog.import.commit_*` lỗi → failure; còn lại success).
 
