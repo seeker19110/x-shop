@@ -1,5 +1,6 @@
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { msToSeconds } from "@x-shop/domain";
 import { normalizeMethod } from "../admin-security/route-match";
 import { rawRequestPath } from "../http/request-path";
 import {
@@ -245,7 +246,10 @@ async function recordInputRejection(
         cause: rejection.cause,
         ...(params.length > 0 && { params }),
         ...(actor.pseudonymized && { actor_pseudonymized: true }),
-        throttle: { occurrence: decision.occurrence, window_seconds: decision.window_seconds },
+        throttle: {
+          occurrence: decision.occurrence,
+          window_seconds: msToSeconds(DENY_AUDIT_THROTTLE.windowMs),
+        },
         ...(globalCap !== null && {
           global_cap: { cap: INPUT_ANON_GLOBAL_CAP, mark: globalCap.mark, occurrence: globalCap.occurrence },
         }),
