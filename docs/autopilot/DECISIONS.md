@@ -889,3 +889,10 @@
 - Chọn: Từ chối dứt khoát → failed giữ tiền, kế toán hủy có lý do (audit) mới nhả, thử lại được; đơn có xung đột mã → auto chọn manual cho mọi refund của đơn; provider tường minh khi cổng tắt → 409 lúc tạo; lý do ghi vào note
 - Lý do (tiêu chí chất lượng cuối): (1) an toàn tiền: không tự nhả khi có thể thử lại/đối chiếu, mọi lần nhả có người + audit; chặn sớm thay vì tạo yêu cầu chắc chắn kẹt; (3) không thêm migration
 - Đường lùi: Đổi refund-route/refundMachine; thêm cột method_reason bằng migration mới
+
+### D-127 · 2026-10-28T07:57:00+00:00 · T-173: từ chối refund theo trả hàng làm kẹt yêu cầu trả hàng
+
+- Phương án: (1) Server chặn /reject với refund return (409 RETURN_REFUND_NOT_REJECTABLE + next_steps), ẩn nút ở admin, không migration · (2) Cho mở lại sau rejected: migration thay IDX_x_refund_return_unique + sửa refundOfReturn
+- Chọn: Server chặn /reject với refund return (409 RETURN_REFUND_NOT_REJECTABLE + next_steps), ẩn nút ở admin, không migration
+- Lý do (tiêu chí chất lượng cuối): (1) cưỡng chế điều RUNBOOK §7 đã ghi; số tiền do kiểm định chốt nên từ chối không có nghĩa nghiệp vụ; (2) không migration, down của (2) không an toàn khi đã có bản rejected + bản mới; (3) phạm vi nhỏ
+- Đường lùi: Bỏ chặn trong rejectRefund; hiện lại nút
