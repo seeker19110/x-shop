@@ -1,6 +1,13 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { isNonEmpty, secondsToMs, signLookupToken, verifyLookupToken } from "@x-shop/domain";
+import {
+  isNonEmpty,
+  secondsToMs,
+  signLookupToken,
+  verifyLookupToken,
+  daysToMs,
+  minutesToMs,
+} from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CheckoutError } from "../checkout/errors";
@@ -16,9 +23,9 @@ import { parseEnv } from "../env";
  */
 export const ORDER_ACCESS_CONFIG = {
   /** Phiên đơn (cookie) 7 ngày — đủ theo dõi đơn COD tới khi giao; hết hạn thì tra cứu lại bằng mã đơn + SĐT. */
-  accessTtlMs: 7 * 24 * 3600_000,
+  accessTtlMs: daysToMs(7),
   /** Liên kết tra cứu 15 phút, một lần dùng. */
-  linkTtlMs: 15 * 60_000,
+  linkTtlMs: minutesToMs(15),
 } as const;
 
 export type OrderTokenPurpose = "access" | "link";

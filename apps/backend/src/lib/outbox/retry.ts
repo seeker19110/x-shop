@@ -10,6 +10,7 @@
  */
 
 import { isTransientCheckoutCode, readCheckoutError } from "../checkout/errors";
+import { secondsToMs } from "@x-shop/domain";
 
 /** RNG trả số trong [0, 1). Tiêm vào để test tất định; mặc định `Math.random`. */
 export type Random = () => number;
@@ -62,7 +63,7 @@ const IMF_FIXDATE =
 export function parseRetryAfterMs(value: string | null | undefined, now: Date, maxMs: number): number | null {
   if (typeof value !== "string") return null;
   const v = value.trim();
-  if (/^\d{1,16}$/.test(v)) return Math.min(Number(v) * 1000, maxMs);
+  if (/^\d{1,16}$/.test(v)) return Math.min(secondsToMs(Number(v)), maxMs);
   if (!IMF_FIXDATE.test(v)) return null;
   const at = Date.parse(v);
   if (!Number.isFinite(at)) return null;

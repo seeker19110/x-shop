@@ -1,6 +1,6 @@
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { isNonEmpty, kibToBytes } from "@x-shop/domain";
+import { isNonEmpty, kibToBytes, secondsToMs } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import type { AuditOutcome } from "../../modules/audit/service";
@@ -554,7 +554,7 @@ async function recordFinished(
 }
 
 /** Chờ handler phản hồi sau khi client ngắt — đủ cho route xuất (native trả 202 ngay; CSV catalog dựng đồng bộ). */
-export const ABORT_WAIT_MS = 15_000;
+export const ABORT_WAIT_MS = secondsToMs(15);
 
 const MAX_PARSED_BODY_BYTES = kibToBytes(64);
 export function parseJsonBody(b: unknown): unknown {

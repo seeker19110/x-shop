@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
-import { searchKey, isNonEmpty } from "@x-shop/domain";
+import { searchKey, isNonEmpty, minutesToMs, secondsToMs } from "@x-shop/domain";
 import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
@@ -23,7 +23,7 @@ import { notifyCatalogChanged } from "./revalidate";
 /** Khoá ghi read model: đồng bộ theo sự kiện và rebuild toàn phần không xen kẽ (không ghi đè bằng dữ liệu cũ). */
 export const CATALOG_INDEX_LOCK = "x-shop:catalog-index";
 /** Chờ tối đa khi khóa đang bị giữ (rebuild/xả dài); Redis câm thì lời gọi có hạn riêng (LOCK_CALL_TIMEOUT_MS). */
-const LOCK_WAIT_MS = 300_000;
+const LOCK_WAIT_MS = minutesToMs(5);
 /** Lease khóa của sync/rebuild — gia hạn nền khi còn chạy; tiến trình chết thì tự hết sau ≤ 30 giây. */
 const WRITE_LOCK_TTL_SECONDS = 30;
 const LOCK_SCOPE = "catalog-index";
@@ -480,7 +480,7 @@ export const DRAIN_LOCK_EXPIRE_SECONDS = 30;
  * trình đang tắt (`isDraining`, T-094) → thôi chờ, giành được khoá thì nhả ngay: không bắt đầu việc nặng giữa lúc tắt
  * (dấu còn trong DB cho tiến trình khác/lần chạy sau — D-081).
  */
-export const DRAIN_WAIT_SLICE_MS = 2_000;
+export const DRAIN_WAIT_SLICE_MS = secondsToMs(2);
 /** Hạn chờ khoá của lượt xả hẹn sau sự kiện — bằng hạn chờ của sync/rebuild (khoá bị giữ quá lâu → job phút sau). */
 export const DRAIN_SCHEDULED_WAIT_MS = LOCK_WAIT_MS;
 

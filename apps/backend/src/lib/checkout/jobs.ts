@@ -28,6 +28,7 @@ import {
   type OutboxBreakerPolicy,
   type OutboxRunLimits,
 } from "../outbox/breaker";
+import { hoursToMs, secondsToMs } from "@x-shop/domain";
 
 /**
  * Hàm xử lý của các job worker (docs/design/checkout-flow.md §6). Tách khỏi `src/jobs/*` để test gọi trực tiếp với
@@ -390,7 +391,7 @@ export async function reconcileAttempts(
   const s = service(container);
   const summary: ReconcileSummary = { compensated: [], skipped: [] };
   for (const a of await s.listStaleAttempts(now, opts.limit ?? 50)) {
-    const outcome = await withLock(container, lockKeys.cart(a.cart_id), 1_000, "cart", async () => {
+    const outcome = await withLock(container, lockKeys.cart(a.cart_id), secondsToMs(1), "cart", async () => {
       if (!(await s.claimStaleAttempt(a.id, now))) return "skipped" as const;
       const { orderIds, reservationIds } = await leftoversOfAttempt(container, a.id);
       if (reservationIds.length > 0) {
@@ -421,7 +422,7 @@ export async function codConfirmTimeout(
       dedupe_key: `cod_confirm_overdue:${o.order_id}`,
       order_id: o.order_id,
       priority: "high",
-      due_at: new Date(now.getTime() + 4 * 3600_000),
+      due_at: new Date(now.getTime() + hoursToMs(4)),
       detail: { display_ref: o.display_ref, owner_role: "order_staff" },
     });
     if (isNew) opened.push(o.order_id);

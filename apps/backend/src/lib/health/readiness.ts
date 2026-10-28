@@ -1,3 +1,5 @@
+import { secondsToMs } from "@x-shop/domain";
+
 /**
  * Readiness (OPS-OBS-006, T-079): tiến trình có phục vụ được request phụ thuộc DB/Redis không. Khác liveness
  * (`/x/health`, không chạm phụ thuộc): readiness lỗi → bộ cân bằng tải ngừng gửi request tới instance, KHÔNG khởi động
@@ -12,7 +14,7 @@
  */
 
 /** Hạn mỗi probe. Probe của bộ điều phối (vd Kubernetes `timeoutSeconds`) nên ≥ 2 s để thấy được 503 thay vì timeout. */
-export const READINESS_PROBE_TIMEOUT_MS = 1_000;
+export const READINESS_PROBE_TIMEOUT_MS = secondsToMs(1);
 
 export type Probe = () => Promise<unknown>;
 

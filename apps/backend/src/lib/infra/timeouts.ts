@@ -1,3 +1,5 @@
+import { minutesToMs, secondsToMs } from "@x-shop/domain";
+
 /**
  * Timeout TƯỜNG MINH cho mọi lời gọi ra ngoài của backend (T-092 — BASE-ERR-004, ARC-RES-001, BE-REL-001, DB-PERF-004,
  * DB-TX-003). Bảng tổng hợp + phép tính kết nối: docs/db/connections.md.
@@ -24,20 +26,20 @@
 
 export const DB_TIMEOUTS = {
   /** Mở kết nối mới (TCP + TLS + startup) — Postgres treo/không tới được → lỗi sau chừng này. */
-  connectTimeoutMs: 5_000,
+  connectTimeoutMs: secondsToMs(5),
   /** Phiên giữ transaction mà không chạy lệnh quá chừng này → Postgres huỷ phiên (khoá được nhả). */
-  idleInTransactionTimeoutMs: 60_000,
+  idleInTransactionTimeoutMs: minutesToMs(1),
   /** Kết nối rảnh trong pool bị đóng sau chừng này. */
-  poolIdleTimeoutMs: 30_000,
+  poolIdleTimeoutMs: secondsToMs(30),
   /** Mặc định knex 3.2.10 (không cấu hình được qua Medusa 2.22.1) — chờ lấy kết nối khi pool cạn. */
-  poolAcquireTimeoutMs: 60_000,
+  poolAcquireTimeoutMs: minutesToMs(1),
   /** pool.min mặc định của Medusa (giữ nguyên). */
   poolMin: 2,
 } as const;
 
 export const REDIS_TIMEOUTS = {
-  connectTimeoutMs: 5_000,
-  commandTimeoutMs: 5_000,
+  connectTimeoutMs: secondsToMs(5),
+  commandTimeoutMs: secondsToMs(5),
 } as const;
 
 /**
@@ -50,9 +52,9 @@ export const REDIS_TIMEOUTS = {
  * SDK thử lại lỗi tạm thời (gồm timeout) theo mặc định 3 lần → trường hợp xấu nhất ≈ 3 × (connect + request).
  */
 export const S3_TIMEOUTS = {
-  connectTimeoutMs: 5_000,
-  requestTimeoutMs: 30_000,
-  socketIdleTimeoutMs: 30_000,
+  connectTimeoutMs: secondsToMs(5),
+  requestTimeoutMs: secondsToMs(30),
+  socketIdleTimeoutMs: secondsToMs(30),
 } as const;
 
 export type S3Timeouts = { [K in keyof typeof S3_TIMEOUTS]: number };

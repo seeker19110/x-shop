@@ -31,6 +31,7 @@ import type { JobBreakerSnapshot } from "../../modules/checkout/service";
 import { isNotificationEvent } from "../notify/notify";
 import { windowStartMs, type WindowSample } from "../security/sliding-window";
 import { OUTBOX_POLICY } from "./policy";
+import { daysToMs, minutesToMs, MINUTES_PER_HOUR, HOURS_PER_DAY } from "@x-shop/domain";
 
 /** Kho trạng thái DÙNG CHUNG (= các phương thức của `CheckoutModuleService`; test tiêm bản giả cùng ngữ nghĩa). */
 export interface BreakerStore {
@@ -101,7 +102,7 @@ export const VNPAY_QUERYDR_BREAKER_KEY = "vnpay.querydr";
  * KHÔNG BAO GIỜ chạm — hết ngân sách sẽ giữ hàng quá hạn tới 00:00 UTC (T-161), nên ngân sách ở đây chỉ là rào cho lịch/vòng
  * lặp chạy sai (80 % → cảnh báo). Breaker querydr chủ yếu mở vì LỖI (cổng không phản hồi).
  */
-export const VNPAY_QUERYDR_DAILY_BUDGET = 100 * 1_440;
+export const VNPAY_QUERYDR_DAILY_BUDGET = 100 * (MINUTES_PER_HOUR * HOURS_PER_DAY);
 
 /**
  * Ngưỡng mặc định (đổi qua review — OPS-COST-004 "cấu hình ngưỡng trong code có review"):
@@ -113,15 +114,15 @@ export const VNPAY_QUERYDR_DAILY_BUDGET = 100 * 1_440;
  */
 export const OUTBOX_BREAKER_POLICY: OutboxBreakerPolicy = {
   failureThreshold: 5,
-  cooldownMs: 5 * 60_000,
+  cooldownMs: minutesToMs(5),
   probeLeaseMs: OUTBOX_POLICY.claimLeaseMs,
-  budgetWindowMs: 24 * 3600_000,
+  budgetWindowMs: daysToMs(1),
   budgets: { "outbox.notify": 3_000, [VNPAY_QUERYDR_BREAKER_KEY]: VNPAY_QUERYDR_DAILY_BUDGET },
   defaultBudget: 10_000,
   warnRatio: 0.8,
   throttleRatio: 0.9,
   throttledCallsPerRun: 5,
-  throttleDeferMs: 60_000,
+  throttleDeferMs: minutesToMs(1),
   subBudgets: { "order.lookup_link": { key: CUSTOMER_TRIGGERED_NOTIFY_KEY, limit: 1_000 } },
 };
 

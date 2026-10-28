@@ -99,6 +99,16 @@ const BASE_RESTRICTED_SYNTAX = [
 const UNITS_MAGIC = ":matches(Literal[value=1000], Literal[value=1024])"; // so theo giá trị: bắt cả 1e3, 0x3e8, 1000.0, 1000n
 const UNITS_MESSAGE =
   "Số ma thuật đổi đơn vị (XC-UNITS-009): dùng hằng/hàm ở units.ts (secondsToMs, msToSecondsCeil, kibToBytes, mibToBytes…).";
+const UNITS_DURATION_MESSAGE =
+  "Hằng thời lượng viết tay (XC-UNITS-009, T-160): dùng minutesToMs/hoursToMs/daysToMs/SECONDS_PER_HOUR… ở units.ts thay cho 60_000/3_600_000/86_400_000/3600/86400.";
+// Giá trị đúng bằng 1 phút/1 giờ/1 ngày (ms hoặc giây) — hằng thời lượng hay bị gõ tay; so theo giá trị (60_000, 6e4…).
+const UNITS_DURATION_SYNTAX = [
+  {
+    selector:
+      ":matches(Literal[value=60000], Literal[value=3600000], Literal[value=86400000], Literal[value=3600], Literal[value=86400])",
+    message: UNITS_DURATION_MESSAGE,
+  },
+];
 const UNITS_RESTRICTED_SYNTAX = [
   { selector: `BinaryExpression[operator=/^[*\\/]$/] > ${UNITS_MAGIC}`, message: UNITS_MESSAGE },
   {
@@ -218,7 +228,7 @@ export default tseslint.config(
   },
   {
     // XC-UNITS-009: số ma thuật đổi đơn vị chỉ được nằm trong module đơn vị. Ghi đè no-restricted-syntax nên phải
-    // lặp luật chung. Ngoại lệ có thời hạn: lib/outbox/retry.ts đang do tác vụ khác sửa (T-120 không đụng) — gỡ khi sửa xong.
+    // lặp luật chung. T-160: gỡ ngoại lệ lib/outbox/retry.ts (đã thay `* 1000` bằng secondsToMs).
     files: ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"],
     ignores: [
       "**/*.test.{ts,tsx}",
@@ -226,9 +236,23 @@ export default tseslint.config(
       "packages/domain/src/units.ts",
       "apps/storefront/src/lib/units.ts",
       "apps/backend/src/admin/lib/units.ts",
-      "apps/backend/src/lib/outbox/retry.ts",
     ],
     rules: { "no-restricted-syntax": ["error", ...BASE_RESTRICTED_SYNTAX, ...UNITS_RESTRICTED_SYNTAX] },
+  },
+  {
+    // XC-UNITS-009 (T-160): hằng thời lượng 1 phút/1 giờ/1 ngày viết tay bị chặn ở backend lib/modules/jobs (đã dọn xong).
+    // Ngoại lệ có thời hạn: modules/checkout/service.ts đang do tác vụ khác sửa — gỡ dòng ignore khi nó thay xong
+    // (workflows/, storefront, domain chưa dọn nên chưa nằm trong phạm vi luật này). Lặp luật chung vì ghi đè no-restricted-syntax.
+    files: ["apps/backend/src/{lib,modules,jobs}/**/*.ts"],
+    ignores: ["**/*.test.ts", "**/__tests__/**", "apps/backend/src/modules/checkout/service.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...BASE_RESTRICTED_SYNTAX,
+        ...UNITS_RESTRICTED_SYNTAX,
+        ...UNITS_DURATION_SYNTAX,
+      ],
+    },
   },
   {
     // Test vitest: không .only/.skip, mỗi test có assertion (QA-STRAT-008, QA-COV-004).

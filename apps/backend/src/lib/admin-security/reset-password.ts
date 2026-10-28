@@ -9,6 +9,7 @@ import { clientIpOf } from "../security/config";
 import { sendRateLimited, storeOf } from "./guard";
 import { registerAttempt } from "./rate-limit";
 import type { SecurityStore } from "./store";
+import { secondsToMs } from "@x-shop/domain";
 
 /**
  * `POST /auth/:actor_type/:auth_provider/reset-password` (T-143, BE-AUTH-003, D-085, D-086) — yêu cầu email đặt lại mật
@@ -40,7 +41,7 @@ const MAX_IDENTIFIER = 320;
 /** Thời gian phản hồi CỐ ĐỊNH (tính từ lúc middleware nhận request) cho mọi yêu cầu được chấp nhận. */
 export const RESET_RESPONSE_MS = 250;
 /** Trần độ trễ ngẫu nhiên trước khi bắt đầu việc nền (tra identity + workflow). */
-export const RESET_WORK_MAX_DELAY_MS = 5000;
+export const RESET_WORK_MAX_DELAY_MS = secondsToMs(5);
 
 /** Thân hợp lệ chung (không phân biệt lý do) khi không có thân đã validate — không nhường handler gốc (lộ thời gian). */
 export const RESET_INVALID = { status: 400, code: "INVALID_REQUEST", title: "Yêu cầu không hợp lệ" } as const;

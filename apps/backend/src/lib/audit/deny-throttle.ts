@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { msToSeconds } from "@x-shop/domain";
+import { msToSeconds, minutesToMs } from "@x-shop/domain";
 
 /**
  * Giới hạn tần suất ghi audit cho lần bị từ chối (RBAC deny) — chống ngập audit log khi một actor (lỗi client, script,
@@ -14,7 +14,7 @@ import { msToSeconds } from "@x-shop/domain";
  * Bộ đếm phải nguyên tử và dùng chung giữa các instance (Postgres `rate_limit_counter`). Bộ đếm lỗi → vẫn ghi audit
  * (mất dấu vết bảo mật tệ hơn thêm dòng).
  */
-export const DENY_AUDIT_THROTTLE = { windowMs: 60_000 } as const;
+export const DENY_AUDIT_THROTTLE = { windowMs: minutesToMs(1) } as const;
 
 export interface DenyGroup {
   actorType: string;

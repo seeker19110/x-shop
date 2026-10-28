@@ -39,7 +39,7 @@ export interface AcquireOptions {
  * Hạn mỗi lời gọi acquire/release. Lệnh khóa là một script Lua O(1) — Redis khỏe trả trong vài ms. ioredis mặc định xếp
  * lệnh chờ khi mất kết nối và chỉ báo lỗi sau ~20 lần kết nối lại (~10 giây) → không để khách treo theo nó.
  */
-export const LOCK_CALL_TIMEOUT_MS = 3_000;
+export const LOCK_CALL_TIMEOUT_MS = secondsToMs(3);
 
 class LockCallTimeout extends Error {
   override readonly name = "LockCallTimeout";

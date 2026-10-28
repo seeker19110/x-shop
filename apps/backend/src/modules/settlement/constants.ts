@@ -1,4 +1,4 @@
-import { mibToBytes } from "@x-shop/domain";
+import { mibToBytes, daysToMs, secondsToMs } from "@x-shop/domain";
 
 /**
  * Giá trị liệt kê + cấu hình của module `settlement` (T-028: đối soát COD/sao kê, chênh lệch, báo cáo — đặc tả §5.5,
@@ -110,7 +110,7 @@ export const SETTLEMENT_CONFIG = {
   /** Trần cột `integer` của Postgres (D-009) — vượt là lỗi dòng, không cắt. */
   maxAmountVnd: 2_147_483_647,
   /** Chấp nhận lệch đồng hồ: `occurred_at`/`period_end` không quá thời điểm hiện tại + chừng này. */
-  futureSkewMs: 24 * 3600_000,
+  futureSkewMs: daysToMs(1),
   /** Số lỗi dòng tối đa trả về (file lỗi hàng loạt không làm phình phản hồi). */
   maxReportedErrors: 100,
   /**
@@ -122,5 +122,5 @@ export const SETTLEMENT_CONFIG = {
    * cộng ~5 s: RTT 1 ms → ~10–11 s, chạm hạn này (lần nhập trần thứ hai song song có thể nhận 409 dù không treo — gọi lại
    * được). Theo dõi log warn `IMPORT_IN_PROGRESS`; tăng hạn (vẫn < statement_timeout) hoặc gộp câu ghi nếu xảy ra thường.
    */
-  importLockWaitMs: 10_000,
+  importLockWaitMs: secondsToMs(10),
 } as const;

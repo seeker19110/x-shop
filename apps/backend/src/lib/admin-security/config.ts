@@ -1,5 +1,6 @@
 import type { Permission } from "@x-shop/domain";
 import { parseEnv } from "../env";
+import { SECONDS_PER_MINUTE } from "@x-shop/domain";
 
 /**
  * Tham số bảo mật admin (T-023/T-024). Thời hạn phiên đọc từ env (đã kiểm ở medusa-config, docs/ops/ENV.md); ngưỡng
@@ -50,7 +51,7 @@ export const isSensitive = (perm: Permission): boolean => SENSITIVE_PERMISSIONS.
  *  - IP (mọi định danh): chỉ chặn quét hàng loạt — ngưỡng CAO để không khoá cả mạng dùng chung (NAT công ty/quán cà phê).
  */
 export const AUTH_RATE_LIMITS = {
-  windowSeconds: 15 * 60,
+  windowSeconds: 15 * SECONDS_PER_MINUTE,
   login: { perIdentityIp: 5, perIdentity: 20, perIp: 100 },
   mfa: { perIdentityIp: 5, perIdentity: 10, perIp: 100 },
   // Đăng ký (T-138): lượt hợp lệ chỉ có khi được mời (thành công được hoàn) — mọi lượt bị từ chối là dò/chiếm trước email,

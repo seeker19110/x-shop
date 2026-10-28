@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
-import { catalogRevalidate as protocol, msToSecondsFloor } from "@x-shop/domain";
+import { catalogRevalidate as protocol, msToSecondsFloor, hoursToMs, secondsToMs } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import type { OutboxClaim } from "../../modules/checkout/service";
@@ -28,13 +28,13 @@ export const CATALOG_REVALIDATE_EVENT = "catalog.revalidate";
 
 export const CATALOG_REVALIDATE_POLICY = {
   /** Độ rộng cửa sổ gộp: mọi thay đổi trong cửa sổ đi chung một webhook ở cuối cửa sổ. */
-  windowMs: 2_000,
+  windowMs: secondsToMs(2),
   /** Quá số sản phẩm này trong một cửa sổ → một dòng "cả catalog" thay vì từng sản phẩm. */
   maxProductsPerWindow: 20,
   /** Dòng outbox đến hạn cho dispatcher sau cuối cửa sổ + khoảng này (lượt gửi gộp chạy trước, đánh dấu sent). */
-  dispatchGraceMs: 10_000,
+  dispatchGraceMs: secondsToMs(10),
   /** Hạn một lần POST tới storefront — ngắn vì bộ xử lý chạy trong khe outbox-dispatch dùng chung (D-081). */
-  requestTimeoutMs: 2_000,
+  requestTimeoutMs: secondsToMs(2),
   /**
    * Bộ ngắt THEO TỪNG URL: một bản storefront lỗi tạm (timeout, không kết nối được, 5xx/408/429) hoặc trả lời chậm hơn
    * `slowResponseMs` → trong khoảng này mọi lần gửi tới URL đó thất bại NGAY (tạm thời, hẹn lại sau phần còn lại; dài hơn
@@ -42,10 +42,10 @@ export const CATALOG_REVALIDATE_POLICY = {
    * ngắt LIÊN TIẾP (thăm dò hỏng) tới `maxUnavailableCooldownMs`: storefront vừa khởi động lại/route nguội chậm một lần
    * không làm webhook đứng 30 giây (E2E sau merge T-154), storefront sập lâu chỉ bị thăm dò mỗi 30 giây.
    */
-  unavailableCooldownMs: 5_000,
-  maxUnavailableCooldownMs: 30_000,
+  unavailableCooldownMs: secondsToMs(5),
+  maxUnavailableCooldownMs: secondsToMs(30),
   /** Phản hồi chậm hơn ngưỡng này (kể cả 2xx) cũng mở ngắt — không để storefront chậm giữ khe dispatcher. */
-  slowResponseMs: 1_000,
+  slowResponseMs: secondsToMs(1),
   /**
    * Trong MỘT lượt outbox-dispatch: tối đa bấy nhiêu dòng catalog gửi theo tag riêng; dòng kế tiếp gửi MỘT webhook tag
    * `catalog` (phủ mọi dòng còn lại của lượt — thành công thì các dòng sau xong không cần mạng); hỏng thì phần còn lại của
@@ -53,7 +53,7 @@ export const CATALOG_REVALIDATE_POLICY = {
    */
   maxNetworkRowsPerRun: 3,
   /** Trần chờ theo `Retry-After` của storefront. */
-  maxRetryAfterMs: 3600_000,
+  maxRetryAfterMs: hoursToMs(1),
 } as const;
 
 export interface RevalidateConfig {

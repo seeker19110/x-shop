@@ -3,7 +3,7 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
-import { parseFilter, isNonEmpty } from "@x-shop/domain";
+import { parseFilter, isNonEmpty, hoursToMs, minutesToMs } from "@x-shop/domain";
 import { CheckoutError, sendProblem } from "../checkout/errors";
 import { sanitizeQuery } from "../catalog/listing";
 import { ipRateKey } from "./client-ip";
@@ -41,17 +41,17 @@ export interface RateWindow {
 
 export const STORE_RATE_LIMITS = {
   /** GET /store/x/search: mỗi IP 60 lần/phút. */
-  searchIp: { limit: 60, windowMs: 60_000 },
+  searchIp: { limit: 60, windowMs: minutesToMs(1) },
   /** POST /store/x/checkout/quote: mỗi IP 60 lần/phút. */
-  quoteIp: { limit: 60, windowMs: 60_000 },
+  quoteIp: { limit: 60, windowMs: minutesToMs(1) },
   /** Mã giảm giá KHÁC NHAU mỗi IP / giờ. */
-  couponIp: { limit: 30, windowMs: 3_600_000 },
+  couponIp: { limit: 30, windowMs: hoursToMs(1) },
   /** Mã giảm giá KHÁC NHAU mỗi giỏ / giờ. */
-  couponCart: { limit: 10, windowMs: 3_600_000 },
+  couponCart: { limit: 10, windowMs: hoursToMs(1) },
   /** Idempotency-Key KHÁC NHAU (lần đặt mới) mỗi IP / 10 phút. */
-  submitIp: { limit: 20, windowMs: 600_000 },
+  submitIp: { limit: 20, windowMs: minutesToMs(10) },
   /** Idempotency-Key KHÁC NHAU mỗi giỏ / 10 phút. */
-  submitCart: { limit: 10, windowMs: 600_000 },
+  submitCart: { limit: 10, windowMs: minutesToMs(10) },
 } as const satisfies Record<string, RateWindow>;
 
 export type StoreRateLimit = keyof typeof STORE_RATE_LIMITS;

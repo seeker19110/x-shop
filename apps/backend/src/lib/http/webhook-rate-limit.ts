@@ -14,6 +14,7 @@ import {
   wouldExceedLimit,
   type WindowSample,
 } from "../security/sliding-window";
+import { secondsToMs } from "@x-shop/domain";
 
 /**
  * Giới hạn tần suất webhook công khai, DÙNG CHUNG mọi bản sao backend (T-095, ARC-RES-005): bộ đếm ở Postgres
@@ -42,9 +43,9 @@ export interface WebhookRateWindow {
 
 export const WEBHOOK_RATE_LIMITS = {
   /** POST /x/webhooks/shipping/ghn: 300 callback / 10 giây / IP — đủ cho hãng gửi lặp, chặn dội request rẻ tiền. */
-  ghnCallbackIp: { limit: 300, windowMs: 10_000 },
+  ghnCallbackIp: { limit: 300, windowMs: secondsToMs(10) },
   /** GET /x/webhooks/vnpay/ipn: 300 IPN / 10 giây / IP — đủ cho VNPAY gửi lặp, chặn dội request rẻ tiền (T-152). */
-  vnpayIpnIp: { limit: 300, windowMs: 10_000 },
+  vnpayIpnIp: { limit: 300, windowMs: secondsToMs(10) },
 } as const satisfies Record<string, WebhookRateWindow>;
 
 export type WebhookRateLimit = keyof typeof WEBHOOK_RATE_LIMITS;

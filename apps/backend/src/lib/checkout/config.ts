@@ -1,33 +1,34 @@
 import type { vnpay } from "@x-shop/domain";
 import { parseEnv, type VnpayIpnKeys, type VnpayMode } from "../env";
+import { daysToMs, minutesToMs, secondsToMs } from "@x-shop/domain";
 
 /**
  * Tham số checkout (D-002): mọi thời hạn là cấu hình có tên, đổi một chỗ. Thời gian lưu UTC (DATA04).
  */
 export const CHECKOUT_CONFIG = {
   /** Báo giá có hiệu lực 10 phút. */
-  quoteTtlMs: 10 * 60_000,
+  quoteTtlMs: minutesToMs(10),
   /** Giữ hàng đơn online (VNPAY) 15 phút — cũng là vnp_ExpireDate. */
-  onlineHoldMs: 15 * 60_000,
+  onlineHoldMs: minutesToMs(15),
   /** Hạn xác nhận đơn COD 24 giờ (D-004) — không dùng TTL online. */
-  codConfirmMs: 24 * 60 * 60_000,
+  codConfirmMs: daysToMs(1),
   /** Attempt `preparing` quá hạn này → job đối chiếu bù trừ (AT10). */
-  attemptLeaseMs: 2 * 60_000,
+  attemptLeaseMs: minutesToMs(2),
   /** Chờ tối đa để lấy khóa (giỏ/tồn kho/mã giảm) trước khi trả 409 BUSY_RETRY. */
-  lockWaitMs: 15_000,
+  lockWaitMs: secondsToMs(15),
   /** Thời hạn khóa Redis; được gia hạn mỗi 1/3 thời hạn khi còn giữ (§6.2 "có thời hạn, gia hạn"). */
   lockTtlSeconds: 30,
   /** Request trùng (cùng key/phiên bản giỏ) chờ attempt đang chạy tối đa bấy nhiêu trước khi trả 202. */
-  replayWaitMs: 8_000,
+  replayWaitMs: secondsToMs(8),
   replayPollMs: 100,
   /** Chờ khóa đơn (`order:<id>`) ở IPN/recheck/job trước khi bỏ lượt (VNPAY gửi lại IPN). */
-  orderLockWaitMs: 15_000,
+  orderLockWaitMs: secondsToMs(15),
   /** Hạn trả lời querydr của VNPAY trước khi coi là `unknown` (AT11). */
-  queryTimeoutMs: 10_000,
+  queryTimeoutMs: secondsToMs(10),
   /** Khách bấm "Kiểm tra lại" tối đa 1 lần / 10 giây mỗi attempt. */
   recheckIntervalSeconds: 10,
   /** Ngoại lệ payment_unknown phải xử lý trong 30 phút. */
-  paymentUnknownDueMs: 30 * 60_000,
+  paymentUnknownDueMs: minutesToMs(30),
   /** Phiên bản chính sách bán hàng (đổi trả, COD…) chụp vào đơn (DATA05). */
   policyVersion: "2026-10-24",
 } as const;

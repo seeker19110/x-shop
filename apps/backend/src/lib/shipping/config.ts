@@ -1,4 +1,5 @@
 import { parseEnv, type GhnMode } from "../env";
+import { hoursToMs, minutesToMs, secondsToMs } from "@x-shop/domain";
 
 /** Tham số giao vận (đặc tả §6.4): thời hạn có tên, đổi một chỗ. */
 export const SHIPPING_CONFIG = {
@@ -6,9 +7,9 @@ export const SHIPPING_CONFIG = {
    * Báo phí GHN có hiệu lực 10 phút (bằng hạn quote checkout): lưu cùng quote, submit trong hạn dùng lại (T-153); hết
    * hạn hoặc đầu vào định phí đổi thì hỏi lại hãng.
    */
-  feeQuoteTtlMs: 10 * 60_000,
+  feeQuoteTtlMs: minutesToMs(10),
   /** Hạn chờ một lời gọi GHN; quá hạn = kết quả mơ hồ (timeout) → tra lại theo client_order_code (S-303). */
-  requestTimeoutMs: 10_000,
+  requestTimeoutMs: secondsToMs(10),
   /** Ghi chú giao hàng mặc định: cho xem hàng, không cho thử. */
   requiredNote: "CHOXEMHANGKHONGTHU" as const,
   /** Khối lượng tối thiểu gửi hãng (gram) khi giỏ không khai cân nặng. */
@@ -33,10 +34,10 @@ export interface GhnRuntimeConfig {
 export const GHN_RETRY_POLICY = {
   maxAttempts: 3,
   baseDelayMs: 200,
-  maxDelayMs: 2_000,
+  maxDelayMs: secondsToMs(2),
   jitter: "full",
-  totalBudgetMs: 3_000,
-  maxRetryAfterMs: 3600_000,
+  totalBudgetMs: secondsToMs(3),
+  maxRetryAfterMs: hoursToMs(1),
 } as const;
 
 let cached: GhnRuntimeConfig | null = null;

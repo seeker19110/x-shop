@@ -4,6 +4,14 @@ import { z } from "zod";
 import { parseTrustedProxies, TRUSTED_PROXY_KEYWORDS } from "../security/client-ip";
 import { privateDirProblem } from "../upload/private";
 import { formatEffectiveConfig, withRedaction } from "./redact";
+import {
+  hoursToMs,
+  minutesToMs,
+  secondsToMs,
+  SECONDS_PER_MINUTE,
+  SECONDS_PER_HOUR,
+  SECONDS_PER_DAY,
+} from "@x-shop/domain";
 
 export { REDACTED, SECRET_ENV_KEYS, formatEffectiveConfig, redactConfig } from "./redact";
 
@@ -387,7 +395,7 @@ const baseSchema = z.object({
   // Pool Postgres MỖI tiến trình (T-092, DB-PERF-004): tổng `DB_POOL_MAX × số tiến trình` + dự phòng ≤ max_connections
   // (docs/db/connections.md). statement_timeout của phiên ứng dụng; chạy migration dài → nâng tạm cho lệnh migrate.
   DB_POOL_MAX: intInRange(10, 1, 100, "kết nối"),
-  DB_STATEMENT_TIMEOUT_MS: intInRange(30_000, 1_000, 3_600_000, "mili giây"),
+  DB_STATEMENT_TIMEOUT_MS: intInRange(secondsToMs(30), secondsToMs(1), hoursToMs(1), "mili giây"),
   // Tắt êm (T-094, BE-REL-004): giữ readiness 503 trong DRAIN_DELAY rồi mới đóng listener; toàn bộ quá trình tắt có
   // trần TIMEOUT, phải < grace period của nền tảng (Kubernetes mặc định 30 s). Vắng DRAIN_DELAY → 5 s ở production,
   // 0 ở dev/test (Ctrl-C không phải chờ).
@@ -396,10 +404,10 @@ const baseSchema = z.object({
       .string()
       .regex(/^\d+$/, { message: "phải là số nguyên mili giây trong [0, 60000]" })
       .transform(Number)
-      .refine((n) => n <= 60_000, { message: "phải là số nguyên mili giây trong [0, 60000]" })
+      .refine((n) => n <= minutesToMs(1), { message: "phải là số nguyên mili giây trong [0, 60000]" })
       .optional(),
   ),
-  SHUTDOWN_TIMEOUT_MS: intInRange(25_000, 1_000, 300_000, "mili giây"),
+  SHUTDOWN_TIMEOUT_MS: intInRange(secondsToMs(25), secondsToMs(1), minutesToMs(5), "mili giây"),
   // Ngưỡng log (T-090): tên mức của Medusa/winston; vắng = info. Log truy cập của dự án ở mức info.
   LOG_LEVEL: z.preprocess(
     (v) => (v === undefined || (typeof v === "string" && v.trim() === "") ? "info" : v),
@@ -416,9 +424,9 @@ const baseSchema = z.object({
     z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
   ),
   // Chính sách phiên admin (SPEC-admin S-402, SEC02): tuyệt đối 8 giờ, nhàn rỗi 30 phút, xác thực lại ≤ 5 phút.
-  ADMIN_SESSION_MAX_AGE_SECONDS: intInRange(28_800, 300, 86_400),
-  ADMIN_SESSION_IDLE_SECONDS: intInRange(1_800, 60, 28_800),
-  ADMIN_REAUTH_MAX_AGE_SECONDS: intInRange(300, 30, 900),
+  ADMIN_SESSION_MAX_AGE_SECONDS: intInRange(8 * SECONDS_PER_HOUR, 5 * SECONDS_PER_MINUTE, SECONDS_PER_DAY),
+  ADMIN_SESSION_IDLE_SECONDS: intInRange(30 * SECONDS_PER_MINUTE, SECONDS_PER_MINUTE, 8 * SECONDS_PER_HOUR),
+  ADMIN_REAUTH_MAX_AGE_SECONDS: intInRange(5 * SECONDS_PER_MINUTE, 30, 15 * SECONDS_PER_MINUTE),
   VNPAY_ENABLED: z.preprocess(
     (v) => (v === undefined || v === "" ? "true" : v),
     z.enum(["true", "false"], { message: "phải là true|false" }).transform((v) => v === "true"),
@@ -625,7 +633,7 @@ const schema = baseSchema
       },
       shutdown: {
         drainDelayMs: Math.min(
-          env.SHUTDOWN_DRAIN_DELAY_MS ?? (env.NODE_ENV === "production" ? 5_000 : 0),
+          env.SHUTDOWN_DRAIN_DELAY_MS ?? (env.NODE_ENV === "production" ? secondsToMs(5) : 0),
           env.SHUTDOWN_TIMEOUT_MS - 1,
         ),
         timeoutMs: env.SHUTDOWN_TIMEOUT_MS,

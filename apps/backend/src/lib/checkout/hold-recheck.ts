@@ -1,3 +1,5 @@
+import { hoursToMs, minutesToMs, secondsToMs } from "@x-shop/domain";
+
 /**
  * Backoff kiểm lại theo đơn của job `expire-holds` (T-164 — nghẽn đầu hàng, review T-161 REPRO-B).
  *
@@ -8,16 +10,16 @@
  */
 export const HOLD_RECHECK_POLICY = {
   /** Lần chưa rõ đầu tiên → kiểm lại sau 1 phút (= chu kỳ job). */
-  baseMs: 60_000,
+  baseMs: minutesToMs(1),
   /** Trần: đơn chưa rõ lâu vẫn được hỏi ít nhất mỗi giờ (IPN đến lúc nào cũng xử lý ngay, không chờ mốc này). */
-  maxMs: 60 * 60_000,
+  maxMs: hoursToMs(1),
   /** Đơn bị breaker hoãn / lỗi ở pha chốt hủy: xét lại sau 1 phút, không tăng số mũ. */
-  deferMs: 60_000,
+  deferMs: minutesToMs(1),
   /**
    * Dung sai lịch: hẹn sớm hơn `slackMs` so với `now + delay`. Lượt kế tiếp của cron 1 phút có thể bắt đầu sớm hơn vài
    * trăm ms so với 60 s sau lượt trước (`now` lấy lúc bắt đầu lượt) — không trừ thì bước 1 phút thành 2 phút.
    */
-  slackMs: 5_000,
+  slackMs: secondsToMs(5),
   /** Số đơn quá hạn chưa rõ (đã hỏi ≥ 1 lần, còn chờ) từ mức này → log WARN mỗi lượt (RUNBOOK §1). */
   backlogWarnAt: 50,
 } as const;
