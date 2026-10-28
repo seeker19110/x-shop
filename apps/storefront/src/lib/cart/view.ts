@@ -111,8 +111,7 @@ export function issueFor(
 }
 
 export function buildCartView(raw: RawCart | null, lookup: ProductLookup, backendBase: string): CartView {
-  if (!raw || isNonEmpty(raw.completed_at))
-    return { id: null, lines: [], itemCount: 0, subtotal: 0, blocked: false };
+  if (!raw || isNonEmpty(raw.completed_at)) return { lines: [], itemCount: 0, subtotal: 0, blocked: false };
   const lines: CartLineView[] = (raw.items ?? []).flatMap((it): CartLineView[] => {
     if (!it) return [];
     const handle = it.product_handle ?? null;
@@ -140,7 +139,6 @@ export function buildCartView(raw: RawCart | null, lookup: ProductLookup, backen
   });
   const sumLines = lines.reduce((s, l) => s + l.lineTotal, 0);
   return {
-    id: raw.id,
     lines,
     itemCount: lines.reduce((s, l) => s + l.quantity, 0),
     // Tạm tính do server trả; chỉ khi thiếu hẳn mới cộng các dòng (cũng là số server tính từng dòng).

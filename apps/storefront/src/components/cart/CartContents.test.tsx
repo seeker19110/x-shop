@@ -46,7 +46,6 @@ const line = (over: Partial<CartLineView> & { id: string }): CartLineView => ({
 });
 
 const cart = (lines: CartLineView[], over: Partial<CartView> = {}): CartView => ({
-  id: "cart_1",
   lines,
   itemCount: lines.reduce((s, l) => s + l.quantity, 0),
   subtotal: lines.reduce((s, l) => s + l.lineTotal, 0),

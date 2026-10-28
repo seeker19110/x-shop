@@ -20,6 +20,11 @@ const lookup = (p: ProductDetail | null | undefined) => new Map([["ao-so-mi-lua"
 describe("buildCartView (giỏ thật của Medusa)", () => {
   const view = buildCartView(rawCart, lookup(product), BASE);
 
+  it("không mang id giỏ (bearer) sang dữ liệu cho Client Component", () => {
+    expect(view).not.toHaveProperty("id");
+    expect(JSON.stringify(view)).not.toContain(rawCart.id);
+  });
+
   it("tạm tính và tổng số lượng lấy từ server; tiền nguyên", () => {
     expect(view.subtotal).toBe(rawCart.item_subtotal);
     expect(view.subtotal).toBe(1700000);
@@ -39,7 +44,7 @@ describe("buildCartView (giỏ thật của Medusa)", () => {
   });
 
   it("giỏ null/đã hoàn tất → rỗng, không chặn", () => {
-    expect(buildCartView(null, lookup(product), BASE)).toMatchObject({ id: null, lines: [], blocked: false });
+    expect(buildCartView(null, lookup(product), BASE)).toMatchObject({ lines: [], blocked: false });
     expect(
       buildCartView({ ...rawCart, completed_at: "2026-10-24T00:00:00Z" }, lookup(product), BASE).lines,
     ).toEqual([]);
