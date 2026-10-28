@@ -232,25 +232,27 @@ medusaIntegrationTestRunner({
         expect(over.data.code).toBe("REFUND_EXCEEDS_CAPTURED");
       });
 
-      it("sandbox/live (cổng hoàn TẮT) → 409 REFUND_PROVIDER_DISABLED, không đổi trạng thái; hoàn tay có chứng từ vẫn đóng được late_payment", async () => {
+      it("sandbox/live (cổng hoàn TẮT, T-169): `auto` → manual có lý do, hoàn tay có chứng từ đóng late_payment; `provider` → 409 ngay khi tạo", async () => {
         const o = await expiredOrder("Đen/S");
         expect((await ipn(api, signer.pay(o.paymentUrl, "success"))).data).toEqual(R.success);
         setRefundGatewayForTest(new DisabledRefundGateway());
-        const { created, exec } = await refund(o.orderId, o.total, "provider");
-        expect({ status: exec.status, code: exec.data.code }).toEqual({
+        const viaProvider = await post(
+          "/admin/x/refunds",
+          A("accountant"),
+          { order_id: o.orderId, reason: "late_payment", amount: o.total, method: "provider", note: "x" },
+          { "Idempotency-Key": key() },
+        );
+        expect({ status: viaProvider.status, code: viaProvider.data.code }).toEqual({
           status: 409,
           code: "REFUND_PROVIDER_DISABLED",
         });
-        expect(await ledgerOf(o.orderId)).toHaveLength(1);
-        expect((await exceptions(o.orderId, "late_payment")).map((e) => e.state)).toEqual(["open"]);
-        // Hủy yêu cầu cổng không được (chỉ `failed` hủy được) → yêu cầu vẫn giữ số tiền; đơn dùng hoàn tay ở đơn khác.
-        expect(created.state).toMatch(/approved|requested/);
-
-        const o2 = await expiredOrder("Đen/M");
-        expect((await ipn(api, signer.pay(o2.paymentUrl, "success"))).data).toEqual(R.success);
-        const manual = await refund(o2.orderId, o2.total, "manual", "CK-20261028-001");
-        expect(manual.exec.data.outcome).toBe("succeeded");
-        expect((await exceptions(o2.orderId, "late_payment")).map((e) => e.state)).toEqual(["resolved"]);
+        const { created, exec } = await refund(o.orderId, o.total, "auto", "CK-20261028-001");
+        expect(created).toMatchObject({ method: "manual", provider: "manual" });
+        expect(created.note).toContain("provider_disabled");
+        expect(exec.data.outcome).toBe("succeeded");
+        expect(refundGw.calls).toBe(0);
+        expect((await ledgerOf(o.orderId)).map((l) => l.kind)).toEqual(["capture", "refund"]);
+        expect((await exceptions(o.orderId, "late_payment")).map((e) => e.state)).toEqual(["resolved"]);
       });
     });
 

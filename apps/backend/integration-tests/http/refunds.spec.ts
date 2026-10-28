@@ -425,12 +425,23 @@ medusaIntegrationTestRunner({
         expect(await checkout().listPaymentLedgers({ order_id: o.orderId, kind: "refund" })).toHaveLength(1);
       });
 
-      it("cổng hoàn chưa bật (sandbox/live chưa ủy quyền) → 409, yêu cầu giữ nguyên đã duyệt", async () => {
+      it("cổng hoàn chưa bật (sandbox/live chưa ủy quyền): yêu cầu cổng đã duyệt → 409 + `failed` chưa gửi, hủy được; `auto` mới → manual (T-169)", async () => {
+        const { o, id } = await approvedRefund(100_000);
         setRefundGatewayForTest(new DisabledRefundGateway());
-        const { id } = await approvedRefund(100_000);
         const r = await execute(id);
         expect(r).toMatchObject({ status: 409, data: { code: "REFUND_PROVIDER_DISABLED" } });
-        expect((await returns().getRefund(id))!.state).toBe("approved");
+        expect(await returns().getRefund(id)).toMatchObject({
+          state: "failed",
+          attempts: 0,
+          last_error: "provider_disabled",
+        });
+        expect(refundGateway.calls).toBe(0);
+        const cancelled = await flow.admin(`/admin/x/refunds/${id}/cancel`, A("accountant"), {
+          reason: "Cổng tắt — hoàn tay",
+        });
+        expect(cancelled.data.refund.state).toBe("cancelled");
+        const next = await createRefund(A("accountant"), other(o, 100_000));
+        expect(next.data.refund).toMatchObject({ method: "manual", state: "approved" });
       });
     });
   },
