@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import type { JobBreakerSnapshot, OutboxClaim } from "../../modules/checkout/service";
+import { isDraining } from "../lifecycle/shutdown";
 import { CHECKOUT_CONFIG } from "./config";
 import { HOLD_RECHECK_POLICY, holdRecheckAt, holdRecheckDelayMs } from "./hold-recheck";
 import { readCheckoutError } from "./errors";
@@ -89,6 +90,8 @@ export interface ExpireSummary {
    */
   deferred: string[];
   skipped: string[];
+  /** Lượt chạy dừng ở ranh giới giữa hai đơn vì tiến trình đang tắt (T-172/D-081); đơn chưa xét để nguyên cho lượt sau. */
+  stopped: "draining" | null;
   /**
    * Sau lượt chạy: số đơn quá hạn còn `awaiting_payment` đã được xét mà chưa có kết cục — chưa rõ/lỗi
    * (`hold_check_attempts` ≥ 1) hoặc bị hoãn (`next_check_at` có giá trị) — tồn đọng đang giữ hàng; ≥ `HOLD_RECHECK_POLICY.backlogWarnAt` → log WARN (T-164, RUNBOOK §1).
@@ -143,6 +146,7 @@ export async function expireHolds(
     unknown: [],
     deferred: [],
     skipped: [],
+    stopped: null,
     unknownBacklog: 0,
   };
   const policy = opts.breakerPolicy ?? OUTBOX_BREAKER_POLICY;
@@ -156,6 +160,12 @@ export async function expireHolds(
   const due = await s.listExpiredHoldOrderIds(now, opts.limit ?? 100);
   const ordered = probeOrder(due, await s.readJobBreaker(VNPAY_QUERYDR_BREAKER_KEY));
   for (const orderId of ordered) {
+    // Ranh giới giữa hai đơn (T-172/D-081): đang tắt → không bắt đầu đơn mới (querydr ≤ vài giây/đơn); đơn dở không bị ngắt.
+    if (isDraining()) {
+      summary.stopped = "draining";
+      log.info("[expire-holds] Đang tắt — dừng ở ranh giới đơn, phần còn lại chờ lượt sau");
+      break;
+    }
     const outcome = await withLock(
       container,
       lockKeys.order(orderId),
@@ -337,6 +347,8 @@ async function expireOne(
 export interface ReconcileSummary {
   compensated: string[];
   skipped: string[];
+  /** Dừng ở ranh giới giữa hai attempt vì tiến trình đang tắt (T-172/D-081); phần còn lại chờ lượt sau. */
+  stopped: "draining" | null;
 }
 
 /** Đơn native do một attempt tạo (metadata.x_checkout_attempt_id) — đọc thẳng bảng order (chỉ đọc, cùng DB). */
@@ -394,8 +406,13 @@ export async function reconcileAttempts(
 ): Promise<ReconcileSummary> {
   const now = opts.now ?? new Date();
   const s = service(container);
-  const summary: ReconcileSummary = { compensated: [], skipped: [] };
+  const summary: ReconcileSummary = { compensated: [], skipped: [], stopped: null };
   for (const a of await s.listStaleAttempts(now, opts.limit ?? 50)) {
+    // Ranh giới giữa hai attempt (T-172/D-081): chưa claim attempt nào khi dừng → attempt còn `preparing` quá lease.
+    if (isDraining()) {
+      summary.stopped = "draining";
+      break;
+    }
     const outcome = await withLock(
       container,
       lockKeys.cart(a.cart_id),
@@ -493,8 +510,11 @@ export interface DispatchSummary {
   dead: string[];
   /** Hoãn không thử vì circuit breaker mở/đang thử/bóp (T-097) — vẫn trong outbox, `attempts` không đổi. */
   deferred: string[];
-  /** Lượt chạy dừng sớm vì chạm trần lượt gọi (`OUTBOX_RUN_LIMITS.maxCalls`); null = không. */
-  stopped: "max_calls" | null;
+  /**
+   * Lượt chạy dừng sớm: `max_calls` = chạm trần lượt gọi (`OUTBOX_RUN_LIMITS.maxCalls`); `draining` = tiến trình đang tắt
+   * (T-172/D-081, kiểm TRƯỚC khi nhận nên không có dòng nhận mà chưa xử lý); null = không.
+   */
+  stopped: "max_calls" | "draining" | null;
 }
 
 /** Vì sao sự kiện vào `dead` (ghi vào ngoại lệ — không PII). */
@@ -605,6 +625,12 @@ export async function dispatchOutbox(
 
   const iterations = Math.min(opts.limit ?? limits.maxIterations, limits.maxIterations);
   for (let i = 0; i < iterations; i++) {
+    // Đang tắt (T-172/D-081): kiểm TRƯỚC khi nhận — không claim thêm, dòng chưa nhận vẫn `pending` cho lượt sau.
+    if (isDraining()) {
+      summary.stopped = "draining";
+      log.info("[outbox] Đang tắt — dừng ở ranh giới sự kiện, phần còn lại chờ lượt sau");
+      break;
+    }
     // Trần lượt gọi: xét TRƯỚC khi nhận — không giữ sự kiện nào mà không xử lý.
     if (breaker.calls >= limits.maxCalls) {
       summary.stopped = "max_calls";
