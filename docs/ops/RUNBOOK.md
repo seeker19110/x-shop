@@ -78,10 +78,10 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
 ### 1.1 Hủy từng đơn có thanh toán chưa xác minh (T-165, D-118)
 Dùng khi một đơn `awaiting_payment` có attempt `unknown` (hoặc `pending` đã quá hạn giữ hàng) mà cổng vẫn không trả lời rõ,
 và đã đối chiếu tay trên cổng merchant VNPAY theo `txn_ref` rằng KHÔNG có giao dịch thành công. Từng đơn, không hàng loạt.
-1. Người làm: **owner** (quyền `payment.override`, phiên đã qua MFA). Vai trò khác — kể cả kế toán — nhận 403; muốn cấp thêm
+1. Người làm: **owner** (quyền `payment.override`, phiên đã qua MFA và xác thực lại — đăng nhập + TOTP — trong 5 phút gần nhất, D-122; quá hạn → 403 `REAUTH_REQUIRED`: đăng nhập lại rồi gửi lại cùng khóa). Vai trò khác — kể cả kế toán — nhận 403; muốn cấp thêm
    là đổi ma trận vai trò (`packages/domain/src/access/rbac.ts`) có quyết định.
 2. Lấy `order_id` + `txn_ref` (truy vấn `order_finance` ở trên, hoặc `payment_unknown` → `detail.txn_ref`); tra `txn_ref` trên
-   cổng merchant; ghi lại mã đối chiếu thấy trên cổng (mã giao dịch/mã tra cứu — 6–64 ký tự `[A-Za-z0-9_.:-]`).
+   cổng merchant; ghi lại mã đối chiếu thấy trên cổng (mã giao dịch/mã tra cứu — 6–64 ký tự `[A-Za-z0-9_.:-]`; định dạng chưa xác minh với tài liệu merchant).
 3. Gọi (một `Idempotency-Key` mới cho mỗi đơn; mất mạng → gửi lại ĐÚNG khóa + nội dung đó):
 
    ```bash
@@ -292,7 +292,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 ## 7. Tiền đến sau khi hủy / thu dư
 - `ops_exception late_payment|overpayment`: kế toán xác minh trên cổng → tạo refund (một refund, retry cùng id) → ghi chú khách. Không phục hồi đơn, không giao thay thế khi chưa có xác nhận mới của khách.
 - Gồm cả đơn đã hủy chưa xác minh (§1.1) mà tiền về sau. Hiện hoàn qua cổng (`method` `provider`/`auto`) cho khoản thu đến sau
-  khi đơn đã hủy trả 422 `REFUND_METHOD_UNAVAILABLE` (attempt đã `failed` không mang mã giao dịch — chờ sửa, báo cáo T-165)
+  khi đơn đã hủy trả 422 `REFUND_METHOD_UNAVAILABLE` (attempt đã `failed` không mang mã giao dịch — chờ sửa ở T-168)
   → tạo refund `method: "manual"`, hoàn ngoài hệ thống rồi `execute` kèm `evidence_ref` (mã chứng từ chuyển khoản).
 
 ## 8. Deploy

@@ -12,7 +12,7 @@ import {
 } from "../../../../../../workflows/returns/http";
 
 /**
- * POST /admin/x/orders/:id/cancel-unverified — nhân viên quyền `payment.override` (chỉ owner; MFA) hủy đơn chờ thanh
+ * POST /admin/x/orders/:id/cancel-unverified — nhân viên quyền `payment.override` (chỉ owner; MFA + xác thực lại ≤ 5 phút, D-122) hủy đơn chờ thanh
  * toán có thanh toán CHƯA XÁC MINH (attempt `unknown` hoặc pending quá hạn giữ hàng) sau khi đối chiếu tay trên cổng
  * merchant VNPAY (T-165, D-118). Body `{ reason (10–500), merchant_ref }`, header `Idempotency-Key` bắt buộc. Hủy +
  * nhả hàng + đóng `payment_unknown` + audit `order.cancelled_unverified`; tiền đến sau → `late_payment` → hoàn (AT09).

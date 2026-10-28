@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, generateJwtToken, Modules } from "@medusajs/framework/utils";
 import { createCustomerAccountWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { vnpay } from "@x-shop/domain";
@@ -19,6 +19,9 @@ import { MockVnpayRefundGateway, setRefundGatewayForTest } from "../../src/workf
 import {
   createAdmin,
   createMfaAdmin,
+  jwtPayload,
+  loginWithMfa,
+  totp,
   type AdminAccount,
   type HttpClient,
   type MfaAdmin,
@@ -180,7 +183,27 @@ medusaIntegrationTestRunner({
       setVnpayGatewayForTest(gateway);
       setRefundGatewayForTest(new MockVnpayRefundGateway(DEV_VNPAY));
       vnpaySwitch.__xshopVnpayOff = undefined;
+      // Route đòi xác thực lại ≤ 5 phút (D-122): mỗi ca owner đăng nhập lại (mật khẩu + TOTP) để không phụ thuộc thời lượng suite.
+      staff.owner = {
+        ...staff.owner,
+        headers: await loginWithMfa(rawApi as unknown as HttpClient, staff.owner, {
+          method: "totp",
+          code: totp(staff.owner.secret),
+        }),
+      };
     });
+
+    /** Token của `base` với claim ghi đè (ký bằng jwtSecret của app) — giả mốc MFA cũ như mfa.spec. */
+    function forgeToken(base: MfaAdmin, claims: Record<string, unknown>) {
+      const payload = jwtPayload(base.headers.authorization.slice("Bearer ".length));
+      const { http } = container.resolve(ContainerRegistrationKeys.CONFIG_MODULE).projectConfig;
+      const { exp: _exp, ...rest } = payload;
+      const token = generateJwtToken(
+        { ...rest, ...claims },
+        { secret: http.jwtSecret as string, expiresIn: "1d" },
+      );
+      return { authorization: `Bearer ${token}` };
+    }
 
     describe("[api5-bfla post /admin/x/orders/{id}/cancel-unverified] quyền payment.override", () => {
       it("owner (MFA) được; order_staff/kế toán/CSKH/kho/catalog → 403 FORBIDDEN; owner chưa MFA → 403 MFA_REQUIRED; ẩn danh/khách → 401; đơn giữ nguyên tới khi owner hủy", async () => {
@@ -225,6 +248,36 @@ medusaIntegrationTestRunner({
 
         const ok = await cancelUv(o.orderId, A("owner"));
         expect(ok).toMatchObject({ status: 200, data: { order_id: o.orderId, state: "cancelled" } });
+      });
+
+      it("D-122 xác thực lại: owner có MFA nhưng mốc MFA 6 phút trước → 403 REAUTH_REQUIRED (max_age_seconds 300), đơn giữ nguyên; đăng nhập lại (mật khẩu + TOTP) → được", async () => {
+        const o = await vnpayOrder("Trắng/M", { unknown: true });
+        const stale = forgeToken(staff.owner, {
+          mfa_challenge_completed_at: new Date(Date.now() - 6 * MIN).toISOString(),
+        });
+        const k = key();
+        const res = await cancelUv(o.orderId, stale, k);
+        expect(res).toMatchObject({
+          status: 403,
+          data: { code: "REAUTH_REQUIRED", max_age_seconds: 300, permission: "payment.override" },
+        });
+        expect(res.headers["content-type"]).toContain("application/problem+json");
+        // Mốc MFA 4 phút trước còn trong hạn → qua cổng xác thực lại, tới handler (thân thiếu lý do → 422, không hủy).
+        const recent = forgeToken(staff.owner, {
+          mfa_challenge_completed_at: new Date(Date.now() - 4 * MIN).toISOString(),
+        });
+        expect((await cancelUv(o.orderId, recent, key(), { merchant_ref: MREF })).status).toBe(422);
+        expect(await fin(o.orderId)).toMatchObject({ state: "awaiting_payment" });
+        expect(await cancelRows(o.orderId)).toHaveLength(0);
+        expect(await inventoryLevel(container, fx, "Trắng/M")).toEqual({ stocked: 50, reserved: 1 });
+
+        const fresh = await loginWithMfa(rawApi as unknown as HttpClient, staff.owner, {
+          method: "totp",
+          code: totp(staff.owner.secret),
+        });
+        const ok = await cancelUv(o.orderId, fresh, k);
+        expect(ok).toMatchObject({ status: 200, data: { state: "cancelled" } });
+        expect(ok.headers["idempotent-replayed"]).toBeUndefined();
       });
     });
 
@@ -576,7 +629,7 @@ medusaIntegrationTestRunner({
 
         // RUNBOOK §7: kế toán xác minh trên cổng → tạo hoàn theo late_payment → (duyệt) → thực hiện → ledger ròng 0. Hoàn
         // ngoài hệ thống (`manual` + chứng từ): hoàn qua cổng cho khoản thu đến sau khi hủy hiện không tìm được giao dịch
-        // gốc (attempt `failed` không mang mã giao dịch) — lỗi có sẵn của đường AT09, ghi ở báo cáo T-165.
+        // gốc (attempt `failed` không mang mã giao dịch) — lỗi có sẵn của đường AT09, sửa ở T-168 (D-122).
         const created = await post(
           "/admin/x/refunds",
           A("accountant"),

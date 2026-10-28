@@ -880,7 +880,7 @@ paths:
       operationId: adminCancelUnverifiedOrder
       summary: "Hủy đơn có thanh toán chưa xác minh sau khi đối chiếu tay với cổng merchant (chỉ owner)"
       description: >-
-        T-165, D-118. Quyền `payment.override` (chỉ owner, MFA). Chỉ đơn `awaiting_payment` có attempt `unknown` hoặc
+        T-165, D-118. Quyền `payment.override` (chỉ owner, MFA) + xác thực lại ≤ 5 phút (D-122; quá hạn → 403 `REAUTH_REQUIRED`). Chỉ đơn `awaiting_payment` có attempt `unknown` hoặc
         `created|pending` đã quá `hold_expires_at`, chưa ghi nhận tiền. Dưới khóa đơn (cùng IPN/job): hỏi cổng lần cuối
         (đã trả → đơn được xác nhận, trả 409 `NOT_AWAITING_PAYMENT`), rồi hủy + nhả hàng + đóng `payment_unknown` + audit
         `order.cancelled_unverified`. Tiền đến sau → `late_payment` → hoàn (AT09). Gửi lại cùng khóa + nội dung → kết quả cũ
@@ -2321,7 +2321,7 @@ components:
         merchant_ref:
           type: string
           pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{5,63}$"
-          description: "Mã đối chiếu thấy trên cổng merchant VNPAY (6–64 ký tự ASCII, không khoảng trắng)."
+          description: "Mã đối chiếu thấy trên cổng merchant VNPAY (6–64 ký tự ASCII, không khoảng trắng; định dạng chưa xác minh với tài liệu merchant)."
     Changed:
       type: object
       additionalProperties: true
