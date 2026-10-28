@@ -903,3 +903,10 @@
 - Chọn: Fallback created_at + WARN; vận hành điền tay từ payment_url theo RUNBOOK §1.2
 - Lý do (tiêu chí chất lượng cuối): (3) đơn giản: chưa có dữ liệu production, cột chỉ thiếu ở attempt tạo trước bản này; không thêm UPDATE hàng loạt (khoá bảng) hay phân tích URL ở đường nóng; (2) đường lùi rõ qua RUNBOOK
 - Đường lùi: Thêm migration điền lại từ payment_url
+
+### D-129 · 2026-10-28T10:31:52+00:00 · 216 mục MUST còn mở sau PLAN-2: xử lý thế nào?
+
+- Phương án: (1) A: thêm mục L vào PLAN-2 (49 task T-175…T-223 cho 91 mục tự làm được; 85 mục C cần người/hạ tầng, 35 mục D chặn bởi task chờ người giữ ở Chờ người) · (2) B: dừng done-pending-human với 216 mục mở · (3) C: tạo PLAN-3 riêng và đổi PLAN của vòng
+- Chọn: A: thêm mục L vào PLAN-2 (49 task T-175…T-223 cho 91 mục tự làm được; 85 mục C cần người/hạ tầng, 35 mục D chặn bởi task chờ người giữ ở Chờ người)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1–3: còn 91 mục agent đóng được bằng Gate máy kiểm; giữ chung PLAN của vòng nên loop status/record không đổi cấu hình; ưu tiên bảo mật > tiền/tồn > độ tin cậy > tuân thủ > tài liệu
+- Đường lùi: Xoá mục L khỏi PLAN-2 (task chưa làm không có tác dụng phụ)
