@@ -117,6 +117,21 @@ const UNITS_RESTRICTED_SYNTAX = [
   },
 ];
 
+/**
+ * FE-SEC-002 (T-178): thuộc tính JSX `href`/`src` chỉ nhận (a) chuỗi literal, (b) template route nội bộ bắt đầu bằng "/",
+ * (c) lời gọi helper đã khai. Mọi giá trị khác (biến, `obj.href`, `a ?? b`…) phải đi qua `safeHref`/`safeImgSrc`/`safeUrl`.
+ * Helper route nội bộ cho phép (tự dựng đường dẫn "/…" từ handle/bộ lọc, không nhận URL ngoài): hrefFor, categoryHref,
+ * productHref. Thêm helper mới phải sửa danh sách này (cố ý: thêm một cửa vào là quyết định có xem xét).
+ */
+const SAFE_URL_HELPERS = "safeUrl|safeHref|safeImgSrc|safePaymentUrl|hrefFor|categoryHref|productHref";
+const URL_ATTRIBUTE_SYNTAX = [
+  {
+    selector: `JSXAttribute[name.name=/^(href|src)$/] > JSXExpressionContainer.value > :not(Literal, TemplateLiteral[quasis.0.value.raw=/^[/]/], CallExpression[callee.name=/^(${SAFE_URL_HELPERS})$/])`,
+    message:
+      "href/src nhận biểu thức không an toàn (FE-SEC-002): bọc bằng safeHref()/safeImgSrc()/safeUrl() ở lib/safe-url.ts, hoặc dùng helper route nội bộ (hrefFor, categoryHref, productHref), hoặc template bắt đầu bằng '/'.",
+  },
+];
+
 export default tseslint.config(
   {
     ignores: [
@@ -251,6 +266,20 @@ export default tseslint.config(
         ...BASE_RESTRICTED_SYNTAX,
         ...UNITS_RESTRICTED_SYNTAX,
         ...UNITS_DURATION_SYNTAX,
+      ],
+    },
+  },
+  {
+    // FE-SEC-002 (T-178): siết cổng — thêm luật href/src cho mã storefront (không test). Ghi đè no-restricted-syntax
+    // nên lặp luật chung + units (cùng ngoại lệ file units như khối XC-UNITS-009).
+    files: ["apps/storefront/src/**/*.tsx"],
+    ignores: ["**/*.test.tsx", "**/__tests__/**"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...BASE_RESTRICTED_SYNTAX,
+        ...UNITS_RESTRICTED_SYNTAX,
+        ...URL_ATTRIBUTE_SYNTAX,
       ],
     },
   },

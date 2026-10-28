@@ -30,6 +30,7 @@ import {
 } from "./selection";
 import { formatVnd } from "../../lib/format-vnd";
 import { isNonEmpty } from "../../lib/presence";
+import { safeHref } from "../../lib/safe-url";
 
 export interface ProductExperienceProps {
   product: ProductDetail;
@@ -206,7 +207,7 @@ export function ProductExperience({ product, initial, children }: ProductExperie
             {PDP_SUMMARY.map((s) => (
               <li key={s.title}>
                 <strong>{s.title}.</strong> {s.text}{" "}
-                <Link href={s.href} prefetch={false}>
+                <Link href={safeHref(s.href)} prefetch={false}>
                   {s.linkLabel}
                 </Link>
               </li>

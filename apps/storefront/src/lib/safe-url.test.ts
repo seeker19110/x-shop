@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { safeUrl } from "./safe-url";
+import { IMAGE_FALLBACK_SRC, safeHref, safeImgSrc, safePaymentUrl, safeUrl } from "./safe-url";
 
 describe("safeUrl", () => {
   it.each([
@@ -58,5 +58,89 @@ describe("safeUrl", () => {
 
   it("không ném lỗi với đầu vào không phải chuỗi", () => {
     expect(safeUrl(42 as unknown as string)).toBeNull();
+  });
+});
+
+describe("safeUrl: scheme nguy hiểm biến thể", () => {
+  it.each([
+    ["DATA:text/html;base64,PHNjcmlwdD4="],
+    ["Data:text/html,x"],
+    ["VBScript:msgbox(1)"],
+    ["VBSCRIPT:msgbox(1)"],
+    ["\tjavascript:alert(1)"],
+    ["\u001fjavascript:alert(1)"],
+    ["\u0080javascript:alert(1)"],
+    ["&#x6A;avascript:alert(1)"],
+    ["&#106avascript:alert(1)"],
+    ["&colon;javascript:alert(1)"],
+    ["javascript&colon;alert(1)"],
+    ["javascript&#58;alert(1)"],
+    ["jav&Tab;ascript:alert(1)"],
+    ["﻿javascript:alert(1)"],
+    ["data&colon;text/html,x"],
+  ])("từ chối %j", (input) => {
+    expect(safeUrl(input)).toBeNull();
+  });
+});
+
+describe("safeHref / safeImgSrc", () => {
+  it("giữ URL an toàn, thay URL xấu bằng giá trị trung tính", () => {
+    expect(safeHref("/san-pham/a")).toBe("/san-pham/a");
+    expect(safeHref("javascript:alert(1)")).toBe("#");
+    expect(safeHref("//evil.example")).toBe("#");
+    expect(safeHref(null)).toBe("#");
+    expect(safeHref("")).toBe("#");
+  });
+
+  it("ảnh: chỉ http(s)/đường dẫn cùng origin, còn lại dùng ảnh dự phòng", () => {
+    expect(safeImgSrc("/demo/a.svg")).toBe("/demo/a.svg");
+    expect(safeImgSrc("https://cdn.example/a.jpg")).toBe("https://cdn.example/a.jpg");
+    expect(safeImgSrc("data:image/svg+xml,<svg onload=alert(1)>")).toBe(IMAGE_FALLBACK_SRC);
+    expect(safeImgSrc("javascript:alert(1)")).toBe(IMAGE_FALLBACK_SRC);
+    expect(safeImgSrc("mailto:a@b.test")).toBe(IMAGE_FALLBACK_SRC);
+    expect(safeImgSrc(undefined)).toBe(IMAGE_FALLBACK_SRC);
+  });
+});
+
+describe("safePaymentUrl", () => {
+  it.each([
+    [
+      "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?a=1",
+      "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?a=1",
+    ],
+    ["https://vnpayment.vn/x", "https://vnpayment.vn/x"],
+    ["HTTPS://SANDBOX.VNPAYMENT.VN/x", "https://sandbox.vnpayment.vn/x"],
+    ["https://pay.vnpay.vn/x", "https://pay.vnpay.vn/x"],
+  ])("cho phép %j", (input, expected) => {
+    expect(safePaymentUrl(input)).toBe(expected);
+  });
+
+  it.each([
+    ["https://vnpayment.vn.evil.com/x"],
+    ["https://evil.com/?vnpayment.vn"],
+    ["https://evil.com/vnpayment.vn"],
+    ["https://evilvnpayment.vn/x"],
+    ["https://vnpayment.vn@evil.com/x"],
+    ["https://vnpay@evil.com/"],
+    ["https://sandbox.vnpayment.vn:8443/x"],
+    ["https://user:pw@sandbox.vnpayment.vn/x"],
+    ["https://sandbox.vnpayment.vn.evil.com@evil.com/"],
+    ["http://sandbox.vnpayment.vn/x"],
+    ["//sandbox.vnpayment.vn/x"],
+    ["/paymentv2/vpcpay.html"],
+    ["evil.com/?vnpayment.vn"],
+    ["javascript:alert(1)"],
+    ["data:text/html,x"],
+    ["not a url"],
+    [""],
+  ])("từ chối %j", (input) => {
+    expect(safePaymentUrl(input)).toBeNull();
+  });
+
+  it("null/undefined cho null; allowlist tuỳ chỉnh", () => {
+    expect(safePaymentUrl(null)).toBeNull();
+    expect(safePaymentUrl(undefined)).toBeNull();
+    expect(safePaymentUrl("https://pay.example.test/x", ["example.test"])).toBe("https://pay.example.test/x");
+    expect(safePaymentUrl("https://sandbox.vnpayment.vn/x", ["example.test"])).toBeNull();
   });
 });

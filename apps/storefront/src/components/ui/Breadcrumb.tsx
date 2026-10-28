@@ -1,6 +1,7 @@
 import Link from "next/link";
 import styles from "./Breadcrumb.module.css";
 import { isNonEmpty } from "../../lib/presence";
+import { safeHref } from "../../lib/safe-url";
 
 export interface BreadcrumbItem {
   label: string;
@@ -25,7 +26,7 @@ export function Breadcrumb({
             {i === last || !isNonEmpty(item.href) ? (
               <span aria-current={i === last ? "page" : undefined}>{item.label}</span>
             ) : (
-              <Link href={item.href} className={styles.link}>
+              <Link href={safeHref(item.href)} className={styles.link}>
                 {item.label}
               </Link>
             )}

@@ -5,6 +5,7 @@ import type { ComponentPropsWithRef, MouseEvent, ReactNode } from "react";
 import styles from "./Button.module.css";
 import { cx } from "./cx";
 import { VisuallyHidden } from "./VisuallyHidden";
+import { safeHref } from "../../lib/safe-url";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost";
 export type ButtonSize = "md" | "lg";
@@ -56,7 +57,7 @@ export function Button(props: ButtonProps) {
     return (
       <Link
         {...anchor}
-        href={href}
+        href={safeHref(href)}
         className={cls}
         aria-busy={loading || undefined}
         aria-disabled={inert || undefined}

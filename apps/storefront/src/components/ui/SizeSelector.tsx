@@ -6,6 +6,7 @@ import { InlineError } from "./InlineError";
 import styles from "./SizeSelector.module.css";
 import { cx } from "./cx";
 import { isNonEmpty } from "../../lib/presence";
+import { safeHref } from "../../lib/safe-url";
 
 export interface SizeOption {
   value: string;
@@ -50,7 +51,7 @@ export function SizeSelector({
             Hướng dẫn chọn size
           </button>
         ) : isNonEmpty(sizeGuideHref) ? (
-          <Link href={sizeGuideHref} className={styles.guide}>
+          <Link href={safeHref(sizeGuideHref)} className={styles.guide}>
             Hướng dẫn chọn size
           </Link>
         ) : null}

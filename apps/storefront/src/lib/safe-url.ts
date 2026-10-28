@@ -45,3 +45,42 @@ export function safeUrl(input: string | null | undefined): string | null {
   if (!ALLOWED_PROTOCOLS.has(url.protocol)) return null;
   return url.href;
 }
+
+/** Liên kết điều hướng: URL không an toàn thì trỏ "#" (không điều hướng đi đâu) thay vì render scheme nguy hiểm. */
+export function safeHref(input: string | null | undefined): string {
+  return safeUrl(input) ?? "#";
+}
+
+/** Ảnh dự phòng cùng origin khi URL ảnh từ dữ liệu ngoài không an toàn. */
+export const IMAGE_FALLBACK_SRC = "/icons/icon.svg";
+
+/** Ảnh nội dung: chỉ http(s)/đường dẫn cùng origin (không mailto/tel); không an toàn thì dùng ảnh dự phòng. */
+export function safeImgSrc(input: string | null | undefined): string {
+  const url = safeUrl(input);
+  if (url === null || url.startsWith("mailto:") || url.startsWith("tel:")) return IMAGE_FALLBACK_SRC;
+  return url;
+}
+
+/** Cổng VNPAY (sandbox.vnpayment.vn, pay.vnpay.vn…): khớp đúng tên miền gốc hoặc subdomain thật, không khớp chuỗi con. */
+export const VNPAY_HOST_SUFFIXES: readonly string[] = ["vnpayment.vn", "vnpay.vn"];
+
+/**
+ * URL thanh toán do server cấp nhưng vẫn không tin tuyệt đối: qua `safeUrl`, chỉ https, không userinfo/cổng lạ,
+ * host phải là (sub)domain của allowlist VNPAY. Sai thì null (không chuyển hướng).
+ */
+export function safePaymentUrl(
+  input: string | null | undefined,
+  hostSuffixes: readonly string[] = VNPAY_HOST_SUFFIXES,
+): string | null {
+  const safe = safeUrl(input);
+  if (safe === null) return null;
+  let url: URL;
+  try {
+    url = new URL(safe);
+  } catch {
+    return null; // đường dẫn tương đối "/..." không phải cổng thanh toán
+  }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "") return null;
+  const host = url.hostname;
+  return hostSuffixes.some((s) => host === s || host.endsWith(`.${s}`)) ? url.href : null;
+}

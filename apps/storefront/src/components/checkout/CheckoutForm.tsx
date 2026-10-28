@@ -25,6 +25,7 @@ import { OrderLines, type CheckoutLine } from "./OrderLines";
 import { PAYMENT_LABEL, Totals } from "./Totals";
 import { fetchWithRetry } from "../../lib/http/retry";
 import { isNonEmpty } from "../../lib/presence";
+import { safePaymentUrl } from "../../lib/safe-url";
 
 export interface CheckoutFormProps {
   lines: readonly CheckoutLine[];
@@ -48,17 +49,6 @@ type Banner =
 
 const QUOTE_DEBOUNCE_MS = 500;
 const REAL_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** Chỉ chuyển hướng tới http(s) — URL thanh toán do server cấp nhưng vẫn không tin tuyệt đối. */
-export function safePaymentUrl(url: string | null): string | null {
-  if (!isNonEmpty(url)) return null;
-  try {
-    const u = new URL(url);
-    return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Checkout MỘT trang (CHK02–CHK06, S-504): liên hệ → giao hàng → thanh toán; mua không cần tài khoản; tổng tiền do

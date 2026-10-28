@@ -22,6 +22,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { InlineError } from "../ui/InlineError";
 import styles from "./Cart.module.css";
 import { isNonEmpty } from "../../lib/presence";
+import { safeImgSrc } from "../../lib/safe-url";
 
 export interface CartContentsProps {
   cart: CartView;
@@ -116,7 +117,12 @@ export function CartContents({ cart }: CartContentsProps) {
               >
                 <div className={styles.thumb}>
                   {line.thumbnail ? (
-                    <Image src={line.thumbnail.url} alt={line.thumbnail.alt} width={96} height={120} />
+                    <Image
+                      src={safeImgSrc(line.thumbnail.url)}
+                      alt={line.thumbnail.alt}
+                      width={96}
+                      height={120}
+                    />
                   ) : null}
                 </div>
                 <div className={styles.info}>

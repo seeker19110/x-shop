@@ -1,5 +1,6 @@
 import Link from "next/link";
 import styles from "./Chip.module.css";
+import { safeHref } from "../../lib/safe-url";
 
 export interface ChipLinkItem {
   key: string;
@@ -29,7 +30,7 @@ export function ChipLinks({
           <li key={it.key} className={styles.chip}>
             <span className={styles.text}>{it.label}</span>
             <Link
-              href={it.href}
+              href={safeHref(it.href)}
               prefetch={false}
               className={styles.remove}
               aria-label={`Bỏ lọc: ${it.label}`}
@@ -40,7 +41,7 @@ export function ChipLinks({
           </li>
         ))}
       </ul>
-      <Link href={clearAllHref} prefetch={false} className={styles.clear}>
+      <Link href={safeHref(clearAllHref)} prefetch={false} className={styles.clear}>
         Xóa tất cả
       </Link>
     </div>

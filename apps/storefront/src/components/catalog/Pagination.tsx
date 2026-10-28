@@ -2,6 +2,7 @@ import type { CatalogFilter } from "@x-shop/domain";
 import Link from "next/link";
 import { hrefFor, pageWindow } from "./filter-state";
 import styles from "./CatalogView.module.css";
+import { safeHref } from "../../lib/safe-url";
 
 /**
  * Phân trang bằng liên kết `<a href>` thật (crawl được, chạy không cần JS), có `rel="prev"` / `rel="next"`.
@@ -24,7 +25,7 @@ export function Pagination({
       <ul className={styles.pages}>
         {current > 1 ? (
           <li>
-            <Link href={to(current - 1)} rel="prev" prefetch={false} className={styles.pageLink}>
+            <Link href={safeHref(to(current - 1))} rel="prev" prefetch={false} className={styles.pageLink}>
               Trang trước
             </Link>
           </li>
@@ -37,7 +38,7 @@ export function Pagination({
           ) : (
             <li key={p}>
               <Link
-                href={to(p)}
+                href={safeHref(to(p))}
                 prefetch={false}
                 className={styles.pageLink}
                 aria-current={p === current ? "page" : undefined}
@@ -50,7 +51,7 @@ export function Pagination({
         )}
         {current < lastPage ? (
           <li>
-            <Link href={to(current + 1)} rel="next" prefetch={false} className={styles.pageLink}>
+            <Link href={safeHref(to(current + 1))} rel="next" prefetch={false} className={styles.pageLink}>
               Trang sau
             </Link>
           </li>
