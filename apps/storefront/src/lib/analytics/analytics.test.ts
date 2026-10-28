@@ -41,6 +41,7 @@ describe("analytics: track() mặc định đẩy vào dataLayer", () => {
     expect(layer()).toHaveLength(1);
   });
 
+  // S-508 (SPEC-storefront): sự kiện không chứa PII; purchase dedupe theo order_id (hai test kế tiếp).
   it("bỏ khi payload chứa email / SĐT / địa chỉ", () => {
     expect(track({ event: "view_item", items: [{ item_id: "a@example.test" }] })).toBe(false);
     expect(track({ event: "view_item", items: [{ item_id: "x", sku: "0912345678" }] })).toBe(false);

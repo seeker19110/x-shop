@@ -73,6 +73,7 @@ medusaIntegrationTestRunner({
       expect(await level()).toEqual({ stocked: 10, reserved: 4 });
     });
 
+    // S-404 (SPEC-admin): điều chỉnh tồn bắt buộc lý do/actor/trước-sau/idempotency, không giảm dưới số đã giữ (các test trong describe này).
     it("tăng tồn có lý do → 201 ghi trước/sau/actor + audit; gửi lại cùng khóa → 200 kết quả cũ, không cộng lần hai", async () => {
       const key = newKey();
       const res = await adjust({ ...body(5), note: "Nhập lô 24/10" }, key);

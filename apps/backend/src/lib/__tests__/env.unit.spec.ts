@@ -190,6 +190,7 @@ describe("parseEnv — production", () => {
     expect(result.env.AUTH_CORS).toBe(production.AUTH_CORS);
   });
 
+  // S-602 (SPEC-platform): thiếu biến bắt buộc → lỗi nêu đúng tên biến.
   it("vắng từng biến bắt buộc → nêu đúng tên biến đó", () => {
     for (const key of PRODUCTION_REQUIRED) {
       expect(variablesOf({ ...production, [key]: undefined })).toEqual([key]);

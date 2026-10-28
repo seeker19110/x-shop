@@ -795,6 +795,7 @@ medusaIntegrationTestRunner({
         ).toHaveLength(0);
       });
 
+      // S-309 (SPEC-fulfillment): hủy đơn đã trả tiền → mở hoàn tiền; xem thêm staff-cancel.spec.ts.
       it("đơn đã thanh toán: hủy → yêu cầu hoàn tiền (một lần), nhả reservation, KHÔNG ghi hoàn native giả", async () => {
         const o = await place([["Trắng/M", 1]], "vnpay");
         expect((await ipn(api, signer.pay(o.paymentUrl, "success"))).status).toBe(200);

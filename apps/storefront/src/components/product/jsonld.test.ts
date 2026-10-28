@@ -28,6 +28,7 @@ interface Ld {
 const ld = (p: ProductDetail) => buildProductJsonLd(p, SITE) as unknown as Ld;
 const byHandle = (h: string) => FIXTURE_PRODUCTS.find((p) => p.handle === h)!;
 
+// S-506 (SPEC-storefront): JSON-LD ProductGroup + hasVariant + Offer khớp giá/tồn UI.
 describe("JSON-LD ProductGroup (product)", () => {
   const p = byHandle("ao-so-mi-oxford");
   const data = ld(p);

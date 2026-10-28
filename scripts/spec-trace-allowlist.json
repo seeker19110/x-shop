@@ -1,0 +1,18 @@
+[
+  {
+    "id": "S-405",
+    "reason": "chưa có test tự động phủ đủ tiêu chí (actor/thời điểm/đối tượng/lý do, che PII, chỉ append) — kiểm tay; test audit hiện có (sanitize, deny-throttle, security-events) mới phủ từng phần, không gắn nhãn bừa."
+  },
+  {
+    "id": "S-601",
+    "reason": "chưa có test tự động riêng — kiểm bằng chính CI (pnpm install --frozen-lockfile rồi cổng của xt.yaml trên Postgres 16/Redis 7); không có test đơn vị tương ứng."
+  },
+  {
+    "id": "S-603",
+    "reason": "chưa có test tự động trong bộ test đơn vị — kiểm bằng `pnpm load:smoke` và `pnpm perf:budget` (lab), kết quả ở docs/ops/perf/."
+  },
+  {
+    "id": "S-606",
+    "reason": "chưa có test tự động — kiểm tay theo docs/ops/RUNBOOK.md (diễn tập); task kiểm runbook tự động là T-213 (scripts/check-runbook.mjs)."
+  }
+]

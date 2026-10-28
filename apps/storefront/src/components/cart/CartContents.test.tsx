@@ -91,6 +91,7 @@ describe("CHK01: lỗi từng dòng", () => {
     }),
   ]);
 
+  // S-010 (SPEC-checkout): dòng lỗi có giải thích, dòng khác nguyên, chặn thanh toán; dòng lỗi vẫn xóa được (test kế tiếp).
   it("lỗi hiện tại ĐÚNG dòng, dòng khác còn nguyên, thanh toán bị chặn có giải thích", () => {
     render(<CartContents cart={issueCart} />);
     const items = screen.getAllByRole("listitem");

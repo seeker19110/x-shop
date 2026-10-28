@@ -28,6 +28,7 @@ describe("parseClientEnv", () => {
     expect(env.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY).toBe("pk_live_abc");
   });
 
+  // S-602 (SPEC-platform): thiếu biến → lỗi nêu tên biến.
   it("thiếu biến + không mặc định → lỗi nêu tên biến", () => {
     expect(() => parseClientEnv({}, { useDefaults: false })).toThrow(/NEXT_PUBLIC_SITE_URL/);
   });

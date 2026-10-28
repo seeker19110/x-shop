@@ -13,6 +13,7 @@ import { loadSw } from "./sw-harness";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const PUBLIC = resolve(ROOT, "public");
 
+// S-507 (SPEC-storefront): manifest, icon, trang /offline, nhãn dữ liệu cũ (các describe PWA bên dưới).
 describe("web app manifest", () => {
   const m = manifest();
 

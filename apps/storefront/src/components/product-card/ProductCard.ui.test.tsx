@@ -16,6 +16,7 @@ const colors = ["Đen", "Trắng", "Xám", "Be", "Xanh", "Đỏ", "Nâu"].map((n
   hex: "#222222",
 }));
 
+// S-205 (SPEC-catalog): card có ảnh, swatch có tên, giá/khoảng giá, nhãn giảm giá và hết hàng.
 describe("ProductCard", () => {
   it("đúng một link chính tới /san-pham/[slug], không lồng link", () => {
     render(<ProductCard {...base} colors={colors} />);
