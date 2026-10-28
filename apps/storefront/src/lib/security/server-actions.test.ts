@@ -66,6 +66,11 @@ import { GET as paymentReturnGET } from "../../app/(shop)/thanh-toan/ket-qua/rou
 import { GET as wardsGET } from "../../app/api/address/wards/route";
 import { GET as catalogCountGET } from "../../app/api/catalog/count/route";
 import { GET as suggestGET } from "../../app/api/catalog/suggest/route";
+import CartPage from "../../app/(shop)/gio-hang/page";
+import CheckoutPage from "../../app/(shop)/thanh-toan/page";
+import manifest from "../../app/manifest";
+import robots from "../../app/robots";
+import sitemap from "../../app/sitemap";
 
 interface Session {
   name: string;
@@ -84,19 +89,38 @@ const as = <T>(s: Session, fn: () => Promise<T>): Promise<T> => als.run(s, fn);
 /* ============================================================== 1. kiểm liệt kê tĩnh */
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+/** Gốc package storefront: file "use server"/route nằm NGOÀI src cũng bị bắt (không được có). */
+const PKG = resolve(SRC, "..");
 const HTTP_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
-const ROUTE_FILE = /^route\.(ts|tsx|js|jsx|mjs)$/;
+const CODE_EXT = "(ts|tsx|js|jsx|mjs|cjs|mts|cts)";
+const ROUTE_FILE = new RegExp(`^route\\.${CODE_EXT}$`);
+/** Metadata route của Next (phục vụ GET qua export default) → đường URL thật. */
+const METADATA_FILE = new RegExp(
+  `^(robots|sitemap|manifest|opengraph-image\\d*|twitter-image\\d*|icon\\d*|apple-icon\\d*)\\.${CODE_EXT}$`,
+);
+const METADATA_URL: Record<string, string> = {
+  robots: "robots.txt",
+  sitemap: "sitemap.xml",
+  manifest: "manifest.webmanifest",
+};
 const ACCESS_KINDS: readonly AccessKind[] = ["cart_cookie", "order_cookie", "link_token", "hmac", "public"];
+const SKIP_DIRS = new Set(["node_modules", ".next", "coverage", "public", ".turbo"]);
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) {
-      if (name !== "node_modules" && name !== "__fixtures__") walk(p, out);
-    } else if (/\.(ts|tsx|js|jsx|mjs)$/.test(name) && !/\.(test|spec)\.|\.d\.ts$/.test(name)) out.push(p);
+      if (!SKIP_DIRS.has(name)) walk(p, out);
+    } else if (new RegExp(`\\.${CODE_EXT}$`).test(name) && !/\.(test|spec)\.|\.d\.[cm]?ts$/.test(name)) {
+      out.push(p);
+    }
   }
   return out;
 }
+
+const baseName = (rel: string) => rel.split("/").pop()!;
+const isRouteFile = (rel: string) => rel.startsWith("app/") && ROUTE_FILE.test(baseName(rel));
+const isMetadataFile = (rel: string) => rel.startsWith("app/") && METADATA_FILE.test(baseName(rel));
 
 const relOf = (abs: string) => relative(SRC, abs).split(sep).join("/");
 
@@ -163,42 +187,55 @@ interface Inventory {
   endpoints: Map<string, { file: string; kind: "action" | "route" }>;
   inline: string[];
   unenumerable: string[];
+  /** File "use server" hoặc route nằm ngoài src (không thuộc danh mục) — luôn là lỗi. */
+  outside: string[];
 }
 
+/**
+ * Parse MỌI file mã (không lọc thô theo chuỗi "use server": directive viết bằng escape như `"use\u0020server"` vẫn là
+ * Server Action với trình biên dịch của Next, và AST trả về chuỗi đã giải escape).
+ */
 function inventory(): Inventory {
   const endpoints: Inventory["endpoints"] = new Map();
   const inline: string[] = [];
   const unenumerable: string[] = [];
+  const outside: string[] = [];
   for (const abs of walk(SRC)) {
     const rel = relOf(abs);
-    const src = readFileSync(abs, "utf8");
-    const isRoute = rel.startsWith("app/") && ROUTE_FILE.test(rel.split("/").pop()!);
-    if (!isRoute && !src.includes("use server")) continue;
-    const sf = parse(abs, src);
+    const sf = parse(abs, readFileSync(abs, "utf8"));
     for (const line of inlineUseServer(sf)) inline.push(`${rel}:${line}`);
-    if (hasUseServer(sf.statements)) {
-      for (const name of runtimeExports(sf)) {
-        if (name === "*" || name.startsWith("<")) unenumerable.push(`${rel}#${name}`);
-        else endpoints.set(`${rel}#${name}`, { file: rel, kind: "action" });
-      }
-    }
-    if (isRoute) {
-      for (const name of runtimeExports(sf)) {
-        if (name === "*" || name.startsWith("<")) unenumerable.push(`${rel}#${name}`);
-        else if (HTTP_METHODS.has(name)) endpoints.set(`${rel}#${name}`, { file: rel, kind: "route" });
-      }
+    const route = isRouteFile(rel);
+    const metadata = isMetadataFile(rel);
+    const action = hasUseServer(sf.statements);
+    if (!route && !metadata && !action) continue;
+    for (const name of runtimeExports(sf)) {
+      if (name === "*" || name.startsWith("<")) unenumerable.push(`${rel}#${name}`);
+      else if (action) endpoints.set(`${rel}#${name}`, { file: rel, kind: "action" });
+      else if (route && HTTP_METHODS.has(name)) endpoints.set(`${rel}#${name}`, { file: rel, kind: "route" });
+      else if (metadata && name === "default") endpoints.set(`${rel}#GET`, { file: rel, kind: "route" });
     }
   }
-  return { endpoints, inline, unenumerable };
+  for (const abs of walk(PKG)) {
+    if (abs.startsWith(SRC + sep)) continue;
+    const sf = parse(abs, readFileSync(abs, "utf8"));
+    const rel = relative(PKG, abs).split(sep).join("/");
+    if (hasUseServer(sf.statements) || inlineUseServer(sf).length > 0 || /^app\//.test(rel))
+      outside.push(rel);
+  }
+  return { endpoints, inline, unenumerable, outside };
 }
 
-/** `app/(shop)/thanh-toan/ket-qua/route.ts` → `/thanh-toan/ket-qua` (bỏ route group). */
+/**
+ * Đường URL của route để đối chiếu file bằng chứng (bỏ route group):
+ * `app/(shop)/thanh-toan/ket-qua/route.ts` → `/thanh-toan/ket-qua`; `app/robots.ts` → `/robots.txt`.
+ */
 function urlPathOf(rel: string): string {
-  const segs = rel
-    .split("/")
-    .slice(1, -1)
-    .filter((s) => !/^\(.*\)$/.test(s));
-  return `/${segs.join("/")}`;
+  const parts = rel.split("/");
+  const dir = parts.slice(1, -1).filter((s) => !/^\(.*\)$/.test(s));
+  const file = parts[parts.length - 1]!;
+  if (ROUTE_FILE.test(file)) return `/${dir.join("/")}`;
+  const stem = file.replace(/\.[^.]+$/, "");
+  return `/${[...dir, METADATA_URL[stem] ?? stem].join("/")}`;
 }
 
 /** Bỏ chú thích để kiểm định danh trong mã (không trong comment). */
@@ -256,9 +293,10 @@ describe("kiểm liệt kê Server Action + route handler (BE-AUTH-009, PRF-WEB-
     expect(stale, "mục allowlist không còn endpoint tương ứng").toEqual([]);
   });
 
-  it("không có Server Action inline hay export không liệt kê được (`export *`, destructure)", () => {
+  it("không có Server Action inline, export không liệt kê được (`export *`, destructure) hay endpoint ngoài src", () => {
     expect(inv.inline, 'đặt Server Action trong file lib/**/actions.ts có "use server" ở đầu').toEqual([]);
     expect(inv.unenumerable).toEqual([]);
+    expect(inv.outside, "Server Action/route phải nằm trong apps/storefront/src").toEqual([]);
   });
 
   it("mỗi mục: kiểu quyền hợp lệ, lý do đủ dài, file bằng chứng tồn tại và nhắc tới endpoint", () => {
@@ -270,8 +308,7 @@ describe("kiểm liệt kê Server Action + route handler (BE-AUTH-009, PRF-WEB-
       const proofAbs = join(SRC, e.proof);
       expect(existsSync(proofAbs), `${key}: thiếu ${e.proof}`).toBe(true);
       const proof = readFileSync(proofAbs, "utf8");
-      const needle =
-        HTTP_METHODS.has(name) && ROUTE_FILE.test(file.split("/").pop()!) ? urlPathOf(file) : name;
+      const needle = inv.endpoints.get(key)?.kind === "route" ? urlPathOf(file) : name;
       expect(proof.includes(needle), `${key}: ${e.proof} không nhắc "${needle}"`).toBe(true);
     }
   });
@@ -345,6 +382,12 @@ describe("bộ quét tự kiểm (endpoint mới không khai sẽ bị bắt)", 
     expect(urlPathOf("app/(shop)/thanh-toan/ket-qua/route.ts")).toBe("/thanh-toan/ket-qua");
     expect(urlPathOf("app/api/cart/count/route.ts")).toBe("/api/cart/count");
     expect(urlPathOf("app/route.ts")).toBe("/");
+    expect(urlPathOf("app/robots.ts")).toBe("/robots.txt");
+    expect(urlPathOf("app/sitemap.ts")).toBe("/sitemap.xml");
+    expect(urlPathOf("app/manifest.ts")).toBe("/manifest.webmanifest");
+    expect(urlPathOf("app/(shop)/don-hang/[ref]/opengraph-image.tsx")).toBe(
+      "/don-hang/[ref]/opengraph-image",
+    );
   });
 });
 
@@ -851,12 +894,16 @@ describe("IDOR đơn: recheckOrderAction, cancelOrderAction, lookupOrderAction, 
 describe("IDOR route: /api/cart/count, /thanh-toan/ket-qua", () => {
   useBackend();
 
-  it("/api/cart/count: đếm giỏ của cookie, bỏ qua ?cart_id=; không cookie/cookie rác → 0, không gọi backend; private no-store", async () => {
-    const res = await as(alice(), () => cartCountGET());
+  it("/api/cart/count: đếm giỏ của cookie, bỏ qua id giỏ trên query; không cookie/cookie rác → 0, không gọi backend; private no-store", async () => {
+    // Next truyền Request thật cho route handler — kể cả khi handler hiện không khai tham số.
+    const countGET = cartCountGET as unknown as (req: Request) => Promise<Response>;
+    const q = `?cart_id=${CART_B}&cartId=${CART_B}&id=${CART_B}&cart=${CART_B}`;
+    const req = () => new Request(`https://shop.test/api/cart/count${q}`);
+    const res = await as(alice(), () => countGET(req()));
     expect(await res.json()).toEqual({ count: 1 });
     expect(res.headers.get("cache-control")).toBe("private, no-store");
     for (const s of [session("anon"), session("bad", { xs_cart: "cart_B;Path=/" })]) {
-      expect(await (await as(s, () => cartCountGET())).json()).toEqual({ count: 0 });
+      expect(await (await as(s, () => countGET(req()))).json()).toEqual({ count: 0 });
     }
     expect(be.calls.map((c) => c.path)).toEqual([`/store/carts/${CART_A}`]);
   });
@@ -895,7 +942,7 @@ describe("IDOR route: /api/cart/count, /thanh-toan/ket-qua", () => {
   });
 });
 
-describe("route công khai có chủ đích: /api/address/wards, /api/catalog/count, /api/catalog/suggest", () => {
+describe("route công khai có chủ đích: /api/address/wards, /api/catalog/count, /api/catalog/suggest, /robots.txt, /sitemap.xml, /manifest.webmanifest", () => {
   beforeEach(() => {
     delete process.env.XS_DATA_SOURCE;
     delete process.env.MEDUSA_BACKEND_URL;
@@ -928,5 +975,100 @@ describe("route công khai có chủ đích: /api/address/wards, /api/catalog/co
       expect(withCookies.cache ?? "", path).not.toContain("private");
     }
     expect(state.cookieReads).toBe(0);
+  });
+
+  it("metadata route /robots.txt, /sitemap.xml, /manifest.webmanifest: cùng nội dung có/không cookie, không đọc cookie", async () => {
+    const calls: Record<string, () => Promise<unknown>> = {
+      "/robots.txt": () => robots(),
+      "/sitemap.xml": () => sitemap({ id: Promise.resolve("0") }),
+      "/manifest.webmanifest": async () => manifest(),
+    };
+    for (const [path, call] of Object.entries(calls)) {
+      const withCookies = JSON.stringify(await as(alice(), call));
+      expect(withCookies, path).toBe(JSON.stringify(await as(session("anon"), call)));
+      expect(withCookies, path).not.toContain(CART_A);
+    }
+    expect(state.cookieReads).toBe(0);
+  });
+});
+
+describe("đối số thừa: Server Action nhận đối số vị trí tuỳ ý từ client — id chèn thêm không được dùng", () => {
+  useBackend();
+
+  const EXTRA = [CART_B, { cart_id: CART_B, cartId: CART_B, attempt_id: ATT_B, ref: REF_B, token: TOKEN_B }];
+  type AnyAction = (...args: unknown[]) => Promise<unknown>;
+  const form = (entries: Record<string, string>) => {
+    const f = new FormData();
+    for (const [k, v] of Object.entries(entries)) f.set(k, v);
+    return f;
+  };
+  const cases: Record<string, [AnyAction, unknown[]]> = {
+    addToCart: [addToCart as AnyAction, [{ handle: PRODUCT.handle, variantId: V_TRANG_S, quantity: 1 }]],
+    updateLineQuantity: [updateLineQuantity as AnyAction, [LINE_B, 2]],
+    removeCartLine: [removeCartLine as AnyAction, [LINE_B]],
+    changeLineVariant: [changeLineVariant as AnyAction, [LINE_B, V_TRANG_S]],
+    refreshCartLine: [refreshCartLine as AnyAction, [LINE_B]],
+    forgetCart: [forgetCart as AnyAction, []],
+    quoteCheckout: [
+      quoteCheckout as AnyAction,
+      [{ paymentMethod: "cod", address: ADDRESS, discountCode: null }],
+    ],
+    submitCheckout: [submitCheckout as AnyAction, [SUBMIT]],
+    pollCheckout: [pollCheckout as AnyAction, [ATT_B]],
+    finishCheckout: [finishCheckout as AnyAction, []],
+    recheckOrderAction: [recheckOrderAction as AnyAction, [REF_B]],
+    cancelOrderAction: [cancelOrderAction as AnyAction, [REF_B]],
+    lookupOrderAction: [
+      lookupOrderAction as AnyAction,
+      [{ status: "idle" }, form({ ma: REF_A, sdt: "0912345678" })],
+    ],
+    redeemLinkAction: [redeemLinkAction as AnyAction, [form({ token: "link-forged" })]],
+  };
+
+  it("bảng phủ đủ mọi Server Action trong allowlist", () => {
+    const actions = Object.keys(ENDPOINT_ALLOWLIST)
+      .filter((k) => k.startsWith("lib/"))
+      .map((k) => k.split("#")[1]);
+    expect(Object.keys(cases).sort()).toEqual(actions.sort());
+  });
+
+  for (const [name, [fn, args]] of Object.entries(cases)) {
+    it(`${name}(…, ${CART_B}, { cart_id, attempt_id, ref, token }) không chạm giỏ/đơn/attempt của người khác`, async () => {
+      const a = session("alice", { xs_cart: CART_A, [`xs_order_${REF_A}`]: TOKEN_A });
+      await as(a, () => fn(...args, ...EXTRA)).catch((e: Error) => {
+        if (!e.message.startsWith("REDIRECT ")) throw e;
+      });
+      const sent = JSON.stringify(be.calls);
+      // Id đối số chính (vd attempt của pollCheckout) được phép tới backend — backend trả 404 vì không khớp giỏ cookie.
+      const primary = JSON.stringify(args);
+      for (const foreign of [CART_B, ATT_B, TOKEN_B].filter((v) => !primary.includes(v))) {
+        expect(sent, name).not.toContain(foreign);
+      }
+      expect(
+        be.calls.some((c) => c.method !== "GET" && c.path.includes(REF_B)),
+        name,
+      ).toBe(false);
+      expect(be.carts.get(CART_B)!.items).toEqual([{ id: LINE_B, variant_id: V_DEN_M, quantity: 5 }]);
+      expect(be.orders.get(REF_B)!.state).toBe("placed");
+      expect(JSON.stringify([...a.jar.values()])).not.toContain(CART_B);
+    });
+  }
+});
+
+describe("id giỏ (bearer) không bị tuần tự hoá sang Client Component", () => {
+  useBackend();
+
+  it("trang /gio-hang và /thanh-toan: props truyền cho client không chứa id giỏ", async () => {
+    const cartEl = await as(alice(), () => CartPage());
+    const checkoutEl = await as(alice(), () => CheckoutPage());
+    const cartProps = JSON.stringify(cartEl.props);
+    const checkoutProps = JSON.stringify(checkoutEl.props);
+    // Đối chứng: props thật có dữ liệu giỏ (dòng của alice).
+    expect(cartProps).toContain(LINE_A);
+    expect(checkoutProps).toContain(LINE_A);
+    for (const p of [cartProps, checkoutProps]) {
+      expect(p).not.toContain(CART_A);
+      expect(p).not.toMatch(/cart_[0-9A-Za-z]{10,}/);
+    }
   });
 });

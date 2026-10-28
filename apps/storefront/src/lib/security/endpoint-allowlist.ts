@@ -1,6 +1,7 @@
 /**
  * Danh mục MỌI endpoint server của storefront (BE-AUTH-009, PRF-WEB-004): mỗi export của file `"use server"` (Server
- * Action = endpoint POST công khai, ai cũng gọi được với tham số tuỳ ý) và mỗi phương thức HTTP của `app/**\/route.ts`.
+ * Action = endpoint POST công khai, ai cũng gọi được với tham số tuỳ ý), mỗi phương thức HTTP của `app/**\/route.ts` và
+ * mỗi metadata route (`robots`, `sitemap`, `manifest`, `opengraph-image`, `twitter-image`, `icon`, `apple-icon` → `#GET`).
  * `server-actions.test.ts` quét mã nguồn và đỏ khi: có endpoint chưa khai ở đây, mục ở đây không còn trong mã, mục thiếu
  * lý do/kiểu quyền, hoặc file bằng chứng không nhắc tới endpoint. Thêm action/route mới → thêm mục kèm test quyền.
  *
@@ -148,6 +149,22 @@ export const ENDPOINT_ALLOWLIST: Readonly<Record<string, EndpointEntry>> = {
   "app/api/catalog/suggest/route.ts#GET": {
     access: ["public"],
     reason: "Gợi ý tên sản phẩm đang bán; chỉ trả { suggestions }.",
+    proof: PROOF,
+  },
+  /* ---------------------------------------------------------------- Metadata route (GET qua export default) */
+  "app/robots.ts#GET": {
+    access: ["public"],
+    reason: "robots.txt cho bot: quy tắc tĩnh + URL sitemap; không đọc cookie.",
+    proof: PROOF,
+  },
+  "app/sitemap.ts#GET": {
+    access: ["public"],
+    reason: "Sitemap các trang công khai (sản phẩm/danh mục đang bán); không đọc cookie.",
+    proof: PROOF,
+  },
+  "app/manifest.ts#GET": {
+    access: ["public"],
+    reason: "Web app manifest tĩnh (PWA); không đọc cookie.",
     proof: PROOF,
   },
 };
