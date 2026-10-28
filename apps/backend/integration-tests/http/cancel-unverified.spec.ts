@@ -678,6 +678,40 @@ medusaIntegrationTestRunner({
         expect(await service().listOpsExceptions({ order_id: o.orderId, kind: "late_payment" })).toHaveLength(
           1,
         );
+
+        // RUNBOOK §7 — hoàn ngoài hệ thống (`manual` + mã chứng từ) vẫn dùng được (vd. cổng hoàn chưa bật ở sandbox/live).
+        const created = await post(
+          "/admin/x/refunds",
+          A("accountant"),
+          {
+            order_id: o.orderId,
+            reason: "late_payment",
+            amount: o.total,
+            method: "manual",
+            note: "Hoàn tay",
+          },
+          { "Idempotency-Key": key() },
+        );
+        expect(created.status).toBe(201);
+        const refundId = String(created.data.refund.id);
+        if (created.data.refund.state === "requested") {
+          expect((await post(`/admin/x/refunds/${refundId}/approve`, A("owner"), {}, {})).status).toBe(200);
+        }
+        const exec = await post(
+          `/admin/x/refunds/${refundId}/execute`,
+          A("accountant"),
+          { evidence_ref: "CK-20261027-001" },
+          {},
+        );
+        expect({ status: exec.status, data: exec.data }).toMatchObject({
+          status: 200,
+          data: { outcome: "succeeded" },
+        });
+        expect(
+          (await service().listOpsExceptions({ order_id: o.orderId, kind: "late_payment" })).map(
+            (e) => e.state,
+          ),
+        ).toEqual(["resolved"]);
       });
     });
 
@@ -747,10 +781,11 @@ medusaIntegrationTestRunner({
     });
 
     describe("tiền đến sau khi hủy (AT09) và đua với IPN", () => {
-      it("AT09: hủy chưa xác minh rồi IPN thành công → ghi capture + late_payment, đơn vẫn cancelled, không giữ lại hàng; kế toán hoàn được đủ số", async () => {
+      it("AT09: hủy chưa xác minh rồi IPN thành công → ghi capture + late_payment, đơn vẫn cancelled, không giữ lại hàng; kế toán hoàn qua cổng đủ số → late_payment đóng", async () => {
         const o = await vnpayOrder("Trắng/S", { unknown: true });
         expect((await cancelUv(o.orderId)).status).toBe(200);
         const paidIpn = signer.pay(o.paymentUrl, "success");
+        const txnNo = paidIpn.get("vnp_TransactionNo")!;
         expect((await ipn(api, paidIpn)).data).toEqual(R.success);
 
         expect(await fin(o.orderId)).toMatchObject({ state: "cancelled" });
@@ -758,6 +793,11 @@ medusaIntegrationTestRunner({
         expect(
           (await service().listPaymentLedgers({ order_id: o.orderId })).map((l) => [l.kind, l.amount]),
         ).toEqual([["capture", o.total]]);
+        // T-168: attempt giữ `failed` nhưng mang mã giao dịch của khoản thu (để hoàn qua cổng + đối soát tìm được).
+        expect((await service().listPaymentAttempts({ order_id: o.orderId }))[0]).toMatchObject({
+          state: "failed",
+          provider_txn_no: txnNo,
+        });
         const late = await service().listOpsExceptions({ order_id: o.orderId, kind: "late_payment" });
         expect(late.map((e) => [e.amount, e.state])).toEqual([[o.total, "open"]]);
         expect(await outboxOf(o.orderId, "order.confirmed")).toHaveLength(0);
@@ -769,9 +809,8 @@ medusaIntegrationTestRunner({
           1,
         );
 
-        // RUNBOOK §7: kế toán xác minh trên cổng → tạo hoàn theo late_payment → (duyệt) → thực hiện → ledger ròng 0. Hoàn
-        // ngoài hệ thống (`manual` + chứng từ): hoàn qua cổng cho khoản thu đến sau khi hủy hiện không tìm được giao dịch
-        // gốc (attempt `failed` không mang mã giao dịch) — lỗi có sẵn của đường AT09, sửa ở T-168 (D-122).
+        // RUNBOOK §7: kế toán xác minh trên cổng → tạo hoàn theo late_payment qua cổng → (duyệt) → thực hiện → ledger
+        // ròng 0, late_payment đóng. (Hoàn tay có chứng từ: ca "VNPAY đang tắt" ở trên.)
         const created = await post(
           "/admin/x/refunds",
           A("accountant"),
@@ -779,29 +818,33 @@ medusaIntegrationTestRunner({
             order_id: o.orderId,
             reason: "late_payment",
             amount: o.total,
-            method: "manual",
+            method: "provider",
             note: "Tiền đến sau khi hủy chưa xác minh",
           },
           { "Idempotency-Key": key() },
         );
         expect(created.status).toBe(201);
         const refundId = String(created.data.refund.id);
-        expect(created.data.refund).toMatchObject({ reason: "late_payment", amount: o.total });
+        expect(created.data.refund).toMatchObject({
+          reason: "late_payment",
+          amount: o.total,
+          method: "provider",
+        });
         if (created.data.refund.state === "requested") {
           expect((await post(`/admin/x/refunds/${refundId}/approve`, A("owner"), {}, {})).status).toBe(200);
         }
-        const exec = await post(
-          `/admin/x/refunds/${refundId}/execute`,
-          A("accountant"),
-          { evidence_ref: "CK-20261027-001" },
-          {},
-        );
+        const exec = await post(`/admin/x/refunds/${refundId}/execute`, A("accountant"), {}, {});
         expect({ status: exec.status, data: exec.data }).toMatchObject({
           status: 200,
           data: { outcome: "succeeded" },
         });
         const ledger = await service().listPaymentLedgers({ order_id: o.orderId });
         expect(ledger.map((l) => l.kind).sort()).toEqual(["capture", "refund"]);
+        expect(
+          (await service().listOpsExceptions({ order_id: o.orderId, kind: "late_payment" })).map(
+            (e) => e.state,
+          ),
+        ).toEqual(["resolved"]);
         expect(await fin(o.orderId)).toMatchObject({ state: "cancelled" });
       });
 
