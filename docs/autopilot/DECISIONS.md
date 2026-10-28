@@ -860,3 +860,10 @@
 - Chọn: Chỉ owner (không cấp kế toán); bắt reauth MFA gần (cơ chế reauth sẵn có trong admin-security/session.ts); merchant_ref ASCII 6–64 ghi '(chưa xác minh)' tới khi có tài liệu merchant; lỗi applyCapture không ghi provider_txn_no vào attempt failed tách T-168
 - Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn: thao tác hủy đơn có thể đã trả tiền là nhạy cảm như hoàn tiền — tách người hủy và người hoàn; reauth chặn phiên bị chiếm; lỗi AT09 có từ trước, ảnh hưởng cả đơn hết hạn nên làm lát riêng có test
 - Đường lùi: Gán payment.override cho kế toán / bỏ yêu cầu reauth trong config admin-security
+
+### D-123 · 2026-10-28T01:36:26+00:00 · T-163: test hàng rào so BẰNG schema = hằng code luôn đỏ ở bản N−1 khi migration nới CHECK; job có làm required
+
+- Phương án: (1) Danh sách miễn tường minh trong n-minus-1 (tên suite+ca, lý do, migration nới gây ra), mục thừa thì đỏ — như ALLOW của check-migrations; job không required, chia shard sau khi đo trên runner thật · (2) Đổi hàng rào thành DB ⊇ code · (3) Giữ nguyên, người đọc log phân biệt
+- Chọn: Danh sách miễn tường minh trong n-minus-1 (tên suite+ca, lý do, migration nới gây ra), mục thừa thì đỏ — như ALLOW của check-migrations; job không required, chia shard sau khi đo trên runner thật
+- Lý do (tiêu chí chất lượng cuối): (1) giữ nguyên độ chặt của hàng rào ở HEAD (bắt cả hai chiều lệch); miễn có lý do và tự hết hạn khi mục thừa; (C) làm job ồn nên tín hiệu thật bị bỏ qua; rủi ro N−1 đọc kind lạ ghi thành việc riêng
+- Đường lùi: Bỏ danh sách miễn; đổi hàng rào sang ⊇
