@@ -91,6 +91,7 @@ export const DIMENSION_WORDS = new Map([
     "lease",
     "window",
     "wait",
+    "expires",
     "cooldown",
     "backoff",
     "latency",
@@ -115,11 +116,21 @@ export const DIMENSION_WORDS = new Map([
     "discount",
     "refund",
     "cod",
+    "compare",
+    "difference",
+    "deposit",
+    "vat",
     "charge",
     "payout",
     "threshold",
   ].map((w) => [w, "tiền"]),
 ]);
+
+/** Từ đứng trước `after` để nó là thời lượng (`retry_after`, `expire_after`). */
+export const AFTER_PREFIXES = new Set(["retry", "expire", "expires", "valid", "cache", "ttl"]);
+
+/** Hậu tố mốc thời điểm: cột kết thúc bằng chúng là thời điểm (`expires_at`), không phải thời lượng. */
+export const TIMESTAMP_SUFFIXES = new Set(["at", "on", "date", "time"]);
 
 /** Danh từ đếm/thứ hạng: tên chứa chúng là số lượng hay thứ tự, không phải đại lượng có đơn vị (`rows_total`, `size_rank`). */
 export const COUNT_WORDS = new Set([
@@ -143,10 +154,17 @@ const NUMERIC_TYPE =
 export function classifyColumn(name) {
   const tokens = String(name).toLowerCase().split("_").filter(Boolean);
   if (tokens.length === 0) return null;
-  if (UNIT_SUFFIXES.has(tokens[tokens.length - 1])) return null;
+  const last = tokens[tokens.length - 1];
+  if (UNIT_SUFFIXES.has(last)) return null;
   if (tokens.some((t) => COUNT_WORDS.has(t))) return null;
+  // `retry_after`/`expire_after`: "after" chỉ là thời lượng khi đứng sau động từ hẹn giờ (`stocked_after` là số lượng).
+  const afterAt = tokens.indexOf("after");
+  if (afterAt > 0 && !TIMESTAMP_SUFFIXES.has(last) && AFTER_PREFIXES.has(tokens[afterAt - 1]))
+    return { dimension: "thời lượng", word: "after" };
   for (const t of tokens) {
     const dimension = DIMENSION_WORDS.get(t);
+    // `expires_at`/`expires_on`: mốc thời điểm, không phải thời lượng (chỉ áp cho nhóm thời lượng; `compare_at` vẫn là tiền).
+    if (dimension === "thời lượng" && TIMESTAMP_SUFFIXES.has(last)) continue;
     if (dimension) return { dimension, word: t };
   }
   return null;
@@ -163,6 +181,7 @@ const CREATE_TABLE = new RegExp(
   String.raw`\bcreate (?:(?:global |local )?(?:temporary |temp |unlogged ))?table (?:if not exists )?(${NAME})\s*(\(.*)$`,
 );
 const ALTER_TABLE = new RegExp(String.raw`\balter table (?:if exists )?(?:only )?(${NAME})\s*\*?\s*(.*)$`);
+const DROP_TABLE = new RegExp(String.raw`\bdrop table (?:if exists )?(${NAME}(?:\s*,\s*${NAME})*)`);
 const NOT_COLUMN = /^(constraint|primary|unique|check|foreign|exclude|like)$/;
 
 /**
@@ -181,12 +200,19 @@ export function applyColumns(chunks, cols = new Map()) {
         for (const item of splitTop(parenBody(ct[2]))) setColumn(cols, table, item, idents);
         continue;
       }
+      const dt = DROP_TABLE.exec(stmt);
+      if (dt) {
+        for (const t of splitTop(dt[1])) dropTable(cols, nameOf(t, idents));
+        continue;
+      }
       const at = ALTER_TABLE.exec(stmt);
       if (!at) continue;
       const table = nameOf(at[1], idents);
       for (const action of splitTop(at[2])) {
         let m;
-        if ((m = /^add (?:column )?(?:if not exists )?(.*)$/.exec(action)))
+        if ((m = new RegExp(String.raw`^rename to (${NAME})$`).exec(action)))
+          renameTable(cols, table, nameOf(m[1], idents));
+        else if ((m = /^add (?:column )?(?:if not exists )?(.*)$/.exec(action)))
           setColumn(cols, table, m[1], idents);
         else if (
           (m = new RegExp(String.raw`^alter (?:column )?(${NAME_PART}) (?:set data )?type (.*)$`).exec(
@@ -210,6 +236,20 @@ export function applyColumns(chunks, cols = new Map()) {
     }
   }
   return cols;
+}
+
+/** `drop table`: bỏ mọi cột của bảng. */
+function dropTable(cols, table) {
+  for (const [k, c] of [...cols]) if (c.table === table) cols.delete(k);
+}
+
+/** `alter table a rename to b`: chuyển cột sang tên bảng mới. */
+function renameTable(cols, from, to) {
+  for (const [k, c] of [...cols])
+    if (c.table === from) {
+      cols.delete(k);
+      cols.set(`${to}.${c.column}`, { ...c, table: to });
+    }
 }
 
 /** Một mục `tên kiểu …` của create table / add column / alter type. */

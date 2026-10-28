@@ -42,5 +42,17 @@
   {
     "column": "shipment.shipping_fee",
     "reason": "Phí vận chuyển VND số nguyên; cột đã áp ở migration shipping, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "catalog_variant_index.compare_at",
+    "reason": "Giá gốc (so sánh) VND số nguyên của chỉ mục tìm kiếm; cột đã áp ở migration catalog-index, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "settlement_line.difference",
+    "reason": "Chênh lệch tiền VND số nguyên (thực nhận trừ kỳ vọng, có thể âm); cột đã áp ở migration settlement, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "settlement_discrepancy.difference",
+    "reason": "Chênh lệch tiền VND số nguyên của sai lệch đối soát (có thể âm); cột đã áp ở migration settlement, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
   }
 ]

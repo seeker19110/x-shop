@@ -20,6 +20,27 @@ test("classifyColumn: đại lượng có đơn vị mà thiếu hậu tố bị
   assert.equal(classifyColumn("shipping_fee")?.word, "fee");
 });
 
+test("classifyColumn: compare/difference/deposit/vat là tiền; expire/retry after là thời lượng", () => {
+  for (const n of ["compare_at", "compare_at_price", "difference", "deposit", "vat", "vat_rate_x"])
+    assert.equal(classifyColumn(n)?.dimension, "tiền", n);
+  for (const n of ["retry_after", "expire_after", "expires", "cache_expires"])
+    assert.equal(classifyColumn(n)?.dimension, "thời lượng", n);
+  for (const n of ["deposit_vnd", "difference_vnd", "vat_percent", "retry_after_seconds", "expires_ms"])
+    assert.equal(classifyColumn(n), null, n);
+});
+
+test("classifyColumn: expires_at/expires_on là mốc thời điểm (không báo); stocked_after là số lượng (không báo)", () => {
+  for (const n of [
+    "expires_at",
+    "expires_on",
+    "valid_after_date",
+    "stocked_after",
+    "qty_after",
+    "count_after",
+  ])
+    assert.equal(classifyColumn(n), null, n);
+});
+
 test("classifyColumn: có hậu tố đơn vị thì qua", () => {
   for (const n of [
     "timeout_ms",
@@ -193,6 +214,31 @@ test("checkUnits: ngoại lệ theo `bảng.cột` và `*.cột` cho qua; mục 
   assert.match(text, /allowlist\[1\].*dạng/);
   assert.match(text, /allowlist\[3\].*trùng/);
   assert.match(text, /allowlist\[4\].*dạng/);
+});
+
+test("applyColumns: drop table xoá cột (kể cả nhiều bảng, if exists); rename to chuyển cột sang tên mới", () => {
+  const cols = applyColumns([
+    `create table "x_a" ("delay" integer); create table "x_b" ("wait" integer); create table "x_c" ("lease" integer);`,
+    `drop table if exists "x_a", "x_b" cascade;`,
+    `alter table "x_c" rename to "x_d";`,
+  ]);
+  assert.deepEqual([...cols.keys()], ["x_d.lease"]);
+  assert.equal(cols.get("x_d.lease").table, "x_d");
+});
+
+test("checkUnits: bảng đã drop hoặc đổi tên không để lại vi phạm/ngoại lệ ma", () => {
+  const { violations, problems } = checkUnits({
+    migrations: [
+      {
+        file: "Migration1.ts",
+        sql: [`create table "x_old" ("delay" integer); create table "x_gone" ("wait" integer);`],
+      },
+      { file: "Migration2.ts", sql: [`drop table "x_gone"; alter table "x_old" rename to "x_new";`] },
+    ],
+    models: [],
+    allow: [{ column: "new.delay", reason: REASON }],
+  });
+  assert.deepEqual({ violations, problems }, { violations: [], problems: [] });
 });
 
 test("checkUnits: cột đã đổi tên có hậu tố thì sạch; cột bị drop không bị báo", () => {

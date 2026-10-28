@@ -38,6 +38,11 @@ import { hoursToMs, secondsToMs } from "@x-shop/domain";
 const service = (c: MedusaContainer) => c.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
 const logger = (c: MedusaContainer) => c.resolve(ContainerRegistrationKeys.LOGGER);
 
+/** Hạn xử lý ngoại lệ "đơn COD quá hạn xác nhận": 4 giờ kể từ lúc mở. */
+export const COD_OVERDUE_EXCEPTION_DUE_MS = hoursToMs(4);
+/** Chờ khoá giỏ tối đa 1 giây khi bù trừ attempt `preparing` quá hạn (lượt sau thử lại). */
+export const STALE_ATTEMPT_LOCK_WAIT_MS = secondsToMs(1);
+
 async function withLock<T>(
   container: MedusaContainer,
   key: string,
@@ -391,16 +396,22 @@ export async function reconcileAttempts(
   const s = service(container);
   const summary: ReconcileSummary = { compensated: [], skipped: [] };
   for (const a of await s.listStaleAttempts(now, opts.limit ?? 50)) {
-    const outcome = await withLock(container, lockKeys.cart(a.cart_id), secondsToMs(1), "cart", async () => {
-      if (!(await s.claimStaleAttempt(a.id, now))) return "skipped" as const;
-      const { orderIds, reservationIds } = await leftoversOfAttempt(container, a.id);
-      if (reservationIds.length > 0) {
-        await deleteReservationsWorkflow(container).run({ input: { ids: reservationIds } });
-      }
-      for (const id of orderIds) await cancelNativeOrder(container, id);
-      await s.compensateAttemptRecords(a.id, orderIds);
-      return "compensated" as const;
-    });
+    const outcome = await withLock(
+      container,
+      lockKeys.cart(a.cart_id),
+      STALE_ATTEMPT_LOCK_WAIT_MS,
+      "cart",
+      async () => {
+        if (!(await s.claimStaleAttempt(a.id, now))) return "skipped" as const;
+        const { orderIds, reservationIds } = await leftoversOfAttempt(container, a.id);
+        if (reservationIds.length > 0) {
+          await deleteReservationsWorkflow(container).run({ input: { ids: reservationIds } });
+        }
+        for (const id of orderIds) await cancelNativeOrder(container, id);
+        await s.compensateAttemptRecords(a.id, orderIds);
+        return "compensated" as const;
+      },
+    );
     summary[outcome === "busy" ? "skipped" : outcome].push(a.id);
   }
   return summary;
@@ -422,7 +433,7 @@ export async function codConfirmTimeout(
       dedupe_key: `cod_confirm_overdue:${o.order_id}`,
       order_id: o.order_id,
       priority: "high",
-      due_at: new Date(now.getTime() + hoursToMs(4)),
+      due_at: new Date(now.getTime() + COD_OVERDUE_EXCEPTION_DUE_MS),
       detail: { display_ref: o.display_ref, owner_role: "order_staff" },
     });
     if (isNew) opened.push(o.order_id);

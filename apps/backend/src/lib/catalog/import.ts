@@ -444,7 +444,7 @@ export async function exportProductsCsv(container: MedusaContainer): Promise<str
 /** Khoá ghi nhập CSV: mọi commit chạy tuần tự (hai import cùng tạo một handle không thể chen nhau). */
 export const CATALOG_IMPORT_LOCK = "x-shop:catalog-import";
 /** Chờ tối đa khi một commit khác đang giữ khóa (như `timeout: 300` của `locking.execute` trước đây). */
-const IMPORT_LOCK_WAIT_MS = minutesToMs(5);
+export const IMPORT_LOCK_WAIT_MS = minutesToMs(5);
 /**
  * Lease khóa nhập: gia hạn nền mỗi 1/3 TTL (20 s) suốt lúc commit chạy — file lớn chạy bao lâu cũng giữ khóa; tiến trình
  * chết thì khóa tự nhả sau ≤ 60 s (bằng hạn mặc định của `locking.execute` native).

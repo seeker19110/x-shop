@@ -105,7 +105,7 @@ const UNITS_DURATION_MESSAGE =
 const UNITS_DURATION_SYNTAX = [
   {
     selector:
-      ":matches(Literal[value=60000], Literal[value=3600000], Literal[value=86400000], Literal[value=3600], Literal[value=86400])",
+      ":matches(Literal[value=60000], Literal[value=3600000], Literal[value=86400000], Literal[value=3600], Literal[value=86400]):not([raw=/^[^0-9]/])",
     message: UNITS_DURATION_MESSAGE,
   },
 ];
@@ -241,7 +241,7 @@ export default tseslint.config(
   },
   {
     // XC-UNITS-009 (T-160): hằng thời lượng 1 phút/1 giờ/1 ngày viết tay bị chặn ở backend lib/modules/jobs (đã dọn xong).
-    // Ngoại lệ có thời hạn: modules/checkout/service.ts đang do tác vụ khác sửa — gỡ dòng ignore khi nó thay xong
+    // Ngoại lệ có thời hạn: modules/checkout/service.ts đang do tác vụ khác sửa — gỡ dòng ignore khi nó thay xong (T-169)
     // (workflows/, storefront, domain chưa dọn nên chưa nằm trong phạm vi luật này). Lặp luật chung vì ghi đè no-restricted-syntax.
     files: ["apps/backend/src/{lib,modules,jobs}/**/*.ts"],
     ignores: ["**/*.test.ts", "**/__tests__/**", "apps/backend/src/modules/checkout/service.ts"],

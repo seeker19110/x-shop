@@ -1,3 +1,12 @@
+import { config as outboxDispatchConfig } from "../../jobs/outbox-dispatch";
+import { RESET_WORK_MAX_DELAY_MS } from "../admin-security/reset-password";
+import { ABORT_WAIT_MS } from "../audit/http";
+import { IMPORT_LOCK_WAIT_MS } from "../catalog/import";
+import { DRAIN_SCHEDULED_WAIT_MS, DRAIN_WAIT_SLICE_MS } from "../catalog/indexer";
+import { COD_OVERDUE_EXCEPTION_DUE_MS, STALE_ATTEMPT_LOCK_WAIT_MS } from "../checkout/jobs";
+import { LOCK_CALL_TIMEOUT_MS } from "../checkout/locks";
+import { parseEnv } from "../env";
+import { READINESS_PROBE_TIMEOUT_MS } from "../health/readiness";
 import { RETURNS_CONFIG } from "../../modules/returns/constants";
 import { SETTLEMENT_CONFIG } from "../../modules/settlement/constants";
 import { AUTH_RATE_LIMITS } from "../admin-security/config";
@@ -6,7 +15,7 @@ import { CATALOG_REVALIDATE_POLICY } from "../catalog/revalidate";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { HOLD_RECHECK_POLICY } from "../checkout/hold-recheck";
 import { WEBHOOK_RATE_LIMITS } from "../http/webhook-rate-limit";
-import { DB_TIMEOUTS, REDIS_TIMEOUTS } from "../infra/timeouts";
+import { DB_TIMEOUTS, REDIS_TIMEOUTS, S3_TIMEOUTS } from "../infra/timeouts";
 import { ORDER_ACCESS_CONFIG } from "../orders/access";
 import { ORDER_RATE_LIMITS } from "../orders/rate-limit";
 import { OUTBOX_BREAKER_POLICY } from "../outbox/breaker";
@@ -14,6 +23,48 @@ import { OUTBOX_POLICY } from "../outbox/policy";
 import { parseRetryAfterMs } from "../outbox/retry";
 import { STORE_RATE_LIMITS } from "../security/rate-limit";
 import { GHN_RETRY_POLICY, SHIPPING_CONFIG } from "../shipping/config";
+
+const DB = "postgres://user:pa55-db-secret@localhost:5432/xshop";
+const JWT = "jwt-0123456789abcdef0123456789abcdef";
+const COOKIE = "cookie-0123456789abcdef0123456789abcd";
+const MFA = "mfa-0123456789abcdef0123456789abcdef0";
+
+// Bản sao nguyên mẫu `production` của env.unit.spec.ts (giá trị giả) — để đo mặc định drain của production.
+const PRODUCTION_ENV = {
+  NODE_ENV: "production",
+  DATABASE_URL: DB,
+  REDIS_URL: "rediss://default:redis-pass@cache.example.vn:6380",
+  JWT_SECRET: JWT,
+  COOKIE_SECRET: COOKIE,
+  AUTH_MFA_ENCRYPTION_KEY: MFA,
+  ORDER_LOOKUP_SECRET: "order-0123456789abcdef0123456789abcd",
+  XS_TRUSTED_PROXIES: "10.0.0.0/8",
+  STOREFRONT_URL: "https://shop.example.vn/",
+  MEDUSA_BACKEND_URL: "https://api.shop.example.vn",
+  FILE_STORAGE: "s3",
+  S3_ENDPOINT: "https://s3.shop.example.vn",
+  S3_REGION: "garage",
+  S3_BUCKET: "xshop-public",
+  S3_PRIVATE_BUCKET: "xshop-private",
+  S3_FILE_URL: "https://cdn.shop.example.vn/xshop-public",
+  S3_ACCESS_KEY_ID: "GK0123456789abcdef01234567",
+  S3_SECRET_ACCESS_KEY: "s3-secret-0123456789abcdef0123456789abcdef",
+  STORE_CORS: "https://shop.example.vn",
+  ADMIN_CORS: "https://admin.example.vn,http://localhost:9000",
+  AUTH_CORS: "https://admin.example.vn,/\\.example\\.vn$/",
+  VNPAY_TMN_CODE: "XSHOPPROD",
+  VNPAY_HASH_SECRET: "vnpay-0123456789abcdef0123456789abcd",
+  VNPAY_PAYMENT_URL: "https://pay.vnpay.example/paymentv2/vpcpay.html",
+  VNPAY_API_URL: "https://pay.vnpay.example/merchant_webapi/api/transaction",
+  VNPAY_RETURN_URL: "https://shop.example.vn/thanh-toan/ket-qua",
+  VNPAY_MODE: "live",
+  GHN_MODE: "live",
+  GHN_BASE_URL: "https://ghn.example.vn/shiip/public-api",
+  GHN_TOKEN: "ghn-token-0123456789abcdef",
+  GHN_SHOP_ID: "123456",
+  // T-142: production bắt buộc khoá webhook revalidate (trừ khi CATALOG_REVALIDATE_ENABLED=false).
+  CATALOG_REVALIDATE_SECRET: "revalidate-0123456789abcdef0123456789",
+};
 
 // T-160 (XC-UNITS-009): thay hằng thời lượng viết tay (`24 * 3600_000`, `60_000`…) bằng hàm đơn vị KHÔNG được đổi giá
 // trị. Giá trị cũ gõ lại bằng số trần ở đây — cố ý không dùng hàm đơn vị để test không tự chứng minh chính nó.
@@ -119,5 +170,61 @@ describe("giá trị thời lượng sau khi thay hằng viết tay bằng hằn
     expect(SETTLEMENT_CONFIG).toMatchObject({ futureSkewMs: DAY, importLockWaitMs: 10_000 });
     expect(RETURNS_CONFIG.lockWaitMs).toBe(15_000);
     expect(RETURNS_CONFIG.refundApprovalThresholdVnd).toBe(1_000_000);
+  });
+});
+
+describe("hằng đơn lẻ và cấu hình env sau khi thay hằng thời lượng (số trần viết tay)", () => {
+  it("hằng export đơn lẻ", () => {
+    expect(S3_TIMEOUTS).toEqual({
+      connectTimeoutMs: 5_000,
+      requestTimeoutMs: 30_000,
+      socketIdleTimeoutMs: 30_000,
+    });
+    expect(LOCK_CALL_TIMEOUT_MS).toBe(3_000);
+    expect(RESET_WORK_MAX_DELAY_MS).toBe(5_000);
+    expect(ABORT_WAIT_MS).toBe(15_000);
+    expect(READINESS_PROBE_TIMEOUT_MS).toBe(1_000);
+    expect(DRAIN_WAIT_SLICE_MS).toBe(2_000);
+    expect(DRAIN_SCHEDULED_WAIT_MS).toBe(300_000); // = LOCK_WAIT_MS của indexer
+    expect(IMPORT_LOCK_WAIT_MS).toBe(300_000);
+    expect(COD_OVERDUE_EXCEPTION_DUE_MS).toBe(14_400_000);
+    expect(STALE_ATTEMPT_LOCK_WAIT_MS).toBe(1_000);
+  });
+
+  it("job outbox-dispatch chạy mỗi 10 giây", () => {
+    expect(outboxDispatchConfig.schedule.interval).toBe(10_000);
+  });
+
+  const base = { DATABASE_URL: "postgres://u:p@localhost:5432/db" };
+  const parse = (extra: Record<string, string> = {}) => parseEnv({ ...base, ...extra });
+  const okValue = (key: string, v: string) => {
+    const r = parse({ [key]: v });
+    return r.ok ? (r.env as unknown as Record<string, unknown>)[key] : "ĐỎ";
+  };
+
+  it.each([
+    // [biến, mặc định, min, max] — số trần của giá trị cũ
+    ["DB_STATEMENT_TIMEOUT_MS", 30_000, 1_000, 3_600_000],
+    ["SHUTDOWN_TIMEOUT_MS", 25_000, 1_000, 300_000],
+    ["ADMIN_SESSION_MAX_AGE_SECONDS", 28_800, 300, 86_400],
+    ["ADMIN_SESSION_IDLE_SECONDS", 1_800, 60, 28_800],
+    ["ADMIN_REAUTH_MAX_AGE_SECONDS", 300, 30, 900],
+  ] as const)("%s: mặc định %i, cận [%i, %i]", (key, def, min, max) => {
+    expect(okValue(key, "")).toBe(def);
+    const r0 = parse();
+    expect(r0.ok && (r0.env as unknown as Record<string, unknown>)[key]).toBe(def);
+    expect(okValue(key, String(min))).toBe(min);
+    expect(okValue(key, String(max))).toBe(max);
+    expect(parse({ [key]: String(min - 1) }).ok).toBe(false);
+    expect(parse({ [key]: String(max + 1) }).ok).toBe(false);
+  });
+
+  it("SHUTDOWN_DRAIN_DELAY_MS: trần 60 000 ms (60 000 hợp lệ, 60 001 không); production mặc định 5 000 ms", () => {
+    expect(parse({ SHUTDOWN_DRAIN_DELAY_MS: "60000", SHUTDOWN_TIMEOUT_MS: "300000" }).ok).toBe(true);
+    expect(parse({ SHUTDOWN_DRAIN_DELAY_MS: "60001", SHUTDOWN_TIMEOUT_MS: "300000" }).ok).toBe(false);
+    const dev = parse();
+    expect(dev.ok && dev.env.shutdown).toEqual({ drainDelayMs: 0, timeoutMs: 25_000 });
+    const prod = parseEnv(PRODUCTION_ENV);
+    expect(prod.ok && prod.env.shutdown).toEqual({ drainDelayMs: 5_000, timeoutMs: 25_000 });
   });
 });
