@@ -853,3 +853,10 @@
 - Chọn: Bảng catalog_index_write_log (migration mới) ghi mốc từng sản phẩm; replaceAll(rows, since) giữ dòng đã đồng bộ từ since và bỏ ảnh chụp cũ hơn; rebuild '*' chạy ngay trong lượt xả
 - Lý do (tiêu chí chất lượng cuối): (1) đúng: xả lại dấu không đủ vì lượt xả song song đã xoá dấu → replaceAll ghi đè ảnh cũ/dòng ma (đã tái hiện); chốt ở DB không dựa lease Redis; khoá ghi 46,7 s → 2,4–2,9 s ở 50k SKU; (3) đơn giản: chạy nền thêm xử lý shutdown D-081 mà lợi ích chỉ cho chính tiến trình đang rebuild
 - Đường lùi: Bỏ dùng write log trong replaceAll; quay lại rebuild trong khoá (bảng giữ nguyên, migration có down)
+
+### D-122 · 2026-10-28T00:36:56+00:00 · T-165: phạm vi quyền/xác thực của cancel-unverified; lỗi AT09 hoàn qua cổng
+
+- Phương án: (1) Chỉ owner (không cấp kế toán); bắt reauth MFA gần (cơ chế reauth sẵn có trong admin-security/session.ts); merchant_ref ASCII 6–64 ghi '(chưa xác minh)' tới khi có tài liệu merchant; lỗi applyCapture không ghi provider_txn_no vào attempt failed tách T-168 · (2) Cấp thêm kế toán; chỉ cần phiên đã MFA
+- Chọn: Chỉ owner (không cấp kế toán); bắt reauth MFA gần (cơ chế reauth sẵn có trong admin-security/session.ts); merchant_ref ASCII 6–64 ghi '(chưa xác minh)' tới khi có tài liệu merchant; lỗi applyCapture không ghi provider_txn_no vào attempt failed tách T-168
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn: thao tác hủy đơn có thể đã trả tiền là nhạy cảm như hoàn tiền — tách người hủy và người hoàn; reauth chặn phiên bị chiếm; lỗi AT09 có từ trước, ảnh hưởng cả đơn hết hạn nên làm lát riêng có test
+- Đường lùi: Gán payment.override cho kế toán / bỏ yêu cầu reauth trong config admin-security
