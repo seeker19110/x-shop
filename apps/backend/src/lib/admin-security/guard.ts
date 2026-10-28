@@ -148,6 +148,7 @@ export function adminRuleOf(
  *  3. chính sách phiên: hết hạn tuyệt đối / nhàn rỗi → 401;
  *  4. quyền theo map (`/admin/x/*`: permissions.ts, fail-closed; native: native-permissions.ts) × vai trò → 403 + audit;
  *  5. quyền nhạy cảm → MFA đã xác minh (403 MFA_REQUIRED); thao tác `reauth` → MFA ≤ 5 phút (403 REAUTH_REQUIRED).
+ * Mọi 403 (bước 2, 4, 5, chính sách trường) và 400 đường dẫn hỏng đều ghi `rbac.denied` (gộp tần suất).
  */
 export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
   const method = normalizeMethod(req.method);
@@ -192,6 +193,8 @@ export async function adminSecurityGuard(req: MedusaRequest, res: MedusaResponse
   if (rule.kind === "permission" && ([rule.permission, ...rule.also].some(isSensitive) || rule.reauth)) {
     const mfa = evaluateMfa(ctx, Date.now(), rule.reauth ? policy.reauthMaxAgeSeconds : null);
     if (!mfa.ok) {
+      // T-175: 403 thiếu MFA/xác thực lại cũng là lần từ chối quyền → `rbac.denied`, lý do = mã phản hồi (cùng bộ gộp).
+      await auditDenied(req, method, path, rule, { reason: mfa.code, permission: rule.permission });
       return deny(res, 403, mfa.code, {
         permission: rule.permission,
         ...(mfa.code === "REAUTH_REQUIRED" && { max_age_seconds: policy.reauthMaxAgeSeconds }),
@@ -250,6 +253,13 @@ export function rejectWithoutRecentMfa(req: MedusaRequest, res: MedusaResponse):
   const policy = getAdminSessionPolicy();
   const mfa = evaluateMfa(ctx, Date.now(), policy.reauthMaxAgeSeconds);
   if (mfa.ok) return false;
+  // T-175: audit như cổng (`rbac.denied`, lý do = mã) — chạy nền, không đổi phản hồi; lỗi ghi audit chỉ vào log.
+  const method = normalizeMethod(req.method);
+  const resolved = adminRuleOf(req, method);
+  auditDenied(req, method, resolved?.path ?? INVALID_PATH_RESOURCE, resolved?.rule ?? INVALID_PATH_RULE, {
+    reason: mfa.code,
+    in_route: true,
+  }).catch(() => undefined);
   deny(res, 403, mfa.code, { max_age_seconds: policy.reauthMaxAgeSeconds });
   return true;
 }
