@@ -4,6 +4,7 @@ import { CHECKOUT_MODULE } from "../../../modules/checkout";
 import type { OutboxClaim } from "../../../modules/checkout/service";
 import { fakeOutboxDb } from "../../outbox/__tests__/fake-outbox-store";
 import { resetShutdownStateForTest, shutdownState } from "../../lifecycle/shutdown";
+import { acquireOrdered } from "../locks";
 import { codConfirmTimeout, dispatchOutbox, expireHolds, reconcileAttempts } from "../jobs";
 
 /**
@@ -42,6 +43,8 @@ afterAll(() => resetShutdownStateForTest());
 
 const ids = ["ord_1", "ord_2", "ord_3"];
 
+const backlog = jest.fn(async () => 0);
+
 function expireFixture(onFirstDone: () => void) {
   const touched: string[] = [];
   const finance = (orderId: string) => ({
@@ -61,7 +64,7 @@ function expireFixture(onFirstDone: () => void) {
       if (touched.length === 1) onFirstDone();
       return true;
     },
-    countUnknownHoldBacklog: async () => 0,
+    countUnknownHoldBacklog: backlog,
   };
   mockQueryAndProcess.mockResolvedValue({ outcome: "not_paid" });
   const container = containerOf(service, {
@@ -80,6 +83,8 @@ describe("expireHolds — dừng khi đang tắt", () => {
     expect(r.cancelled).toEqual(["ord_1"]);
     expect(f.touched).toEqual(["ord_1"]);
     expect(mockQueryAndProcess).toHaveBeenCalledTimes(1);
+    expect(acquireOrdered).toHaveBeenCalledTimes(1);
+    expect(backlog).not.toHaveBeenCalled();
     expect(r.stopped).toBe("draining");
   });
 
@@ -89,6 +94,8 @@ describe("expireHolds — dừng khi đang tắt", () => {
     const r = await expireHolds(f.container, { now: new Date() });
     expect(r.cancelled).toEqual([]);
     expect(mockQueryAndProcess).not.toHaveBeenCalled();
+    expect(acquireOrdered).not.toHaveBeenCalled();
+    expect(backlog).not.toHaveBeenCalled();
     expect(r.stopped).toBe("draining");
   });
 
@@ -96,6 +103,8 @@ describe("expireHolds — dừng khi đang tắt", () => {
     const f = expireFixture(() => undefined);
     const r = await expireHolds(f.container, { now: new Date() });
     expect(r.cancelled).toEqual(ids);
+    expect(acquireOrdered).toHaveBeenCalledTimes(3);
+    expect(backlog).toHaveBeenCalledTimes(1);
     expect(r.stopped).toBeNull();
   });
 });
@@ -128,6 +137,7 @@ describe("reconcileAttempts — dừng khi đang tắt", () => {
     const r = await reconcileAttempts(f.container, { now: new Date() });
     expect(r.compensated).toEqual(["att_ord_1"]);
     expect(f.claimed).toEqual(["att_ord_1"]);
+    expect(acquireOrdered).toHaveBeenCalledTimes(1);
     expect(r.stopped).toBe("draining");
   });
 

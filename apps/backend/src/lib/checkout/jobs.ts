@@ -95,6 +95,7 @@ export interface ExpireSummary {
   /**
    * Sau lượt chạy: số đơn quá hạn còn `awaiting_payment` đã được xét mà chưa có kết cục — chưa rõ/lỗi
    * (`hold_check_attempts` ≥ 1) hoặc bị hoãn (`next_check_at` có giá trị) — tồn đọng đang giữ hàng; ≥ `HOLD_RECHECK_POLICY.backlogWarnAt` → log WARN (T-164, RUNBOOK §1).
+   * Lượt dừng vì đang tắt (`stopped` ≠ null) KHÔNG đếm: giá trị 0 khi đó là "chưa đếm", không phải "hết tồn đọng" (T-172).
    */
   unknownBacklog: number;
 }
@@ -175,6 +176,8 @@ export async function expireHolds(
     );
     summary[outcome === "busy" ? "skipped" : outcome].push(orderId);
   }
+  // Đang tắt: bỏ đếm tồn đọng (thêm một truy vấn khi pool sắp đóng); lượt sau đếm (unknownBacklog = 0 nghĩa là "chưa đếm").
+  if (summary.stopped !== null) return summary;
   summary.unknownBacklog = await s.countUnknownHoldBacklog(now);
   const warnAt = opts.backlogWarnAt ?? HOLD_RECHECK_POLICY.backlogWarnAt;
   if (summary.unknownBacklog >= warnAt) {
@@ -411,6 +414,9 @@ export async function reconcileAttempts(
     // Ranh giới giữa hai attempt (T-172/D-081): chưa claim attempt nào khi dừng → attempt còn `preparing` quá lease.
     if (isDraining()) {
       summary.stopped = "draining";
+      logger(container).info(
+        "[reconcile-attempts] Đang tắt — dừng ở ranh giới attempt, phần còn lại chờ lượt sau",
+      );
       break;
     }
     const outcome = await withLock(
