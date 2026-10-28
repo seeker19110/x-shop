@@ -760,12 +760,30 @@ class CheckoutModuleService extends MedusaService({
       const stateBefore = String(fin.state) as OrderState;
       const total = Number(fin.total);
       const decision = decideOnCapture(stateBefore, total, entries, input.amount);
-      await this.exec(
-        `UPDATE payment_attempt SET state = 'captured', provider_txn_no = ?, updated_at = now()
-         WHERE id = ? AND state IN ('created', 'pending', 'unknown', 'authorized')`,
-        [input.provider_txn_id, input.payment_attempt_id],
-        em,
-      );
+      const link = await this.linkAttemptToCapture(em, input.payment_attempt_id, input.provider_txn_id);
+      if (link.result === "conflict") {
+        // Không ghi đè mã đã gắn (T-168): khoản thu này vẫn ghi ledger + quyết định như thường, nhưng hoàn qua cổng/đối
+        // soát không tìm được attempt cho nó → kế toán xử lý tay (RUNBOOK §7).
+        await this.openOpsException(
+          {
+            kind: "payment_unknown",
+            dedupe_key: `attempt_txn_conflict:${input.provider}:${input.provider_txn_id}`,
+            order_id: input.order_id,
+            amount: input.amount,
+            priority: "high",
+            due_at: new Date(input.now.getTime() + 24 * 3600_000),
+            detail: {
+              reason: "attempt_txn_conflict",
+              txn_ref: link.txn_ref,
+              provider_txn_id: input.provider_txn_id,
+              attempt_provider_txn_no: link.provider_txn_no,
+              attempt_state: link.state,
+              order_state: stateBefore,
+            },
+          },
+          em,
+        );
+      }
       const exception = (kind: OpsExceptionInput["kind"], amount: number, priority: "normal" | "high") =>
         this.openOpsException(
           {
@@ -815,6 +833,79 @@ class CheckoutModuleService extends MedusaService({
       }
       return { duplicate: false, decision, state_before: stateBefore } as const;
     });
+  }
+
+  /**
+   * Gắn giao dịch cổng của MỘT khoản thu vừa ghi vào attempt (trong transaction của `applyCapture`, dưới khóa đơn):
+   *  - attempt còn mở → `captured` + `provider_txn_no` (như trước T-168);
+   *  - attempt `failed` CHƯA có mã (đơn đã hủy do hết hạn/nhân viên/bù trừ rồi tiền mới về — AT09) → ghi mã, GIỮ `failed`
+   *    (máy trạng thái: `failed` là kết thúc). Hoàn qua cổng (`providerRequestOf` tìm attempt theo `provider_txn_no`) và
+   *    đối soát VNPAY (join `provider_txn_no = payment_ledger.provider_txn_id`) cần mã này (T-168, D-122);
+   *  - đã mang đúng mã này → không đổi gì (`unchanged`);
+   *  - `failed` đang mang mã KHÁC (thông báo thất bại có mã, hoặc giao dịch thành công thứ hai) → KHÔNG ghi đè, trả
+   *    `conflict` để người gọi mở ngoại lệ. Attempt `captured` mang mã khác (AT36 — khoản thu thứ hai của đơn đã xác
+   *    nhận) giữ hành vi cũ: không đổi, không mở thêm (đã có ngoại lệ `overpayment`).
+   * Câu UPDATE có điều kiện `provider_txn_no IS NULL` nên hai khoản thu khác mã đua nhau chỉ một bên gắn được.
+   */
+  private async linkAttemptToCapture(
+    em: SqlEntityManager,
+    attemptId: string,
+    providerTxnId: string,
+  ): Promise<
+    | { result: "captured" | "linked" | "unchanged" | "other" }
+    | { result: "conflict"; txn_ref: string; provider_txn_no: string; state: string }
+  > {
+    const captured = await this.exec(
+      `UPDATE payment_attempt SET state = 'captured', provider_txn_no = ?, updated_at = now()
+       WHERE id = ? AND state IN ('created', 'pending', 'unknown', 'authorized') RETURNING id`,
+      [providerTxnId, attemptId],
+      em,
+    );
+    if (captured.length === 1) return { result: "captured" };
+    const linked = await this.exec(
+      `UPDATE payment_attempt SET provider_txn_no = ?, updated_at = now()
+       WHERE id = ? AND state = 'failed' AND provider_txn_no IS NULL RETURNING id`,
+      [providerTxnId, attemptId],
+      em,
+    );
+    if (linked.length === 1) return { result: "linked" };
+    const [row] = await this.exec(
+      `SELECT state, provider_txn_no, txn_ref FROM payment_attempt WHERE id = ?`,
+      [attemptId],
+      em,
+    );
+    if (!row || row.provider_txn_no === providerTxnId) return { result: "unchanged" };
+    if (row.state !== "failed" || row.provider_txn_no === null) return { result: "other" };
+    return {
+      result: "conflict",
+      txn_ref: String(row.txn_ref),
+      provider_txn_no: String(row.provider_txn_no),
+      state: String(row.state),
+    };
+  }
+
+  /**
+   * Đóng ngoại lệ `late_payment` đang mở của đơn ĐÃ HỦY khi tiền đã trả lại hết — ledger ròng (Σ capture − Σ refund đã
+   * hoàn) ≤ 0 (T-168). Gọi sau mỗi lần hoàn thành công (idempotent). Hoàn một phần → còn mở.
+   * MỘT câu lệnh = một snapshot: khoản thu đến muộn mới và `late_payment` của nó commit cùng transaction
+   * (`applyCapture`), nên câu này hoặc thấy cả hai (ròng > 0 → không đóng) hoặc không thấy cả hai — không đóng nhầm
+   * ngoại lệ của khoản thu chưa hoàn.
+   */
+  async resolveRefundedLatePayments(orderId: string, resolution: Record<string, unknown>): Promise<number> {
+    const rows = await this.exec(
+      `UPDATE ops_exception
+          SET state = 'resolved', detail = COALESCE(detail, '{}'::jsonb) || ?::jsonb, updated_at = now()
+        WHERE order_id = ? AND kind = 'late_payment' AND state IN ('open', 'in_progress') AND deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM order_finance f
+                       WHERE f.order_id = ? AND f.state = 'cancelled' AND f.deleted_at IS NULL)
+          AND (SELECT COALESCE(SUM(CASE WHEN l.kind = 'capture' THEN l.amount
+                                        WHEN l.kind = 'refund' AND l.state = 'succeeded' THEN -l.amount
+                                        ELSE 0 END), 0)
+                 FROM payment_ledger l WHERE l.order_id = ? AND l.deleted_at IS NULL) <= 0
+       RETURNING id`,
+      [json(resolution), orderId, orderId, orderId],
+    );
+    return rows.length;
   }
 
   /* ------------------------------------------------------------ xác nhận COD (T-026) */

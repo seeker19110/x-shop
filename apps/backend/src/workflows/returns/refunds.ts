@@ -548,10 +548,17 @@ async function syncLedger(container: Scope, r: RefundRow): Promise<void> {
 
 /**
  * Sau khi tiền đã hoàn thật: bút toán ledger; yêu cầu trả liên quan → closed; hoàn do hủy đơn → hủy đơn native (D-012:
- * hủy native cùng lúc tiền đã hoàn) + đóng ngoại lệ `refund_request`. Idempotent — gọi lại an toàn.
+ * hủy native cùng lúc tiền đã hoàn) + đóng ngoại lệ `refund_request`; đơn đã hủy đã trả lại hết tiền → đóng
+ * `late_payment` (T-168). Idempotent — gọi lại an toàn.
  */
 async function afterRefundSucceeded(container: Scope, r: RefundRow): Promise<void> {
   await syncLedger(container, r);
+  // AT09 (T-168): đơn đã hủy mà tiền đến sau đã được trả lại hết → đóng `late_payment` (hoàn một phần → còn mở).
+  await checkoutOf(container).resolveRefundedLatePayments(r.order_id, {
+    resolution: "refunded",
+    refund_id: r.id,
+    resolved_at: new Date().toISOString(),
+  });
   const svc = returnsOf(container);
   if (isNonEmpty(r.return_id)) {
     await svc.updateReturn(null, r.return_id, ["inspected"], { state: "closed", closed_at: new Date() });
