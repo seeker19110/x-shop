@@ -716,10 +716,8 @@ describe("giá trị trong lỗi DB qua MikroORM (review T-151 vòng 3)", () => 
 
     it("hết ngân sách quét → đóng an toàn: bỏ toàn bộ phần sau, vẫn nhanh", () => {
       const v = `"insert into "t" ( - \n$$ E'`.repeat(1200);
-      const t0 = process.cpuUsage();
+      expectLinearOrUnder(50, v, redactText);
       const out = redactText(v);
-      const d = process.cpuUsage(t0);
-      expect((d.user + d.system) / 1000).toBeLessThan(50);
       // Không có trần: mỗi câu được quét riêng (đầu ra ~320 ký tự); có trần: dừng sau câu thứ ba.
       expect(out.length).toBeLessThan(200);
       expect(out.endsWith(`insert into "t" ${REDACTED}`)).toBe(true);

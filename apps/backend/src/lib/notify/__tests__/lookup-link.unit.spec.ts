@@ -1,4 +1,5 @@
 import { issueOrderToken, readOrderToken, setOrderLookupSecretForTest } from "../../orders/access";
+import { expectLinearOrUnder } from "../../__tests__/cpu-budget";
 import { orderLookupLink, scrubPii } from "../notify";
 
 /** T-149 (D-089): liên kết tra cứu dựng lúc gửi; token không được lọt vào thông điệp lỗi lưu DB/log. */
@@ -58,10 +59,7 @@ describe("scrubPii — đầu vào đối nghịch dài (chống ReDoS)", () => 
     ["token= lặp", "?token=".repeat(N / 7)],
   ];
   it.each(cases)("%s → xong < 50 ms CPU, kết quả ≤ 300 ký tự", (_name, input) => {
-    const t0 = process.cpuUsage();
-    const out = scrubPii(input);
-    const { user, system } = process.cpuUsage(t0);
-    expect((user + system) / 1000).toBeLessThan(50);
-    expect(out.length).toBeLessThanOrEqual(300);
+    expectLinearOrUnder(50, input, scrubPii);
+    expect(scrubPii(input).length).toBeLessThanOrEqual(300);
   });
 });

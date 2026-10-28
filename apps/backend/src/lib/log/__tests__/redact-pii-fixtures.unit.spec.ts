@@ -374,11 +374,7 @@ describe("luật T-136: chống ReDoS (CPU < 50 ms / 32K ký tự)", () => {
     for (const s of fixture.samples) {
       const unit = `${text(s)} `;
       const input = unit.repeat(Math.ceil(N / unit.length)).slice(0, N);
-      redactText(input.slice(0, 100));
-      const t0 = process.cpuUsage();
-      redactText(input);
-      const d = process.cpuUsage(t0);
-      expect({ id: s.id, ms: (d.user + d.system) / 1000 < 50 }).toEqual({ id: s.id, ms: true });
+      expectLinearOrUnder(50, input, redactText);
     }
   });
 });
