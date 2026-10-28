@@ -863,7 +863,14 @@
 
 ### D-123 · 2026-10-28T01:36:26+00:00 · T-163: test hàng rào so BẰNG schema = hằng code luôn đỏ ở bản N−1 khi migration nới CHECK; job có làm required
 
-- Phương án: (1) Danh sách miễn tường minh trong n-minus-1 (tên suite+ca, lý do, migration nới gây ra), mục thừa thì đỏ — như ALLOW của check-migrations; job không required, chia shard sau khi đo trên runner thật · (2) Đổi hàng rào thành DB ⊇ code · (3) Giữ nguyên, người đọc log phân biệt
-- Chọn: Danh sách miễn tường minh trong n-minus-1 (tên suite+ca, lý do, migration nới gây ra), mục thừa thì đỏ — như ALLOW của check-migrations; job không required, chia shard sau khi đo trên runner thật
+- Phương án: (1) Danh sách miễn tường minh trong n-minus-1 (tên suite+ca, lý do, migration nới gây ra), mục đang hiệu lực mà không khớp ca đỏ nào → NHẮC (sửa theo D-124); mục nêu migration không còn tồn tại → đỏ; job không required, chia shard sau khi đo trên runner thật · (2) Đổi hàng rào thành DB ⊇ code · (3) Giữ nguyên, người đọc log phân biệt
+- Chọn: Danh sách miễn tường minh trong n-minus-1 (tên suite+ca, lý do, migration nới gây ra), mục đang hiệu lực mà không khớp ca đỏ nào → NHẮC (sửa theo D-124); mục nêu migration không còn tồn tại → đỏ; job không required, chia shard sau khi đo trên runner thật
 - Lý do (tiêu chí chất lượng cuối): (1) giữ nguyên độ chặt của hàng rào ở HEAD (bắt cả hai chiều lệch); miễn có lý do và tự hết hạn khi mục thừa; (C) làm job ồn nên tín hiệu thật bị bỏ qua; rủi ro N−1 đọc kind lạ ghi thành việc riêng
 - Đường lùi: Bỏ danh sách miễn; đổi hàng rào sang ⊇
+
+### D-124 · 2026-10-28T02:20:20+00:00 · T-163 review: job n-minus-1 thực tế chặn merge (_ci_blocker xét mọi check); phân loại; chập chờn; phạm vi so schema
+
+- Phương án: (1) Chấp nhận là cổng thật cho PR có migration: mã 2 (không kết luận được) đỏ kèm annotation hướng xử lý; phân loại theo CA; chập chờn (đỏ lần đầu, xác nhận ≥2 lần đều xanh) → mã 2 đỏ có annotation; mã 0 chỉ khi lần đầu xanh hoặc mọi ca đỏ đều được miễn; so schema thêm trigger/function/policy/enum/precision/identity/generated; mục N1_ALLOW đang hiệu lực mà không khớp → NHẮC (sửa câu chữ D-123) · (2) Tách job khỏi đường merge (workflow riêng, không trên head PR)
+- Chọn: Chấp nhận là cổng thật cho PR có migration: mã 2 (không kết luận được) đỏ kèm annotation hướng xử lý; phân loại theo CA; chập chờn (đỏ lần đầu, xác nhận ≥2 lần đều xanh) → mã 2 đỏ có annotation; mã 0 chỉ khi lần đầu xanh hoặc mọi ca đỏ đều được miễn; so schema thêm trigger/function/policy/enum/precision/identity/generated; mục N1_ALLOW đang hiệu lực mà không khớp → NHẮC (sửa câu chữ D-123)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: kiểm N−1 chỉ có giá trị nếu chặn được; autopilot chỉ đọc exit code nên 'chập chờn → 0' là cho qua (D-114); trigger là hàng rào ghi của audit/settlement/refund nên bỏ sót là lọt thật; chi phí 45 phút chỉ áp PR có migration
+- Đường lùi: Chuyển job sang workflow_dispatch/cron, bỏ khỏi pull_request
