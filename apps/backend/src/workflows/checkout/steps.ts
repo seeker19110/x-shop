@@ -516,19 +516,23 @@ export const createPaymentAttemptStep = createStep(
     // Reference ổn định, duy nhất (UNIQUE ở DB), dạng PA_<ULID> — chỉ ký tự VNPAY chấp nhận.
     const txnRef = generateEntityId(undefined, "PA");
     const expiresAt = new Date(input.hold_expires_at);
+    // T-170: MỘT mốc (`prepared.now`) cho cả `vnp_CreateDate` trong URL lẫn chuỗi lưu vào attempt — querydr/refund gửi lại
+    // đúng chuỗi này làm `vnp_TransactionDate`. `created_at` (now() của DB lúc INSERT, sau mốc này) không dùng được.
+    const createdAt = new Date(input.now);
     const id = await service.insertPaymentAttempt({
       order_id: input.order_id,
       provider: "vnpay",
       txn_ref: txnRef,
       amount: input.amount,
       expires_at: expiresAt,
+      vnp_create_date: vnpay.toVnpDate(createdAt),
     });
     const paymentUrl = vnpay.buildPaymentUrl(cfg, {
       txnRef,
       amount: input.amount,
       orderInfo: `Thanh toan don ${input.display_ref}`,
       ipAddr: input.ip,
-      createdAt: new Date(input.now),
+      createdAt,
       expiresAt,
       // Storefront `/thanh-toan/ket-qua?attempt=` (API-CONTRACT): attempt của giỏ trong phiên → đúng đơn, không lấy từ URL.
       returnParams: { attempt: input.attempt_id },

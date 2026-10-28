@@ -439,10 +439,12 @@ class CheckoutModuleService extends MedusaService({
     txn_ref: string;
     amount: number;
     expires_at: Date;
+    /** T-170: đúng chuỗi `vnp_CreateDate` sẽ ký vào URL thanh toán (yyyyMMddHHmmss GMT+7); provider khác → null. */
+    vnp_create_date: string | null;
   }): Promise<string> {
     const rows = await this.exec(
-      `INSERT INTO payment_attempt (id, order_id, provider, txn_ref, amount, state, expires_at)
-       VALUES (?, ?, ?, ?, ?, 'created', ?) RETURNING id`,
+      `INSERT INTO payment_attempt (id, order_id, provider, txn_ref, amount, state, expires_at, vnp_create_date)
+       VALUES (?, ?, ?, ?, ?, 'created', ?, ?) RETURNING id`,
       [
         generateEntityId(undefined, "payatt"),
         input.order_id,
@@ -450,6 +452,7 @@ class CheckoutModuleService extends MedusaService({
         input.txn_ref,
         input.amount,
         input.expires_at,
+        input.vnp_create_date,
       ],
     );
     return String(rows[0]?.id);

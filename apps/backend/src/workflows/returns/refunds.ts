@@ -20,6 +20,7 @@ import { recordAudit } from "../../lib/audit/record";
 import { maskFreeText } from "../../lib/audit/sanitize";
 import type { AuditEntryInput } from "../../modules/audit/service";
 import { cancelNativeOrder } from "../../lib/checkout/jobs";
+import { transactionDateOf } from "../../lib/checkout/vnpay-transaction-date";
 import { RETURNS_CONFIG, type RefundMethod, type RefundReason } from "../../modules/returns/constants";
 import type { RefundRow } from "../../modules/returns/service";
 import type ReturnsModuleService from "../../modules/returns/service";
@@ -549,7 +550,7 @@ async function providerRequestOf(
     requestId: r.provider_request_id,
     txnRef: pa.txn_ref,
     transactionNo: capture.startsWith("ref:") ? "" : capture,
-    transactionDate: new Date(pa.created_at),
+    transactionDate: transactionDateOf(container, pa, "refund"),
     amount: r.amount,
     full: others.length === 0 && Number(ledger?.amount ?? 0) === r.amount,
     createdBy: actor.id.slice(0, 64),

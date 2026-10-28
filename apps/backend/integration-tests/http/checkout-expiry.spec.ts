@@ -1108,6 +1108,119 @@ medusaIntegrationTestRunner({
       });
     });
 
+    describe("T-170 — querydr gửi vnp_TransactionDate = vnp_CreateDate của URL thanh toán gốc", () => {
+      const pg = () => container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+      const sentCreateDate = (paymentUrl: string) => new URL(paymentUrl).searchParams.get("vnp_CreateDate");
+      /** Cổng querydr HTTP giả: ghi lại thân request (JSON) đúng như gửi đi, trả `{}` (chữ ký thiếu → unknown). */
+      async function withCapturedQueryDr<T>(fn: (bodies: Array<Record<string, string>>) => Promise<T>) {
+        const bodies: Array<Record<string, string>> = [];
+        const srv = createServer((req, res) => {
+          let raw = "";
+          req.on("data", (c: Buffer) => (raw += c.toString("utf8")));
+          req.on("end", () => {
+            bodies.push(JSON.parse(raw) as Record<string, string>);
+            res.setHeader("content-type", "application/json");
+            res.end("{}");
+          });
+        });
+        await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+        const url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api`;
+        setVnpayGatewayForTest(new HttpVnpayGateway({ ...DEV_VNPAY, apiUrl: url }, 2_000));
+        try {
+          return await fn(bodies);
+        } finally {
+          await new Promise<void>((r) => srv.close(() => r()));
+          setVnpayGatewayForTest(gateway);
+        }
+      }
+      /** Trễ giả giữa prepare (vnp_CreateDate) và INSERT attempt (created_at). */
+      function delayAttemptInsert(ms: number) {
+        const svc = service();
+        const original = svc.insertPaymentAttempt.bind(svc);
+        return jest.spyOn(svc, "insertPaymentAttempt").mockImplementation(async (input) => {
+          await sleep(ms);
+          return original(input);
+        });
+      }
+      const attemptOf = async (orderId: string) =>
+        (await service().listPaymentAttempts({ order_id: orderId }))[0]!;
+      const sentFor = (bodies: Array<Record<string, string>>, txnRef: string) =>
+        bodies.filter((b) => b.vnp_TxnRef === txnRef).map((b) => b.vnp_TransactionDate);
+
+      it("trễ > 1 s giữa prepare và INSERT attempt → querydr của expire-holds vẫn gửi đúng vnp_CreateDate gốc (không lấy created_at)", async () => {
+        const spy = delayAttemptInsert(1_100);
+        let o: Awaited<ReturnType<typeof client.placeOrder>>;
+        try {
+          o = await client.placeOrder([["Đen/S", 1]], "vnpay");
+        } finally {
+          spy.mockRestore();
+        }
+        const pa = await attemptOf(o.orderId);
+        const original = sentCreateDate(o.paymentUrl)!;
+        expect(vnpay.toVnpDate(new Date(pa.created_at))).not.toBe(original);
+        await withCapturedQueryDr(async (bodies) => {
+          expect((await expireHolds(container, { now: future(16 * MIN) })).unknown).toEqual([o.orderId]);
+          expect(sentFor(bodies, pa.txn_ref)).toEqual([original]);
+        });
+      });
+
+      it("dữ liệu trước T-170 (cột NULL) → fallback created_at + log WARN có txn_ref; biên GMT+7 qua nửa đêm UTC", async () => {
+        const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+        const warn = jest.spyOn(logger, "warn");
+        try {
+          const o = await client.placeOrder([["Trắng/S", 1]], "vnpay");
+          const pa = await attemptOf(o.orderId);
+          // 2026-10-27T17:00:00Z = 00:00:00 ngày 28 giờ VN (ngày UTC vẫn là 27).
+          await pg().raw(
+            `UPDATE payment_attempt SET vnp_create_date = NULL, created_at = '2026-10-27T17:00:00.250Z' WHERE id = ?`,
+            [pa.id],
+          );
+          await withCapturedQueryDr(async (bodies) => {
+            expect((await expireHolds(container, { now: future(16 * MIN) })).unknown).toEqual([o.orderId]);
+            expect(sentFor(bodies, pa.txn_ref)).toEqual(["20261028000000"]);
+          });
+          const logged = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes(pa.txn_ref));
+          expect(logged).toHaveLength(1);
+          expect(logged[0]).toMatch(/vnp_create_date/);
+          expect(logged[0]).toMatch(/created_at/);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it("biên GMT+7: chuỗi lưu là mốc sau nửa đêm giờ VN (UTC còn ngày trước), created_at lệch → gửi đúng chuỗi lưu, không WARN", async () => {
+        const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+        const warn = jest.spyOn(logger, "warn");
+        try {
+          const o = await client.placeOrder([["Đen/M", 1]], "vnpay");
+          const pa = await attemptOf(o.orderId);
+          // vnp_CreateDate 00:00:00 ngày 01/01/2027 giờ VN = 2026-12-31T17:00:00Z; created_at ở giây trước đó (UTC).
+          await pg().raw(
+            `UPDATE payment_attempt SET vnp_create_date = '20270101000000', created_at = '2026-12-31T16:59:59.900Z' WHERE id = ?`,
+            [pa.id],
+          );
+          await withCapturedQueryDr(async (bodies) => {
+            expect((await expireHolds(container, { now: future(16 * MIN) })).unknown).toEqual([o.orderId]);
+            expect(sentFor(bodies, pa.txn_ref)).toEqual(["20270101000000"]);
+          });
+          expect(warn.mock.calls.filter((c) => String(c[0]).includes(pa.txn_ref))).toEqual([]);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it("CHECK của cột: chuỗi sai định dạng bị DB từ chối (không thể lưu mốc lệch dạng)", async () => {
+        const o = await client.placeOrder([["Trắng/M", 1]], "vnpay");
+        const pa = await attemptOf(o.orderId);
+        for (const bad of ["2026-10-28 00:00:00", "2026102800000", "", "202610280000000"]) {
+          await expect(
+            pg().raw(`UPDATE payment_attempt SET vnp_create_date = ? WHERE id = ?`, [bad, pa.id]),
+          ).rejects.toThrow(/payment_attempt_vnp_create_date_format/);
+        }
+        expect((await attemptOf(o.orderId)).vnp_create_date).toBe(sentCreateDate(o.paymentUrl));
+      });
+    });
+
     describe("reconcile-attempts (AT10)", () => {
       it("attempt preparing có 1/2 reservation, lease quá hạn → bù trừ hết, tồn về đúng; 2 lượt song song chỉ bù 1 lần", async () => {
         await createPromotion(container, "DOI", { limit: 3, percent: 10 });

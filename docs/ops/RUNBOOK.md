@@ -100,6 +100,33 @@ và đã đối chiếu tay trên cổng merchant VNPAY theo `txn_ref` rằng KH
    tiền — dùng `/cancel` để mở hoàn tiền). 409 `BUSY_RETRY`: gửi lại cùng khóa sau vài giây.
 5. Nếu tiền vẫn về sau đó (IPN/querydr thành công): đơn KHÔNG phục hồi; hệ thống ghi khoản thu + `late_payment` → §7.
 
+### 1.2 WARN `thiếu vnp_create_date` — querydr/hoàn tiền của attempt tạo trước T-170
+querydr và refund gửi `vnp_TransactionDate` = `payment_attempt.vnp_create_date` — đúng chuỗi `vnp_CreateDate` của URL
+thanh toán gốc (`yyyyMMddHHmmss` giờ VN). Theo nguồn thứ cấp VNPAY so khớp hai giá trị này (chưa xác minh với tài liệu
+merchant, RK-006). Attempt tạo trước T-170, hoặc do bản N−1 tạo trong lúc deploy cuốn, có cột NULL → hệ thống dùng
+`created_at` (cách cũ, thường lệch 1 giây vì INSERT sau mốc ký URL vài trăm ms) và log:
+`[payment] payment_attempt <id> txn_ref=<PA_…> thiếu vnp_create_date hợp lệ (dữ liệu trước T-170) — <querydr|refund> dùng created_at …`.
+
+- Ảnh hưởng nếu VNPAY so khớp chặt: querydr của đơn đó trả lỗi → `unknown` (job `expire-holds` giữ hàng, backoff — không
+  hủy nhầm); hoàn qua cổng → `failed`/`unknown` (tiền vẫn giữ, §7). Không mất tiền, chỉ kẹt cho tới khi sửa.
+- Sửa: lấy lại chuỗi gốc từ `payment_url` đã lưu (URL đã ký gửi khách, có `vnp_CreateDate`). Xem trước, rồi điền — chỉ
+  dòng NULL, chỉ chuỗi đúng 14 chữ số (CHECK `payment_attempt_vnp_create_date_format` chặn giá trị sai dạng):
+
+  ```sql
+  SELECT id, txn_ref, state, created_at,
+         substring(payment_url from '[?&]vnp_CreateDate=([0-9]{14})(&|$)') AS vnp_create_date
+    FROM payment_attempt WHERE vnp_create_date IS NULL AND provider = 'vnpay' ORDER BY created_at DESC LIMIT 100;
+  UPDATE payment_attempt
+     SET vnp_create_date = substring(payment_url from '[?&]vnp_CreateDate=([0-9]{14})(&|$)'), updated_at = now()
+   WHERE vnp_create_date IS NULL AND provider = 'vnpay'
+     AND payment_url ~ '[?&]vnp_CreateDate=[0-9]{14}(&|$)';
+  ```
+
+  Dòng không có `payment_url` (attempt chưa từng gửi khách — `created`/`failed` do bù trừ) không có giao dịch ở VNPAY: để
+  NULL. Sau khi điền: đơn đang backoff → đặt `next_check_at = NULL` (§1) để lượt kế tiếp hỏi lại; hoàn `failed` đã gửi
+  cổng → `execute` lại (cùng `vnp_RequestId`).
+- Không sửa `created_at` để "khớp" — cột đó là mốc DB, không phải mốc gửi VNPAY.
+
 ## 2. Hãng vận chuyển lỗi (GHN)
 - Tạo vận đơn timeout → hệ thống tra theo `client_order_code` trước khi tạo lại (không tạo tay vận đơn mới khi chưa tra).
 - Callback ngừng: chạy job đồng bộ trạng thái bằng API; không tự đánh dấu "đã giao".

@@ -375,6 +375,68 @@ medusaIntegrationTestRunner({
       });
     });
 
+    describe("T-170 — vnp_CreateDate của URL thanh toán lưu vào attempt (vnp_TransactionDate của querydr/refund)", () => {
+      /** Trễ giả giữa prepare (mốc `prepared.now` = vnp_CreateDate) và INSERT attempt (mốc `created_at` = now() của DB). */
+      function delayAttemptInsert(...delays: number[]) {
+        const svc = service();
+        const original = svc.insertPaymentAttempt.bind(svc);
+        let call = 0;
+        return jest.spyOn(svc, "insertPaymentAttempt").mockImplementation(async (input) => {
+          const ms = delays[Math.min(call++, delays.length - 1)]!;
+          await new Promise((r) => setTimeout(r, ms));
+          return original(input);
+        });
+      }
+      const createDateOf = (paymentUrl: string) => new URL(paymentUrl).searchParams.get("vnp_CreateDate");
+
+      it("giá trị lưu = vnp_CreateDate trong URL (yyyyMMddHHmmss GMT+7), kể cả khi INSERT attempt trễ > 1 s so với prepare", async () => {
+        const spy = delayAttemptInsert(1_100);
+        try {
+          const cartId = await createCart([["Đen/S", 1]]);
+          const q = await quoteOk(cartId, { payment_method: "vnpay" });
+          const res = await submit(submitBody(q));
+          expect(res.status).toBe(200);
+          expect(spy).toHaveBeenCalledTimes(1);
+          const [pa] = await service().listPaymentAttempts({ order_id: res.data.order.id });
+          const sent = createDateOf(res.data.payment_url);
+          expect(sent).toMatch(/^\d{14}$/);
+          expect(pa!.vnp_create_date).toBe(sent);
+          // Đối chứng: trễ đủ để `created_at` (cách cũ) rơi sang giây khác — dùng nó cho vnp_TransactionDate là sai.
+          expect(vnpay.toVnpDate(new Date(pa!.created_at))).not.toBe(sent);
+          // Chuỗi lưu đọc lại được đúng một mốc và ký lại ra đúng chuỗi đó (không lệch múi giờ qua Date).
+          expect(vnpay.toVnpDate(vnpay.fromVnpDate(sent!)!)).toBe(sent);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it("đồng thời: hai đơn VNPAY submit song song, trễ khác nhau → mỗi attempt mang đúng vnp_CreateDate của URL của nó", async () => {
+        const spy = delayAttemptInsert(1_100, 1_600);
+        try {
+          const carts = await Promise.all([createCart([["Đen/S", 1]]), createCart([["Trắng/S", 1]])]);
+          const quotes = await Promise.all(carts.map((c) => quoteOk(c, { payment_method: "vnpay" })));
+          const results = await Promise.all(quotes.map((q) => submit(submitBody(q))));
+          expect(results.map((r) => r.status)).toEqual([200, 200]);
+          for (const r of results) {
+            const [pa] = await service().listPaymentAttempts({ order_id: r.data.order.id });
+            expect({ ref: pa!.txn_ref, date: pa!.vnp_create_date }).toEqual({
+              ref: new URL(r.data.payment_url).searchParams.get("vnp_TxnRef"),
+              date: createDateOf(r.data.payment_url),
+            });
+          }
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it("COD → không có payment_attempt (không có gì để lưu)", async () => {
+        const cartId = await createCart([["Đen/S", 1]]);
+        const res = await submit(submitBody(await quoteOk(cartId)));
+        expect(res.status).toBe(200);
+        expect(await service().listPaymentAttempts({ order_id: res.data.order.id })).toEqual([]);
+      });
+    });
+
     describe("AT03 — giá đổi giữa quote và submit", () => {
       it("409 PRICE_CHANGED kèm quote mới; không đơn, không reservation; xác nhận quote mới thì đặt được", async () => {
         const cartId = await createCart([["Đen/M", 1]]);
