@@ -971,6 +971,29 @@ medusaIntegrationTestRunner({
           expectWellFormed(rows, [owner.email, `Vùng ${tag}`, `Kênh ${tag}`, `Lý do ${tag}`]);
         });
 
+        it("🟢 review vòng 2: owner gõ sai đường dẫn ghi native (404, chưa tới route) → config.changed failure loại `unknown`, id NULL — không chép đường dẫn client", async () => {
+          const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+          const rid = `req-t175-404-${randomUUID().slice(0, 8)}`;
+          const res = await call(
+            "POST",
+            "/admin/khach-nguyen-van-a/0912345678",
+            { ...owner.headers, "x-request-id": rid },
+            { ghi_chu: "x" },
+          );
+          expect(res.status).toBe(404);
+          const rows = await waitRows({ request_id: rid, action: SECURITY_EVENTS.CONFIG_CHANGED }, 1);
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            actor_id: owner.userId,
+            outcome: "failure",
+            resource_type: "unknown",
+            resource_id: null,
+            changes: { status: 404, operation: "unknown", route: "POST (chưa tới route)" },
+          });
+          expect((rows[0]?.changes as Row).fields).toBeUndefined();
+          expectWellFormed(rows, [owner.email, "khach-nguyen-van-a", "0912345678", "ghi_chu"]);
+        });
+
         it("🟠3 review: chấp nhận lời mời — không token (401) → 1 dòng vô danh không tên trường; thành công → invite_accepted, id user từ phản hồi", async () => {
           await resetAuditThrottle();
           const rid = `req-t175-acc-${randomUUID().slice(0, 8)}`;
@@ -1312,12 +1335,20 @@ medusaIntegrationTestRunner({
           const rows = (
             await Promise.all(Array.from({ length: n }, (_v, i) => list({ request_id: `${rid}-${i}` })))
           ).flat();
-          expect(rows).toHaveLength(INPUT_ANON_GLOBAL_CAP);
+          // Trần + MỘT dòng đánh dấu (vòng 2 review: không chặn im lặng).
+          expect(rows).toHaveLength(INPUT_ANON_GLOBAL_CAP + 1);
           // Mỗi IP là lần 1 của nhóm nguồn của nó — chỉ trần chung chặn phần vượt.
           expect(new Set(rows.map((r) => ((r.changes as Row).throttle as Row).occurrence))).toEqual(
             new Set([1]),
           );
-          expect(new Set(rows.map((r) => r.ip_hash)).size).toBe(INPUT_ANON_GLOBAL_CAP);
+          expect(new Set(rows.map((r) => r.ip_hash)).size).toBe(INPUT_ANON_GLOBAL_CAP + 1);
+          const marked = rows.filter((r) => (r.changes as Row).global_cap !== undefined);
+          expect(marked).toHaveLength(1);
+          const mark = (marked[0]?.changes as Row).global_cap as Row;
+          expect(mark).toMatchObject({ cap: INPUT_ANON_GLOBAL_CAP, mark: "reached" });
+          // occurrence = số request vô danh THÔ của cửa sổ lúc chạm trần (bộ đếm đã xoá ở đầu ca).
+          expect(Number(mark.occurrence)).toBeGreaterThanOrEqual(INPUT_ANON_GLOBAL_CAP + 1);
+          expect(Number(mark.occurrence)).toBeLessThanOrEqual(n);
           // Actor đã xác thực không bị trần vô danh chặn.
           const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
           const rid2 = `req-t175-cap-owner-${randomUUID().slice(0, 8)}`;
