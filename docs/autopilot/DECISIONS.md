@@ -931,3 +931,17 @@
 - Chọn: Chỉ cho origin http/localhost khi NEXT_PUBLIC_SITE_URL là localhost; site URL công khai thì schema ném lỗi lúc khởi động
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: triển khai thật luôn có site URL công khai nên origin http/localhost bị từ chối; tiêu chí 3: không thêm cờ dễ đặt sai, E2E giữ nguyên cách chạy; bổ sung D-131
 - Đường lùi: Đổi điều kiện trong parseVnpayExtraOrigins (apps/storefront/src/lib/env/public.ts)
+
+### D-133 · 2026-10-28T12:39:53+00:00 · T-185: trigger tồn có miễn backorder không?
+
+- Phương án: (1) Giữ chặt: mọi giữ hàng vượt tồn bị chặn (backorder thực tế tắt, 409) · (2) Miễn kiểm khi dòng có reservation backorder · (3) Gỡ hỗ trợ backorder khỏi checkout
+- Chọn: Giữ chặt: mọi giữ hàng vượt tồn bị chặn (backorder thực tế tắt, 409)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: đặc tả mặc định tắt backorder, không có sản phẩm nào bật; chặn bán vượt tồn là bất biến RK-001; tiêu chí 2: muốn bán đặt trước thì mở D mới + migration miễn có điều kiện (H-06 chính sách bán)
+- Đường lùi: Migration mới nới hàm trigger cho reservation allow_backorder
+
+### D-134 · 2026-10-28T12:39:54+00:00 · T-185: ghi đè mất cập nhật reserved (Medusa ghi giá trị tuyệt đối) — trigger có kiểm thêm tổng reservation_item?
+
+- Phương án: (1) Kiểm thêm stocked >= tổng reservation_item còn sống theo item+kho, trigger cả trên reservation_item · (2) Giữ nguyên, ghi rủi ro dư vào RK-001, dựa khoá Redis
+- Chọn: Kiểm thêm stocked >= tổng reservation_item còn sống theo item+kho, trigger cả trên reservation_item
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: bắt được oversell khi khoá Redis hỏng/đường ghi không qua khoá (đúng tinh thần RK-001); migration T-185 chưa áp ở đâu nên sửa trong cùng nhánh; tiêu chí 3: test được bằng hai phiên DB
+- Đường lùi: Migration mới bỏ phần tổng reservation khỏi hàm trigger
