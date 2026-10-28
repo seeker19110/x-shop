@@ -421,7 +421,7 @@ const ADD_NOT_COLUMN = /^(constraint|primary|unique|check|foreign|exclude)$/;
 const TABLE_ITEM_NOT_COLUMN = /^(constraint|primary|unique|check|foreign|exclude|like)$/;
 
 /** Tên đã chuẩn hoá (phần cuối, bỏ token định danh) để so bảng/cột/ràng buộc. */
-function nameOf(raw, idents) {
+export function nameOf(raw, idents) {
   const parts = raw.split(/\s*\.\s*/).map((p) => p.trim());
   const last = parts[parts.length - 1];
   const m = /^⟦(\d+)⟧$/.exec(last);
@@ -430,7 +430,7 @@ function nameOf(raw, idents) {
 const namesOf = (raw, idents) => splitTop(raw).map((t) => nameOf(t, idents));
 
 /** Tách theo dấu phẩy ở mức ngoặc ngoài cùng. */
-function splitTop(s) {
+export function splitTop(s) {
   const out = [];
   let depth = 0;
   let cur = "";
@@ -447,7 +447,7 @@ function splitTop(s) {
 }
 
 /** Nội dung trong cặp ngoặc đầu tiên của `s` (bắt đầu bằng "("). */
-function parenBody(s) {
+export function parenBody(s) {
   let depth = 0;
   for (let i = 0; i < s.length; i++) {
     if (s[i] === "(") depth++;

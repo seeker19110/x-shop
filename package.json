@@ -35,6 +35,8 @@
     "check:vi-diacritics": "node scripts/check-vi-diacritics.mjs",
     "check:vi-diacritics:test": "node --test scripts/check-vi-diacritics.test.mjs",
     "check:routes:test": "node --test scripts/check-routes.test.mjs",
+    "check:units": "node scripts/check-units.mjs",
+    "check:units:test": "node --test scripts/check-units.test.mjs",
     "check:sql-safety": "node scripts/check-sql-safety.mjs",
     "check:sql-safety:test": "node --test scripts/check-sql-safety.test.mjs",
     "check:schema": "node scripts/ops/check-schema.mjs",
