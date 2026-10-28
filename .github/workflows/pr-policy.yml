@@ -105,3 +105,20 @@ jobs:
           node --test scripts/check-fix-pr.test.mjs
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/changed-fix.txt"
           FILES_PATH="$RUNNER_TEMP/changed-fix.txt" node scripts/check-fix-pr.mjs
+      # WF-SDD-001/003 (T-212): PR `feat:` phải link một SPEC Approved trong mô tả và có mục "Map tiêu chí → test".
+      # Logic + test ở scripts/check-specs.mjs `--pr`; thân/tiêu đề PR đi qua env, subject commit qua tệp.
+      - name: PR `feat:` link SPEC Approved + map tiêu chí → test — `check-specs.mjs --pr`
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$PR_AUTHOR" == *"[bot]" ]] || [[ "$PR_TITLE" == 'Revert "'* ]]; then
+            echo "Bỏ qua (bot / revert)."; exit 0
+          fi
+          node --test scripts/check-specs.test.mjs
+          git log --format=%s "$BASE_SHA..$HEAD_SHA" > "$RUNNER_TEMP/subjects.txt"
+          COMMIT_SUBJECTS_FILE="$RUNNER_TEMP/subjects.txt" node scripts/check-specs.mjs --pr

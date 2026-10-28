@@ -15,6 +15,11 @@
   - Xanh sau:
 - [ ] Mục blueprint liên quan tick kèm `— Kiểm: <lệnh>` hoặc `— Bằng chứng:` — ID:
 
+## Map tiêu chí → test
+<!-- WF-SDD-003, PM-SPEC-004: bắt buộc cho PR `feat:` (`pr-policy` kiểm). Link spec Approved ở mục "Mục tiêu" (`docs/specs/SPEC-*.md`),
+rồi mỗi tiêu chí của lát này một dòng: `S-NNN → tên test (đường dẫn)`. Tiêu chí chưa có test tự động: ghi vào
+`scripts/spec-trace-allowlist.json` kèm lý do (`pnpm check:spec-trace`). PR không phải `feat:` ghi "không áp dụng — lý do". -->
+
 ## Docs cập nhật
 <!-- WF-DOC-001: thay đổi hành vi đi cùng PR với tài liệu (README, docs/, ADR, CHANGELOG `Unreleased`). Ghi file đã cập nhật, hoặc
 "không cần — lý do". Không có "sẽ cập nhật docs sau". `pr-policy` cảnh báo khi đổi API/config mà không chạm tài liệu. -->

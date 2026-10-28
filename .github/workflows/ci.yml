@@ -182,6 +182,11 @@ jobs:
       # (ARC-MOD-008, ADR-0005). Không cần DB. Thêm kiểm, không nới cổng.
       - name: Module/lõi miền ↔ docs/architecture/domains.md — `pnpm check:domains` (ARC-MOD-008)
         run: pnpm check:domains
+      # x-shop (T-212, Q-14): metadata spec (status/approved_by/approved_at) + mỗi ID tiêu chí S-NNN có test nhắc tới (hoặc
+      # nằm trong scripts/spec-trace-allowlist.json kèm lý do); thiếu = đỏ (WF-SDD-001/002/003, PM-SPEC-004). Không cần DB.
+      # Thêm kiểm, không nới cổng.
+      - name: Spec đủ metadata + tiêu chí ↔ test — `pnpm check:specs && pnpm check:spec-trace` (WF-SDD-003)
+        run: pnpm check:specs:test && pnpm check:specs && pnpm check:spec-trace
 
   # E2E (QA-E2E-001, QA-E2E-029): chạy CÙNG LÚC với `gate`, không `needs` — lệnh `e2e` tự build và phục vụ (vd `webServer`
   # của Playwright). `e2e-mode`: `off` (chưa khai `e2e`) → bỏ qua; `shard` (lệnh dùng $XT_SHARD, vd
