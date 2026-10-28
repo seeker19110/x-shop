@@ -360,9 +360,18 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 
 ## 7. Tiền đến sau khi hủy / thu dư
 - `ops_exception late_payment|overpayment`: kế toán xác minh trên cổng → tạo refund (một refund, retry cùng id) → ghi chú khách. Không phục hồi đơn, không giao thay thế khi chưa có xác nhận mới của khách.
-- Gồm cả đơn đã hủy chưa xác minh (§1.1) mà tiền về sau. Hiện hoàn qua cổng (`method` `provider`/`auto`) cho khoản thu đến sau
-  khi đơn đã hủy trả 422 `REFUND_METHOD_UNAVAILABLE` (attempt đã `failed` không mang mã giao dịch — chờ sửa ở T-168)
-  → tạo refund `method: "manual"`, hoàn ngoài hệ thống rồi `execute` kèm `evidence_ref` (mã chứng từ chuyển khoản).
+- Gồm cả đơn đã hủy chưa xác minh (§1.1) và đơn hết hạn mà tiền về sau. Khoản thu đến sau được gắn vào attempt (attempt
+  vẫn `failed`, mang `provider_txn_no` của khoản thu — T-168) nên hoàn qua cổng (`method` `provider`/`auto`) và đối soát
+  VNPAY tìm được giao dịch gốc. Cổng hoàn chưa bật (sandbox/live chưa ủy quyền → 409 `REFUND_PROVIDER_DISABLED`) → tạo
+  refund `method: "manual"`, hoàn ngoài hệ thống rồi `execute` kèm `evidence_ref` (mã chứng từ chuyển khoản).
+- `late_payment` tự đóng (`detail.resolution = refunded`, `refund_id`) khi tiền của đơn đã hủy được trả lại hết (ledger ròng
+  = 0, cổng hoặc tay); hoàn một phần → còn mở. Trên sao kê VNPAY dòng khoản thu này là chênh lệch `late_after_cancel` (gắn
+  đúng khoản thu/đơn), dòng hoàn khớp `matched`.
+- Cùng một attempt nhận khoản thu với mã giao dịch KHÁC mã attempt đang mang (thông báo thất bại có mã rồi tiền về với mã
+  khác, hoặc hai giao dịch thành công): hệ thống KHÔNG ghi đè mã cũ, mở `payment_unknown` (`detail.reason =
+  attempt_txn_conflict`, `provider_txn_id` = khoản thu mới, `attempt_provider_txn_no` = mã đang gắn). Khoản thu mới không
+  hoàn qua cổng được (422 `REFUND_METHOD_UNAVAILABLE` lúc `execute`) → đối chiếu trên cổng merchant theo `txn_ref` +
+  `provider_txn_id` rồi hoàn `manual` có chứng từ; đừng chọn `auto` cho khoản này (có thể chọn cổng rồi kẹt 422).
 
 ## 8. Deploy
 

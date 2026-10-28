@@ -55,7 +55,7 @@ Lỗi ở bước 8–10 → bước bù trừ của workflow: xóa reservation 
 4. Khóa `order:<id>`. Không thành công → attempt `failed` (nếu chuyển hợp lệ), `00`.
 5. Thành công: INSERT ledger capture (UNIQUE provider_txn_id) — va → đã ghi → `02`. Rồi `decideOnCapture(order.state, total, ledgerAfter, amount)`:
    - `confirm_order` → order_finance `confirmed`, payment collection native đánh dấu đã thu (API module payment, không qua webhook native), outbox `order.confirmed`; `overpaid > 0` → exception `overpayment`.
-   - `exception late_payment` (đơn đã hủy) → exception, KHÔNG phục hồi đơn/giao hàng (AT09).
+   - `exception late_payment` (đơn đã hủy) → exception, KHÔNG phục hồi đơn/giao hàng (AT09). Attempt đã `failed` chưa có mã → ghi `provider_txn_no` của khoản thu, GIỮ `failed` (T-168: hoàn qua cổng + đối soát VNPAY tìm được giao dịch gốc); attempt `failed` đang mang mã KHÁC → không ghi đè, `payment_unknown` lý do `attempt_txn_conflict`. `late_payment` đóng khi tiền của đơn đã hủy được trả lại hết (ledger ròng = 0).
    - `exception overpayment` (đơn đã xác nhận, giao dịch thật thứ hai) → exception, không xác nhận lại (AT36).
    - `record_only` (thu thiếu) → exception `payment_unknown` để CSKH xử lý.
 6. Trả `00` (hoặc `02` khi đơn đã xác nhận trước đó bởi đúng giao dịch này).
@@ -78,4 +78,5 @@ Chứng minh AT35: test gọi IPN thật qua HTTP, kiểm `order_id`, số order
 - `checkout-submit`: AT03 (giá đổi), AT04 (50 submit song song, 1 thành công, reserved=1), AT05 (cùng key ×10 song song, 2 tab), AT33 (20 checkout tranh coupon còn 1), COD.
 - `payment-ipn`: AT06 (×20), AT07 (chữ ký/số tiền), AT08 (return không đổi trạng thái), AT35 (order_id/reservation không đổi, cart không bị complete), AT36 (hai giao dịch thật).
 - `checkout-expiry`: AT09, AT10 (giết giữa chừng: attempt preparing có 1/2 reservation), AT11 (timeout → unknown → query), AT12 (expiry ∥ IPN chạy song song, lặp 20 lần ngẫu nhiên thứ tự: ledger luôn có tiền, đơn đúng một kết cục); T-164: REPRO-B (đơn chưa rõ kẹt đầu hàng không chặn đơn mới), backoff có trần, IPN khi đang backoff, hai lượt song song, `next_check_at` NULL/biên UTC.
+- `late-payment` (T-168): đơn hết hạn/hủy chưa xác minh → IPN thành công → attempt `failed` mang mã, hoàn qua cổng (mock) toàn phần/từng phần, `late_payment` đóng khi ròng 0; cổng hoàn tắt → 409, hoàn tay; đối soát VNPAY gắn dòng vào khoản thu (`late_after_cancel`, vắng mặt → `missing`); IPN gửi lại (tuần tự/song song) không đổi gì; hai mã giao dịch cho một attempt → không ghi đè + ngoại lệ.
 - `cancel-unverified` (T-165): quyền (owner được; order_staff/kế toán/… 403; chưa MFA 403; ẩn danh/khách 401), thiếu/sai lý do/mã đối chiếu/khóa 422, trạng thái sai 409, cùng khóa → kết quả cũ, khác khóa trên đơn đã hủy 409, AT09 sau hủy, IPN ∥ lệnh hủy đúng một kết cục, audit, đóng `payment_unknown`, nhả hàng đúng một lần.
