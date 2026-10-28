@@ -47,7 +47,33 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
 - Breaker `vnpay.querydr` (T-161, §14): VNPAY lỗi tạm liên tiếp → job `expire-holds` ngừng gọi querydr, mở ngoại lệ `job_circuit_open`
   (`detail.breaker = 'vnpay.querydr'`); đơn quá hạn được giữ như `unknown` (`payment_unknown` lý do `breaker_*`), tự hỏi lại khi
   breaker đóng. IPN không đi qua breaker — vẫn xác nhận đơn bình thường.
-- Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (cờ cấu hình) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
+- Backoff theo đơn (T-164): đơn quá hạn có querydr chưa rõ (mã 91, chữ ký sai, hết giờ…) không bị hỏi mỗi phút — hẹn lại
+  1 → 2 → 4 … → 60 phút (`order_finance.next_check_at`, số lần `hold_check_attempts`), nên đơn chưa rõ tồn đọng không chặn đơn
+  quá hạn mới. Xem đơn đang hẹn, và buộc hỏi lại ngay một đơn (ví dụ sau khi VNPAY xác nhận đã sửa lỗi) — lượt `x-expire-holds`
+  kế tiếp (≤ 1 phút) hỏi lại:
+
+  ```sql
+  SELECT order_id, display_ref, hold_expires_at, hold_check_attempts, next_check_at FROM order_finance
+   WHERE state = 'awaiting_payment' AND hold_expires_at <= now() ORDER BY hold_check_attempts DESC, hold_expires_at LIMIT 50;
+  UPDATE order_finance SET next_check_at = NULL, updated_at = now()
+   WHERE order_id = '<order_id>' AND state = 'awaiting_payment';
+  ```
+
+  Cảnh báo tồn đọng: log WARN `[expire-holds] N đơn quá hạn chưa rõ thanh toán đang giữ hàng (ngưỡng 50)` mỗi lượt khi số đơn
+  quá hạn còn `awaiting_payment` đã được job xét mà chưa có kết cục — querydr chưa rõ/lỗi (`hold_check_attempts` ≥ 1) hoặc bị
+  hoãn không hỏi (breaker mở, `VNPAY_ENABLED=false`: `next_check_at` có giá trị) — chạm ngưỡng
+  (`HOLD_RECHECK_POLICY.backlogWarnAt`). Đơn quá hạn chưa tới lượt xét lần nào không tính. Thường là cổng trả mã 91/chữ ký sai
+  hàng loạt (khoá/cấu hình VNPAY), breaker mở kéo dài hoặc VNPAY đang tắt → kiểm `detail->>'reason'` của `payment_unknown` (§14
+  bước 5) và đối chiếu với VNPAY trước khi làm gì khác. Chỉ đặt NULL (không sửa `state`/`hold_check_attempts`). Đơn chưa rõ quá vài giờ (`hold_check_attempts` ≥ 8): đối chiếu trên
+  cổng merchant VNPAY theo `txn_ref`; CHƯA có đường hủy tay cho đơn `unknown` (Admin trả 409 PAYMENT_PENDING) — leo thang kỹ
+  thuật, không sửa `state` bằng SQL.
+- `VNPAY_ENABLED=false` (T-166) chỉ chặn TẠO thanh toán VNPAY mới (quote/submit trả lỗi phương thức chưa bật). Đơn VNPAY đang
+  chờ: `x-expire-holds` không querydr, không hủy — giữ hàng như breaker mở (`payment_unknown` lý do `vnpay_disabled`, hẹn lại 1
+  phút, không tăng backoff); hủy tay trả 409 PAYMENT_PENDING; đơn đã có IPN thất bại (không còn attempt mở) vẫn hủy bình thường.
+  IPN vẫn xác minh bằng `VNPAY_TMN_CODE`/`VNPAY_HASH_SECRET` (+ `_PREVIOUS`) — phải giữ các biến này khi tắt; production tắt mà
+  thiếu khoá (hoặc dùng khoá giả dev) → IPN trả 99 để VNPAY gửi lại, không ghi inbox/tiền, log WARN `[payment] IPN VNPAY tới khi
+  không có khoá xác minh`. Bật lại → lượt kế tiếp hỏi lại từng đơn.
+- Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (`VNPAY_ENABLED=false`, giữ khoá) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
 - Xác nhận: không còn attempt `unknown` quá hạn chưa có owner trong `ops_exception`.
 
 ## 2. Hãng vận chuyển lỗi (GHN)
@@ -522,7 +548,9 @@ trước.
 
    KHÔNG hủy tay các đơn này (§1). Cổng đã hồi phục (querydr thủ công cho vài `txn_ref` trả lời bình thường) → đóng breaker bằng câu
    `UPDATE job_breaker …` ở bước 4 với `breaker_key = 'vnpay.querydr'` (không có bước kéo outbox); lượt `x-expire-holds` kế tiếp
-   (≤ 1 phút) hỏi lại và xác nhận/hủy đúng từng đơn. Sau đó đóng các `payment_unknown` lý do `breaker_*` của đơn đã có kết cục.
+   (≤ 1 phút) hỏi lại và xác nhận/hủy đúng từng đơn — đơn bị hoãn chỉ lùi 1 phút (không tăng backoff); đơn từng nhận lỗi tạm
+   (`timeout`/`network`/…) đang backoff theo đơn (T-164, §1) được hỏi khi tới `next_check_at` (≤ 60 phút) — cần ngay thì đặt
+   `next_check_at = NULL` như §1. Sau đó đóng các `payment_unknown` lý do `breaker_*` của đơn đã có kết cục.
 6. Đóng ngoại lệ kèm ghi chú nguyên nhân (Admin chưa có nút đóng):
 
    ```sql

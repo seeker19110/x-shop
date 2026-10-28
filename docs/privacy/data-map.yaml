@@ -459,6 +459,8 @@ tables:
       - total
       - payment_method
       - hold_expires_at
+      - next_check_at
+      - hold_check_attempts
       - cod_confirm_by
       - policy_version
       - quote

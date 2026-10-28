@@ -5,6 +5,30 @@ import { resetAnalyticsForTests, track } from "./track";
 import { validateEvent } from "./validate";
 
 /**
+ * Hàng rào ReDoS chống nhiễu: CPU của tiến trình gồm cả GC nên lúc cổng tải nặng một lần đo từng lên 59–68 ms dù chạy
+ * riêng nhanh hơn nhiều. Nhiễu CỘNG gần như cố định vào mọi lần đo, còn backtracking thảm hoạ tăng ít nhất bậc hai theo
+ * độ dài → đo xen kẽ n và n/4 (min 5 lần), chỉ đỏ khi vượt trần VÀ T(n)/T(n/4) ≥ 8 (tuyến tính ≈ 4, bậc hai ≈ 16);
+ * trần cứng 2 s bắt mọi trường hợp thảm hoạ.
+ */
+function expectLinearOrUnder(budgetMs: number, input: string, run: (s: string) => void): void {
+  const cpuMs = (s: string) => {
+    const t0 = process.cpuUsage();
+    run(s);
+    const d = process.cpuUsage(t0);
+    return (d.user + d.system) / 1000;
+  };
+  const quarterInput = input.slice(0, Math.ceil(input.length / 4));
+  let full = Infinity;
+  let quarter = Infinity;
+  for (let i = 0; i < 5; i++) {
+    quarter = Math.min(quarter, cpuMs(quarterInput));
+    full = Math.min(full, cpuMs(input));
+  }
+  if (full >= budgetMs) expect(full / Math.max(quarter, 0.5)).toBeLessThan(8);
+  expect(full).toBeLessThan(2_000);
+}
+
+/**
  * T-136 (D-065, D-066): cùng bộ mẫu `scripts/fixtures/pii-samples.json` với test của bộ che log backend
  * (`redact-pii-fixtures.unit.spec.ts`). Mẫu `scopes ∋ storefront` phải bị bộ quét `track()` nhận ra ở mọi vị trí (giá trị,
  * khoá, lồng, mảng); mẫu `negatives` (số tiền, thời gian, mã đơn…) không bị nhận nhầm. Hai bản mẫu nhận diện được giữ
@@ -86,11 +110,8 @@ describe("NFKC: NBSP và toàn chiều rộng (D-112)", () => {
     expect(looksLikePii(v)).toBe(true);
   });
   it("ký tự nở khi chuẩn hoá không làm chậm (CPU < 50 ms)", () => {
-    const input = "\ufdfa".repeat(32_000);
-    const t0 = process.cpuUsage();
-    looksLikePii(input);
-    const d = process.cpuUsage(t0);
-    expect((d.user + d.system) / 1000).toBeLessThan(50);
+    expect.hasAssertions();
+    expectLinearOrUnder(50, "\ufdfa".repeat(32_000), looksLikePii);
   });
 });
 
@@ -164,11 +185,11 @@ describe("looksLikePii: đầu vào đối nghịch (CPU < 50 ms / 32K ký tự)
     ["SĐT/CCCD: số tách chấm", "0.".repeat(N / 2)],
   ];
   it.each(cases)("%s", (_name, input) => {
+    expect.hasAssertions();
     looksLikePii(input.slice(0, 100));
-    const t0 = process.cpuUsage();
-    looksLikePii(input);
-    findPii({ a: input });
-    const d = process.cpuUsage(t0);
-    expect((d.user + d.system) / 1000).toBeLessThan(50);
+    expectLinearOrUnder(50, input, (s) => {
+      looksLikePii(s);
+      findPii({ a: s });
+    });
   });
 });

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { inspect } from "node:util";
 import { createLogger, exceptionFields } from "../logger";
 import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText } from "../redact";
+import { expectLinearOrUnder } from "../../__tests__/cpu-budget";
 
 /**
  * T-136 (D-065, D-066): bộ mẫu PII dùng chung `scripts/fixtures/pii-samples.json` — mọi mẫu `scopes ∋ backend` đi qua mọi
@@ -366,11 +367,7 @@ describe("luật T-136: chống ReDoS (CPU < 50 ms / 32K ký tự)", () => {
     ["nhãn: dia_chi lặp", "dia_chi ".repeat(N / 8)],
   ];
   it.each(cases)("%s → < 50 ms", (_name, input) => {
-    redactText(input.slice(0, 100));
-    const t0 = process.cpuUsage();
-    redactText(input);
-    const d = process.cpuUsage(t0);
-    expect((d.user + d.system) / 1000).toBeLessThan(50);
+    expectLinearOrUnder(50, input, redactText);
   });
 
   it("mỗi mẫu fixture lặp tới 32K ký tự → < 50 ms", () => {

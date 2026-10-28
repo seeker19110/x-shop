@@ -221,6 +221,62 @@ describe("parseEnv — production", () => {
     expect(result.env.vnpay).toBeNull();
   });
 
+  it("T-166: khoá xác minh IPN tách khỏi `vnpay` — VNPAY_ENABLED=false vẫn giữ khoá khi còn cấu hình", () => {
+    const keysOf = (source: Record<string, string | undefined>) => {
+      const result = parseEnv(source);
+      if (!result.ok) throw new Error(`mong đợi hợp lệ: ${JSON.stringify(result)}`);
+      return result.env.vnpayIpnKeys;
+    };
+    // Bật → cùng khoá với `vnpay`.
+    expect(keysOf(production)).toEqual({
+      tmnCode: production.VNPAY_TMN_CODE,
+      hashSecret: production.VNPAY_HASH_SECRET,
+      hashSecretPrevious: null,
+    });
+    // Production tắt nhưng còn khoá → giữ khoá (IPN xác minh được); URL/MODE không cần.
+    const off: Record<string, string | undefined> = { ...production, VNPAY_ENABLED: "false" };
+    off.VNPAY_MODE = undefined;
+    off.VNPAY_PAYMENT_URL = undefined;
+    off.VNPAY_API_URL = undefined;
+    off.VNPAY_RETURN_URL = undefined;
+    const offResult = parseEnv(off);
+    if (!offResult.ok) throw new Error("mong đợi hợp lệ");
+    expect(offResult.env.vnpay).toBeNull();
+    expect(offResult.env.vnpayIpnKeys).toEqual({
+      tmnCode: production.VNPAY_TMN_CODE,
+      hashSecret: production.VNPAY_HASH_SECRET,
+      hashSecretPrevious: null,
+    });
+    // Production tắt, thiếu khoá hoặc khoá giả dev → null (không xác minh bằng chuỗi rỗng/khoá công khai).
+    expect(keysOf({ ...off, VNPAY_HASH_SECRET: undefined })).toBeNull();
+    expect(keysOf({ ...off, VNPAY_TMN_CODE: undefined })).toBeNull();
+    expect(keysOf({ ...off, VNPAY_HASH_SECRET: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET })).toBeNull();
+    expect(keysOf({ ...off, VNPAY_HASH_SECRET_PREVIOUS: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET })).toBeNull();
+    // Dev/test tắt → khoá giả dev (đồng nhất với lúc bật).
+    expect(keysOf({ DATABASE_URL: DB, NODE_ENV: "test", VNPAY_ENABLED: "false" })).toEqual({
+      tmnCode: VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE,
+      hashSecret: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET,
+      hashSecretPrevious: null,
+    });
+    // Mã merchant giả của dev bị chặn ở production cho CẢ hai nhánh (không phân biệt hoa/thường); lỗi chỉ nêu tên biến.
+    for (const enabled of ["true", "false"]) {
+      for (const code of [
+        VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE,
+        VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE.toLowerCase(),
+      ]) {
+        const source = { ...(enabled === "true" ? production : off), VNPAY_TMN_CODE: code };
+        expect(variablesOf(source)).toEqual(["VNPAY_TMN_CODE"]);
+        expect(JSON.stringify(problemsOf(source))).not.toContain(code);
+      }
+    }
+    // Dev/test: mã giả là mặc định hợp lệ.
+    expect(
+      parseEnv({ DATABASE_URL: DB, NODE_ENV: "test", VNPAY_TMN_CODE: VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE }).ok,
+    ).toBe(true);
+    // Không lộ khoá khi dump.
+    expect(JSON.stringify(offResult.env.vnpayIpnKeys)).not.toContain(production.VNPAY_HASH_SECRET);
+  });
+
   it("khoá VNPAY giả của dev hoặc URL không https bị từ chối", () => {
     expect(variablesOf({ ...production, VNPAY_HASH_SECRET: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET })).toEqual([
       "VNPAY_HASH_SECRET",

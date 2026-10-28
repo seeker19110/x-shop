@@ -126,6 +126,13 @@ export const OrderFinance = model
     total: model.number(),
     payment_method: model.enum([...PAYMENT_METHODS]),
     hold_expires_at: model.dateTime().nullable(),
+    /**
+     * Backoff kiểm lại của job `expire-holds` (T-164): đơn quá hạn giữ hàng có kết quả querydr chưa rõ/lỗi được hẹn
+     * kiểm lại lúc này (null = đến hạn ngay — mọi đơn mới và dữ liệu trước T-164). `hold_check_attempts` = số lần liên
+     * tiếp chưa rõ/lỗi (cấp số mũ của backoff); không tăng khi breaker hoãn (không gọi querydr).
+     */
+    next_check_at: model.dateTime().nullable(),
+    hold_check_attempts: model.number().default(0),
     cod_confirm_by: model.dateTime().nullable(),
     policy_version: model.text(),
     quote: model.json(),
@@ -141,6 +148,10 @@ export const OrderFinance = model
   .checks([
     { name: "order_finance_total_nonneg", expression: (c) => `${c.total} >= 0` },
     { name: "order_finance_version_pos", expression: (c) => `${c.version} >= 1` },
+    {
+      name: "order_finance_hold_check_attempts_nonneg",
+      expression: (c) => `${c.hold_check_attempts} >= 0`,
+    },
   ]);
 
 /**

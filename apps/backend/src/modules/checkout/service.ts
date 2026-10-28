@@ -859,15 +859,65 @@ class CheckoutModuleService extends MedusaService({
 
   /* ------------------------------------------------------------ job (T-012) */
 
-  /** Đơn online còn chờ thanh toán đã quá hạn giữ hàng (biên: now >= hold_expires_at là hết hạn — DATA04). */
+  /**
+   * Đơn online còn chờ thanh toán đã quá hạn giữ hàng (biên: now >= hold_expires_at là hết hạn — DATA04) VÀ đã tới hạn
+   * kiểm lại (`next_check_at` NULL hoặc ≤ now — T-164). Xếp theo hạn xét `COALESCE(next_check_at, hold_expires_at)`
+   * (FIFO): đơn mới quá hạn chờ tối đa ⌈số đơn tới hạn trước nó / limit⌉ lượt — đơn đã hỏi rồi bị hẹn lại xếp sau mọi
+   * đơn có hạn xét sớm hơn mốc hẹn của nó, nên đơn chưa rõ kẹt không chặn đầu hàng mãi.
+   * Mọi so sánh trên timestamptz (UTC tuyệt đối, không phụ thuộc TimeZone phiên).
+   */
   async listExpiredHoldOrderIds(now: Date, limit: number): Promise<string[]> {
     const rows = await this.exec(
       `SELECT order_id FROM order_finance
        WHERE state = 'awaiting_payment' AND hold_expires_at <= ? AND deleted_at IS NULL
-       ORDER BY hold_expires_at LIMIT ?`,
-      [now, limit],
+         AND (next_check_at IS NULL OR next_check_at <= ?)
+       ORDER BY COALESCE(next_check_at, hold_expires_at), hold_expires_at, order_id LIMIT ?`,
+      [now, now, limit],
     );
     return rows.map((r) => String(r.order_id));
+  }
+
+  /**
+   * Tồn đọng đơn quá hạn chưa rõ đang giữ hàng (T-164): còn `awaiting_payment`, quá `hold_expires_at`, và job đã xét mà
+   * chưa ra kết cục — querydr chưa rõ/lỗi (`hold_check_attempts` ≥ 1) HOẶC bị hoãn không hỏi (breaker mở, VNPAY tắt —
+   * không tăng số lần nhưng có `next_check_at`). Đơn quá hạn chưa từng được xét (cả hai trống) không tính.
+   */
+  async countUnknownHoldBacklog(now: Date): Promise<number> {
+    const rows = await this.exec(
+      `SELECT count(*)::int AS n FROM order_finance
+       WHERE state = 'awaiting_payment' AND hold_expires_at <= ? AND deleted_at IS NULL
+         AND (hold_check_attempts >= 1 OR next_check_at IS NOT NULL)`,
+      [now],
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Hẹn kiểm lại đơn quá hạn (T-164) — gọi dưới khóa `order:<id>`. Chỉ khi đơn còn `awaiting_payment` và số lần chưa
+   * rõ vẫn là `fromAttempts` (đọc trước đó — lạc quan: bản chạy khác đã hẹn thì không ghi đè). Trả true nếu đã ghi.
+   */
+  async scheduleHoldRecheck(
+    orderId: string,
+    input: { next_check_at: Date; fromAttempts: number; attempts: number },
+  ): Promise<boolean> {
+    const rows = await this.exec(
+      `UPDATE order_finance SET next_check_at = ?, hold_check_attempts = ?, updated_at = now()
+       WHERE order_id = ? AND state = 'awaiting_payment' AND hold_check_attempts = ? RETURNING id`,
+      [input.next_check_at, input.attempts, orderId, input.fromAttempts],
+    );
+    return rows.length === 1;
+  }
+
+  /**
+   * Bỏ hẹn kiểm lại (T-164): có tin chắc chắn về thanh toán của đơn (IPN giao dịch không thành công) → lượt
+   * `expire-holds` kế tiếp xét ngay thay vì chờ hết backoff. Giữ `hold_check_attempts`.
+   */
+  async clearHoldRecheck(orderId: string): Promise<void> {
+    await this.exec(
+      `UPDATE order_finance SET next_check_at = NULL, updated_at = now()
+       WHERE order_id = ? AND state = 'awaiting_payment' AND next_check_at IS NOT NULL`,
+      [orderId],
+    );
   }
 
   /**
