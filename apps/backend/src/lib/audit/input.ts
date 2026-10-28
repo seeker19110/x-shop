@@ -2,7 +2,13 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { normalizeMethod } from "../admin-security/route-match";
 import { rawRequestPath } from "../http/request-path";
-import { decideDenyAudit } from "./deny-throttle";
+import {
+  decideDenyAudit,
+  DENY_AUDIT_THROTTLE,
+  denyBucket,
+  isRecordedOccurrence,
+  type WindowCounter,
+} from "./deny-throttle";
 import { SECURITY_EVENTS, type SecurityEventName } from "./events";
 import { counterOf, ipGroupOf, parseJsonBody, resolveActor } from "./http";
 import { hashIdentifier, recordAudit } from "./record";
@@ -25,9 +31,16 @@ import { maskFreeText } from "./sanitize";
  *      tự ghi lúc `finish`.
  * Không ghi thân, thông điệp lỗi (Medusa chép giá trị nhập vào thông điệp) hay query; chỉ status, mã lỗi, nguồn phân loại,
  * tên tham số lỗi (`errors[].param` đã lọc), route. Đích = `http_route` / `<METHOD> <mẫu route Express>` (không có mẫu →
- * pathname đã che PII, ≤ 200 ký tự). Chống ngập: gộp (actor hoặc nguồn IP, sự kiện, method, mã lỗi) như `deny-throttle.ts`.
+ * pathname đã che PII, ≤ 200 ký tự). Chống ngập, hai tầng:
+ *   - gộp theo (actor hoặc nguồn IP, sự kiện, mã lỗi) như `deny-throttle.ts` (ghi lần 1, 10, 100…) — KHÔNG theo method
+ *     hay đường dẫn (client chọn tuỳ ý: đổi method/đường dẫn mỗi lần là lách được);
+ *   - trần chung cho nguồn VÔ DANH theo sự kiện: tối đa `INPUT_ANON_GLOBAL_CAP` dòng mỗi cửa sổ trên toàn hệ thống (xoay
+ *     nhiều IP không làm ngập); vượt trần chỉ đếm, ghi thêm ở lần 1000, 10000… của bộ đếm chung (`changes.global_cap`).
  * Ghi audit lỗi → log lỗi (không PII), không ảnh hưởng request.
  */
+
+/** Trần dòng `input.*` vô danh mỗi cửa sổ gộp (60 s), toàn hệ thống, theo sự kiện. */
+export const INPUT_ANON_GLOBAL_CAP = 50;
 
 export type InputRejectionKind = "validation" | "deserialize";
 
@@ -127,6 +140,37 @@ export function inputResourceOf(req: MedusaRequest, rejection: InputRejection | 
   return `${method} ${masked.length > MAX_RESOURCE_PATH ? `${masked.slice(0, MAX_RESOURCE_PATH)}…` : masked}`;
 }
 
+/**
+ * Trần chung cho dòng vô danh (sau khi đã qua gộp theo nguồn): bộ đếm cửa sổ chung theo sự kiện; ≤ trần → ghi; vượt →
+ * chỉ ghi ở lần 1000, 10000… (độ lớn đợt). Bộ đếm lỗi → ghi (mất dấu vết tệ hơn thêm dòng).
+ */
+async function anonymousGlobalCap(
+  counter: WindowCounter,
+  event: SecurityEventName,
+  now: Date,
+  onError: () => void,
+): Promise<{ record: boolean; exceeded: boolean; occurrence: number | null }> {
+  let n: number;
+  try {
+    n = await counter(
+      denyBucket({
+        actorType: "global",
+        actorId: null,
+        method: "*",
+        routeClass: `audit:${event}:anon_cap`,
+        reason: "*",
+      }),
+      DENY_AUDIT_THROTTLE.windowMs,
+      now,
+    );
+  } catch {
+    onError();
+    return { record: true, exceeded: false, occurrence: null };
+  }
+  if (n <= INPUT_ANON_GLOBAL_CAP) return { record: true, exceeded: false, occurrence: n };
+  return { record: isRecordedOccurrence(n) && n >= 1000, exceeded: true, occurrence: n };
+}
+
 async function recordInputRejection(
   req: MedusaRequest,
   res: MedusaResponse,
@@ -142,22 +186,27 @@ async function recordInputRejection(
   const ctx = (req as MedusaRequest & { auth_context?: { actor_id?: string; actor_type?: string } })
     .auth_context;
   const actor = resolveActor(null, ctx, (v) => hashIdentifier(req.scope, v));
-  const method = normalizeMethod(req.method);
   const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER);
-  // Gộp theo actor đã xác thực, không có thì theo nguồn IP — không theo đường dẫn (đổi đường dẫn rác là lách được).
+  const now = new Date();
+  const counter = counterOf(req);
+  const onCounterError = () => logger.warn(`[audit] Bộ đếm gộp audit lỗi, vẫn ghi: ${event}`);
+  // Gộp theo actor đã xác thực, không có thì theo nguồn IP — không theo method/đường dẫn (client chọn, lách được).
   const decision = await decideDenyAudit(
-    counterOf(req),
+    counter,
     {
       actorType: actor.actor_id === null ? "ip" : actor.actor_type,
       actorId: actor.actor_id ?? ipGroupOf(req),
-      method,
+      method: "*",
       routeClass: `audit:${event}`,
       reason: errorCode ?? rejection.cause,
     },
-    new Date(),
-    () => logger.warn(`[audit] Bộ đếm gộp audit lỗi, vẫn ghi: ${event}`),
+    now,
+    onCounterError,
   );
   if (!decision.record) return;
+  const globalCap =
+    actor.actor_id === null ? await anonymousGlobalCap(counter, event, now, onCounterError) : null;
+  if (globalCap !== null && !globalCap.record) return;
   const params = problemParamsOf(body);
   await recordAudit(
     req.scope,
@@ -175,6 +224,9 @@ async function recordInputRejection(
         ...(params.length > 0 && { params }),
         ...(actor.pseudonymized && { actor_pseudonymized: true }),
         throttle: { occurrence: decision.occurrence, window_seconds: decision.window_seconds },
+        ...(globalCap?.exceeded === true && {
+          global_cap: { cap: INPUT_ANON_GLOBAL_CAP, occurrence: globalCap.occurrence },
+        }),
       },
     },
     req,

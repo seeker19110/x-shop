@@ -1,13 +1,18 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
+import { resolveAdminRule } from "../../admin-security/policy";
 import { defaultOutcomeOf } from "../../../modules/audit/service";
 import { SECURITY_EVENT_NAMES, SECURITY_EVENTS } from "../events";
 import {
   AUDIT_ROUTES,
   bodyFieldNames,
+  CONFIG_PERMISSIONS,
   matchAuditRoute,
+  nativeOperationOf,
   outcomeOfStatus,
   resolveActor,
+  resourceTypeOf,
+  responseClaimsOf,
   routerSegments,
   tokenClaims,
   uploadDetails,
@@ -65,7 +70,12 @@ describe("bảng route audit (matchAuditRoute)", () => {
     expect(ev("GET", "/admin/customers")).toBe(SECURITY_EVENTS.DATA_ACCESSED);
     expect(ev("GET", "/admin/customers/cus_1/addresses")).toBe(SECURITY_EVENTS.DATA_ACCESSED);
     expect(ev("GET", "/admin/orders/order_1")).toBe(SECURITY_EVENTS.DATA_ACCESSED);
-    expect(ev("POST", "/admin/orders/order_1")).toBeNull();
+    // Sửa đơn native không có quyền khai riêng → mặc định ghi `settings.manage` → đổi cấu hình (suy từ bảng quyền).
+    expect(ev("POST", "/admin/orders/order_1")).toBe(SECURITY_EVENTS.CONFIG_CHANGED);
+    // Ghi native bị đóng (`deny`) hoặc quyền nghiệp vụ không phải cấu hình → không phải config.changed.
+    expect(ev("POST", "/admin/orders/order_1/cancel")).toBeNull();
+    expect(ev("POST", "/admin/products/prod_1")).toBeNull();
+    expect(ev("POST", "/admin/x/refunds")).toBeNull();
     expect(ev("GET", "/admin/products")).toBeNull();
     expect(ev("GET", "/store/x/products")).toBeNull();
     expect(
@@ -217,6 +227,90 @@ describe("bảng route audit (matchAuditRoute)", () => {
       file_count: 2,
       total_bytes: 0,
     });
+  });
+
+  it("🟠1 review: MỌI route ghi native của Medusa đang cài mang quyền settings.* → có sự kiện audit (thiếu → đỏ)", () => {
+    const root = join(dirname(require.resolve("@medusajs/medusa/package.json")), "dist/api/admin");
+    const writes: Array<[string, string]> = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (e.name === "route.js") {
+          const src = readFileSync(full, "utf8");
+          const rel = relative(root, dir).split(sep).filter(Boolean);
+          const path = ["/admin", ...rel.map((x) => x.replace(/^\[(.+)\]$/, "x_$1"))].join("/");
+          for (const m of ["POST", "PUT", "PATCH", "DELETE"])
+            if (new RegExp(`\\bexports\\.${m}\\s*=`).test(src)) writes.push([m, path]);
+        }
+      }
+    };
+    walk(root);
+    expect(writes.length).toBeGreaterThan(100);
+    const config = writes.filter(([m, path]) => {
+      const rule = resolveAdminRule(m, path.toLowerCase());
+      return (
+        rule.kind === "permission" &&
+        [rule.permission, ...rule.also].some((p) => CONFIG_PERMISSIONS.includes(p))
+      );
+    });
+    // Đại diện các nhóm reviewer nêu đều thuộc tập này.
+    for (const want of [
+      "POST /admin/regions",
+      "POST /admin/sales-channels",
+      "POST /admin/shipping-profiles",
+      "POST /admin/tax-rates",
+      "POST /admin/tax-regions",
+      "POST /admin/shipping-options",
+      "POST /admin/stock-locations",
+      "POST /admin/return-reasons",
+      "POST /admin/refund-reasons",
+      "POST /admin/workflows-executions/x_workflow_id/run",
+    ])
+      expect(config.map(([m, p]) => `${m} ${p}`)).toContain(want);
+    const missing = config.filter(([m, path]) => {
+      const e = ev(m, path);
+      return e !== SECURITY_EVENTS.CONFIG_CHANGED && e !== SECURITY_EVENTS.DATA_EXPORTED;
+    });
+    expect(missing).toEqual([]);
+  });
+
+  it("route suy ra: loại theo đoạn đầu, thao tác theo MẪU route (id không vào operation), đoạn lạ → unknown", () => {
+    expect(resourceTypeOf("tax-regions")).toBe("tax_region");
+    expect(resourceTypeOf("currencies")).toBe("currency");
+    expect(resourceTypeOf("rbac")).toBe("rbac");
+    expect(resourceTypeOf("Khong-Hop-Le")).toBe("unknown");
+    expect(resourceTypeOf("a@b.vn")).toBe("unknown");
+    expect(resourceTypeOf(undefined)).toBe("unknown");
+    expect(nativeOperationOf("POST", "/admin/regions")).toBe("create");
+    expect(nativeOperationOf("POST", "/admin/regions/:id")).toBe("update");
+    expect(nativeOperationOf("DELETE", "/admin/regions/:id")).toBe("delete");
+    expect(nativeOperationOf("POST", "/admin/workflows-executions/:id/steps/success")).toBe("steps.success");
+    expect(nativeOperationOf("DELETE", "/admin/fulfillment-sets/:id/service-zones/:zone_id")).toBe(
+      "delete.service_zones",
+    );
+    expect(nativeOperationOf("POST", "/admin/fulfillment-sets/:id/service-zones/:zone_id")).toBe(
+      "update.service_zones",
+    );
+    expect(nativeOperationOf("POST", null)).toBe("unknown");
+    expect(nativeOperationOf("DELETE", null)).toBe("delete");
+  });
+
+  it("🟢 review (M7): token trong phản hồi chỉ được đọc ở /auth — token giả có actor_id ở /admin bị bỏ qua", () => {
+    const body = {
+      token: jwt({ actor_id: "user_nguoi_khac", actor_type: "user", auth_identity_id: "authid_x" }),
+    };
+    expect(responseClaimsOf({ scope: "admin" }, body)).toBeNull();
+    expect(responseClaimsOf({ scope: "auth" }, body)).toMatchObject({ actor_id: "user_nguoi_khac" });
+    // Hệ quả: actor ở /admin là người gọi (auth_context), không phải chủ token trong phản hồi.
+    const pseudo = (v: string) => v;
+    expect(
+      resolveActor(
+        responseClaimsOf({ scope: "admin" }, body),
+        { actor_id: "user_goi", actor_type: "user" },
+        pseudo,
+      ).actor_id,
+    ).toBe("user_goi");
   });
 
   it("mọi sự kiện trong bảng route thuộc danh mục", () => {

@@ -1,9 +1,10 @@
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { isNonEmpty, kibToBytes, secondsToMs } from "@x-shop/domain";
+import { isNonEmpty, kibToBytes, secondsToMs, type Permission } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import type { AuditOutcome } from "../../modules/audit/service";
+import { adminRuleOf } from "../admin-security/guard";
 import { normalizeMethod } from "../admin-security/route-match";
 import { rawRequestPath } from "../http/request-path";
 import { ipRateKey } from "../security/client-ip";
@@ -33,7 +34,9 @@ import { hashIdentifier, recordAudit } from "./record";
  *     (xoay địa chỉ trong /64 là lách được); cột `ip_hash` vẫn là băm của địa chỉ đầy đủ;
  *   - riêng `/admin`: 401/403 không ghi ở đây (403 do cổng RBAC ghi `rbac.denied`, kể cả `MFA_REQUIRED`/`REAUTH_REQUIRED`)
  *     — trừ route công khai với cổng RBAC (`recordAuthFailures`: chấp nhận lời mời);
- *   - đổi cấu hình: chỉ TÊN trường của thân (`changes.fields`), không giá trị; đích tạo mới lấy id từ thân phản hồi.
+ *   - đổi cấu hình: route liệt kê (`configRoute`) + MỌI lần ghi route native mang quyền `settings.manage` (suy từ bảng
+ *     quyền — `NATIVE_CONFIG_ROUTE`); chỉ TÊN trường của thân khi thành công (`changes.fields`), không giá trị; đích tạo
+ *     mới lấy id từ thân phản hồi.
  * Không PII thô: định danh đăng nhập (email) → bí danh HMAC `idh_…` (`hashIdentifier`); `actor_id` dạng email (token đặt
  * lại mật khẩu của Medusa mang email làm actor_id) cũng thành bí danh; IP → `ip_hash`; User-Agent cắt ngắn + che.
  * Token trong phản hồi chỉ được giải mã phần payload để lấy actor/auth identity — không lưu token.
@@ -49,7 +52,8 @@ type TargetFn = (
 ) => { type: string; id: string | null };
 
 export interface AuditRoute {
-  method: "GET" | "POST" | "DELETE";
+  /** `WRITE` chỉ dùng cho route suy ra từ bảng quyền (`NATIVE_CONFIG_ROUTE`) — mọi method ghi. */
+  method: "GET" | "POST" | "DELETE" | "WRITE";
   /** Mẫu của `matchPath` (`:param` một đoạn; `*` cuối = 0..n đoạn). */
   pattern: string;
   event: SecurityEventName;
@@ -77,7 +81,12 @@ export interface AuditRoute {
   /** Ghi TÊN trường cấp đầu của thân yêu cầu (không giá trị) vào `changes.fields` — biết cấu hình nào bị đổi. */
   bodyFields?: true;
   /** Chi tiết thêm từ request/phản hồi (vd số file, dung lượng của upload). Không được ném; không chép dữ liệu nhập. */
-  extra?: (req: MedusaRequest, body: unknown, status: number | null) => Record<string, unknown>;
+  extra?: (
+    req: MedusaRequest,
+    body: unknown,
+    status: number | null,
+    m: MatchedRoute,
+  ) => Record<string, unknown>;
 }
 
 /** Actor/provider đã biết; giá trị khác ghi `"other"` (không chép chuỗi do client chọn vào audit). */
@@ -496,7 +505,114 @@ export function matchAuditRoute(
     if (route.skip === true) return null;
     return { route, segments, path: `/${segments.join("/")}`, method };
   }
+  return matchNativeConfigRoute(method, req, rawSegments);
+}
+
+/**
+ * Quyền mà mọi lần GHI vào route native mang quyền đó là "đổi cấu hình" (CMP-AUDIT-002). Suy từ bảng quyền RBAC
+ * (`native-permissions.ts` + mặc định đóng: route ghi native chưa khai → `settings.manage`) thay vì liệt kê tay → route
+ * native mới (nâng Medusa) thuộc `settings.manage` tự được audit. Test `security-events.unit.spec.ts` quét cây route
+ * Medusa đang cài và đỏ nếu một route ghi `settings.manage` không ra sự kiện.
+ */
+export const CONFIG_PERMISSIONS: readonly Permission[] = ["settings.manage"];
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/** Mẫu route Express đã khớp (`req.route.path`, chỉ có sau khi tới route) — vd `/admin/regions/:id`. */
+const ROUTE_PATTERN = /^\/admin(\/[A-Za-z0-9_:-]{1,64}){1,8}$/;
+function routePatternOf(req: MedusaRequest): string | null {
+  const p = (req as MedusaRequest & { route?: { path?: unknown } }).route?.path;
+  return typeof p === "string" && ROUTE_PATTERN.test(p) ? p : null;
+}
+
+const RESOURCE_SEGMENT = /^[a-z][a-z0-9-]{0,40}$/;
+/** `tax-regions` → `tax_region`, `currencies` → `currency`; đoạn lạ (route không tồn tại — client chọn) → `unknown`. */
+export function resourceTypeOf(segment: string | undefined): string {
+  if (segment === undefined || !RESOURCE_SEGMENT.test(segment)) return "unknown";
+  return segment
+    .replace(/-/g, "_")
+    .replace(/ies$/, "y")
+    .replace(/([^s])s$/, "$1");
+}
+
+/** Id từ thân phản hồi: `{ id }` (xoá) hoặc `{ <thực thể>: { id } }` (tạo). */
+function responseIdOf(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return null;
+  const b = body as Record<string, unknown>;
+  if (typeof b.id === "string") return b.id;
+  for (const v of Object.values(b)) {
+    const id = (v as { id?: unknown } | null)?.id;
+    if (typeof v === "object" && v !== null && !Array.isArray(v) && typeof id === "string") return id;
+  }
   return null;
+}
+
+/**
+ * Thao tác theo MẪU route (không theo đường dẫn cụ thể — id không vào `operation`): `POST /admin/regions` → `create`,
+ * `POST /admin/regions/:id` → `update`, `DELETE …/:id` → `delete`, `POST /admin/workflows-executions/:id/steps/success`
+ * → `steps.success`, `DELETE /admin/fulfillment-sets/:id/service-zones/:zone_id` → `delete.service_zones`. Chưa tới
+ * route (không có mẫu) → `delete`/`unknown`.
+ */
+export function nativeOperationOf(method: string, pattern: string | null): string {
+  if (pattern === null) return method === "DELETE" ? "delete" : "unknown";
+  const segs = pattern.split("/").filter(Boolean);
+  const rest = segs
+    .slice(2)
+    .filter((s) => !s.startsWith(":"))
+    .map((s) => s.replace(/-/g, "_"));
+  const lastIsParam = segs.length > 2 && (segs[segs.length - 1] ?? "").startsWith(":");
+  const tail = rest.length > 0 ? `.${rest.join(".")}` : "";
+  if (method === "DELETE") return `delete${tail}`;
+  if (segs.length === 2) return "create";
+  if (lastIsParam) return `update${tail}`;
+  return rest.join(".");
+}
+
+/** Đích: loại theo đoạn đầu sau `/admin`; id = tham số thứ nhất của mẫu (`/admin/<loại>/:id…`), không có → từ thân phản hồi. */
+const nativeConfigTarget: TargetFn = (segments, req, body) => {
+  const pattern = routePatternOf(req);
+  const type = pattern === null ? resourceTypeOf(segments[1]) : resourceTypeOf(pattern.split("/")[2]);
+  const pathId =
+    pattern === null
+      ? (segments[2] ?? null)
+      : (pattern.split("/")[3] ?? "").startsWith(":")
+        ? (segments[2] ?? null)
+        : null;
+  return { type, id: pathId ?? responseIdOf(body) };
+};
+
+/** Route audit suy ra cho MỌI lần ghi route native mang quyền cấu hình (không có trong `AUDIT_ROUTES`). */
+export const NATIVE_CONFIG_ROUTE: AuditRoute = {
+  method: "WRITE",
+  pattern: "/admin/*",
+  event: SECURITY_EVENTS.CONFIG_CHANGED,
+  scope: "admin",
+  target: nativeConfigTarget,
+  bodyFields: true,
+  extra: (req, _body, _status, m) => {
+    const pattern = routePatternOf(req);
+    return {
+      operation: nativeOperationOf(m.method, pattern),
+      route: `${m.method} ${pattern ?? "(chưa tới route)"}`,
+      derived_from: "rbac_permission",
+    };
+  },
+};
+
+function matchNativeConfigRoute(
+  method: string,
+  req: { originalUrl?: unknown; url?: unknown },
+  rawSegments: readonly string[],
+): MatchedRoute | null {
+  if (READ_METHODS.has(method)) return null;
+  if (rawSegments[0]?.toLowerCase() !== "admin" || rawSegments.length < 2) return null;
+  if (rawSegments[1]?.toLowerCase() === "x") return null;
+  const resolved = adminRuleOf(req, method);
+  if (resolved === null || resolved.rule.kind !== "permission") return null;
+  const perms = [resolved.rule.permission, ...resolved.rule.also];
+  if (!perms.some((p) => CONFIG_PERMISSIONS.includes(p))) return null;
+  const segments = matchRoutePattern(`/${rawSegments.map(() => ":p").join("/")}`, rawSegments);
+  if (segments === null) return null;
+  return { route: NATIVE_CONFIG_ROUTE, segments, path: `/${segments.join("/")}`, method };
 }
 
 export function outcomeOfStatus(status: number): AuditOutcome {
@@ -530,6 +646,17 @@ export function tokenClaims(body: unknown): AuthCtx | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Claims của token TRONG PHẢN HỒI dùng để xác định actor — chỉ ở `/auth` (token vừa cấp cho chính người gọi: đăng nhập,
+ * MFA). Ở `/admin` luôn `null`: phòng thủ — phản hồi admin có thể mang token cấp cho NGƯỜI KHÁC (vd `POST
+ * /admin/users/:id/reset-password` trả token đặt lại của user đích; JWT đó hiện mang `entity_id`, không `actor_id`, nên
+ * hôm nay không gây sai — nhưng một route admin trả token có `actor_id` sẽ ghi sai người thực hiện). Actor ở `/admin` lấy
+ * từ `auth_context`.
+ */
+export function responseClaimsOf(route: Pick<AuditRoute, "scope">, body: unknown): AuthCtx | null {
+  return route.scope === "auth" ? tokenClaims(body) : null;
 }
 
 export interface ResolvedActor {
@@ -602,9 +729,7 @@ async function recordFinished(
     return;
 
   const ctx = (req as AuthedRequest).auth_context;
-  // Chỉ /auth: token trong phản hồi là của chính người gọi. Route admin có thể trả token của NGƯỜI KHÁC (vd token đặt lại
-  // mật khẩu của `POST /admin/users/:id/reset-password`) — đọc nó sẽ ghi sai actor.
-  const claims = route.scope === "auth" ? tokenClaims(body) : null;
+  const claims = responseClaimsOf(route, body);
   const pseudonym = (v: string) => hashIdentifier(req.scope, v);
   const actor = resolveActor(claims, ctx, pseudonym);
 
@@ -629,13 +754,15 @@ async function recordFinished(
     ...route.details,
   };
   if (aborted) changes.aborted = true;
-  if (route.bodyFields === true) {
+  // Tên trường chỉ khi THÀNH CÔNG: schema strict của route native đã nhận thân → mọi khoá là khoá đã biết của route; thân
+  // bị từ chối có thể mang khoá do client tự đặt (vd tên người) → không chép.
+  if (route.bodyFields === true && status !== null && status < 400) {
     const fields = bodyFieldNames(req.body);
     if (fields !== null) changes.fields = fields;
   }
   if (route.extra !== undefined) {
     try {
-      Object.assign(changes, route.extra(req, body, status));
+      Object.assign(changes, route.extra(req, body, status, m));
     } catch {
       // chi tiết thêm là phụ — không bỏ dòng audit vì nó
     }
