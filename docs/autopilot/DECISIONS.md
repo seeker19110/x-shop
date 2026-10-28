@@ -853,6 +853,7 @@
 - Chọn: Bảng catalog_index_write_log (migration mới) ghi mốc từng sản phẩm; replaceAll(rows, since) giữ dòng đã đồng bộ từ since và bỏ ảnh chụp cũ hơn; rebuild '*' chạy ngay trong lượt xả
 - Lý do (tiêu chí chất lượng cuối): (1) đúng: xả lại dấu không đủ vì lượt xả song song đã xoá dấu → replaceAll ghi đè ảnh cũ/dòng ma (đã tái hiện); chốt ở DB không dựa lease Redis; khoá ghi 46,7 s → 2,4–2,9 s ở 50k SKU; (3) đơn giản: chạy nền thêm xử lý shutdown D-081 mà lợi ích chỉ cho chính tiến trình đang rebuild
 - Đường lùi: Bỏ dùng write log trong replaceAll; quay lại rebuild trong khoá (bảng giữ nguyên, migration có down)
+- Bổ sung sau review T-167: sản phẩm giữ dòng (`kept`) được đánh dấu bẩn lại trong cùng giao dịch `replaceAll` để thay đổi không phát sự kiện không bị mất; giới hạn: trong lúc rebuild `'*'` (~50 s ở 50k SKU) lượt xả theo sự kiện cùng tiến trình chờ, và nếu job mỗi phút thấy `'*'` trước thì rebuild chạy trọn trong khe job (trái ý D-081, có từ trước) — docs/db/connections.md §5
 
 ### D-122 · 2026-10-28T00:36:56+00:00 · T-165: phạm vi quyền/xác thực của cancel-unverified; lỗi AT09 hoàn qua cổng
 
