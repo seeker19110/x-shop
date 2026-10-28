@@ -476,6 +476,12 @@ const RefundsPage = (): ReactNode => {
                             Từ chối
                           </Button>
                         )}
+                        {a.rejectBlocked && (
+                          <Text size="xsmall" className="text-ui-fg-subtle">
+                            Hoàn theo trả hàng không từ chối được — duyệt rồi thực hiện; đổi cách hoàn: hủy
+                            khi thất bại rồi tạo lại.
+                          </Text>
+                        )}
                         {a.execute && (
                           <Button size="small" variant="secondary" onClick={() => open("execute", r)}>
                             {a.executeLabel}

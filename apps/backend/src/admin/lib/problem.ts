@@ -60,6 +60,8 @@ const MESSAGES: Record<string, string> = {
     "Yêu cầu hoàn này đã hết lượt thử. Hủy yêu cầu (ghi lý do) rồi tạo yêu cầu mới, thường là hoàn ngoài hệ thống.",
   REFUND_PROVIDER_UNCONFIRMED:
     "Chưa xác nhận được với cổng thanh toán là yêu cầu chưa được hoàn — chưa hủy được. Thử lại sau ít phút.",
+  RETURN_REFUND_NOT_REJECTABLE:
+    "Hoàn theo trả hàng không từ chối được (số tiền do kiểm định chốt). Duyệt rồi thực hiện; cần đổi cách hoàn thì khi yêu cầu ở trạng thái thất bại, hủy (ghi lý do) rồi tạo lại theo trả hàng.",
   BUSY_RETRY: "Hệ thống đang bận xử lý đơn này. Thử lại sau vài giây.",
   INVALID_STATE: "Trạng thái hiện tại không cho phép thao tác này. Tải lại để xem trạng thái mới nhất.",
   NOT_FOUND: "Không tìm thấy bản ghi.",

@@ -20,9 +20,11 @@ export interface RefundLike {
 }
 
 export interface RefundActions {
-  /** Duyệt/từ chối (chỉ `requested`). */
+  /** Duyệt/từ chối (chỉ `requested`). Hoàn theo trả hàng không có nút từ chối (server trả 409 — T-173). */
   approve: boolean;
   reject: boolean;
+  /** `requested` theo trả hàng: thay nút từ chối bằng hướng dẫn (duyệt → thực hiện; đổi cách hoàn → hủy khi failed). */
+  rejectBlocked: boolean;
   /** Người đang đăng nhập là người tạo → không tự duyệt được (S-403). */
   selfCreated: boolean;
   /** Thực hiện / thử lại / hỏi lại cổng. */
@@ -54,8 +56,13 @@ export function isRetryExhausted(
   return !Number.isSafeInteger(r.attempts) || r.attempts >= maxAttempts;
 }
 
+/** Hoàn gắn yêu cầu trả (khớp server `isReturnRefund`): không từ chối được — chỉ hủy khi `failed` rồi tạo lại. */
+export const isReturnRefund = (r: Pick<RefundLike, "reason" | "return_id">) =>
+  r.reason === "return" || isNonEmpty(r.return_id);
+
 export function refundActions(r: RefundLike, ctx: RefundActionContext = {}): RefundActions {
   const requested = r.state === "requested";
+  const returnRefund = isReturnRefund(r);
   const exhausted =
     r.state === "failed" &&
     (isRetryExhausted(r, ctx.maxAttempts ?? REFUND_MAX_ATTEMPTS) || (ctx.exhaustedIds?.has(r.id) ?? false));
@@ -69,7 +76,8 @@ export function refundActions(r: RefundLike, ctx: RefundActionContext = {}): Ref
     );
   return {
     approve: requested,
-    reject: requested,
+    reject: requested && !returnRefund,
+    rejectBlocked: requested && returnRefund,
     selfCreated: requested && isNonEmpty(ctx.myId) && r.requested_by === ctx.myId,
     execute,
     executeLabel: !execute ? null : r.state === "approved" ? "Thực hiện" : "Thử lại / hỏi lại cổng",

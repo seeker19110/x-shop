@@ -130,6 +130,31 @@ describe("refundActions", () => {
     expect(refundActions(base, { myId: null }).selfCreated).toBe(false);
   });
 
+  it("requested theo trả hàng (reason=return hoặc có return_id): không nút từ chối, thay bằng hướng dẫn; vẫn duyệt được (T-173)", () => {
+    for (const patch of [
+      { reason: "return", return_id: "xret_1" },
+      { reason: "return", return_id: null },
+      { reason: "other", return_id: "xret_1" },
+    ]) {
+      expect({ patch, a: refundActions(at(patch), { myId: "u2" }) }).toMatchObject({
+        patch,
+        a: { approve: true, reject: false, rejectBlocked: true },
+      });
+    }
+    // Hoàn hủy đơn / lý do khác vẫn từ chối được; trạng thái khác requested: không nút, không hướng dẫn.
+    for (const reason of ["cancellation", "other"]) {
+      expect(refundActions(at({ reason }))).toMatchObject({ reject: true, rejectBlocked: false });
+    }
+    expect(refundActions(at({ state: "failed", reason: "return", return_id: "xret_1" }))).toMatchObject({
+      reject: false,
+      rejectBlocked: false,
+      cancel: true,
+    });
+    expect(describeProblem(new AdminApiError(409, "RETURN_REFUND_NOT_REJECTABLE", "x")).message).toContain(
+      "tạo lại theo trả hàng",
+    );
+  });
+
   it("approved/unknown: thực hiện; failed còn lượt: thử lại + hủy", () => {
     expect(refundActions(at({ state: "approved" }))).toMatchObject({
       execute: true,
