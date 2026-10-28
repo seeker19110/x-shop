@@ -13,7 +13,8 @@ import { SECURITY_EVENTS, type SecurityEventName } from "./events";
 import { hashIdentifier, recordAudit } from "./record";
 
 /**
- * Audit sự kiện xác thực và xuất/truy cập dữ liệu nhạy cảm theo route (T-091, SEC-LOG-001/002, CMP-AUDIT-002).
+ * Audit sự kiện xác thực, xuất/truy cập dữ liệu nhạy cảm, upload và đổi cấu hình qua route native (T-091, T-175,
+ * SEC-LOG-001/002, CMP-AUDIT-002).
  *
  * Một middleware toàn cục (`securityAuditTrail`, đăng ký cho `/auth` và `/admin` ở api/middlewares.ts) tra bảng
  * `AUDIT_ROUTES`; route khớp → ghi MỘT dòng audit SAU khi phản hồi xong (`finish` — không thêm độ trễ vào phản hồi, không
@@ -30,7 +31,9 @@ import { hashIdentifier, recordAudit } from "./record";
  *     MỌI thất bại vô danh gộp theo (nguồn `ipRateKey` — IPv4 nguyên địa chỉ, IPv6 cả /64 —, sự kiện, kết quả) — KHÔNG
  *     theo định danh trong thân (kẻ tấn công tự chọn, đổi email mỗi lần là lách được) và không theo từng địa chỉ IPv6
  *     (xoay địa chỉ trong /64 là lách được); cột `ip_hash` vẫn là băm của địa chỉ đầy đủ;
- *   - riêng `/admin`: 401/403 không ghi ở đây (403 do cổng RBAC ghi `rbac.denied`).
+ *   - riêng `/admin`: 401/403 không ghi ở đây (403 do cổng RBAC ghi `rbac.denied`, kể cả `MFA_REQUIRED`/`REAUTH_REQUIRED`)
+ *     — trừ route công khai với cổng RBAC (`recordAuthFailures`: chấp nhận lời mời);
+ *   - đổi cấu hình: chỉ TÊN trường của thân (`changes.fields`), không giá trị; đích tạo mới lấy id từ thân phản hồi.
  * Không PII thô: định danh đăng nhập (email) → bí danh HMAC `idh_…` (`hashIdentifier`); `actor_id` dạng email (token đặt
  * lại mật khẩu của Medusa mang email làm actor_id) cũng thành bí danh; IP → `ip_hash`; User-Agent cắt ngắn + che.
  * Token trong phản hồi chỉ được giải mã phần payload để lấy actor/auth identity — không lưu token.
@@ -38,7 +41,12 @@ import { hashIdentifier, recordAudit } from "./record";
  */
 
 type Scope = "auth" | "admin";
-type TargetFn = (segments: readonly string[], req: MedusaRequest) => { type: string; id: string | null };
+/** Đích của sự kiện: từ đoạn đường dẫn, request, hoặc thân PHẢN HỒI (route tạo mới — id chỉ có sau khi tạo). */
+type TargetFn = (
+  segments: readonly string[],
+  req: MedusaRequest,
+  body?: unknown,
+) => { type: string; id: string | null };
 
 export interface AuditRoute {
   method: "GET" | "POST" | "DELETE";
@@ -61,6 +69,15 @@ export interface AuditRoute {
   segmentIn?: { index: number; values: readonly string[] };
   /** Không ghi (route tĩnh của Medusa trùng hình mẫu tham số phía sau, vd `/auth/verification/request`). */
   skip?: true;
+  /**
+   * Route `/admin` công khai với cổng RBAC (chấp nhận lời mời): 401/403 KHÔNG do cổng RBAC trả (không có `rbac.denied`)
+   * → vẫn ghi ở đây. Mặc định route admin bỏ qua 401/403 (đã có `rbac.denied`).
+   */
+  recordAuthFailures?: true;
+  /** Ghi TÊN trường cấp đầu của thân yêu cầu (không giá trị) vào `changes.fields` — biết cấu hình nào bị đổi. */
+  bodyFields?: true;
+  /** Chi tiết thêm từ request/phản hồi (vd số file, dung lượng của upload). Không được ném; không chép dữ liệu nhập. */
+  extra?: (req: MedusaRequest, body: unknown, status: number | null) => Record<string, unknown>;
 }
 
 /** Actor/provider đã biết; giá trị khác ghi `"other"` (không chép chuỗi do client chọn vào audit). */
@@ -78,6 +95,83 @@ const authIdentityOf: TargetFn = (_s, req) => {
 const fixed =
   (type: string, id: string | null): TargetFn =>
   () => ({ type, id });
+/** Id từ thân phản hồi `{ <key>: { id } }` (route tạo mới của Medusa: `api_key`, `invite`, `user`). */
+const fromBody =
+  (type: string, key: string): TargetFn =>
+  (_s, _req, body) => {
+    const id = ((body as Record<string, unknown> | null)?.[key] as { id?: unknown } | undefined)?.id;
+    return { type, id: typeof id === "string" ? id : null };
+  };
+
+const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const MAX_FIELDS = 30;
+/** Tên trường cấp đầu của thân yêu cầu (chỉ tên hợp lệ, ≤ 30) — không bao giờ giá trị. Thân không phải object → null. */
+export function bodyFieldNames(body: unknown): string[] | null {
+  if (typeof body !== "object" || body === null || Array.isArray(body) || Buffer.isBuffer(body)) return null;
+  return Object.keys(body)
+    .filter((k) => FIELD_NAME.test(k))
+    .sort()
+    .slice(0, MAX_FIELDS);
+}
+
+/** File upload (multer, `req.files`): số file, tổng byte; loại MIME chỉ khi thành công (đã được kiểm bằng magic bytes). */
+export function uploadDetails(
+  req: MedusaRequest,
+  body: unknown,
+  status: number | null,
+): Record<string, unknown> {
+  const files = (req as MedusaRequest & { files?: unknown }).files;
+  const list = Array.isArray(files) ? (files as Array<{ size?: unknown; mimetype?: unknown }>) : [];
+  const out: Record<string, unknown> = {
+    file_count: list.length,
+    total_bytes: list.reduce(
+      (n, f) => n + (Number.isSafeInteger(f.size) && (f.size as number) >= 0 ? (f.size as number) : 0),
+      0,
+    ),
+  };
+  if (status !== null && status < 400) {
+    out.mime_types = [
+      ...new Set(list.map((f) => (typeof f.mimetype === "string" ? f.mimetype : "unknown"))),
+    ].sort();
+    const ids = uploadedFileIds(body);
+    if (ids.length > 1) out.file_ids = ids;
+  }
+  return out;
+}
+
+function uploadedFileIds(body: unknown): string[] {
+  const files = (body as { files?: unknown } | null)?.files;
+  if (!Array.isArray(files)) return [];
+  return files
+    .map((f) => safeId((f as { id?: unknown } | null)?.id))
+    .filter((id): id is string => id !== null)
+    .slice(0, 10);
+}
+
+/** Một file → id của nó; nhiều file → null (danh sách ở `changes.file_ids`). */
+const uploadTarget: TargetFn = (_s, _req, body) => {
+  const ids = uploadedFileIds(body);
+  return { type: "file", id: ids.length === 1 ? (ids[0] as string) : null };
+};
+
+/** Đổi cấu hình qua route native (CMP-AUDIT-002): đích = loại + id, `changes.operation`, tên trường đổi (không giá trị). */
+const configRoute = (
+  method: "POST" | "DELETE",
+  pattern: string,
+  type: string,
+  operation: string,
+  target: TargetFn = seg(type, 2),
+  extra: Partial<AuditRoute> = {},
+): AuditRoute => ({
+  method,
+  pattern,
+  event: SECURITY_EVENTS.CONFIG_CHANGED,
+  scope: "admin",
+  target,
+  details: { operation },
+  bodyFields: true,
+  ...extra,
+});
 
 /** Thứ tự có nghĩa: khớp mẫu đầu tiên (mẫu cụ thể trước mẫu có tham số). */
 export const AUDIT_ROUTES: readonly AuditRoute[] = [
@@ -230,6 +324,43 @@ export const AUDIT_ROUTES: readonly AuditRoute[] = [
     target: fixed("export", "inventory_items"),
     details: { dataset: "inventory_items", format: "csv", pii: false },
   },
+  // --- Tệp (native Medusa 2.22.1 `/admin/uploads`; `presigned-urls` bị tắt — 403 của uploadPrecheck, không ghi) ---
+  {
+    method: "POST",
+    pattern: "/admin/uploads",
+    event: SECURITY_EVENTS.FILE_UPLOADED,
+    scope: "admin",
+    target: uploadTarget,
+    extra: uploadDetails,
+  },
+  {
+    method: "DELETE",
+    pattern: "/admin/uploads/:id",
+    event: SECURITY_EVENTS.FILE_DELETED,
+    scope: "admin",
+    target: seg("file", 2),
+  },
+  // --- Đổi cấu hình qua route native (Medusa 2.22.1: stores, api-keys, invites, users — POST/DELETE) ---
+  configRoute("POST", "/admin/stores/:id", "store", "update"),
+  configRoute("POST", "/admin/api-keys", "api_key", "create", fromBody("api_key", "api_key")),
+  configRoute("POST", "/admin/api-keys/:id/revoke", "api_key", "revoke"),
+  configRoute("POST", "/admin/api-keys/:id/sales-channels", "api_key", "update_sales_channels"),
+  configRoute("POST", "/admin/api-keys/:id", "api_key", "update"),
+  configRoute("DELETE", "/admin/api-keys/:id", "api_key", "delete"),
+  // Chấp nhận lời mời = tạo tài khoản admin; route công khai với cổng RBAC → ghi cả 401/403 của chính nó.
+  configRoute("POST", "/admin/invites/accept", "user", "invite_accepted", fromBody("user", "user"), {
+    recordAuthFailures: true,
+  }),
+  configRoute("POST", "/admin/invites", "invite", "create", fromBody("invite", "invite")),
+  configRoute("POST", "/admin/invites/:id/resend", "invite", "resend"),
+  configRoute("DELETE", "/admin/invites/:id", "invite", "delete"),
+  // Phản hồi `reset-password` chứa token đặt lại — không đọc (tokenClaims chỉ áp cho /auth).
+  configRoute("POST", "/admin/users/:id/reset-password", "user", "reset_password_token_issued"),
+  configRoute("POST", "/admin/users/:id/roles", "user", "native_roles_assigned"),
+  configRoute("DELETE", "/admin/users/:id/roles/:role_id", "user", "native_role_removed"),
+  configRoute("DELETE", "/admin/users/:id/roles", "user", "native_roles_removed"),
+  configRoute("POST", "/admin/users/:id", "user", "update"),
+  configRoute("DELETE", "/admin/users/:id", "user", "delete"),
   // --- Truy cập dữ liệu nhạy cảm (đối soát, PII khách qua route native) ---
   {
     // Tải file private (T-141): file xuất PII khách/đơn — coi là PII. Đích = khoá file (không chứa dữ liệu người dùng).
@@ -444,12 +575,12 @@ function bodyString(req: MedusaRequest, key: string): string | null {
 }
 
 /** Khoá nguồn cho nhóm gộp: `ipRateKey` (IPv6 gộp /64) — chỉ đi vào băm của bucket, không lưu. */
-function ipGroupOf(req: MedusaRequest): string | null {
+export function ipGroupOf(req: MedusaRequest): string | null {
   const ip = clientIpOf(req).ip;
   return isNonEmpty(ip) ? ipRateKey(ip) : null;
 }
 
-const counterOf =
+export const counterOf =
   (req: MedusaRequest): WindowCounter =>
   async (bucket, windowMs, now) =>
     (await req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE).hitRateCounter(bucket, windowMs, now))
@@ -467,10 +598,13 @@ async function recordFinished(
   const { route } = m;
   const status = aborted ? endedStatus : res.statusCode;
   const outcome: AuditOutcome = status === null ? "failure" : outcomeOfStatus(status);
-  if (route.scope === "admin" && (status === 401 || status === 403)) return;
+  if (route.scope === "admin" && (status === 401 || status === 403) && route.recordAuthFailures !== true)
+    return;
 
   const ctx = (req as AuthedRequest).auth_context;
-  const claims = tokenClaims(body);
+  // Chỉ /auth: token trong phản hồi là của chính người gọi. Route admin có thể trả token của NGƯỜI KHÁC (vd token đặt lại
+  // mật khẩu của `POST /admin/users/:id/reset-password`) — đọc nó sẽ ghi sai actor.
+  const claims = route.scope === "auth" ? tokenClaims(body) : null;
   const pseudonym = (v: string) => hashIdentifier(req.scope, v);
   const actor = resolveActor(claims, ctx, pseudonym);
 
@@ -484,7 +618,7 @@ async function recordFinished(
           : (ctx?.actor_id ?? null);
     target = { type: "login_identifier", id: pseudonym(raw ?? "") };
   } else {
-    target = (route.target ?? fixed("route", null))(m.segments, req);
+    target = (route.target ?? fixed("route", null))(m.segments, req, body);
     target = { type: target.type, id: safeId(target.id) };
   }
   const lockout = route.rateLimited === true && status === 429;
@@ -495,6 +629,17 @@ async function recordFinished(
     ...route.details,
   };
   if (aborted) changes.aborted = true;
+  if (route.bodyFields === true) {
+    const fields = bodyFieldNames(req.body);
+    if (fields !== null) changes.fields = fields;
+  }
+  if (route.extra !== undefined) {
+    try {
+      Object.assign(changes, route.extra(req, body, status));
+    } catch {
+      // chi tiết thêm là phụ — không bỏ dòng audit vì nó
+    }
+  }
   if (route.bodyFormat !== undefined) {
     const f = bodyString(req, "format");
     changes.format = f !== null && route.bodyFormat.values.includes(f) ? f : route.bodyFormat.fallback;

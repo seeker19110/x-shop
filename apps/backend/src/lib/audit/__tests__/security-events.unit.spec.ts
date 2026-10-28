@@ -4,11 +4,13 @@ import { defaultOutcomeOf } from "../../../modules/audit/service";
 import { SECURITY_EVENT_NAMES, SECURITY_EVENTS } from "../events";
 import {
   AUDIT_ROUTES,
+  bodyFieldNames,
   matchAuditRoute,
   outcomeOfStatus,
   resolveActor,
   routerSegments,
   tokenClaims,
+  uploadDetails,
 } from "../http";
 import { sanitizeUserAgent, USER_AGENT_MAX } from "../sanitize";
 import { SecurityAuditRecord, securityEventJsonSchema } from "../schema";
@@ -125,6 +127,95 @@ describe("bảng route audit (matchAuditRoute)", () => {
     expect(m?.route.target?.(m.segments, {} as never)).toEqual({
       type: "mfa_factor",
       id: "authmfa_01ABCxyz",
+    });
+  });
+
+  it("T-175: upload và đổi cấu hình native (stores, api-keys, invites, users — POST/DELETE); đọc không khớp", () => {
+    expect(ev("POST", "/admin/uploads")).toBe(SECURITY_EVENTS.FILE_UPLOADED);
+    expect(ev("DELETE", "/admin/uploads/1700000000000-abc.png")).toBe(SECURITY_EVENTS.FILE_DELETED);
+    expect(ev("GET", "/admin/uploads/f_1")).toBeNull();
+    expect(ev("POST", "/admin/uploads/presigned-urls")).toBeNull();
+    const op = (method: string, url: string) => {
+      const m = matchAuditRoute(method, at(url));
+      return m === null
+        ? null
+        : [m.route.event, m.route.details?.operation, m.route.target?.(m.segments, {} as never, {})];
+    };
+    const C = SECURITY_EVENTS.CONFIG_CHANGED;
+    expect(op("POST", "/admin/stores/store_1")).toEqual([C, "update", { type: "store", id: "store_1" }]);
+    expect(op("POST", "/admin/api-keys")).toEqual([C, "create", { type: "api_key", id: null }]);
+    expect(op("POST", "/admin/api-keys/apk_1")).toEqual([C, "update", { type: "api_key", id: "apk_1" }]);
+    expect(op("POST", "/admin/api-keys/apk_1/revoke")?.[1]).toBe("revoke");
+    expect(op("POST", "/admin/api-keys/apk_1/sales-channels")?.[1]).toBe("update_sales_channels");
+    expect(op("DELETE", "/admin/api-keys/apk_1")?.[1]).toBe("delete");
+    expect(op("POST", "/admin/invites")?.[1]).toBe("create");
+    expect(op("POST", "/admin/invites/accept")).toEqual([C, "invite_accepted", { type: "user", id: null }]);
+    expect(op("POST", "/admin/invites/inv_1/resend")?.[1]).toBe("resend");
+    expect(op("DELETE", "/admin/invites/inv_1")?.[1]).toBe("delete");
+    expect(op("POST", "/admin/users/user_1")).toEqual([C, "update", { type: "user", id: "user_1" }]);
+    expect(op("DELETE", "/admin/users/user_1")?.[1]).toBe("delete");
+    expect(op("POST", "/admin/users/user_1/reset-password")?.[1]).toBe("reset_password_token_issued");
+    expect(op("DELETE", "/admin/users/user_1/roles/role_1")?.[1]).toBe("native_role_removed");
+    for (const url of [
+      "/admin/stores",
+      "/admin/stores/store_1",
+      "/admin/api-keys",
+      "/admin/invites",
+      "/admin/users",
+    ])
+      expect({ url, ev: ev("GET", url) }).toEqual({ url, ev: null });
+    // Đích tạo mới lấy id từ thân phản hồi; thân không có/sai kiểu → null.
+    const create = matchAuditRoute("POST", at("/admin/api-keys"));
+    expect(
+      create?.route.target?.(create.segments, {} as never, { api_key: { id: "apk_9", token: "sk_bi_mat" } }),
+    ).toEqual({
+      type: "api_key",
+      id: "apk_9",
+    });
+    expect(create?.route.target?.(create.segments, {} as never, { api_key: { id: 5 } })).toEqual({
+      type: "api_key",
+      id: null,
+    });
+    expect(create?.route.target?.(create.segments, {} as never, null)).toEqual({ type: "api_key", id: null });
+    // Chỉ lời mời chấp nhận ghi cả 401/403 (route công khai với cổng RBAC).
+    expect(AUDIT_ROUTES.filter((r) => r.recordAuthFailures === true).map((r) => r.pattern)).toEqual([
+      "/admin/invites/accept",
+    ]);
+  });
+
+  it("bodyFieldNames: chỉ TÊN trường hợp lệ, sắp xếp, ≤ 30; không phải object → null", () => {
+    expect(bodyFieldNames({ name: "Shop", email: "a@b.vn", "x y": 1, __proto__x: 1, "1a": 2 })).toEqual([
+      "email",
+      "name",
+    ]);
+    for (const v of [null, undefined, "chuoi", 5, ["a"], Buffer.from("{}")])
+      expect(bodyFieldNames(v)).toBeNull();
+    expect(bodyFieldNames({})).toEqual([]);
+    const many = Object.fromEntries(
+      Array.from({ length: 50 }, (_v, i) => [`f${String(i).padStart(2, "0")}`, i]),
+    );
+    expect(bodyFieldNames(many)).toHaveLength(30);
+  });
+
+  it("uploadDetails: số file/tổng byte luôn có; MIME + danh sách id chỉ khi thành công; không có file → 0", () => {
+    const req = (files: unknown) => ({ files }) as never;
+    const files = [
+      { size: 10, mimetype: "image/png", originalname: "nguyen-van-a.png" },
+      { size: 5, mimetype: "image/jpeg" },
+    ];
+    const ok = uploadDetails(req(files), { files: [{ id: "1-a.png" }, { id: "2-b.jpg" }] }, 200);
+    expect(ok).toEqual({
+      file_count: 2,
+      total_bytes: 15,
+      mime_types: ["image/jpeg", "image/png"],
+      file_ids: ["1-a.png", "2-b.jpg"],
+    });
+    expect(JSON.stringify(ok)).not.toContain("nguyen");
+    expect(uploadDetails(req(files), null, 415)).toEqual({ file_count: 2, total_bytes: 15 });
+    expect(uploadDetails(req(undefined), null, 415)).toEqual({ file_count: 0, total_bytes: 0 });
+    expect(uploadDetails(req([{ size: -1 }, { size: "9" }]), null, null)).toEqual({
+      file_count: 2,
+      total_bytes: 0,
     });
   });
 
@@ -277,8 +368,10 @@ describe("docs/security/security-events.md ↔ tên sự kiện trong mã (SEC-L
       });
   });
 
-  it("tài liệu không nêu sự kiện auth./data./rbac. mà mã không có", () => {
-    const mentioned = new Set([...doc.matchAll(/`((?:auth|data|rbac)\.[a-z0-9_.]+)`/g)].map((m) => m[1]));
+  it("tài liệu không nêu sự kiện auth./data./rbac./file./config./input. mà mã không có", () => {
+    const mentioned = new Set(
+      [...doc.matchAll(/`((?:auth|data|rbac|file|config|input)\.[a-z0-9_.]+)`/g)].map((m) => m[1]),
+    );
     for (const name of mentioned)
       expect({ name, inCode: (SECURITY_EVENT_NAMES as readonly string[]).includes(name as string) }).toEqual({
         name,

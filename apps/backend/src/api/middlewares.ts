@@ -19,6 +19,7 @@ import { inviteAcceptGuard } from "../lib/admin-security/invite-guard";
 import { registerGate } from "../lib/admin-security/register-gate";
 import { resetPasswordGuard } from "../lib/admin-security/reset-password";
 import { securityAuditTrail } from "../lib/audit/http";
+import { inputAuditTrail, withInputAudit } from "../lib/audit/input";
 import { xErrorHandler } from "../lib/errors/error-handler";
 import { requestLogContext } from "../lib/log/http";
 import { csrfGuard } from "../lib/security/csrf";
@@ -51,11 +52,13 @@ function blockNativeCartComplete(_req: MedusaRequest, res: MedusaResponse, _next
 
 export default defineMiddlewares({
   // Handler lỗi toàn cục (T-088): problem+json có trace_id, 5xx không lộ stack/SQL/đường dẫn (lib/errors/error-handler.ts).
-  errorHandler: xErrorHandler,
+  // Bọc audit đầu vào bị từ chối (T-175, lib/audit/input.ts): lỗi schema/deserialize → `input.*`; phản hồi không đổi.
+  errorHandler: withInputAudit(xErrorHandler),
   routes: [
     // Ngữ cảnh log (trace_id/span_id) + log truy cập đã che cho MỌI request (T-090, lib/log/http.ts). `matcher: "/"`
     // không `methods` → Medusa xếp vào nhóm global, chạy trước mọi middleware khác của dự án.
-    { matcher: "/", middlewares: [requestLogContext] },
+    // Audit đầu vào bị từ chối (400/422 `VALIDATION`/`INVALID_CHARACTERS`, lỗi schema native) cho MỌI route (T-175).
+    { matcher: "/", middlewares: [requestLogContext, inputAuditTrail] },
     // Audit sự kiện xác thực + xuất/truy cập dữ liệu nhạy cảm theo bảng route (T-091, lib/audit/http.ts): ghi SAU khi
     // phản hồi xong, kể cả thất bại/429. Toàn cục → gắn trước rate limit/CSRF nên thấy cả request bị chặn sớm.
     { matcher: "/auth", middlewares: [securityAuditTrail] },

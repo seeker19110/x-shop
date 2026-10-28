@@ -1,9 +1,9 @@
 # Sự kiện bảo mật và audit trail
 
-> T-091 · Đóng/hỗ trợ: SEC-LOG-001, SEC-LOG-002, CMP-AUDIT-002, SEC-LOG-007 (append-only). Cập nhật: 2026-10-26.
+> T-091, T-175 · Đóng/hỗ trợ: SEC-LOG-001, SEC-LOG-002, CMP-AUDIT-002, SEC-LOG-007 (append-only). Cập nhật: 2026-10-28.
 > Nguồn tên sự kiện trong mã: `apps/backend/src/lib/audit/events.ts` (`SECURITY_EVENTS`). Test
 > `apps/backend/src/lib/audit/__tests__/security-events.unit.spec.ts` đối chiếu bảng dưới với mã: thêm sự kiện mà quên
-> tài liệu (hoặc tài liệu nêu `auth.*`/`data.*`/`rbac.*` mà mã không có) → đỏ.
+> tài liệu (hoặc tài liệu nêu `auth.*`/`data.*`/`rbac.*`/`file.*`/`config.*`/`input.*` mà mã không có) → đỏ.
 
 ## 1. Nơi ghi
 
@@ -12,6 +12,7 @@
 | Bảng `audit_log` (DB)  | module `xAudit` — `apps/backend/src/modules/audit/`                                         | **Nguồn chính.** Chỉ ghi thêm: trigger `x_append_only_guard` chặn UPDATE/DELETE; không có route sửa/xoá (`/admin/x/audit` chỉ GET).            |
 | Dòng log `security.audit` | stdout JSON của logger dự án (`apps/backend/src/lib/log/`), phát bởi `recordAudit`        | Chỉ trường định danh/kết quả (không `changes`/`reason`/User-Agent) — để Collector đưa về kho tập trung (SEC-LOG-006, chưa có hạ tầng).        |
 | Ghi theo route         | `securityAuditTrail` — `apps/backend/src/lib/audit/http.ts`, đăng ký ở `src/api/middlewares.ts` cho `/auth` và `/admin` | Ghi **sau khi phản hồi xong** (`finish`): không thêm độ trễ, không đổi thời gian phản hồi đăng nhập (BE-AUTH-003); thất bại/405/429 cũng ghi; kết nối đóng trước khi xong (`close`, chưa `writableFinished`): handler vẫn chạy tiếp (workflow xuất vẫn tạo file) → chờ handler gọi `res.end` tối đa `ABORT_WAIT_MS` (15 s) rồi ghi kết quả theo status thật kèm `changes.aborted`; hết hạn chưa phản hồi → `failure`, `status: null`. Khớp route **như router Express thấy** (§3.0). |
+| Đầu vào bị từ chối     | `inputAuditTrail` + `withInputAudit(errorHandler)` — `apps/backend/src/lib/audit/input.ts`, đăng ký ở `src/api/middlewares.ts` (toàn cục `/` + bọc handler lỗi) | MỌI route; ghi sau `finish`, tối đa một dòng mỗi request (§3.6). Body-parser của Medusa chạy trước middleware dự án → lỗi deserialize chỉ thấy ở handler lỗi, nên handler lỗi được bọc. |
 | Ghi trong mã nghiệp vụ | `recordAudit()` — `apps/backend/src/lib/audit/record.ts`                                    | Cổng RBAC (`lib/admin-security/guard.ts`), route vai trò, workflow đổi trả/hoàn tiền, đối soát, nhập catalog, điều chỉnh tồn.                    |
 
 ## 2. Trường của một sự kiện (SEC-LOG-002, CMP-AUDIT-002)
@@ -31,7 +32,7 @@ schema. Sinh lại sau khi sửa schema: `UPDATE_SECURITY_SCHEMA=1 pnpm --filter
 | `user_agent` / where                         | `user_agent`                    | ≤ 256 ký tự (CHECK ở DB), bỏ ký tự điều khiển/bidi/xuống dòng, che email/SĐT lẫn trong chuỗi (`sanitizeUserAgent`).                                                                 |
 | `trace_id` / `request_id`                    | `request_id`                    | = `trace_id` của request (cùng mã trong log JSON và problem+json — `lib/errors/trace.ts`).                                                                                         |
 | reason                                       | `reason`                        | Lý do nhân viên nhập; che email/SĐT/địa chỉ (`maskFreeText`), ≤ 1000 ký tự.                                                                                                        |
-| chi tiết                                     | `changes` (jsonb)               | Đã che PII theo tên khoá + giá trị (`sanitizeChanges`). Sự kiện theo route có `route`, `status`, `error_code`, `stage`, `auth_identity_id`, `throttle`, `aborted`, `dataset`, `pii`; đăng nhập/mật khẩu có `actor_type` (`user`/`customer`/`other`) và `provider` (`emailpass`/`other`) — không chép chuỗi lạ do client chọn.            |
+| chi tiết                                     | `changes` (jsonb)               | Đã che PII theo tên khoá + giá trị (`sanitizeChanges`). Sự kiện theo route có `route`, `status`, `error_code`, `stage`, `auth_identity_id`, `throttle`, `aborted`, `dataset`, `pii`; đăng nhập/mật khẩu có `actor_type` (`user`/`customer`/`other`) và `provider` (`emailpass`/`other`) — không chép chuỗi lạ do client chọn. Upload: `file_count`, `total_bytes`, `mime_types`/`file_ids` (khi thành công). Đổi cấu hình: `operation`, `fields` (TÊN trường của thân, không giá trị). Đầu vào bị từ chối: `cause`, `params` (tên tham số lỗi). |
 
 Không bao giờ ghi: mật khẩu, mã TOTP/recovery code, token/JWT, cookie, email/SĐT thô, IP thô.
 
@@ -71,7 +72,7 @@ hợp) vẫn audit đúng route.
 
 | Sự kiện             | Khi nào                                                                        | Nơi ghi                                         | Kết quả                                                    |
 | ------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------- |
-| `rbac.denied`       | 403 ở cổng RBAC `/admin/*` (thiếu quyền, route không khai báo, actor không phải user) | `lib/admin-security/guard.ts` (`auditDenied`)  | denied; gộp tần suất theo (actor, lớp route, lý do)         |
+| `rbac.denied`       | 403 ở cổng RBAC `/admin/*` (thiếu quyền, route không khai báo, actor không phải user, trường cấm); **403 `MFA_REQUIRED`/`REAUTH_REQUIRED`** ở cổng và trong route (hoàn tiền vượt ngưỡng — `rejectWithoutRecentMfa`, `changes.in_route: true`) — T-175 | `lib/admin-security/guard.ts` (`auditDenied`)  | denied; `changes.reason` = `missing_permission`/`actor_type`/`forbidden_fields`/`invalid_path`/mã deny/`MFA_REQUIRED`/`REAUTH_REQUIRED`; gộp tần suất theo (actor, lớp route, lý do) |
 | `rbac.role_granted` | `POST /admin/x/users/:id/roles` (cấp vai trò); script `rbac:grant-owner`       | `api/admin/x/users/[id]/roles/route.ts`, `scripts/grant-owner.ts` | success (có trước/sau) · failure (`NOT_FOUND`)              |
 | `rbac.role_revoked` | `DELETE /admin/x/users/:id/roles`                                              | `api/admin/x/users/[id]/roles/route.ts`         | success · failure (`LAST_OWNER` — không thu hồi owner cuối) |
 
@@ -90,12 +91,47 @@ hợp) vẫn audit đúng route.
 
 Kết quả: success · failure (4xx khác 401/403, 5xx). 401/403 ở `/admin` không ghi ở đây — 403 đã có `rbac.denied`. Đường dẫn có `//` ở giữa: Express không khớp route nào (404) → không ghi.
 
-### 3.4 Hành động admin nghiệp vụ (đã có trước T-091, cùng bảng)
+### 3.4 Upload và đổi cấu hình qua route native (ghi theo route — `securityAuditTrail`, T-175)
+
+| Sự kiện          | Route (native Medusa 2.22.1)                                                          | Đích                                        | `changes`                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `file.uploaded`  | `POST /admin/uploads` (multer + `uploadPrecheck`/`uploadContentCheck`)                 | `file` / id file (một file; nhiều file → NULL + `file_ids`) | `file_count`, `total_bytes`; thành công: `mime_types` (loại thật theo magic bytes), `file_ids`; không bao giờ tên file gốc |
+| `file.deleted`   | `DELETE /admin/uploads/:id`                                                            | `file` / id                                 | `status`                                                                                       |
+| `config.changed` | `POST /admin/stores/:id` (`update`)                                                    | `store` / id                                | `operation`, `fields` (tên trường, không giá trị)                                              |
+| `config.changed` | `POST /admin/api-keys` (`create`), `POST /admin/api-keys/:id` (`update`), `…/revoke`, `…/sales-channels` (`update_sales_channels`), `DELETE /admin/api-keys/:id` (`delete`) | `api_key` / id (tạo mới: id từ thân phản hồi — không đọc `token` bí mật) | như trên |
+| `config.changed` | `POST /admin/invites` (`create`), `POST /admin/invites/:id/resend` (`resend`), `DELETE /admin/invites/:id` (`delete`); `POST /admin/invites/accept` (`invite_accepted` — tạo tài khoản admin; route công khai với cổng RBAC nên 401/403 của nó cũng ghi) | `invite` / id; accept: `user` / id user mới | như trên (email lời mời chỉ xuất hiện dưới dạng tên trường `email`) |
+| `config.changed` | `POST /admin/users/:id` (`update`), `DELETE /admin/users/:id` (`delete`), `POST /admin/users/:id/reset-password` (`reset_password_token_issued`), route vai trò native `/admin/users/:id/roles[/:role_id]` (RBAC native — cờ tắt) | `user` / id | như trên; token đặt lại trong phản hồi KHÔNG được đọc (actor vẫn là admin gọi) |
+
+Kết quả theo status như §3.3. 403 của cổng RBAC (thiếu quyền, thiếu MFA/xác thực lại) không ghi ở đây — đã có `rbac.denied`;
+request bị kiểm upload (415/413/411/400) hoặc schema (400) từ chối vẫn ghi `failure` kèm `error_code`. Lỗi schema ở route
+cấu hình sinh **hai** dòng khác sự kiện cho một request: `config.changed` (failure) và `input.validation_failed` (§3.6).
+
+### 3.5 Hành động admin nghiệp vụ (đã có trước T-091, cùng bảng)
 
 `refund.requested|approved|rejected|cancelled|succeeded|failed|unknown`, `return.requested|approved|rejected|received|inspected`,
 `order.cancelled`, `order.cancelled_unverified` (T-165: owner hủy đơn thanh toán chưa xác minh — lý do, `merchant_ref`, attempt), `inventory.adjusted`, `settlement.batch.imported`, `settlement.discrepancy.resolved`,
 `catalog.import.previewed|committed|commit_rejected|commit_failed`. Kết quả mặc định theo tên (`defaultOutcomeOf`:
 `refund.failed`, `catalog.import.commit_*` lỗi → failure; còn lại success).
+
+### 3.6 Đầu vào bị từ chối (`lib/audit/input.ts`, T-175 — mọi route)
+
+| Sự kiện                    | Khi nào                                                                                                                       | `changes.cause`                          |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `input.validation_failed`  | Validator native của Medusa (`validateAndTransformBody/Query` → `MedusaError invalid_data` "Invalid request: …", 400 `INVALID_DATA`) | `medusa_schema`                     |
+| `input.validation_failed`  | Lỗi zod thô tới handler lỗi (400 `VALIDATION`)                                                                                | `zod`                                    |
+| `input.validation_failed`  | Phản hồi 400/422 mã `VALIDATION` (zod trong route `/admin/x/*`, `CheckoutError`/`ReturnsError` — quy ước của dự án cho đầu vào sai) hoặc `INVALID_CHARACTERS` (NUL — `rejectNulBytes`) | `problem_code` |
+| `input.deserialize_failed` | Body-parser: JSON hỏng (`entity.parse.failed`), charset/encoding không hỗ trợ (415)                                            | `body_parse` · `body_charset` · `body_encoding` |
+| `input.deserialize_failed` | Tham số đường dẫn mã hoá hỏng (`URIError` của Express → 400 `INVALID_PATH`)                                                   | `path_decode` (đích = nhãn cố định)      |
+
+Actor: user/customer đã xác thực, không có → `anonymous` (body-parser chạy trước xác thực nên lỗi deserialize luôn vô danh).
+Đích: `http_route` / `<METHOD> <mẫu route Express>` (vd `POST /admin/stores/:id`); không có mẫu → pathname đã che email/SĐT
+(≤ 200 ký tự); đường dẫn không giải mã được → `(đường dẫn không hợp lệ)`. `changes`: `status`, `error_code` (mã problem+json),
+`cause`, `params` (tên tham số từ `errors[].param`, đã lọc ký tự, ≤ 10). **Không ghi** thân, query, thông điệp lỗi (Medusa
+chép giá trị nhập vào thông điệp). Kết quả luôn `failure`. Một request = tối đa một dòng (cờ trên request: handler lỗi phân
+loại, bộ quan sát ghi lúc `finish`; request chưa qua bộ quan sát — lỗi body-parser — được handler lỗi gắn quan sát). Không
+gồm: 413 quá dung lượng, lỗi nghiệp vụ `INVALID_DATA` khác của Medusa, lỗi multer (upload đã có `file.uploaded` failure).
+Ghi audit lỗi → chỉ log `[audit] …` (không PII), phản hồi không đổi. Chống tái phát khi nâng Medusa: test
+`apps/backend/src/lib/audit/__tests__/input.unit.spec.ts` khoá tiền tố `Invalid request: ` của `zodValidator`; test tích hợp kiểm `cause: medusa_schema` thật.
 
 ## 4. Chống ngập
 
@@ -107,7 +143,8 @@ Gộp trong cửa sổ 60 giây, chỉ ghi lần 1, 10, 100, 1000… của nhóm
 | Mọi thất bại **vô danh** ghi theo route (đăng nhập sai, thân rỗng, MFA vô danh…) | (nguồn IP, sự kiện, kết quả)         |
 | `auth.lockout` (429)                                                    | (nguồn IP, `auth.lockout`, `rate_limited`) |
 | `auth.password_reset_requested` (vô danh, không rate limit)             | (nguồn IP, sự kiện, kết quả)                |
-| `rbac.denied`                                                           | (actor, lớp route, lý do) — actor đã xác thực |
+| `rbac.denied` (gồm `MFA_REQUIRED`/`REAUTH_REQUIRED`)                     | (actor, lớp route, lý do) — actor đã xác thực |
+| `input.validation_failed`, `input.deserialize_failed` (mọi lần, kể cả có actor) | (actor đã xác thực hoặc nguồn IP, sự kiện, method, mã lỗi) — không theo đường dẫn (đổi đường dẫn rác không lách được) |
 
 "Nguồn IP" = `ipRateKey` (`lib/security/client-ip.ts`, cùng khoá với rate limit): IPv4 nguyên địa chỉ, IPv6 gộp cả /64 —
 xoay địa chỉ trong một /64 không lách được gộp; cột `ip_hash` của dòng vẫn là băm địa chỉ đầy đủ. Nhóm **không** chứa
@@ -136,9 +173,9 @@ có dòng riêng; tổng số lần vẫn đọc được từ `occurrence`, chi
 
 | Sự kiện yêu cầu                                       | Tình trạng                                                                                           |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Từ chối MFA/xác thực lại (403 `MFA_REQUIRED`/`REAUTH_REQUIRED`) | Cổng RBAC chưa ghi audit cho hai mã này (chỉ ghi `rbac.denied` khi thiếu quyền).            |
-| Upload, đổi cấu hình (native `/admin/stores`, khoá API, lời mời, xoá user native) | Chưa ghi audit theo route.                                                  |
-| Lỗi validate đầu vào, lỗi deserialize, lỗi TLS backend | Chỉ có trong log ứng dụng/log truy cập (không phải audit).                                          |
+| Lỗi TLS/chứng chỉ backend                             | **Không áp dụng tới khi có TLS nội bộ**: TLS đầu vào và TLS Postgres/Redis do hạ tầng, chưa có (THREAT-MODEL O-03) — backend chưa tự kết thúc TLS, không có mTLS/CA riêng do dự án quản lý. Gọi ra ngoài (VNPAY, GHN, S3, revalidate storefront) dùng HTTPS với kho CA mặc định của Node: lỗi chứng chỉ ở đó là lỗi gọi adapter (log ứng dụng + luồng lỗi/ngắt mạch của adapter), không phải sự kiện audit. Khi có TLS nội bộ (TLS/mTLS tới DB/Redis, CA riêng) phải thêm sự kiện (đề xuất `tls.handshake_failed`) kèm test. |
+| 403 trong route khác ngoài cổng RBAC và `rejectWithoutRecentMfa` | Không thành `rbac.denied` (vd `SELF_APPROVAL` của duyệt hoàn tiền — có audit nghiệp vụ hoàn tiền riêng). |
+| `POST /admin/uploads/presigned-urls`                  | Bị tắt (403 `UPLOAD_METHOD_DISABLED` của `uploadPrecheck`); không ghi `file.uploaded` (403 ở `/admin` bỏ qua). |
 | DSAR, triển khai                                      | Chưa có chức năng DSAR; triển khai chưa có pipeline production.                                     |
 | Đăng ký auth identity (`/auth/*/register`)            | Không ghi audit (T-138: cổng lời mời + rate limit, mọi ca từ chối cùng phản hồi 400).              |
 | Route PII native khác ngoài §3.3 (vd `/admin/payments`, `/admin/payment-collections`) | Chưa ghi `data.accessed` (dữ liệu thanh toán, không phải liên hệ khách). |
