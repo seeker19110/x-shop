@@ -11,7 +11,10 @@ import { CHECKOUT_CONFIG, getVnpayConfig, type VnpayRuntimeConfig } from "./conf
 export interface QueryStatusInput {
   txnRef: string;
   amount: number;
-  /** Thời điểm tạo giao dịch (vnp_TransactionDate). */
+  /**
+   * `vnp_TransactionDate` = `vnp_CreateDate` của URL thanh toán gốc (T-170) — lấy qua `transactionDateOf()`
+   * (`./vnpay-transaction-date`), không lấy `payment_attempt.created_at`.
+   */
   transactionDate: Date;
   orderInfo: string;
 }

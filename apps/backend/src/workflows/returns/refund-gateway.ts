@@ -14,6 +14,7 @@ export interface ProviderRefundRequest {
   requestId: string;
   txnRef: string;
   transactionNo: string;
+  /** `vnp_TransactionDate` = `vnp_CreateDate` của URL thanh toán gốc (T-170, `transactionDateOf()`). */
   transactionDate: Date;
   amount: number;
   /** Hoàn toàn phần giao dịch (VNPAY `02`) hay một phần (`03`). */

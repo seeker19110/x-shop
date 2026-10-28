@@ -5,6 +5,7 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import { getVnpayConfig } from "./config";
 import { notificationFromQuery, processVerified } from "./payment";
 import { getVnpayGateway, type QueryStatusResult } from "./vnpay-gateway";
+import { transactionDateOf } from "./vnpay-transaction-date";
 import { isNonEmpty } from "@x-shop/domain";
 
 const service = (c: MedusaContainer) => c.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
@@ -75,7 +76,7 @@ export async function queryAndProcess(
     raw = await gateway.queryStatus({
       txnRef: pa.txn_ref,
       amount: pa.amount,
-      transactionDate: new Date(pa.created_at),
+      transactionDate: transactionDateOf(container, pa, "querydr"),
       orderInfo: `Thanh toan don ${fin.display_ref}`,
     });
   } catch (e) {

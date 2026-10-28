@@ -217,6 +217,34 @@ describe("querydr / refund", () => {
       ),
     );
   });
+  it("T-170: vnp_TransactionDate = đúng chuỗi vnp_CreateDate của URL gốc qua khứ hồi fromVnpDate (cả biên GMT+7, bỏ ms)", () => {
+    for (const at of [
+      "2026-10-27T16:59:59.999Z", // 23:59:59 ngày 27 giờ VN
+      "2026-10-27T17:00:00.001Z", // 00:00:00 ngày 28 giờ VN, UTC còn ngày 27
+      "2026-12-31T17:00:00.500Z", // sang năm mới giờ VN
+      "2028-02-28T23:59:59.330Z", // 29/02 năm nhuận giờ VN
+    ]) {
+      const createdAt = new Date(at);
+      const sent = new URL(
+        buildPaymentUrl(cfg, { ...input, createdAt, expiresAt: new Date(createdAt.getTime() + 900_000) }),
+      ).searchParams.get("vnp_CreateDate")!;
+      const back = fromVnpDate(sent)!;
+      expect(back).not.toBeNull();
+      const q = buildQueryDr(cfg, { ...common, txnRef: "T1", transactionDate: back, orderInfo: "x" });
+      const r = buildRefund(cfg, {
+        ...common,
+        txnRef: "T1",
+        amount: 1_000,
+        full: true,
+        transactionNo: "1",
+        transactionDate: back,
+        createdBy: "k",
+        orderInfo: "x",
+      });
+      expect([q.vnp_TransactionDate, r.vnp_TransactionDate]).toEqual([sent, sent]);
+    }
+    expect(toVnpDate(new Date("2026-10-27T17:00:00.001Z"))).toBe("20261028000000");
+  });
   it("body refund một phần / toàn phần", () => {
     const base = {
       ...common,
