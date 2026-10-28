@@ -5,6 +5,7 @@ import { updateProductVariantsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { catalogRevalidate as protocol } from "@x-shop/domain";
 import { CURRENCY } from "../../src/lib/catalog/constants";
+import { rebuildCatalogIndex } from "../../src/lib/catalog/indexer";
 import { CATALOG_REVALIDATE_EVENT, CATALOG_REVALIDATE_POLICY } from "../../src/lib/catalog/revalidate";
 import { dispatchOutbox } from "../../src/lib/checkout/jobs";
 import { validateOutboxPayload } from "../../src/lib/outbox/payload";
@@ -12,6 +13,7 @@ import seedCatalog from "../../src/scripts/seed-catalog";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import { storeHeaders } from "../helpers/auth";
+import { pauseSourceReadAfter } from "../helpers/catalog-rebuild";
 
 /**
  * T-142 (D-070, BE-CACHE-007): sửa giá ở backend → webhook ĐÃ KÝ tới storefront (ở đây: máy chủ HTTP giả đóng vai route
@@ -32,31 +34,39 @@ interface Received {
   at: number;
   body: { id: string; tags: string[] };
   verified: boolean;
+  /** Kết quả `state.probe` đọc NGAY lúc nhận webhook (trước khi trả lời) — storefront thật nạp lại đúng lúc này. */
+  probe?: unknown;
 }
 
 /** Storefront giả: kiểm chữ ký như route thật; `status` đổi được để mô phỏng storefront lỗi. */
 function fakeStorefront() {
   const received: Received[] = [];
-  const state = { status: 200 };
+  const state: { status: number; probe: (() => Promise<unknown>) | null } = { status: 200, probe: null };
   const server: Server = createServer((req: IncomingMessage, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      const h = (k: string) => (req.headers[k] as string | undefined) ?? null;
-      const v = protocol.verifyRevalidate(
-        SECRET,
-        {
-          timestamp: h(protocol.REVALIDATE_HEADERS.timestamp),
-          nonce: h(protocol.REVALIDATE_HEADERS.nonce),
-          signature: h(protocol.REVALIDATE_HEADERS.signature),
-        },
-        raw,
-        Date.now(),
-      );
-      received.push({ at: Date.now(), body: JSON.parse(raw), verified: v.ok });
-      res.writeHead(v.ok ? state.status : 401, { "content-type": "application/json" });
-      res.end("{}");
+      void (async () => {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        const h = (k: string) => (req.headers[k] as string | undefined) ?? null;
+        const v = protocol.verifyRevalidate(
+          SECRET,
+          {
+            timestamp: h(protocol.REVALIDATE_HEADERS.timestamp),
+            nonce: h(protocol.REVALIDATE_HEADERS.nonce),
+            signature: h(protocol.REVALIDATE_HEADERS.signature),
+          },
+          raw,
+          Date.now(),
+        );
+        const at = Date.now();
+        const probe = state.probe
+          ? await state.probe().catch((e: unknown) => `lỗi: ${(e as Error).message}`)
+          : undefined;
+        received.push({ at, body: JSON.parse(raw), verified: v.ok, probe });
+        res.writeHead(v.ok ? state.status : 401, { "content-type": "application/json" });
+        res.end("{}");
+      })();
     });
   });
   return { server, received, state };
@@ -146,6 +156,7 @@ medusaIntegrationTestRunner({
     });
     beforeEach(() => {
       sf.state.status = 200;
+      sf.state.probe = null;
     });
 
     const productId = async () =>
@@ -250,6 +261,44 @@ medusaIntegrationTestRunner({
       // Số cửa sổ không vượt khoảng thời gian sửa (+ cửa sổ của lượt xả cuối).
       expect(rows.length).toBeLessThanOrEqual(Math.ceil((t1 - t0) / CATALOG_REVALIDATE_POLICY.windowMs) + 2);
       expect(rows.every((r) => r.state === "sent")).toBe(true);
+    });
+
+    it("T-167: sửa giá trong lúc rebuild đang đọc nguồn → đồng bộ không chờ rebuild; webhook `catalog` của rebuild tới SAU khi read model có giá mới", async () => {
+      const pid = await productId();
+      const indexPrices = async (): Promise<number[]> =>
+        (await db().raw(`SELECT price FROM catalog_variant_index WHERE sku = ?`, [SKU])).rows.map(
+          (r: { price: string | number }) => Number(r.price),
+        );
+      const NEW = 499_000;
+      const isNew = (p: unknown) => Array.isArray(p) && p.length > 0 && p.every((x) => x === NEW);
+      // Storefront giả đọc read model ngay lúc nhận webhook (lúc storefront thật nạp lại danh sách).
+      sf.state.probe = indexPrices;
+
+      const gate = pauseSourceReadAfter(container, pid);
+      const run = rebuildCatalogIndex(container);
+      try {
+        await gate.reached; // rebuild đã cầm ảnh chụp với giá CŨ
+        await setPrice(NEW); // workflow thật → sự kiện → dấu bẩn → lượt xả hẹn trước
+        // Khoá ghi không bị rebuild giữ lúc đọc nguồn → lượt xả đồng bộ ngay (trước T-167: chờ hết rebuild).
+        await eventually(indexPrices, isNew);
+      } finally {
+        gate.restore();
+      }
+      const released = Date.now();
+      const result = await run;
+      expect(result.superseded).toBe(false);
+      expect(result.kept).toBeGreaterThanOrEqual(1);
+      expect(isNew(await indexPrices())).toBe(true); // ảnh chụp cũ không ghi đè
+
+      // Webhook "cả catalog" do rebuild ghi SAU replaceAll: lúc storefront nhận, read model đã là giá mới.
+      const hooks = await eventually(
+        () => sf.received.filter((r) => r.at >= released && r.body.tags.includes(protocol.CATALOG_TAG)),
+        (r) => r.length > 0,
+      );
+      for (const h of hooks) {
+        expect(h.verified).toBe(true);
+        expect(h.probe).toEqual((await indexPrices()).map(() => NEW));
+      }
     });
   },
 });
