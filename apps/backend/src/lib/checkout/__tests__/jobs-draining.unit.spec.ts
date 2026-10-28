@@ -4,7 +4,7 @@ import { CHECKOUT_MODULE } from "../../../modules/checkout";
 import type { OutboxClaim } from "../../../modules/checkout/service";
 import { fakeOutboxDb } from "../../outbox/__tests__/fake-outbox-store";
 import { resetShutdownStateForTest, shutdownState } from "../../lifecycle/shutdown";
-import { dispatchOutbox, expireHolds, reconcileAttempts } from "../jobs";
+import { codConfirmTimeout, dispatchOutbox, expireHolds, reconcileAttempts } from "../jobs";
 
 /**
  * T-172/D-081: ba vòng lặp job kiểm `isDraining()` ở RANH GIỚI giữa hai đơn vị — đơn vị đang xử lý chạy trọn, đơn vị sau
@@ -187,5 +187,38 @@ describe("dispatchOutbox — dừng khi đang tắt", () => {
     const r = await dispatchOutbox(f.container, { handlers: { "test.x": async () => undefined } });
     expect(r.sent).toHaveLength(3);
     expect(r.stopped).toBeNull();
+  });
+});
+
+describe("codConfirmTimeout — dừng khi đang tắt", () => {
+  function fixture() {
+    const opened: string[] = [];
+    const service = {
+      listOverdueCodOrders: async () => ids.map((id) => ({ order_id: id, display_ref: `#${id}` })),
+      openOpsException: async (input: { order_id: string }) => {
+        opened.push(input.order_id);
+        if (opened.length === 1 && stopAfterFirst) shutdownState().draining = true;
+        return true;
+      },
+    };
+    return { container: containerOf(service), opened };
+  }
+  let stopAfterFirst = false;
+  beforeEach(() => {
+    stopAfterFirst = false;
+  });
+
+  it("bật cờ tắt sau đơn 1/3: chỉ đơn 1 có ngoại lệ, stopped = draining", async () => {
+    stopAfterFirst = true;
+    const f = fixture();
+    const r = await codConfirmTimeout(f.container, { now: new Date() });
+    expect(r).toEqual({ opened: ["ord_1"], stopped: "draining" });
+    expect(f.opened).toEqual(["ord_1"]);
+  });
+
+  it("không tắt: mở đủ 3, stopped = null", async () => {
+    const f = fixture();
+    const r = await codConfirmTimeout(f.container, { now: new Date() });
+    expect(r).toEqual({ opened: ids, stopped: null });
   });
 });

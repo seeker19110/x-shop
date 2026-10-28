@@ -440,11 +440,17 @@ export async function reconcileAttempts(
 export async function codConfirmTimeout(
   container: MedusaContainer,
   opts: { now?: Date; limit?: number } = {},
-): Promise<{ opened: string[] }> {
+): Promise<{ opened: string[]; stopped: "draining" | null }> {
   const now = opts.now ?? new Date();
   const s = service(container);
   const opened: string[] = [];
+  let stopped: "draining" | null = null;
   for (const o of await s.listOverdueCodOrders(now, opts.limit ?? 200)) {
+    // Ranh giới giữa hai đơn (T-172/D-081): đang tắt → không mở ngoại lệ tiếp; đơn chưa xét vẫn quá hạn cho lượt sau.
+    if (isDraining()) {
+      stopped = "draining";
+      break;
+    }
     const isNew = await s.openOpsException({
       kind: "cod_confirm_overdue",
       dedupe_key: `cod_confirm_overdue:${o.order_id}`,
@@ -455,7 +461,7 @@ export async function codConfirmTimeout(
     });
     if (isNew) opened.push(o.order_id);
   }
-  return { opened };
+  return { opened, stopped };
 }
 
 /* ---------------------------------------------------------------- outbox-dispatch */
