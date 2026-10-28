@@ -27,6 +27,13 @@ import { key, newIp, returnsFlow, type J, type PlacedOrder } from "../helpers/re
 jest.setTimeout(300 * 1000);
 
 const GUARD = INVENTORY_GUARD_CONSTRAINT;
+/** Bốn constraint trigger (D-134): inventory_level + reservation_item, INSERT/UPDATE tách để WHEN dùng được OLD. */
+const TRIGGERS = [
+  { table: "inventory_level", tgname: `${GUARD}_ins` },
+  { table: "inventory_level", tgname: `${GUARD}_upd` },
+  { table: "reservation_item", tgname: "x_reservation_item_stock_guard_ins" },
+  { table: "reservation_item", tgname: "x_reservation_item_stock_guard_upd" },
+];
 const CHECK_VIOLATION = "23514";
 const MIN = 60_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -86,10 +93,13 @@ medusaIntegrationTestRunner({
     const guardObjects = async () => {
       const triggers = (
         await pg().raw(
-          `select tgname, tgdeferrable, tginitdeferred, tgconstraint <> 0 as is_constraint
-             from pg_trigger where tgrelid = 'inventory_level'::regclass and not tgisinternal order by tgname`,
+          `select c.relname as "table", t.tgname, t.tgdeferrable, t.tginitdeferred, t.tgconstraint <> 0 as is_constraint
+             from pg_trigger t join pg_class c on c.oid = t.tgrelid
+            where t.tgrelid in ('inventory_level'::regclass, 'reservation_item'::regclass) and not t.tgisinternal
+            order by t.tgname`,
         )
       ).rows as Array<{
+        table: string;
         tgname: string;
         tgdeferrable: boolean;
         tginitdeferred: boolean;
@@ -103,6 +113,29 @@ medusaIntegrationTestRunner({
       const m = new Migration20261028150000({} as never, {} as never);
       await m[direction]();
       for (const q of m.getQueries()) await pg().raw(String(q));
+    };
+    /** Một dòng reservation_item ghi thẳng (không qua Medusa, không cập nhật reserved_quantity của level). */
+    const rawReservation = (variantKey: string, quantity: number, tag: string) => ({
+      id: `resitem_t185_${tag}`,
+      inventory_item_id: fx.variants[variantKey]!.inventoryItemId,
+      location_id: fx.sellableLocationId,
+      quantity,
+      description: "T-185",
+    });
+    const liveReservations = async (variantKey: string) =>
+      (
+        await pg()("reservation_item")
+          .where({
+            inventory_item_id: fx.variants[variantKey]!.inventoryItemId,
+            location_id: fx.sellableLocationId,
+          })
+          .whereNull("deleted_at")
+      ).length;
+    /** Gate dùng cho hai phiên DB chạy xen kẽ. */
+    const latch = () => {
+      let open!: () => void;
+      const p = new Promise<void>((r) => (open = r));
+      return { p, open };
     };
     const allowBackorder = (variantKey: string) =>
       updateProductVariantsWorkflow(container).run({
@@ -162,9 +195,14 @@ medusaIntegrationTestRunner({
     /* ------------------------------------------------------------------ ràng buộc trong DB */
 
     describe("ràng buộc trong DB", () => {
-      it("constraint trigger DEFERRABLE INITIALLY DEFERRED tồn tại trên inventory_level, kèm function", async () => {
+      it("constraint trigger DEFERRABLE INITIALLY DEFERRED tồn tại trên inventory_level và reservation_item, kèm function", async () => {
         expect(await guardObjects()).toEqual({
-          triggers: [{ tgname: GUARD, tgdeferrable: true, tginitdeferred: true, is_constraint: true }],
+          triggers: TRIGGERS.map((t) => ({
+            ...t,
+            tgdeferrable: true,
+            tginitdeferred: true,
+            is_constraint: true,
+          })),
           fns: 1,
         });
       });
@@ -290,15 +328,130 @@ medusaIntegrationTestRunner({
           expect(await guardObjects()).toEqual({ triggers: [], fns: 0 });
           expect(await levelRow("Trắng/S")).toMatchObject({ stocked: 10, reserved: 12 }); // không tự sửa
           await pg()("inventory_level").where({ id }).update({ reserved_quantity: 0 });
+          // D-134: tổng reservation_item còn sống vượt stocked (cột reserved vẫn khớp stocked) → up cũng dừng.
+          await pg()("reservation_item").insert(rawReservation("Trắng/S", 11, "down"));
+          const up2 = await runMigration("up").then(
+            () => null,
+            (e: { code?: string; message?: string }) => e,
+          );
+          expect(up2?.message).toContain("T-185: 1 dòng inventory_level vi phạm");
+          expect(await guardObjects()).toEqual({ triggers: [], fns: 0 });
+          await pg()("reservation_item").where({ id: "resitem_t185_down" }).delete();
         } finally {
           await runMigration("up");
         }
-        expect((await guardObjects()).triggers.map((t) => t.tgname)).toEqual([GUARD]);
+        expect((await guardObjects()).triggers.map((t) => t.tgname)).toEqual(TRIGGERS.map((t) => t.tgname));
         expect(await outcome(pg()("inventory_level").where({ id }).update({ reserved_quantity: 12 }))).toBe(
           CHECK_VIOLATION,
         );
         await runMigration("up");
         expect(await guardObjects()).toMatchObject({ fns: 1 });
+      });
+    });
+
+    /* ------------------------------------------------------------------ D-134: tổng reservation_item */
+
+    describe("D-134: stocked ≥ tổng reservation_item còn sống", () => {
+      it("lost-update kiểu Medusa: hai phiên cùng đọc reserved = 0, mỗi phiên thêm reservation_item và ghi reserved = 0 + 1 (không khóa Redis) → phiên sau bị từ chối lúc commit; không bán âm", async () => {
+        const { id } = await levelRow("Đen/S"); // 1 / 0
+        const read = [latch(), latch()];
+        const bothRead = Promise.all(read.map((l) => l.p));
+        const session = (n: number) =>
+          outcome(
+            pg().transaction(async (trx) => {
+              const row = await trx("inventory_level").where({ id }).first<{ reserved_quantity: string }>();
+              read[n]!.open();
+              await bothRead; // cả hai đã đọc số cũ
+              await trx("reservation_item").insert(rawReservation("Đen/S", 1, `lu${n}`));
+              // Ghi tuyệt đối từ số đã đọc (như inventory module của Medusa) — phiên sau chờ khóa dòng rồi GHI ĐÈ.
+              await trx("inventory_level")
+                .where({ id })
+                .update({ reserved_quantity: Number(row!.reserved_quantity) + 1 });
+            }),
+          );
+        const results = await Promise.all([session(0), session(1)]);
+        expect(results.sort()).toEqual([CHECK_VIOLATION, "ok"]);
+        expect(await levelRow("Đen/S")).toMatchObject({ stocked: 1, reserved: 1 });
+        expect(await liveReservations("Đen/S")).toBe(1);
+      });
+
+      it("hai phiên chỉ chèn reservation_item (không chạm inventory_level), commit cùng lúc → đúng một phiên lọt (khóa dòng level trong hàm trigger tuần tự hoá)", async () => {
+        const inserted = [latch(), latch()];
+        const go = latch();
+        const session = (n: number) =>
+          outcome(
+            pg().transaction(async (trx) => {
+              await trx("reservation_item").insert(rawReservation("Đen/S", 1, `ins${n}`));
+              inserted[n]!.open();
+              await go.p;
+            }),
+          );
+        const runs = [session(0), session(1)];
+        await Promise.all(inserted.map((l) => l.p));
+        go.open();
+        expect((await Promise.all(runs)).sort()).toEqual([CHECK_VIOLATION, "ok"]);
+        expect(await liveReservations("Đen/S")).toBe(1);
+      });
+
+      it("một phiên: chèn reservation vượt stocked → 23514; tăng quantity, khôi phục reservation đã xoá mềm, chuyển sang SKU/kho đã đầy → 23514; đúng biên → được", async () => {
+        expect(await outcome(pg()("reservation_item").insert(rawReservation("Đen/S", 2, "big")))).toBe(
+          CHECK_VIOLATION,
+        );
+        expect(await outcome(pg()("reservation_item").insert(rawReservation("Đen/S", 1, "one")))).toBe("ok");
+        const one = pg()("reservation_item").where({ id: "resitem_t185_one" });
+        expect(await outcome(one.clone().update({ quantity: 2 }))).toBe(CHECK_VIOLATION);
+        expect(await outcome(one.clone().update({ deleted_at: new Date() }))).toBe("ok");
+        expect(await outcome(pg()("reservation_item").insert(rawReservation("Đen/S", 1, "two")))).toBe("ok");
+        expect(await outcome(one.clone().update({ deleted_at: null }))).toBe(CHECK_VIOLATION); // 2 > 1
+        expect(await outcome(one.clone().update({ quantity: 5 }))).toBe("ok"); // còn xoá mềm → không tính
+        // Chuyển reservation (Trắng/M, đủ hàng) sang Đen/S (đã giữ hết) → 23514.
+        expect(await outcome(pg()("reservation_item").insert(rawReservation("Trắng/M", 1, "move")))).toBe(
+          "ok",
+        );
+        expect(
+          await outcome(
+            pg()("reservation_item")
+              .where({ id: "resitem_t185_move" })
+              .update({ inventory_item_id: fx.variants["Đen/S"]!.inventoryItemId }),
+          ),
+        ).toBe(CHECK_VIOLATION);
+        expect(await liveReservations("Đen/S")).toBe(1);
+      });
+
+      it("cột reserved_quantity bị ghi lệch nhỏ hơn tổng giữ: hạ stocked dưới tổng reservation (vẫn ≥ reserved) → 23514", async () => {
+        await flow.client.placeOrder([["Đen/M", 3]], "vnpay"); // 10 / 3, tổng giữ 3
+        const { id } = await levelRow("Đen/M");
+        const r = await outcome(
+          pg().transaction(async (trx) => {
+            await trx("inventory_level").where({ id }).update({ reserved_quantity: 0 });
+            await trx("inventory_level").where({ id }).update({ stocked_quantity: 2 }); // 2 ≥ 0 nhưng < 3
+          }),
+        );
+        expect(r).toBe(CHECK_VIOLATION);
+        expect(await levelRow("Đen/M")).toMatchObject({ stocked: 10, reserved: 3 });
+      });
+
+      it("đồng thời: phiên A chèn reservation (chưa commit), phiên B hạ stocked đúng bằng reserved cũ → một trong hai bị từ chối", async () => {
+        const { id } = await levelRow("Đen/M"); // 10 / 0
+        const aInserted = latch();
+        const releaseA = latch();
+        const a = outcome(
+          pg().transaction(async (trx) => {
+            await trx("reservation_item").insert(rawReservation("Đen/M", 1, "a"));
+            aInserted.open();
+            await releaseA.p;
+          }),
+        );
+        await aInserted.p;
+        const b = outcome(
+          pg().transaction(async (trx) => {
+            await trx("inventory_level").where({ id }).update({ stocked_quantity: 0 });
+          }),
+        );
+        releaseA.open();
+        expect([await a, await b].sort()).toEqual([CHECK_VIOLATION, "ok"]);
+        const after = await levelRow("Đen/M");
+        expect(after.stocked >= (await liveReservations("Đen/M"))).toBe(true);
       });
     });
 
@@ -320,7 +473,8 @@ medusaIntegrationTestRunner({
         expect(await countOrders(container)).toBe(orders0 + 1);
       });
 
-      it("hàng rào DB quyết định (backorder bỏ qua kiểm tồn của ứng dụng và Medusa): hai checkout đồng thời tranh đơn vị cuối → một 200, một 409 INSUFFICIENT_STOCK (không 500), không bán âm", async () => {
+      // D-133: hàng rào chặn MỌI giữ hàng vượt tồn, kể cả biến thể bật allow_backorder — backorder thực tế TẮT theo D-133.
+      it("hàng rào DB quyết định (backorder bỏ qua kiểm tồn của ứng dụng và Medusa; backorder thực tế tắt theo D-133): hai checkout đồng thời tranh đơn vị cuối → một 200, một 409 INSUFFICIENT_STOCK (không 500), không bán âm", async () => {
         await allowBackorder("Đen/S");
         const carts = await Promise.all([
           flow.client.createCart([["Đen/S", 1]]),
@@ -480,6 +634,59 @@ medusaIntegrationTestRunner({
         expect(inspected.status).toBe(200);
         expect(await inventoryLevel(container, fx, "Trắng/M")).toEqual({ stocked: 10, reserved: 0 });
         expect(await quarantine("Trắng/M")).toBe(0);
+      });
+
+      it("đổi size: duyệt → đơn thay thế giữ hàng size mới (+1 reserved); size mới đã giữ hết + backorder (D-133) → hàng rào DB chặn → 409 INSUFFICIENT_STOCK, không 500, không giữ thêm", async () => {
+        const o = await flow.deliveredOrder([["Đen/S", 1]], "cod");
+        const line = await lineOf(o.orderId, "Đen/S");
+        const exchange = () =>
+          flow.requestReturn(o, {
+            kind: "exchange",
+            reason: "wrong_size",
+            lines: [{ line_id: line, quantity: 1, exchange_variant_id: fx.variants["Đen/M"]!.id }],
+          });
+        const req = await exchange();
+        expect(req.status).toBe(201);
+        const retId = req.data.return.id as string;
+
+        // Size mới đã giữ hết cho đơn khác; backorder bỏ qua kiểm tồn của ứng dụng → chỉ còn hàng rào DB.
+        await flow.client.placeOrder([["Đen/M", 10]], "vnpay"); // 10 / 10
+        await allowBackorder("Đen/M");
+        const orders0 = await countOrders(container);
+        const blocked = await flow.admin(`/admin/x/returns/${retId}/approve`, A("support"));
+        expect(blocked).toMatchObject({ status: 409, data: { code: "INSUFFICIENT_STOCK" } });
+        expect((await returns().getReturn(retId))!.state).toBe("requested");
+        expect(await countOrders(container)).toBe(orders0);
+        expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 10, reserved: 10 });
+        expect(await liveReservations("Đen/M")).toBe(1);
+
+        // Còn hàng → duyệt được, giữ +1.
+        await setStock(container, fx, "Đen/M", 11);
+        const ok = await flow.admin(`/admin/x/returns/${retId}/approve`, A("support"));
+        expect(ok.status).toBe(200);
+        expect(ok.data.return.replacement_order_id).toBeTruthy();
+        expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 11, reserved: 11 });
+      });
+
+      it("xuất kho đọc tồn cũ (ghi khác chen giữa lúc kiểm và lúc trừ) → hàng rào DB chặn trừ tồn → 409 FULFILLMENT_BLOCKED (không 500), stocked không đổi", async () => {
+        const o = await flow.place([["Đen/M", 1]], "cod"); // 10 / 1
+        await flow.client.placeOrder([["Đen/M", 9]], "vnpay"); // 10 / 10
+        const inventory = container.resolve(Modules.INVENTORY);
+        const real = inventory.listInventoryLevels.bind(inventory);
+        // Chỉ lời đọc của applyStock thấy số cũ (stocked 9, reserved 8) → kiểm của ứng dụng cho qua, trừ về 8 < 9 đang giữ.
+        const spy = jest.spyOn(inventory, "listInventoryLevels").mockImplementation(async (...args) => {
+          const rows = await real(...(args as Parameters<typeof real>));
+          if (!new Error().stack?.includes("applyStock")) return rows;
+          return rows.map((r) => ({ ...r, stocked_quantity: 9, reserved_quantity: 8 })) as typeof rows;
+        });
+        try {
+          const r = await flow.admin(`/admin/x/orders/${o.orderId}/shipments`, A("order_staff"));
+          expect(r.status).toBe(409);
+          expect(r.data.code).toBe("FULFILLMENT_BLOCKED");
+        } finally {
+          spy.mockRestore();
+        }
+        expect((await inventoryLevel(container, fx, "Đen/M")).stocked).toBe(10);
       });
     });
   },

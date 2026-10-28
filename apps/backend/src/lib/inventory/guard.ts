@@ -1,7 +1,8 @@
 /**
  * Nhận dạng lỗi của hàng rào tồn kho phía DB (T-185, IND-ECOM-001): constraint trigger `DEFERRABLE INITIALLY DEFERRED`
- * trên `inventory_level` (migration checkout Migration20261028150000) từ chối lúc COMMIT khi một dòng còn sống không giữ
- * `0 <= reserved_quantity <= stocked_quantity`, với SQLSTATE `23514`, `constraint` = tên dưới đây và thông điệp bắt đầu
+ * trên `inventory_level` và `reservation_item` (migration checkout Migration20261028150000) từ chối lúc COMMIT khi một
+ * dòng level còn sống không giữ `0 <= reserved_quantity <= stocked_quantity` hoặc tổng reservation_item còn sống của cặp
+ * (SKU, kho) vượt `stocked_quantity` (D-134), với SQLSTATE `23514`, `constraint` = tên dưới đây và thông điệp bắt đầu
  * bằng tên đó.
  *
  * Lỗi tới tay mã ứng dụng ở nhiều hình: lỗi `pg` gốc, `DriverException` của MikroORM (chép thuộc tính của lỗi gốc), lỗi
