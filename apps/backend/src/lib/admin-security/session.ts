@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import type { AdminSessionPolicy } from "./config";
 import type { SecurityStore } from "./store";
 import { isNonEmpty, msToSecondsCeil, secondsToMs } from "@x-shop/domain";
@@ -63,9 +63,15 @@ export function evaluateMfa(
   return { ok: true };
 }
 
-/** Khóa phiên ổn định qua refresh: băm (auth identity, mốc xác thực) — không lưu token/định danh thô. */
+/** Nhãn cố định của HMAC dẫn xuất khóa phiên (không phải bí mật — chỉ tách miền băm; đầu vào không phải mật khẩu). */
+const SESSION_KEY_LABEL = "x-shop/admin-session-key/v1";
+
+/**
+ * Khóa phiên ổn định qua refresh: HMAC-SHA256 (auth identity, mốc xác thực) — không lưu token/định danh thô.
+ * Đổi từ SHA-256 trần sang HMAC làm khóa phiên đang có (Redis/DB) mất khớp một lần: phiên phải đăng nhập lại.
+ */
 export function sessionKey(ctx: AdminAuthContext, anchorMs: number): string {
-  const h = createHash("sha256")
+  const h = createHmac("sha256", SESSION_KEY_LABEL)
     .update(`${ctx.auth_identity_id ?? ""}|${anchorMs}`)
     .digest("hex");
   return `sess:${h.slice(0, 40)}`;
