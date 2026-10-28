@@ -69,6 +69,23 @@ export const RejectBody = z.object({ reason: note.min(3) }).strict();
 /** Hủy (yêu cầu hoàn `failed`, đơn bởi nhân viên — T-044): lý do bắt buộc, ghi audit. */
 export const CancelBody = RejectBody;
 
+/**
+ * Mã đối chiếu trên cổng merchant VNPAY (T-165): mã giao dịch/mã tra cứu nhân viên thấy khi đối chiếu tay — 6–64 ký tự
+ * ASCII `[A-Za-z0-9_.:-]`, bắt đầu bằng chữ/số, không khoảng trắng (không phải chỗ ghi văn tự do/PII).
+ */
+export const MERCHANT_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{5,63}$/;
+
+/**
+ * Hủy đơn có thanh toán chưa xác minh (T-165, D-118): lý do ≥ 10 ký tự (thao tác ghi đè — phải đủ để người sau hiểu đã
+ * đối chiếu gì) + mã đối chiếu merchant.
+ */
+export const CancelUnverifiedBody = z
+  .object({
+    reason: note.min(10),
+    merchant_ref: z.string().trim().regex(MERCHANT_REF_PATTERN, "mã đối chiếu không hợp lệ"),
+  })
+  .strict();
+
 export const ReceiveBody = z
   .object({
     lines: z

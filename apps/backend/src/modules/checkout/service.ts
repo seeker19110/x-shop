@@ -78,6 +78,16 @@ export interface OpsExceptionInput {
   detail?: Record<string, unknown> | null;
 }
 
+/** Đầu vào hủy đơn trong một transaction (khách/cửa hàng — T-021/T-044; chưa xác minh — T-165). */
+export interface CancelOrderInput {
+  order_id: string;
+  from: OrderState;
+  refund_amount: number;
+  display_ref: string;
+  now: Date;
+  reason?: "CUSTOMER_CANCELLED" | "SHOP_CANCELLED";
+}
+
 export interface OutboxClaim {
   id: string;
   event_key: string;
@@ -1320,76 +1330,118 @@ class CheckoutModuleService extends MedusaService({
    * (hoàn thật + hủy native ở T-027). Trả false nếu đơn đã rời `from` (nhánh khác thắng). `reason`: khách tự hủy
    * (mặc định) hay cửa hàng hủy (nhân viên `order.cancel` — T-044).
    */
-  async cancelOrderByCustomer(input: {
-    order_id: string;
-    from: OrderState;
-    refund_amount: number;
-    display_ref: string;
-    now: Date;
-    reason?: "CUSTOMER_CANCELLED" | "SHOP_CANCELLED";
-  }): Promise<boolean> {
-    const reason = input.reason ?? "CUSTOMER_CANCELLED";
+  async cancelOrderByCustomer(input: CancelOrderInput): Promise<boolean> {
     const t = orderMachine.transition(input.from, "cancelled");
     if (!t.ok) return false;
+    return this.repo_.transaction((em) => this.cancelOrderIn(em, input));
+  }
+
+  /**
+   * Hủy đơn có thanh toán CHƯA XÁC MINH sau khi nhân viên `payment.override` đối chiếu tay trên cổng merchant (T-165,
+   * D-118) — gọi dưới khóa `order:<id>`. MỘT transaction: như cửa hàng hủy đơn `awaiting_payment` chưa thu
+   * (`cancelOrderByCustomer` với `SHOP_CANCELLED`, attempt mở → failed) + đóng mọi ngoại lệ `payment_unknown` đang mở của
+   * đơn (`resolved`, `detail` thêm cách xử lý, người, mã đối chiếu; `owner` giữ nếu đã có). Đơn đã rời `awaiting_payment`
+   * → `cancelled: false`, không đổi gì. Tiền đến sau (IPN/querydr) đi AT09: `decideOnCapture(cancelled)` → `late_payment`.
+   */
+  async cancelUnverifiedOrder(input: {
+    order_id: string;
+    display_ref: string;
+    now: Date;
+    actor_id: string;
+    merchant_ref: string;
+  }): Promise<{ cancelled: boolean; payment_unknown_closed: number }> {
     return this.repo_.transaction(async (em) => {
-      const fin = await this.exec(
-        `UPDATE order_finance SET state = 'cancelled', version = version + 1, updated_at = now()
-         WHERE order_id = ? AND state = ? RETURNING id`,
-        [input.order_id, input.from],
+      const cancelled = await this.cancelOrderIn(em, {
+        order_id: input.order_id,
+        from: "awaiting_payment",
+        refund_amount: 0,
+        display_ref: input.display_ref,
+        now: input.now,
+        reason: "SHOP_CANCELLED",
+      });
+      if (!cancelled) return { cancelled: false, payment_unknown_closed: 0 };
+      const closed = await this.exec(
+        `UPDATE ops_exception
+            SET state = 'resolved', owner = COALESCE(owner, ?),
+                detail = COALESCE(detail, '{}'::jsonb) || ?::jsonb, updated_at = now()
+          WHERE order_id = ? AND kind = 'payment_unknown' AND state IN ('open', 'in_progress') AND deleted_at IS NULL
+         RETURNING id`,
+        [
+          input.actor_id,
+          json({
+            resolution: "cancelled_unverified",
+            resolved_by: input.actor_id,
+            merchant_ref: input.merchant_ref,
+            resolved_at: input.now.toISOString(),
+          }),
+          input.order_id,
+        ],
         em,
       );
-      if (fin.length !== 1) return false;
-      await this.exec(
-        `UPDATE payment_attempt SET state = 'failed', updated_at = now()
-         WHERE order_id = ? AND state IN ('created', 'pending', 'unknown')`,
-        [input.order_id],
-        em,
-      );
-      await this.exec(
-        `UPDATE coupon_usage SET state = 'released', updated_at = now()
-         WHERE order_id = ? AND state IN ('held', 'used')`,
-        [input.order_id],
-        em,
-      );
-      await this.exec(
-        `UPDATE checkout_attempt SET state = 'failed', error_code = ?, updated_at = now()
-         WHERE order_id = ? AND state = 'ready'`,
-        [reason, input.order_id],
-        em,
-      );
-      await this.insertOutbox(
-        `order.cancelled:${input.order_id}`,
-        input.order_id,
-        "order.cancelled",
+      return { cancelled: true, payment_unknown_closed: closed.length };
+    });
+  }
+
+  /** Thân transaction của `cancelOrderByCustomer` (dùng lại trong `cancelUnverifiedOrder`). */
+  private async cancelOrderIn(em: SqlEntityManager, input: CancelOrderInput): Promise<boolean> {
+    const reason = input.reason ?? "CUSTOMER_CANCELLED";
+    const fin = await this.exec(
+      `UPDATE order_finance SET state = 'cancelled', version = version + 1, updated_at = now()
+       WHERE order_id = ? AND state = ? RETURNING id`,
+      [input.order_id, input.from],
+      em,
+    );
+    if (fin.length !== 1) return false;
+    await this.exec(
+      `UPDATE payment_attempt SET state = 'failed', updated_at = now()
+       WHERE order_id = ? AND state IN ('created', 'pending', 'unknown')`,
+      [input.order_id],
+      em,
+    );
+    await this.exec(
+      `UPDATE coupon_usage SET state = 'released', updated_at = now()
+       WHERE order_id = ? AND state IN ('held', 'used')`,
+      [input.order_id],
+      em,
+    );
+    await this.exec(
+      `UPDATE checkout_attempt SET state = 'failed', error_code = ?, updated_at = now()
+       WHERE order_id = ? AND state = 'ready'`,
+      [reason, input.order_id],
+      em,
+    );
+    await this.insertOutbox(
+      `order.cancelled:${input.order_id}`,
+      input.order_id,
+      "order.cancelled",
+      {
+        order_id: input.order_id,
+        reason,
+        from: input.from,
+        refund_amount: input.refund_amount,
+      },
+      em,
+    );
+    if (input.refund_amount > 0) {
+      await this.openOpsException(
         {
+          kind: "refund_request",
+          dedupe_key: `refund_request:${input.order_id}`,
           order_id: input.order_id,
-          reason,
-          from: input.from,
-          refund_amount: input.refund_amount,
+          amount: input.refund_amount,
+          priority: "high",
+          due_at: new Date(input.now.getTime() + 24 * 3600_000),
+          detail: {
+            reason,
+            display_ref: input.display_ref,
+            order_state_before: input.from,
+            native_cancel_pending: true,
+          },
         },
         em,
       );
-      if (input.refund_amount > 0) {
-        await this.openOpsException(
-          {
-            kind: "refund_request",
-            dedupe_key: `refund_request:${input.order_id}`,
-            order_id: input.order_id,
-            amount: input.refund_amount,
-            priority: "high",
-            due_at: new Date(input.now.getTime() + 24 * 3600_000),
-            detail: {
-              reason,
-              display_ref: input.display_ref,
-              order_state_before: input.from,
-              native_cancel_pending: true,
-            },
-          },
-          em,
-        );
-      }
-      return true;
-    });
+    }
+    return true;
   }
 
   async insertOutbox(

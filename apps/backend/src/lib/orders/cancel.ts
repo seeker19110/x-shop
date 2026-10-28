@@ -54,7 +54,7 @@ export async function releaseReservations(container: MedusaContainer, orderId: s
 }
 
 /** Giữ khóa `order:<id>` (cùng khóa với IPN/expiry/recheck/hoàn tiền) trong lúc chạy `fn`. */
-async function withCancelLock<T>(
+export async function withCancelLock<T>(
   container: MedusaContainer,
   orderId: string,
   fn: () => Promise<T>,
@@ -196,7 +196,7 @@ export interface StaffCancelResult extends CancelResult {
   replayed: boolean;
 }
 
-const pgCode = (e: unknown) =>
+export const pgCode = (e: unknown) =>
   typeof e === "object" && e !== null ? (e as { code?: string }).code : undefined;
 
 function replayStaffCancel(row: OrderCancelRow, hash: string): StaffCancelResult {

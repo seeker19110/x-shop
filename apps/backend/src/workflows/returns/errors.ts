@@ -31,6 +31,10 @@ export const RETURNS_ERROR_STATUS = {
   REFUND_RETRY_EXHAUSTED: 409,
   REFUND_PROVIDER_UNCONFIRMED: 409,
   BUSY_RETRY: 409,
+  /** T-165: hủy chưa xác minh chỉ cho đơn `awaiting_payment` (đã xác nhận/đã hủy/COD… → 409, kèm `state`). */
+  NOT_AWAITING_PAYMENT: 409,
+  /** T-165: đơn chờ thanh toán nhưng thanh toán không ở diện "chưa xác minh" (còn hạn, đã có kết quả, đã thu). */
+  PAYMENT_NOT_UNVERIFIED: 409,
 } as const;
 
 export type ReturnsErrorCode = keyof typeof RETURNS_ERROR_STATUS;
