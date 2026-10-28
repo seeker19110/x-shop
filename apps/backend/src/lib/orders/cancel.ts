@@ -53,16 +53,20 @@ export async function releaseReservations(container: MedusaContainer, orderId: s
   }
 }
 
-/** Giữ khóa `order:<id>` (cùng khóa với IPN/expiry/recheck/hoàn tiền) trong lúc chạy `fn`. */
+/**
+ * Giữ khóa `order:<id>` (cùng khóa với IPN/expiry/recheck/hoàn tiền) — và các khóa `extraKeys` nếu có (vd. khóa theo
+ * Idempotency-Key, T-165) — trong lúc chạy `fn`. `acquireOrdered` lấy khóa theo thứ tự đã sắp → không deadlock.
+ */
 export async function withCancelLock<T>(
   container: MedusaContainer,
   orderId: string,
   fn: () => Promise<T>,
+  extraKeys: readonly string[] = [],
 ): Promise<T> {
   const locking = container.resolve(Modules.LOCKING);
   const owner = `cancel:${randomUUID()}`;
   try {
-    await acquireOrdered(locking, [lockKeys.order(orderId)], {
+    await acquireOrdered(locking, [lockKeys.order(orderId), ...extraKeys], {
       ownerId: owner,
       waitMs: CHECKOUT_CONFIG.orderLockWaitMs,
       ttlSeconds: CHECKOUT_CONFIG.lockTtlSeconds,
@@ -196,7 +200,7 @@ export interface StaffCancelResult extends CancelResult {
   replayed: boolean;
 }
 
-export const pgCode = (e: unknown) =>
+const pgCode = (e: unknown) =>
   typeof e === "object" && e !== null ? (e as { code?: string }).code : undefined;
 
 function replayStaffCancel(row: OrderCancelRow, hash: string): StaffCancelResult {

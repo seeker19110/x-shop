@@ -607,6 +607,64 @@ medusaIntegrationTestRunner({
         }
       });
 
+      it("review vòng 2: audit ĐÃ ghi rồi mới lỗi → dòng audit bị rollback cùng việc hủy (audit nằm trong transaction); gửi lại → một audit", async () => {
+        const o = await vnpayOrder("Đen/S", { unknown: true });
+        const a = auditOf();
+        const orig = a.record.bind(a);
+        const spy = jest.spyOn(a, "record").mockImplementationOnce(async (entry, trx) => {
+          await orig(entry, trx);
+          throw new Error("crash-after-audit-insert");
+        });
+        const ctx = { actor_type: "user", actor_id: staff.owner.userId, request_id: null, ip_hash: null };
+        const input = {
+          order_id: o.orderId,
+          actor_id: staff.owner.userId,
+          reason: REASON,
+          merchant_ref: MREF,
+          idempotency_key: key(),
+        };
+        await expect(cancelUnverified(container, input, ctx)).rejects.toThrow("crash-after-audit-insert");
+        expect(spy).toHaveBeenCalledTimes(1);
+        spy.mockRestore();
+        expect(await auditEntries(o.orderId)).toHaveLength(0);
+        expect(await fin(o.orderId)).toMatchObject({ state: "awaiting_payment" });
+        expect(await cancelRows(o.orderId)).toHaveLength(0);
+
+        expect(await cancelUnverified(container, input, ctx)).toMatchObject({ replayed: false });
+        expect(await auditEntries(o.orderId)).toHaveLength(1);
+      });
+
+      it("review vòng 2: cùng Idempotency-Key cho HAI đơn chạy song song → bên sau nhận 409 IDEMPOTENCY_CONFLICT, đơn của nó không bị đụng (native còn, hàng còn giữ)", async () => {
+        const o1 = await vnpayOrder("Trắng/S", { unknown: true });
+        const o2 = await vnpayOrder("Trắng/M", { unknown: true });
+        const k = key();
+        // Treo querydr của đơn 1 → lệnh 1 giữ khóa đơn 1 (+ khóa key) trong lúc lệnh 2 (đơn 2, cùng key) được bắn.
+        let release!: () => void;
+        gateway.holds.set(o1.txnRef, new Promise<void>((r) => (release = r)));
+        const started = new Promise<void>((r) => gateway.started.set(o1.txnRef, r));
+        const r1p = cancelUv(o1.orderId, A("owner"), k);
+        await started;
+        const r2p = cancelUv(o2.orderId, A("owner"), k);
+        await sleep(500); // lệnh 2 phải đứng chờ khóa key, không được tiến tới querydr/hủy native của đơn 2
+        expect(gateway.seen.filter((t) => t === o2.txnRef)).toHaveLength(1); // chỉ lượt job tạo unknown
+        expect(await nativeStatus(o2.orderId)).not.toBe("canceled");
+        release();
+        const [r1, r2] = await Promise.all([r1p, r2p]);
+        expect(r1).toMatchObject({ status: 200, data: { order_id: o1.orderId, state: "cancelled" } });
+        expect({ status: r2.status, code: r2.data.code }).toEqual({
+          status: 409,
+          code: "IDEMPOTENCY_CONFLICT",
+        });
+        expect(await fin(o2.orderId)).toMatchObject({ state: "awaiting_payment" });
+        expect(await nativeStatus(o2.orderId)).not.toBe("canceled");
+        expect(await inventoryLevel(container, fx, "Trắng/M")).toEqual({ stocked: 50, reserved: 1 });
+        expect((await service().listPaymentAttempts({ order_id: o2.orderId })).map((p) => p.state)).toEqual([
+          "unknown",
+        ]);
+        expect(await cancelRows(o2.orderId)).toHaveLength(0);
+        expect(await cancelRows(o1.orderId)).toHaveLength(1);
+      });
+
       it("VNPAY đang tắt (không hỏi được cổng) → vẫn ghi đè được; IPN đến sau vẫn xác minh và đi AT09", async () => {
         const o = await vnpayOrder("Trắng/M", { unknown: true });
         vnpaySwitch.__xshopVnpayOff = "keys";

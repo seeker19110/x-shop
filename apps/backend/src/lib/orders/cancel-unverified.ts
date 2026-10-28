@@ -1,7 +1,9 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
+import { MedusaError } from "@medusajs/framework/utils";
 import { decideIdempotency, ledgerTotals, payloadHash } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
+import { isUniqueViolation } from "../../modules/checkout/service";
 import type { OrderCancelRow } from "../../modules/returns/service";
 import { ReturnsError } from "../../workflows/returns/errors";
 import { returnsOf } from "../../workflows/returns/order-context";
@@ -13,13 +15,27 @@ import { emitSecurityLog } from "../audit/record";
 import { CheckoutError } from "../checkout/errors";
 import { cancelNativeOrder } from "../checkout/jobs";
 import { queryAndProcess } from "../checkout/recheck";
-import { pgCode, withCancelLock } from "./cancel";
+import { withCancelLock } from "./cancel";
 
 const service = (c: MedusaContainer) => c.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
 
 /** Tiền tố khóa chống trùng trong `x_order_cancel` — tách không gian khóa với `/cancel` (`staff:`). */
 const KEY_PREFIX = "unverified:";
 const OPEN_PAYMENT_STATES = ["created", "pending", "unknown"] as const;
+
+/**
+ * Khóa theo Idempotency-Key (review T-165 vòng 2): hai lệnh cùng khóa trên HAI đơn khác nhau không cùng giữ một
+ * `order:<id>` — nếu không khóa theo key, cả hai qua kiểm trùng, cùng hủy native rồi một bên va UNIQUE (đơn nửa vời).
+ */
+const keyLock = (key: string) => `cancel-key:${key}`;
+
+/**
+ * Va UNIQUE `x_order_cancel.idempotency_key`: lỗi pg 23505 (thô/bọc) hoặc `MedusaError` DUPLICATE_ERROR — Medusa đổi lỗi
+ * unique thành loại này khi câu ghi chạy trong `repo_.transaction` (mất `.code`).
+ */
+function isDuplicate(e: unknown): boolean {
+  return isUniqueViolation(e) || (e instanceof MedusaError && e.type === MedusaError.Types.DUPLICATE_ERROR);
+}
 
 export interface UnverifiedCancelInput {
   order_id: string;
@@ -121,93 +137,100 @@ export async function cancelUnverified(
   const prior = await svc.findOrderCancelByKey(key);
   if (prior) return replay(prior, hash);
   try {
-    return await withCancelLock(container, input.order_id, async () => {
-      const again = await svc.findOrderCancelByKey(key);
-      if (again) return replay(again, hash);
-      const s = service(container);
-      const read = async () => {
-        const [row] = await s.listOrderFinances({ order_id: input.order_id });
-        if (!row) throw new CheckoutError("NOT_FOUND", "Không tìm thấy đơn hàng");
-        return row;
-      };
-      const paidOf = async () => Math.max(0, ledgerTotals(await s.ledgerEntriesOf(input.order_id)).net);
+    return await withCancelLock(
+      container,
+      input.order_id,
+      async () => {
+        // Dưới khóa đơn + khóa key: kiểm trùng TRƯỚC mọi tác dụng (hủy native) — cùng key trên đơn khác → 409, không đụng đơn.
+        const again = await svc.findOrderCancelByKey(key);
+        if (again) return replay(again, hash);
+        const s = service(container);
+        const read = async () => {
+          const [row] = await s.listOrderFinances({ order_id: input.order_id });
+          if (!row) throw new CheckoutError("NOT_FOUND", "Không tìm thấy đơn hàng");
+          return row;
+        };
+        const paidOf = async () => Math.max(0, ledgerTotals(await s.ledgerEntriesOf(input.order_id)).net);
 
-      const fin = await read();
-      if (fin.state !== "awaiting_payment") throw notAwaiting(fin.state);
-      const [attempt] = await s.listPaymentAttempts(
-        { order_id: input.order_id, state: [...OPEN_PAYMENT_STATES] },
-        { order: { created_at: "DESC" } },
-      );
-      const why = notUnverifiedReason(fin, attempt, await paidOf(), now);
-      if (why !== null) throw notUnverified(why);
-      if (!attempt) throw notUnverified("no_open_payment");
+        const fin = await read();
+        if (fin.state !== "awaiting_payment") throw notAwaiting(fin.state);
+        const [attempt] = await s.listPaymentAttempts(
+          { order_id: input.order_id, state: [...OPEN_PAYMENT_STATES] },
+          { order: { created_at: "DESC" } },
+        );
+        const why = notUnverifiedReason(fin, attempt, await paidOf(), now);
+        if (why !== null) throw notUnverified(why);
+        if (!attempt) throw notUnverified("no_open_payment");
 
-      const q = await queryAndProcess(container, input.order_id, { orderLockHeld: true });
-      const after = await read();
-      if (after.state !== "awaiting_payment") throw notAwaiting(after.state);
-      // Cổng báo ĐÃ TRẢ mà đơn vẫn chờ (vd. `processVerified` trả sớm vì inbox đã có kết quả khác cho cùng sự kiện), hoặc
-      // đã có tiền mà thiếu (`record_only`) → tiền có thể đã trừ: không ghi đè (review T-165 🟢2).
-      if (q.outcome === "paid" || (await paidOf()) > 0) throw notUnverified("payment_received");
+        const q = await queryAndProcess(container, input.order_id, { orderLockHeld: true });
+        const after = await read();
+        if (after.state !== "awaiting_payment") throw notAwaiting(after.state);
+        // Cổng báo ĐÃ TRẢ mà đơn vẫn chờ (vd. `processVerified` trả sớm vì inbox đã có kết quả khác cho cùng sự kiện), hoặc
+        // đã có tiền mà thiếu (`record_only`) → tiền có thể đã trừ: không ghi đè (review T-165 🟢2).
+        if (q.outcome === "paid" || (await paidOf()) > 0) throw notUnverified("payment_received");
 
-      // Native trước (idempotent), rồi chốt module: lỗi/chết giữa chừng thì lần gọi sau thấy đơn còn chờ và làm lại an toàn.
-      await cancelNativeOrder(container, input.order_id);
-      // Hủy + lệnh hủy theo Idempotency-Key + audit trong MỘT transaction (review T-165 🟠1): không có trạng thái "đã hủy mà
-      // mất dấu" — chết trước commit thì không có gì, gửi lại làm lại; sau commit thì gửi lại được kết quả cũ. Ghi audit
-      // trực tiếp (không qua `audit()` nuốt lỗi): audit lỗi → rollback, nhân viên nhận lỗi và gửi lại cùng khóa.
-      const written: { audit?: AuditEntry } = {};
-      const done = await s.cancelUnverifiedOrder(
-        {
-          order_id: input.order_id,
-          display_ref: after.display_ref,
-          now,
-          actor_id: input.actor_id,
-          merchant_ref: input.merchant_ref,
-        },
-        async (trx, paymentUnknownClosed) => {
-          await svc.insertOrderCancel(
-            {
-              order_id: input.order_id,
-              idempotency_key: key,
-              payload_hash: hash,
-              actor_id: input.actor_id,
-              reason: input.reason,
-              outcome: "cancelled",
-              from_state: "awaiting_payment",
-              refund_requested: false,
-              refund_id: null,
-            },
-            trx,
-          );
-          written.audit = await container.resolve<AuditModuleService>(AUDIT_MODULE).record(
-            {
-              ...auditCtx,
-              action: "order.cancelled_unverified",
-              resource_type: "order",
-              resource_id: input.order_id,
-              reason: input.reason,
-              changes: {
-                by: "staff",
-                from: "awaiting_payment",
-                to: "cancelled",
-                merchant_ref: input.merchant_ref,
-                payment_attempt_id: attempt.id,
-                txn_ref: attempt.txn_ref,
-                payment_state: attempt.state,
-                querydr: q.outcome,
-                payment_unknown_closed: paymentUnknownClosed,
+        // Native trước (idempotent), rồi chốt module: lỗi/chết giữa chừng thì lần gọi sau thấy đơn còn chờ và làm lại an toàn.
+        await cancelNativeOrder(container, input.order_id);
+        // Hủy + lệnh hủy theo Idempotency-Key + audit trong MỘT transaction (review T-165 🟠1): không có trạng thái "đã hủy mà
+        // mất dấu" — chết trước commit thì không có gì, gửi lại làm lại; sau commit thì gửi lại được kết quả cũ. Ghi audit
+        // trực tiếp (không qua `audit()` nuốt lỗi): audit lỗi → rollback, nhân viên nhận lỗi và gửi lại cùng khóa.
+        const written: { audit?: AuditEntry } = {};
+        const done = await s.cancelUnverifiedOrder(
+          {
+            order_id: input.order_id,
+            display_ref: after.display_ref,
+            now,
+            actor_id: input.actor_id,
+            merchant_ref: input.merchant_ref,
+          },
+          async (trx, paymentUnknownClosed) => {
+            await svc.insertOrderCancel(
+              {
+                order_id: input.order_id,
+                idempotency_key: key,
+                payload_hash: hash,
+                actor_id: input.actor_id,
+                reason: input.reason,
+                outcome: "cancelled",
+                from_state: "awaiting_payment",
+                refund_requested: false,
+                refund_id: null,
               },
-            },
-            trx,
-          );
-        },
-      );
-      if (!done.cancelled) throw new CheckoutError("BUSY_RETRY");
-      if (written.audit !== undefined) emitSecurityLog(container, written.audit);
-      return { outcome: "cancelled", from: "awaiting_payment", replayed: false } as const;
-    });
+              trx,
+            );
+            written.audit = await container.resolve<AuditModuleService>(AUDIT_MODULE).record(
+              {
+                ...auditCtx,
+                action: "order.cancelled_unverified",
+                resource_type: "order",
+                resource_id: input.order_id,
+                reason: input.reason,
+                changes: {
+                  by: "staff",
+                  from: "awaiting_payment",
+                  to: "cancelled",
+                  merchant_ref: input.merchant_ref,
+                  payment_attempt_id: attempt.id,
+                  txn_ref: attempt.txn_ref,
+                  payment_state: attempt.state,
+                  querydr: q.outcome,
+                  payment_unknown_closed: paymentUnknownClosed,
+                },
+              },
+              trx,
+            );
+          },
+        );
+        if (!done.cancelled) throw new CheckoutError("BUSY_RETRY");
+        if (written.audit !== undefined) emitSecurityLog(container, written.audit);
+        return { outcome: "cancelled", from: "awaiting_payment", replayed: false } as const;
+      },
+      [keyLock(key)],
+    );
   } catch (e) {
-    // Khóa đơn hết hạn giữa chừng và một request cùng khóa đã ghi trước → trả kết quả của nó.
-    if (pgCode(e) === "23505") {
+    // Khóa hết hạn giữa chừng và một request cùng key đã ghi trước: transaction của request này đã rollback (kể cả việc
+    // hủy) → trả kết quả của bên thắng (cùng nội dung → replay; khác → 409 IDEMPOTENCY_CONFLICT).
+    if (isDuplicate(e)) {
       const winner = await svc.findOrderCancelByKey(key);
       if (winner) return replay(winner, hash);
     }
