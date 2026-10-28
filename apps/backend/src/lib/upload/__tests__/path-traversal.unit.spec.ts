@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -39,6 +39,9 @@ const MALICIOUS: ReadonlyArray<readonly [string, string]> = [
   ["khoá thật + NUL", `${VALID_PRIVATE}\u0000.png`],
   ["khoá thật + xuống dòng", `${VALID_PRIVATE}\n`],
   ["khoá thật trong thư mục con", `sub/${VALID_PRIVATE}`],
+  ["tiền tố PRIVATE- viết hoa", VALID_PRIVATE.replace("private-", "PRIVATE-")],
+  ["ULID chữ thường", VALID_PRIVATE.replace("01J9ZQ8Y3M4N5P6Q7R8S9T0VWX", "01j9zq8y3m4n5p6q7r8s9t0vwx")],
+  ["đuôi viết hoa", VALID_PRIVATE.replace(".csv", ".CSV")],
   ["khoá công khai có `..` đứng trước", `../${VALID_PUBLIC}`],
 ];
 
@@ -187,6 +190,33 @@ describe("provider local — traversal", () => {
   it.each(MALICIOUS)("xoá khoá độc: %s → không xoá gì ngoài thư mục gốc", async (_n, key) => {
     await Promise.allSettled([svc.delete({ fileKey: key }), svc.delete({ fileKey: `private-${key}` })]);
     expect(await readSecret()).toBe(SECRET);
+  });
+
+  it("symlink trong thư mục gốc trỏ ra ngoài → đọc/presign bị từ chối (realpath), file ngoài còn nguyên", async () => {
+    const link = path.join(base, "private", VALID_PRIVATE);
+    await symlink(path.join(base, "secret.txt"), link);
+    const publicLink = path.join(base, "static", VALID_PUBLIC);
+    await mkdir(path.join(base, "static"), { recursive: true });
+    await symlink(path.join(base, "secret.txt"), publicLink);
+    for (const fileKey of [VALID_PRIVATE, VALID_PUBLIC]) {
+      await expect(svc.getAsBuffer({ fileKey })).rejects.toThrow(/Invalid file key/);
+      await expect(svc.getDownloadStream({ fileKey })).rejects.toThrow(/Invalid file key/);
+      await expect(svc.getPresignedDownloadUrl({ fileKey })).rejects.toThrow(/Invalid file key/);
+    }
+    // xoá chỉ gỡ chính symlink, không đụng đích ngoài thư mục gốc
+    await svc.delete({ fileKey: VALID_PRIVATE });
+    expect(await readSecret()).toBe(SECRET);
+  });
+
+  it("symlink trỏ vào bên trong thư mục gốc và file thường vẫn đọc được (đối chứng — không chặn quá tay)", async () => {
+    const out = await svc.upload({
+      filename: "a.csv",
+      mimeType: "text/csv",
+      content: Buffer.from("a,b").toString("base64"),
+      access: "private",
+    });
+    expect((await svc.getAsBuffer({ fileKey: out.key })).toString()).toBe("a,b");
+    expect(await svc.getPresignedDownloadUrl({ fileKey: out.key })).toContain("/admin/x/files/");
   });
 
   it("presigned download khoá độc → từ chối, không trả URL", async () => {

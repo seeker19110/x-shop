@@ -1,9 +1,17 @@
+import { realpathSync } from "node:fs";
 import { chmod } from "node:fs/promises";
 import path from "node:path";
 import type { FileTypes, LocalFileServiceOptions } from "@medusajs/framework/types";
+import { MedusaError } from "@medusajs/framework/utils";
 import { LocalFileService } from "@medusajs/medusa/file-local";
 import { generateUploadKey, PRIVATE_KEY_PREFIX } from "./key";
-import { preparePrivateDir, PRIVATE_FILE_MODE, privateFileUrl } from "./private";
+import {
+  isSameOrInside,
+  preparePrivateDir,
+  PRIVATE_FILE_MODE,
+  privateFileUrl,
+  realpathLoose,
+} from "./private";
 
 /**
  * File provider local của Medusa, bọc lại để tên lưu do server sinh (BE-FILE-003, T-100) và file private nằm ngoài webroot
@@ -87,6 +95,40 @@ export class ServerKeyedLocalFileService extends LocalFileService {
       : result;
   }
 
+  /**
+   * Đường dẫn THẬT (sau khi theo symlink) của file đọc theo khoá phải nằm trong thư mục gốc tương ứng. Provider gốc chỉ kiểm
+   * theo chữ (`path.resolve` + `relative`) nên symlink đặt trong thư mục (`private/<khoá>` → `/etc/passwd`) vẫn đọc ra ngoài.
+   * Thiếu file → để provider gốc báo (ENOENT/NOT_FOUND); khoá không hợp lệ (NUL, không phải chuỗi) → ném lỗi. Hạn chế: kiểm rồi
+   * mở là hai bước (TOCTOU) — thư mục private 700 thuộc user chạy backend nên kẻ ngoài không đặt được symlink; đây là lớp phụ.
+   */
+  private assertRealInside(fileKey: unknown): void {
+    if (typeof fileKey !== "string") {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "Invalid file key");
+    }
+    const baseDir = this.isPrivateKey(fileKey) ? this.privateUploadDir_ : this.uploadDir_;
+    let real: string;
+    try {
+      real = realpathSync(path.resolve(baseDir, fileKey));
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return;
+      throw err;
+    }
+    if (!isSameOrInside(realpathLoose(baseDir), real)) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "Invalid file key");
+    }
+  }
+
+  override async getDownloadStream(file: FileTypes.ProviderGetFileDTO) {
+    this.assertRealInside(file?.fileKey);
+    return super.getDownloadStream(file);
+  }
+
+  override async getAsBuffer(file: FileTypes.ProviderGetFileDTO) {
+    this.assertRealInside(file?.fileKey);
+    return super.getAsBuffer(file);
+  }
+
   override async upload(file: FileTypes.ProviderUploadFileDTO): Promise<FileTypes.ProviderFileResultDTO> {
     const res = await super.upload({ ...file, filename: generateUploadKey(file?.mimeType) });
     await this.restrict(res.key);
@@ -112,6 +154,7 @@ export class ServerKeyedLocalFileService extends LocalFileService {
 
   override async getPresignedDownloadUrl(file: FileTypes.ProviderGetFileDTO): Promise<string> {
     // Gốc kiểm file tồn tại (NOT_FOUND) và khoá không thoát thư mục; chỉ thay URL trả về.
+    this.assertRealInside(file?.fileKey);
     const url = await super.getPresignedDownloadUrl(file);
     return this.isPrivateKey(file.fileKey) ? privateFileUrl(this.backendUrl_, file.fileKey) : url;
   }
