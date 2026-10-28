@@ -136,7 +136,7 @@ jobs:
       - name: Fixture không PII thật — `node scripts/check-fixtures.mjs` (QA-DATA-002)
         run: node scripts/check-fixtures.mjs
       - name: Test của các script kiểm kiến trúc/dữ liệu
-        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs scripts/n-minus-1.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test && pnpm check:migrations:test && pnpm check:units:test && pnpm check:env-doc:test
+        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs scripts/n-minus-1.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test && pnpm check:migrations:test && pnpm check:units:test && pnpm check:env-doc:test && pnpm check:domains:test
       - name: Schema module tuỳ biến (FK ON DELETE/index, NOT NULL, CHECK) — `pnpm check:schema` (DB-MODEL-004)
         run: pnpm check:schema
       # x-shop (T-102): migration đã có trên nhánh đích giữ nguyên byte (blob hash git) + migration mới không phá huỷ trong
@@ -167,6 +167,10 @@ jobs:
       # (BASE-CFG-003, Q-18). Không cần DB. Thêm kiểm, không nới cổng.
       - name: Khoá env schema ↔ docs/ops/ENV.md — `pnpm check:env-doc` (BASE-CFG-003)
         run: pnpm check:env-doc
+      # x-shop (T-211, D-047): thư mục `modules/*` + `packages/domain/src/*` ↔ docs/architecture/domains.md, hai chiều; lệch = đỏ
+      # (ARC-MOD-008, ADR-0005). Không cần DB. Thêm kiểm, không nới cổng.
+      - name: Module/lõi miền ↔ docs/architecture/domains.md — `pnpm check:domains` (ARC-MOD-008)
+        run: pnpm check:domains
 
   # E2E (QA-E2E-001, QA-E2E-029): chạy CÙNG LÚC với `gate`, không `needs` — lệnh `e2e` tự build và phục vụ (vd `webServer`
   # của Playwright). `e2e-mode`: `off` (chưa khai `e2e`) → bỏ qua; `shard` (lệnh dùng $XT_SHARD, vd
