@@ -304,11 +304,23 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   Hai lần chạy thật đều đỏ, cả hai không phải do migration hỏng: (1) `bf24224~1` — `redact-http-db-error.spec.ts` tự đỏ ở chính
   ref gốc (đỏ cả trên schema N−1) → nay ra mã 2 "N−1 TỰ ĐỎ"; (2) `d63dc4e~1` — `catalog-model.spec.ts` "hàng rào: CHECK
   ops_exception.kind trên DB thật = OPS_EXCEPTION_KINDS" đỏ vì Migration20261027160101 nới CHECK thêm `job_circuit_open`: test
-  so BẰNG giữa schema và hằng của code nên luôn đỏ ở bản N−1 khi CHECK được nới, dù nới CHECK là tương thích ngược cho việc ghi
-  (mã 1 — đọc log, phân biệt hàng rào so bằng với lỗi thật; câu hỏi mở của T-163). Job `n-minus-1` chạy song song với `gate`
-  (không `needs`), không nằm trong `quality.needs` nên **không phải required check**: cả bộ test vượt timeout 30 phút của
-  runner theo số đo trên (D-119 đo bản có coverage 36m39s), và hàng rào so bằng làm đỏ giả. Đỏ → đọc log job (dòng
+  so BẰNG giữa schema và hằng của code nên luôn đỏ ở bản N−1 khi CHECK được nới, dù nới CHECK là tương thích ngược cho việc ghi.
+  Sau khi có danh sách miễn (2026-10-28, cùng ref gốc, phủ thêm Migration20261027210643 của T-164): tập con catalog-model +
+  checkout-submit/checkout-expiry/payment-ipn/staff-cancel (đọc/ghi `order_finance`) ra mã 0 trong 8m43s, 121 ca, chỉ ca hàng rào
+  trên được miễn. **Danh sách miễn `N1_ALLOW`** (D-123, trong `scripts/n-minus-1.mjs`): mỗi mục = suite + tên ca đầy đủ (khớp chính xác
+  `describe › … › ca`, lấy từ báo cáo `jest --json`) + file migration của HEAD gây lệch + lý do. Suite đỏ chỉ được miễn khi MỌI
+  ca đỏ của nó khớp mục mà migration của mục nằm trong phần phủ của lần chạy (dòng `MIỄN (N1_ALLOW)`); mục có hiệu lực mà
+  không khớp ca đỏ nào → dòng `NHẮC` (xoá mục khi không còn cần); mục nêu migration không còn trong cây → mã 2. Thêm mục chỉ
+  cho hàng rào so bằng theo thiết kế, kèm số đo "xanh trên schema N−1, chỉ ca này đỏ trên schema N"; không thêm để che lỗi
+  thật. Mục hiện có: ca hàng rào CHECK `ops_exception.kind` ↔ Migration20261027160101. Job `n-minus-1` chạy song song với `gate`
+  (không `needs`), không nằm trong `quality.needs` nên **không phải required check** (D-123: chưa chia shard): cả bộ test vượt
+  timeout 30 phút của runner theo số đo trên (D-119 đo bản có coverage 36m39s). Đỏ → đọc log job (dòng
   `KHÔNG TƯƠNG THÍCH`/`N−1 TỰ ĐỎ`/`CHẬP CHỜN`), sửa migration nếu là lỗi thật (không sửa test N−1).
+  **Việc cần làm (chưa có kiểm, D-123):** bản N−1 ĐỌC phải giá trị enum mới do bản N ghi khi hai bản chạy song song trên schema
+  N (vd `ops_exception.kind = 'job_circuit_open'` sau Migration20261027160101): bộ test của N−1 chỉ ghi/đọc dữ liệu do chính nó
+  tạo nên không phát hiện được. Cần: code đọc enum/kind (danh sách ngoại lệ Admin, zod/parse, `switch` không `default`) chịu
+  được giá trị lạ (bỏ qua/hiển thị thô, không 500), và test seed dòng có kind lạ rồi gọi route đọc. Đến lúc đó, migration nới
+  CHECK/enum phải kèm rà tay các đường đọc của bản N−1.
 - **Ngưỡng quyết định lùi (đề xuất, chủ dự án duyệt — chưa có hạ tầng đo tự động):** trong 30 phút sau deploy, lùi nếu một trong:
   smoke §8.3 đỏ · tỷ lệ 5xx của `/store/x/*` > 2% trong 5 phút liên tiếp · p95 `POST /store/x/checkout/submit` vượt 2× số đo ở
   `docs/ops/perf/` trong 10 phút · có đơn đã đặt nhưng thiếu `order_finance`/`payment_attempt` (đối chiếu truy vấn §3.3.3). Người quyết
