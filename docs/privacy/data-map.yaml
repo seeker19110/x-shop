@@ -140,6 +140,12 @@ tables:
       - marked_at
       - attempts
       - next_attempt_at
+  catalog_index_write_log:
+    system: x-shop/backend/catalog-index
+    pii: {}
+    non_pii:
+      - product_id
+      - written_at
   catalog_variant_index:
     system: x-shop/backend/catalog-index
     pii: {}
