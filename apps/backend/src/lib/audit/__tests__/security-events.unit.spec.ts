@@ -8,6 +8,7 @@ import {
   bodyFieldNames,
   CONFIG_PERMISSIONS,
   matchAuditRoute,
+  nativeConfigTarget,
   nativeOperationOf,
   outcomeOfStatus,
   resolveActor,
@@ -294,6 +295,60 @@ describe("bảng route audit (matchAuditRoute)", () => {
     );
     expect(nativeOperationOf("POST", null)).toBe("unknown");
     expect(nativeOperationOf("DELETE", null)).toBe("delete");
+  });
+
+  it("🟢 review vòng 2: chưa tới route (404 gõ sai đường dẫn) → loại `unknown`, id NULL; có mẫu route → theo mẫu", () => {
+    const segs = ["admin", "khach-nguyen-van-a", "0912345678"];
+    expect(nativeConfigTarget(segs, {} as never, { id: "x_1" })).toEqual({ type: "unknown", id: null });
+    expect(nativeConfigTarget(segs, { route: { path: /x/ } } as never, null)).toEqual({
+      type: "unknown",
+      id: null,
+    });
+    expect(
+      nativeConfigTarget(
+        ["admin", "regions", "reg_1"],
+        { route: { path: "/admin/regions/:id" } } as never,
+        null,
+      ),
+    ).toEqual({ type: "region", id: "reg_1" });
+    expect(
+      nativeConfigTarget(["admin", "regions"], { route: { path: "/admin/regions" } } as never, {
+        region: { id: "reg_2" },
+      }),
+    ).toEqual({ type: "region", id: "reg_2" });
+    // Đoạn tĩnh ở vị trí id (batch) → id từ thân phản hồi, không lấy "batch".
+    expect(
+      nativeConfigTarget(
+        ["admin", "inventory-items", "batch"],
+        { route: { path: "/admin/inventory-items/batch" } } as never,
+        {},
+      ),
+    ).toEqual({ type: "inventory_item", id: null });
+  });
+
+  it("🟢 review vòng 2: danh sách nhóm ở docs §3.4 khớp bảng quyền — price-preferences (price.write) KHÔNG phải config.changed", () => {
+    expect(ev("POST", "/admin/price-preferences")).toBeNull();
+    expect(ev("POST", "/admin/price-preferences/pp_1")).toBeNull();
+    for (const url of [
+      "/admin/regions",
+      "/admin/sales-channels",
+      "/admin/shipping-profiles",
+      "/admin/tax-rates",
+      "/admin/tax-regions",
+      "/admin/shipping-options",
+      "/admin/fulfillment-sets/fs_1/service-zones",
+      "/admin/stock-locations/sl_1/fulfillment-providers",
+      "/admin/stock-locations/sl_1/sales-channels",
+      "/admin/return-reasons",
+      "/admin/refund-reasons",
+      "/admin/workflows-executions/wf_1/run",
+      "/admin/workflows-executions/wf_1/steps/success",
+      "/admin/rbac/roles",
+      "/admin/inventory-items/ii_1",
+      "/admin/reservations/res_1",
+      "/admin/orders/order_1",
+    ])
+      expect({ url, ev: ev("POST", url) }).toEqual({ url, ev: SECURITY_EVENTS.CONFIG_CHANGED });
   });
 
   it("🟢 review (M7): token trong phản hồi chỉ được đọc ở /auth — token giả có actor_id ở /admin bị bỏ qua", () => {

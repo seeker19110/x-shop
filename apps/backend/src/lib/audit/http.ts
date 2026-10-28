@@ -567,17 +567,17 @@ export function nativeOperationOf(method: string, pattern: string | null): strin
   return rest.join(".");
 }
 
-/** Đích: loại theo đoạn đầu sau `/admin`; id = tham số thứ nhất của mẫu (`/admin/<loại>/:id…`), không có → từ thân phản hồi. */
-const nativeConfigTarget: TargetFn = (segments, req, body) => {
+/**
+ * Đích: loại theo đoạn đầu của MẪU route Express (`/admin/<loại>/…`), id = tham số thứ nhất của mẫu, không có → id trong
+ * thân phản hồi. Chưa tới route (không có `req.route` — vd 404 do gõ sai đường dẫn): đường dẫn là chuỗi client chọn →
+ * KHÔNG lấy loại/id từ đó: `unknown` / NULL.
+ */
+export const nativeConfigTarget: TargetFn = (segments, req, body) => {
   const pattern = routePatternOf(req);
-  const type = pattern === null ? resourceTypeOf(segments[1]) : resourceTypeOf(pattern.split("/")[2]);
-  const pathId =
-    pattern === null
-      ? (segments[2] ?? null)
-      : (pattern.split("/")[3] ?? "").startsWith(":")
-        ? (segments[2] ?? null)
-        : null;
-  return { type, id: pathId ?? responseIdOf(body) };
+  if (pattern === null) return { type: "unknown", id: null };
+  const parts = pattern.split("/");
+  const pathId = (parts[3] ?? "").startsWith(":") ? (segments[2] ?? null) : null;
+  return { type: resourceTypeOf(parts[2]), id: pathId ?? responseIdOf(body) };
 };
 
 /** Route audit suy ra cho MỌI lần ghi route native mang quyền cấu hình (không có trong `AUDIT_ROUTES`). */

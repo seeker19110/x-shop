@@ -34,8 +34,10 @@ import { maskFreeText } from "./sanitize";
  * pathname đã che PII, ≤ 200 ký tự). Chống ngập, hai tầng:
  *   - gộp theo (actor hoặc nguồn IP, sự kiện, mã lỗi) như `deny-throttle.ts` (ghi lần 1, 10, 100…) — KHÔNG theo method
  *     hay đường dẫn (client chọn tuỳ ý: đổi method/đường dẫn mỗi lần là lách được);
- *   - trần chung cho nguồn VÔ DANH theo sự kiện: tối đa `INPUT_ANON_GLOBAL_CAP` dòng mỗi cửa sổ trên toàn hệ thống (xoay
- *     nhiều IP không làm ngập); vượt trần chỉ đếm, ghi thêm ở lần 1000, 10000… của bộ đếm chung (`changes.global_cap`).
+ *   - trần chung cho nguồn VÔ DANH theo sự kiện: tối đa `INPUT_ANON_GLOBAL_CAP` dòng (đã qua gộp nguồn) mỗi cửa sổ trên
+ *     toàn hệ thống (xoay nhiều IP không làm ngập); dòng thứ trần + 1 là dòng ĐÁNH DẤU (`changes.global_cap.mark:
+ *     reached`), sau đó chỉ đếm; bộ đếm THÔ (mọi request vô danh bị từ chối, kể cả bị gộp nguồn) ghi thêm một dòng ở lần
+ *     1000, 10000… của cửa sổ (`mark: milestone`, `occurrence` = số request thô).
  * Ghi audit lỗi → log lỗi (không PII), không ảnh hưởng request.
  */
 
@@ -140,35 +142,43 @@ export function inputResourceOf(req: MedusaRequest, rejection: InputRejection | 
   return `${method} ${masked.length > MAX_RESOURCE_PATH ? `${masked.slice(0, MAX_RESOURCE_PATH)}…` : masked}`;
 }
 
+/** Bucket của bộ đếm chung vô danh theo sự kiện: `raw` = mọi request vô danh bị từ chối; `rows` = dòng đã qua gộp nguồn. */
+function anonBucket(event: SecurityEventName, kind: "raw" | "rows"): string {
+  return denyBucket({
+    actorType: "global",
+    actorId: null,
+    method: "*",
+    routeClass: `audit:${event}:anon_${kind}`,
+    reason: "*",
+  });
+}
+
+/** Mốc độ lớn đợt theo số request vô danh THÔ trong cửa sổ: 1000, 10000… (ghi bất kể trần/gộp nguồn). */
+export function isAnonMilestone(raw: number | null): boolean {
+  return raw !== null && raw >= 1000 && isRecordedOccurrence(raw);
+}
+
 /**
- * Trần chung cho dòng vô danh (sau khi đã qua gộp theo nguồn): bộ đếm cửa sổ chung theo sự kiện; ≤ trần → ghi; vượt →
- * chỉ ghi ở lần 1000, 10000… (độ lớn đợt). Bộ đếm lỗi → ghi (mất dấu vết tệ hơn thêm dòng).
+ * Trần chung theo số dòng đã qua gộp nguồn: ≤ trần → ghi; đúng trần + 1 → ghi MỘT dòng đánh dấu (`reached`); vượt nữa →
+ * bỏ (chỉ đếm). Bộ đếm lỗi (`null`) → ghi (mất dấu vết tệ hơn thêm dòng).
  */
-async function anonymousGlobalCap(
+export function anonCapVerdict(rows: number | null): "record" | "reached" | "skip" {
+  if (rows === null || rows <= INPUT_ANON_GLOBAL_CAP) return "record";
+  return rows === INPUT_ANON_GLOBAL_CAP + 1 ? "reached" : "skip";
+}
+
+async function countOrNull(
   counter: WindowCounter,
-  event: SecurityEventName,
+  bucket: string,
   now: Date,
   onError: () => void,
-): Promise<{ record: boolean; exceeded: boolean; occurrence: number | null }> {
-  let n: number;
+): Promise<number | null> {
   try {
-    n = await counter(
-      denyBucket({
-        actorType: "global",
-        actorId: null,
-        method: "*",
-        routeClass: `audit:${event}:anon_cap`,
-        reason: "*",
-      }),
-      DENY_AUDIT_THROTTLE.windowMs,
-      now,
-    );
+    return await counter(bucket, DENY_AUDIT_THROTTLE.windowMs, now);
   } catch {
     onError();
-    return { record: true, exceeded: false, occurrence: null };
+    return null;
   }
-  if (n <= INPUT_ANON_GLOBAL_CAP) return { record: true, exceeded: false, occurrence: n };
-  return { record: isRecordedOccurrence(n) && n >= 1000, exceeded: true, occurrence: n };
 }
 
 async function recordInputRejection(
@@ -190,11 +200,14 @@ async function recordInputRejection(
   const now = new Date();
   const counter = counterOf(req);
   const onCounterError = () => logger.warn(`[audit] Bộ đếm gộp audit lỗi, vẫn ghi: ${event}`);
+  const anonymous = actor.actor_id === null;
+  // Vô danh: đếm THÔ mọi lần (kể cả lần bị gộp theo nguồn) — mốc 1000, 10000… phản ánh đúng độ lớn đợt.
+  const raw = anonymous ? await countOrNull(counter, anonBucket(event, "raw"), now, onCounterError) : null;
   // Gộp theo actor đã xác thực, không có thì theo nguồn IP — không theo method/đường dẫn (client chọn, lách được).
   const decision = await decideDenyAudit(
     counter,
     {
-      actorType: actor.actor_id === null ? "ip" : actor.actor_type,
+      actorType: anonymous ? "ip" : actor.actor_type,
       actorId: actor.actor_id ?? ipGroupOf(req),
       method: "*",
       routeClass: `audit:${event}`,
@@ -203,10 +216,19 @@ async function recordInputRejection(
     now,
     onCounterError,
   );
-  if (!decision.record) return;
-  const globalCap =
-    actor.actor_id === null ? await anonymousGlobalCap(counter, event, now, onCounterError) : null;
-  if (globalCap !== null && !globalCap.record) return;
+  let globalCap: { mark: "reached" | "milestone"; occurrence: number | null } | null = null;
+  if (anonymous && isAnonMilestone(raw)) {
+    globalCap = { mark: "milestone", occurrence: raw };
+  } else {
+    if (!decision.record) return;
+    if (anonymous) {
+      const verdict = anonCapVerdict(
+        await countOrNull(counter, anonBucket(event, "rows"), now, onCounterError),
+      );
+      if (verdict === "skip") return;
+      if (verdict === "reached") globalCap = { mark: "reached", occurrence: raw };
+    }
+  }
   const params = problemParamsOf(body);
   await recordAudit(
     req.scope,
@@ -224,8 +246,8 @@ async function recordInputRejection(
         ...(params.length > 0 && { params }),
         ...(actor.pseudonymized && { actor_pseudonymized: true }),
         throttle: { occurrence: decision.occurrence, window_seconds: decision.window_seconds },
-        ...(globalCap?.exceeded === true && {
-          global_cap: { cap: INPUT_ANON_GLOBAL_CAP, occurrence: globalCap.occurrence },
+        ...(globalCap !== null && {
+          global_cap: { cap: INPUT_ANON_GLOBAL_CAP, mark: globalCap.mark, occurrence: globalCap.occurrence },
         }),
       },
     },

@@ -2,7 +2,10 @@ import { EventEmitter } from "node:events";
 import { MedusaError } from "@medusajs/framework/utils";
 import { z } from "zod";
 import {
+  anonCapVerdict,
   classifyInputError,
+  INPUT_ANON_GLOBAL_CAP,
+  isAnonMilestone,
   INVALID_PATH_LABEL,
   inputAuditTrail,
   inputResourceOf,
@@ -174,5 +177,21 @@ describe("inputAuditTrail / withInputAudit không làm hỏng request (ghi audit
     const next = jest.fn();
     withInputAudit(handler)(err, req as never, res as never, next);
     expect(handler).toHaveBeenCalledWith(err, req, res, next);
+  });
+});
+
+describe("trần chung vô danh (review T-175 vòng 2)", () => {
+  it("≤ trần → ghi; đúng trần + 1 → MỘT dòng đánh dấu; vượt nữa → chỉ đếm; bộ đếm lỗi → ghi", () => {
+    expect(anonCapVerdict(1)).toBe("record");
+    expect(anonCapVerdict(INPUT_ANON_GLOBAL_CAP)).toBe("record");
+    expect(anonCapVerdict(INPUT_ANON_GLOBAL_CAP + 1)).toBe("reached");
+    expect(anonCapVerdict(INPUT_ANON_GLOBAL_CAP + 2)).toBe("skip");
+    expect(anonCapVerdict(10_000)).toBe("skip");
+    expect(anonCapVerdict(null)).toBe("record");
+  });
+
+  it("mốc theo số request THÔ: 1000, 10000… (dưới 1000 không phải mốc — trần + dòng đánh dấu đã phủ)", () => {
+    for (const n of [1000, 10_000, 100_000]) expect(isAnonMilestone(n)).toBe(true);
+    for (const n of [null, 1, 10, 100, 999, 1001, 2000, 5000]) expect(isAnonMilestone(n)).toBe(false);
   });
 });

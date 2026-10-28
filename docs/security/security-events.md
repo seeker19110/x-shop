@@ -101,7 +101,7 @@ Kết quả: success · failure (4xx khác 401/403, 5xx). 401/403 ở `/admin` k
 | `config.changed` | `POST /admin/api-keys` (`create`), `POST /admin/api-keys/:id` (`update`), `…/revoke`, `…/sales-channels` (`update_sales_channels`), `DELETE /admin/api-keys/:id` (`delete`) | `api_key` / id (tạo mới: id từ thân phản hồi — không đọc `token` bí mật) | như trên |
 | `config.changed` | `POST /admin/invites` (`create`), `POST /admin/invites/:id/resend` (`resend`), `DELETE /admin/invites/:id` (`delete`); `POST /admin/invites/accept` (`invite_accepted` — tạo tài khoản admin; route công khai với cổng RBAC nên 401/403 của nó cũng ghi) | `invite` / id; accept: `user` / id user mới | như trên (email lời mời chỉ xuất hiện dưới dạng tên trường `email`) |
 | `config.changed` | `POST /admin/users/:id` (`update`), `DELETE /admin/users/:id` (`delete`), `POST /admin/users/:id/reset-password` (`reset_password_token_issued`), route vai trò native `/admin/users/:id/roles[/:role_id]` (RBAC native — cờ tắt) | `user` / id | như trên; token đặt lại trong phản hồi KHÔNG được đọc (actor vẫn là admin gọi) |
-| `config.changed` | **Mọi lần ghi (POST/PUT/PATCH/DELETE) route native mang quyền `settings.manage`** không có dòng riêng ở trên — suy từ bảng quyền RBAC (`native-permissions.ts`, `CONFIG_PERMISSIONS` ở `lib/audit/http.ts`), gồm route ghi native CHƯA khai (mặc định đóng → `settings.manage`). Medusa 2.22.1: vùng, kênh bán, hồ sơ giao hàng, thuế (`tax-rates`, `tax-regions`), phương án giao, `fulfillment-sets`/service zone, kho (`stock-locations` + liên kết provider/kênh bán), lý do trả/hoàn, `price-preferences`, `workflows-executions/:id/run` + `steps/success|failure`, thông báo, RBAC native, ghi tồn native (`inventory-items`, `reservations` — D-010), sửa đơn native chưa khai quyền riêng (`POST /admin/orders/:id`…) | loại = đoạn đầu sau `/admin` số ít (`region`, `tax_region`, `workflows_execution`…; đoạn lạ → `unknown`) / id = tham số đầu của mẫu route, không có → id trong thân phản hồi | `operation` theo MẪU route (`create`/`update`/`delete`/`steps.success`/`delete.service_zones`…), `route` = mẫu Express (`POST /admin/regions/:id`; chưa tới route → `(chưa tới route)`), `derived_from: rbac_permission`, `fields` khi thành công |
+| `config.changed` | **Mọi lần ghi (POST/PUT/PATCH/DELETE) route native mang quyền `settings.manage`** không có dòng riêng ở trên — suy từ bảng quyền RBAC (`native-permissions.ts`, `CONFIG_PERMISSIONS` ở `lib/audit/http.ts`), gồm route ghi native CHƯA khai (mặc định đóng → `settings.manage`). Medusa 2.22.1 (đối chiếu bằng test quét cây route): vùng, kênh bán, hồ sơ giao hàng, thuế (`tax-rates`, `tax-regions`), phương án giao, `fulfillment-sets`/service zone, kho (`stock-locations` + liên kết provider/kênh bán), lý do trả/hoàn, `workflows-executions/:id/run` + `steps/success|failure`, RBAC native (`/admin/rbac/*`), ghi tồn native (`inventory-items`, `reservations` — D-010), sửa đơn native chưa khai quyền riêng (`POST /admin/orders/:id`…) | loại = đoạn đầu của MẪU route Express, số ít (`region`, `tax_region`, `workflows_execution`…) / id = tham số đầu của mẫu, không có → id trong thân phản hồi; **chưa tới route** (không có `req.route` — vd 404 do gõ sai đường dẫn) → `unknown` / NULL (không lấy loại/id từ đường dẫn client gõ) | `operation` theo MẪU route (`create`/`update`/`delete`/`steps.success`/`delete.service_zones`…; chưa tới route → `unknown`/`delete`), `route` = mẫu Express (`POST /admin/regions/:id`; chưa tới route → `(chưa tới route)`), `derived_from: rbac_permission`, `fields` khi thành công |
 
 Kết quả theo status như §3.3. 403 của cổng RBAC (thiếu quyền, thiếu MFA/xác thực lại) không ghi ở đây — đã có `rbac.denied`;
 request bị kiểm upload (415/413/411/400) hoặc schema (400) từ chối vẫn ghi `failure` kèm `error_code`. Lỗi schema ở route
@@ -110,8 +110,10 @@ cấu hình sinh **hai** dòng khác sự kiện cho một request: `config.chan
 bị từ chối có thể mang khoá do client tự đặt (vd tên người) nên không chép. Đối chiếu tự động: test
 `apps/backend/src/lib/audit/__tests__/security-events.unit.spec.ts` quét cây route `@medusajs/medusa/dist/api/admin/**` đang
 cài — route ghi nào có quyền `settings.manage` mà không ra `config.changed` (hoặc `data.exported`) → đỏ. Ngoài phạm vi
-`config.changed`: ghi native theo quyền nghiệp vụ (catalog `catalog.write`, giá/khuyến mãi `price.write`, vận đơn
-`fulfillment.*`, `order.confirm`) — là thao tác nghiệp vụ, không phải cấu hình; route ghi tiền/hủy đơn native bị đóng (`deny`).
+`config.changed`: ghi native theo quyền nghiệp vụ (catalog `catalog.write`, giá/khuyến mãi/`price-preferences`
+`price.write`, vận đơn `fulfillment.*`, `order.confirm`) — là thao tác nghiệp vụ, không phải cấu hình; `/admin/notifications`
+không có route ghi trong 2.22.1; route ghi tiền/hủy đơn native bị đóng (`deny`). Người dùng/lời mời (`user.manage`) có dòng
+riêng ở trên.
 
 ### 3.5 Hành động admin nghiệp vụ (đã có trước T-091, cùng bảng)
 
@@ -151,12 +153,14 @@ Gộp trong cửa sổ 60 giây, chỉ ghi lần 1, 10, 100, 1000… của nhóm
 | `auth.lockout` (429)                                                    | (nguồn IP, `auth.lockout`, `rate_limited`) |
 | `auth.password_reset_requested` (vô danh, không rate limit)             | (nguồn IP, sự kiện, kết quả)                |
 | `rbac.denied` (gồm `MFA_REQUIRED`/`REAUTH_REQUIRED`)                     | (actor, lớp route, lý do) — actor đã xác thực |
-| `input.validation_failed`, `input.deserialize_failed` (mọi lần, kể cả có actor) | (actor đã xác thực hoặc nguồn IP, sự kiện, mã lỗi) — không theo method hay đường dẫn (client chọn tuỳ ý: 32 method × đường dẫn rác vẫn là một nhóm); thêm **trần chung** cho nguồn vô danh: ≤ `INPUT_ANON_GLOBAL_CAP` (50) dòng mỗi sự kiện mỗi cửa sổ trên toàn hệ thống (xoay nhiều IP không làm ngập), vượt trần chỉ đếm, ghi thêm ở lần 1000, 10000… (`changes.global_cap`) |
+| `input.validation_failed`, `input.deserialize_failed` (mọi lần, kể cả có actor) | (actor đã xác thực hoặc nguồn IP, sự kiện, mã lỗi) — không theo method hay đường dẫn (client chọn tuỳ ý: 32 method × đường dẫn rác vẫn là một nhóm); thêm **trần chung** cho nguồn vô danh: ≤ `INPUT_ANON_GLOBAL_CAP` (50) dòng (đã qua gộp nguồn) mỗi sự kiện mỗi cửa sổ trên toàn hệ thống (xoay nhiều IP không làm ngập); dòng thứ 51 là **dòng đánh dấu** (`changes.global_cap: { cap, mark: "reached", occurrence: <số request thô> }`), sau đó chỉ đếm; bộ đếm **thô** (mọi request vô danh bị từ chối, kể cả bị gộp nguồn) ghi thêm một dòng ở lần 1000, 10000… của cửa sổ (`mark: "milestone"`) — độ lớn đợt thật |
 
-Bề mặt ghi DB của request vô danh hỏng (JSON hỏng, đường dẫn mã hoá hỏng): mỗi request như vậy là ≥ 1 lệnh upsert
-`rate_limit_counter` (bucket theo nguồn) và, khi qua gộp theo nguồn, 1 upsert bucket trần chung — không cần đăng nhập. Số
-bucket bị chặn bởi số nguồn IP khác nhau trong cửa sổ (job dọn bộ đếm theo TTL); số dòng `audit_log` bị chặn bởi trần chung.
-Chặn ở biên (rate limit/WAF của proxy) vẫn là lớp chính chống ngập request; trần chung chỉ giảm nhẹ phía audit.
+Bề mặt ghi DB của request vô danh hỏng (JSON hỏng, đường dẫn mã hoá hỏng), không cần đăng nhập: mỗi request = 2 upsert
+`rate_limit_counter` (bucket thô chung theo sự kiện — một hàng nóng — và bucket theo nguồn) + 1 upsert bucket dòng chung khi
+qua gộp nguồn. Số bucket bị chặn bởi số nguồn IP khác nhau trong cửa sổ (job dọn bộ đếm theo TTL); số dòng `audit_log` bị
+chặn bởi trần chung + log10 của số request. Chặn ở biên (rate limit/WAF của proxy) vẫn là lớp chính chống ngập request;
+trần chung chỉ giảm nhẹ phía audit. Chưa làm: nhớ "đã vượt trần" trong bộ nhớ instance để bớt upsert hàng nóng (trạng thái
+theo instance lệch với bộ đếm chung khi nhiều instance và khi test xoá bộ đếm — để sau, khi đo thấy tranh chấp hàng).
 
 "Nguồn IP" = `ipRateKey` (`lib/security/client-ip.ts`, cùng khoá với rate limit): IPv4 nguyên địa chỉ, IPv6 gộp cả /64 —
 xoay địa chỉ trong một /64 không lách được gộp; cột `ip_hash` của dòng vẫn là băm địa chỉ đầy đủ. Nhóm **không** chứa
