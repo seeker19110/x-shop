@@ -319,7 +319,10 @@ async function syncUnlocked(
 
 export interface RebuildResult {
   products: number;
-  /** Số dòng đã ghi vào bảng (0 khi rebuild bị hủy vì `missing > 0` — bảng cũ được giữ). */
+  /**
+   * Số dòng trong bảng sau khi thay (dòng của ảnh chụp + dòng giữ nguyên của sản phẩm đồng bộ trong lúc rebuild); 0 khi
+   * rebuild bị hủy vì `missing > 0` (bảng cũ được giữ) hoặc bị bỏ vì ảnh chụp mới hơn đã áp (`superseded`).
+   */
   rows: number;
   /** Số dòng kỳ vọng theo giá niêm yết (xem `IndexBuildReport.expected`). */
   expected: number;
@@ -327,15 +330,31 @@ export interface RebuildResult {
   missing: number;
   /** SKU thật sự không có giá bán (đã loại, log WARN). */
   unpriced: number;
+  /** Số sản phẩm giữ bản do đồng bộ ghi sau mốc bắt đầu rebuild (không ghi đè bằng ảnh chụp cũ hơn) — T-167. */
+  kept: number;
+  /** true = một rebuild bắt đầu SAU lần này đã thay bảng trước → lần này không ghi gì (chỉ ảnh chụp mới nhất thắng). */
+  superseded: boolean;
 }
 
+/** Khoá tuần tự hoá các lần rebuild toàn phần với nhau (KHÔNG chặn đồng bộ/xả — chúng chỉ dùng `CATALOG_INDEX_LOCK`). */
+export const CATALOG_REBUILD_LOCK = `${CATALOG_INDEX_LOCK}:rebuild`;
+
 /**
- * Rebuild theo lô `SOURCE_CHUNK` sản phẩm (như sync) nhưng gom mọi dòng rồi thay cả bảng trong MỘT giao dịch cuối —
- * người đọc thấy bảng cũ tới khi commit.
+ * Rebuild toàn phần (T-167, D-076): đọc nguồn theo lô `SOURCE_CHUNK` sản phẩm và gom mọi dòng NGOÀI khoá ghi (đồng bộ
+ * theo sự kiện vẫn chạy — thay đổi trong lúc rebuild không trễ theo nó), chỉ giữ khoá ghi lúc thay cả bảng trong MỘT
+ * giao dịch (`replaceAll`) — người đọc thấy bảng cũ tới khi commit. Thay đổi xen giữa không bị ghi đè vĩnh viễn:
+ * - `since` = đồng hồ DB lấy TRƯỚC mọi lần đọc nguồn;
+ * - sản phẩm được đồng bộ ghi từ `since` (write log, cùng giao dịch ghi) → giữ bản đồng bộ (gồm cả xoá/ẩn — không dòng
+ *   ma) VÀ đánh dấu bẩn lại trong cùng giao dịch: mốc write log là lúc GHI, lượt đồng bộ có thể đã đọc nguồn trước
+ *   `since` nên bỏ mất thay đổi không phát sự kiện mà ảnh chụp có — lượt xả hẹn ngay sau rebuild đọc lại nguồn mới nhất;
+ * - thay đổi chưa kịp đồng bộ → dấu bẩn của nó còn trong hàng đợi (chỉ đồng bộ xong mới xoá dấu) → lượt xả kế tiếp ghi
+ *   bản mới ngay khi khoá ghi nhả;
+ * - ảnh chụp cũ hơn ảnh chụp đã áp → bỏ (`superseded`).
  */
-async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResult> {
-  const ctx = await loadIndexContext(container);
+async function rebuildOutsideLock(container: MedusaContainer): Promise<RebuildResult> {
   const index = indexService(container);
+  const since = await index.clockNow();
+  const ctx = await loadIndexContext(container);
   const products = await container
     .resolve(Modules.PRODUCT)
     .listProducts({ status: "published" }, { select: ["id"], take: null, order: { id: "ASC" } });
@@ -345,47 +364,60 @@ async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResul
   for (let i = 0; i < ids.length; i += SOURCE_CHUNK) {
     const built = await buildIndexRowsWithReport(
       container,
-      await loadProductSources(container, { id: ids.slice(i, i + SOURCE_CHUNK) }),
+      await loadProductSources(container, {
+        id: ids.slice(i, i + SOURCE_CHUNK),
+      }),
       ctx,
     );
     for (const r of built.rows) rows.push(r);
     mergeReport(report, built.report);
   }
-  if (report.missing.length > 0) {
-    // Dấu hiệu lỗi hệ thống (đọc giá hỏng): KHÔNG thay bảng — giữ bảng cũ (còn đúng hơn bảng thiếu dòng), báo ngay.
-    reportBuild(container, "rebuild", report, await index.countRows());
-    container
-      .resolve(ContainerRegistrationKeys.LOGGER)
-      .error(
-        `[catalog-index] Rebuild BỊ HỦY, giữ bảng cũ: ${report.missing.length} SKU có giá niêm yết nhưng không ra ` +
-          `giá bán (kỳ vọng ${report.expected} dòng, dựng ${report.rows}).`,
-      );
-    await openMismatchException(container, "rebuild", report);
-    // Bảng cũ được giữ nhưng nguồn (PDP đọc trực tiếp) có thể đã đổi → vẫn làm mới cả catalog ở storefront (T-142).
-    await notifyCatalogChanged(container, { all: true });
-    return {
-      products: ids.length,
-      rows: 0,
-      expected: report.expected,
-      missing: report.missing.length,
-      unpriced: report.unpriced.length,
-    };
-  }
-  await index.replaceAll(rows);
-  await notifyCatalogChanged(container, { all: true });
-  reportBuild(container, "rebuild", report, await index.countRows());
-  container
-    .resolve(ContainerRegistrationKeys.LOGGER)
-    .info(
-      `[catalog-index] Rebuild: ${ids.length} sản phẩm, ${rows.length} dòng (kỳ vọng ${report.expected}, ` +
-        `thiếu giá bán ${report.missing.length}, không giá ${report.unpriced.length}).`,
-    );
-  return {
+  const base = {
     products: ids.length,
-    rows: rows.length,
     expected: report.expected,
     missing: report.missing.length,
     unpriced: report.unpriced.length,
+  };
+  const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+  if (report.missing.length > 0) {
+    // Dấu hiệu lỗi hệ thống (đọc giá hỏng): KHÔNG thay bảng — giữ bảng cũ (còn đúng hơn bảng thiếu dòng), báo ngay.
+    reportBuild(container, "rebuild", report, await index.countRows());
+    logger.error(
+      `[catalog-index] Rebuild BỊ HỦY, giữ bảng cũ: ${report.missing.length} SKU có giá niêm yết nhưng không ra ` +
+        `giá bán (kỳ vọng ${report.expected} dòng, dựng ${report.rows}).`,
+    );
+    await openMismatchException(container, "rebuild", report);
+    // Bảng cũ được giữ nhưng nguồn (PDP đọc trực tiếp) có thể đã đổi → vẫn làm mới cả catalog ở storefront (T-142).
+    await notifyCatalogChanged(container, { all: true });
+    return { ...base, rows: 0, kept: 0, superseded: false };
+  }
+  const { res, stored } = await withIndexLock(container, async () => {
+    const r = await index.replaceAll(rows, since);
+    // Đang giữ khoá ghi → không ai khác ghi bảng giữa lúc thay và lúc đếm.
+    return { res: r, stored: r.applied ? await index.countRows() : 0 };
+  });
+  if (!res.applied) {
+    logger.info(
+      `[catalog-index] Rebuild (bắt đầu ${since}) không ghi: ảnh chụp mới hơn đã thay bảng trước — không ghi đè.`,
+    );
+    return { ...base, rows: 0, kept: 0, superseded: true };
+  }
+  // Read model đã thay (đã commit) → báo storefront làm mới cả catalog (T-142). Ngoài khoá ghi: chỉ ghi outbox.
+  await notifyCatalogChanged(container, { all: true });
+  // Sản phẩm giữ bản đồng bộ đã được đánh dấu bẩn lại trong replaceAll → xả ngay, không chờ job mỗi phút.
+  if (res.keptProducts.length > 0) scheduleCatalogDrain(container, 0);
+  const total = res.inserted + res.keptRows;
+  reportBuild(container, "rebuild", { ...report, rows: total }, stored);
+  logger.info(
+    `[catalog-index] Rebuild: ${ids.length} sản phẩm, ${total} dòng (kỳ vọng ${report.expected}, thiếu giá bán ` +
+      `${report.missing.length}, không giá ${report.unpriced.length}; giữ bản đồng bộ mới hơn của ` +
+      `${res.keptProducts.length} sản phẩm).`,
+  );
+  return {
+    ...base,
+    rows: total,
+    kept: res.keptProducts.length,
+    superseded: false,
   };
 }
 
@@ -402,11 +434,34 @@ export async function syncCatalogProducts(container: MedusaContainer, productIds
   });
 }
 
-/** Rebuild toàn phần: tính mọi dòng rồi thay cả bảng trong MỘT giao dịch (người đọc thấy bảng cũ tới khi commit). */
-export async function rebuildCatalogIndex(container: MedusaContainer): Promise<RebuildResult> {
-  return withIndexLock(container, () => rebuildUnlocked(container));
+export interface RebuildOptions {
+  /** Chờ tối đa (ms) khi đang có rebuild khác chạy; mặc định `LOCK_WAIT_MS`. Quá hạn → `BUSY_RETRY`. */
+  waitMs?: number;
 }
 
+/**
+ * Rebuild toàn phần (xem `rebuildOutsideLock`): các lần rebuild tuần tự với nhau qua `CATALOG_REBUILD_LOCK`; khoá ghi
+ * index chỉ bị giữ lúc thay bảng.
+ */
+export async function rebuildCatalogIndex(
+  container: MedusaContainer,
+  opts: RebuildOptions = {},
+): Promise<RebuildResult> {
+  return withOwnedLock(
+    container.resolve(Modules.LOCKING),
+    CATALOG_REBUILD_LOCK,
+    {
+      waitMs: Math.max(0, opts.waitMs ?? LOCK_WAIT_MS),
+      ttlSeconds: WRITE_LOCK_TTL_SECONDS,
+      scope: LOCK_SCOPE,
+      onReleaseError: (e) =>
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .warn(`[catalog-index] Nhả khoá rebuild lỗi/quá hạn (lease tự hết): ${(e as Error).message}`),
+    },
+    () => rebuildOutsideLock(container),
+  );
+}
 /** Ký hiệu "cần rebuild toàn phần" trong hàng đợi sản phẩm bẩn. */
 export const REBUILD_MARK = "*";
 const DRAIN_BATCH = 500;
@@ -418,8 +473,8 @@ export const SKIP_MAX_ATTEMPTS = SKIP_RETRY_DELAYS_SECONDS.length + 1;
 // dài 600 giây cũ làm index đứng 10 phút và chặn rebuild — chờ tối đa LOCK_TIMEOUT_SECONDS — tới khi hết hạn).
 export const DRAIN_LOCK_EXPIRE_SECONDS = 30;
 /**
- * Khoá bận khi xả (T-137): người giữ có thể KHÔNG phải một lượt xả — rebuild/sync (`withIndexLock`, rebuild 50k SKU
- * ~110 giây) hoặc tiến trình khác — nên không ai xả dấu vừa đặt; bỏ lượt thì dấu nằm chờ job mỗi phút (đo dưới tải:
+ * Khoá bận khi xả (T-137): người giữ có thể KHÔNG phải một lượt xả — sync/rebuild (`withIndexLock`; từ T-167 rebuild chỉ
+ * giữ lúc `replaceAll`, trước đó giữ suốt ~1–2 phút ở 50k SKU) hoặc tiến trình khác — nên không ai xả dấu vừa đặt; bỏ lượt thì dấu nằm chờ job mỗi phút (đo dưới tải:
  * 41 giây, tối đa 60 giây + thời gian giữ khoá). Thay vào đó lượt xả CHỜ khoá (thăm dò ≤ 80 ms như mọi người chờ khác),
  * cứ mỗi lát `DRAIN_WAIT_SLICE_MS` kiểm còn dấu đến hạn không — hết dấu (lượt xả khác đã xả xong) thì thôi chờ. Tiến
  * trình đang tắt (`isDraining`, T-094) → thôi chờ, giành được khoá thì nhả ngay: không bắt đầu việc nặng giữa lúc tắt
@@ -479,6 +534,29 @@ export async function markCatalogDirty(container: MedusaContainer, productIds: s
   await indexService(container).markDirty(productIds);
 }
 
+const isBusyRetry = (e: unknown): boolean => (e as { code?: unknown } | null)?.code === "BUSY_RETRY";
+
+/**
+ * Rebuild do dấu '*' trong hàng đợi — KHÔNG chờ khi rebuild khác đang chạy: lượt xả chờ ~1 phút thì sản phẩm bẩn của tiến
+ * trình này (lượt hẹn gộp, `scheduleCatalogDrain`) cũng chờ theo. Rebuild đang chạy có thể đã đọc nguồn TRƯỚC thay đổi
+ * gây ra '*' → không coi là đã phủ: giữ dấu '*' (false), job mỗi phút thử lại. Redis lỗi → cũng giữ dấu. Lỗi khác ném lên
+ * như trước.
+ */
+async function rebuildForDrain(container: MedusaContainer): Promise<boolean> {
+  try {
+    await rebuildCatalogIndex(container, { waitMs: 0 });
+    return true;
+  } catch (e) {
+    if (!isBusyRetry(e) && !isLockUnavailable(e)) throw e;
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .warn(
+        `[catalog-index] Chưa rebuild được theo dấu '*' (rebuild khác đang chạy/khoá lỗi) — để lượt sau.`,
+      );
+    return false;
+  }
+}
+
 /**
  * Xả hàng đợi sản phẩm bẩn: chỉ MỘT tiến trình xả tại một thời điểm. Khoá bận → chờ tối đa `waitMs` (mặc định 0 =
  * trả về ngay) trong khi còn dấu đến hạn — xem `DRAIN_WAIT_SLICE_MS`. Nhiều sự kiện của cùng sản phẩm gộp thành một
@@ -507,49 +585,48 @@ export async function drainCatalogIndex(
       }
       return processed;
     }
+    // Dấu '*' (cần rebuild toàn phần): rebuild chạy SAU khi nhả khoá xả — nó đọc nguồn ngoài khoá ghi (T-167).
+    let rebuildClaim: DirtyClaim | null = null;
     try {
       let ctx: IndexContext | null = null;
       for (;;) {
         // Đang tắt: xong lô đang làm thì dừng, dấu còn lại để lần chạy sau.
         if (isDraining()) break;
-        const claims = await index.claimDirty(DRAIN_BATCH);
+        const batch = await index.claimDirty(DRAIN_BATCH);
+        rebuildClaim = batch.find((c) => c.product_id === REBUILD_MARK) ?? rebuildClaim;
+        // Sản phẩm bẩn vẫn đồng bộ ngay (không chờ rebuild ~1 phút); '*' còn trong bảng nên lô sau bỏ qua nó.
+        const claims = batch.filter((c) => c.product_id !== REBUILD_MARK);
         if (claims.length === 0) break;
-        if (claims.some((c) => c.product_id === REBUILD_MARK)) {
-          await rebuildUnlocked(container);
-          // Rebuild bao trùm mọi dấu có từ trước khi nó đọc nguồn.
-          await index.clearDirty(claims);
-        } else {
-          ctx ??= await loadIndexContext(container);
-          const { skipped } = await syncUnlocked(
-            container,
-            claims.map((c) => c.product_id),
-            ctx,
-          );
-          // Sản phẩm bị bỏ qua (lệch giá) KHÔNG xoá dấu: lùi giờ thử lại; hết lượt thì xoá, ngoại lệ lo tiếp.
-          const defers: DirtyDefer[] = [];
-          const giveUp: DirtyClaim[] = [];
-          const done: DirtyClaim[] = [];
-          for (const c of claims) {
-            if (!skipped.has(c.product_id)) done.push(c);
-            else if (c.attempts + 1 >= SKIP_MAX_ATTEMPTS) giveUp.push(c);
-            else
-              defers.push({
-                ...c,
-                attempts: c.attempts + 1,
-                delay_seconds: SKIP_RETRY_DELAYS_SECONDS[c.attempts] ?? SKIP_RETRY_DELAYS_SECONDS.at(-1)!,
-              });
-          }
-          if (giveUp.length > 0) {
-            container
-              .resolve(ContainerRegistrationKeys.LOGGER)
-              .error(
-                `[catalog-index] Bỏ thử lại sau ${SKIP_MAX_ATTEMPTS} lần: ${giveUp.length} sản phẩm vẫn lệch giá, ` +
-                  `xoá dấu (xử lý theo ngoại lệ ${CATALOG_INDEX_MISMATCH_KIND}): ${sample(giveUp.map((c) => c.product_id))}`,
-              );
-          }
-          await index.clearDirty([...done, ...giveUp]);
-          await index.deferDirty(defers);
+        ctx ??= await loadIndexContext(container);
+        const { skipped } = await syncUnlocked(
+          container,
+          claims.map((c) => c.product_id),
+          ctx,
+        );
+        // Sản phẩm bị bỏ qua (lệch giá) KHÔNG xoá dấu: lùi giờ thử lại; hết lượt thì xoá, ngoại lệ lo tiếp.
+        const defers: DirtyDefer[] = [];
+        const giveUp: DirtyClaim[] = [];
+        const done: DirtyClaim[] = [];
+        for (const c of claims) {
+          if (!skipped.has(c.product_id)) done.push(c);
+          else if (c.attempts + 1 >= SKIP_MAX_ATTEMPTS) giveUp.push(c);
+          else
+            defers.push({
+              ...c,
+              attempts: c.attempts + 1,
+              delay_seconds: SKIP_RETRY_DELAYS_SECONDS[c.attempts] ?? SKIP_RETRY_DELAYS_SECONDS.at(-1)!,
+            });
         }
+        if (giveUp.length > 0) {
+          container
+            .resolve(ContainerRegistrationKeys.LOGGER)
+            .error(
+              `[catalog-index] Bỏ thử lại sau ${SKIP_MAX_ATTEMPTS} lần: ${giveUp.length} sản phẩm vẫn lệch giá, ` +
+                `xoá dấu (xử lý theo ngoại lệ ${CATALOG_INDEX_MISMATCH_KIND}): ${sample(giveUp.map((c) => c.product_id))}`,
+            );
+        }
+        await index.clearDirty([...done, ...giveUp]);
+        await index.deferDirty(defers);
         processed += claims.length;
       }
     } finally {
@@ -560,6 +637,12 @@ export async function drainCatalogIndex(
           .resolve(ContainerRegistrationKeys.LOGGER)
           .warn(`[catalog-index] Nhả khoá xả lỗi/quá hạn (lease tự hết): ${(err as Error).message}`);
       }
+    }
+    if (rebuildClaim && !isDraining()) {
+      if (!(await rebuildForDrain(container))) return processed;
+      // Rebuild bắt đầu SAU khi lấy dấu '*' → bao trùm thay đổi đã đánh dấu tới lúc đó; '*' đặt lại sau đó được giữ.
+      await index.clearDirty([rebuildClaim]);
+      processed += 1;
     }
     if (isDraining() || (await index.dirtyCount(true)) === 0) break;
   }

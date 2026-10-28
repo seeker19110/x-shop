@@ -1,13 +1,20 @@
 import type { Logger, MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
-import { drainCatalogIndex, rebuildCatalogIndex, syncCatalogProducts } from "../../src/lib/catalog/indexer";
+import {
+  CATALOG_INDEX_LOCK,
+  drainCatalogIndex,
+  rebuildCatalogIndex,
+  syncCatalogProducts,
+} from "../../src/lib/catalog/indexer";
 import { Migration20261026120000 } from "../../src/modules/catalog-index/migrations/Migration20261026120000";
 import { Migration20261026030000 } from "../../src/modules/checkout/migrations/Migration20261026030000";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
+import type { CatalogIndexRow } from "../../src/modules/catalog-index/service";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
+import { pauseAfterPriceRead } from "../helpers/catalog-rebuild";
 
 jest.setTimeout(300 * 1000);
 
@@ -175,8 +182,25 @@ medusaIntegrationTestRunner({
       const CHUNK_ROWS = 500;
       const COLUMNS = 25;
       const inserts: number[] = [];
+      // Chỉ đếm INSERT trong giao dịch replaceAll của rebuild: từ T-167 lượt xả nền (job mỗi phút, lượt hẹn) được phép
+      // đồng bộ song song lúc rebuild đọc nguồn — INSERT của nó không thuộc phép đo. replaceAll giữ khoá ghi nên trong
+      // khoảng này không lượt đồng bộ nào ghi xen.
+      let inReplace = false;
+      let inserted = -1;
+      const svc = index();
+      const replace = svc.replaceAll.bind(svc);
+      jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        inReplace = true;
+        try {
+          const r = await replace(rows, since);
+          inserted = r.inserted;
+          return r;
+        } finally {
+          inReplace = false;
+        }
+      });
       const onQuery = (q: { sql?: string; bindings?: unknown[] }) => {
-        if (/^insert into "catalog_variant_index"/i.test(q.sql ?? ""))
+        if (inReplace && /^insert into "catalog_variant_index"/i.test(q.sql ?? ""))
           inserts.push((q.bindings ?? []).length);
       };
       db.on("query", onQuery);
@@ -186,9 +210,11 @@ medusaIntegrationTestRunner({
       } finally {
         db.removeListener("query", onQuery);
       }
-      expect(inserts).toHaveLength(Math.ceil(expectedTotal / CHUNK_ROWS));
+      // `inserted` = dòng ảnh chụp thực ghi (trừ sản phẩm giữ bản đồng bộ nếu lượt xả nền chen lúc đọc — thường 0).
+      expect(inserted).toBeGreaterThan(expectedTotal - 10 * SKUS_PER_PRODUCT);
+      expect(inserts).toHaveLength(Math.ceil(inserted / CHUNK_ROWS));
       expect(Math.max(...inserts)).toBe(CHUNK_ROWS * COLUMNS);
-      expect(inserts.reduce((a, b) => a + b, 0)).toBe(expectedTotal * COLUMNS);
+      expect(inserts.reduce((a, b) => a + b, 0)).toBe(inserted * COLUMNS);
     });
 
     it("đồng bộ theo lô lớn (mọi sản phẩm sinh một lần gọi) cũng đủ dòng", async () => {
@@ -215,6 +241,336 @@ medusaIntegrationTestRunner({
       expect(await count()).toBe(expectedTotal);
       expect(await distinctKeys()).toBe(expectedTotal);
       expect(await scaleRows()).toBe(PRICED_VARIANTS);
+    });
+
+    // ---- T-167 (D-076): rebuild dựng dòng NGOÀI khoá ghi, chỉ giữ khoá lúc replaceAll ----
+    const pricesOf = async (variantId: string): Promise<number[]> =>
+      (
+        await db.raw(
+          `SELECT price FROM catalog_variant_index WHERE variant_id = ? ORDER BY sales_channel_id`,
+          [variantId],
+        )
+      ).rows.map((r: { price: string | number }) => Number(r.price));
+    /** Đổi giá niêm yết ở NGUỒN (bảng price của biến thể sinh ở `generate`) — không phát sự kiện. */
+    const setSourcePrice = (variantId: string, amount: number) =>
+      db.raw(
+        `UPDATE price SET amount = ?, raw_amount = jsonb_build_object('value', ?::text, 'precision', 20)
+          WHERE price_set_id = ?`,
+        [amount, amount, `pset_${variantId.slice("variant_".length)}`],
+      );
+    const isDirty = async (productId: string): Promise<boolean> =>
+      (await db.raw(`SELECT 1 FROM catalog_index_dirty WHERE product_id = ?`, [productId])).rows.length > 0;
+    /** Biến thể đầu (si = 0) của sản phẩm sinh ở `generate`. */
+    const firstVariant = (pid: string) => `variant_SCALE${pid.slice("prod_SCALE".length)}0`;
+    /**
+     * Xả tới khi không còn dấu đến hạn (gồm lượt xả rebuild hẹn cho sản phẩm giữ bản đồng bộ) — ca sau không gặp khoá
+     * ghi bận vì lượt xả nền của ca trước.
+     */
+    const settle = async () => {
+      for (let i = 0; i < 20 && (await index().dirtyCount(true)) > 0; i++)
+        await drainCatalogIndex(container, { waitMs: 5_000 });
+      expect(await index().dirtyCount(true)).toBe(0);
+      await new Promise((r) => setTimeout(r, 300));
+    };
+    /** Mốc sạch: bảng đúng nguồn và hàng đợi rỗng (dấu còn sót của ca trước đã được rebuild này phủ). */
+    const baseline = async () => {
+      await rebuildCatalogIndex(container);
+      await settle();
+      await db.raw(`DELETE FROM catalog_index_dirty`);
+    };
+    /**
+     * Chạy rebuild, dừng nó ngay sau khi đọc xong GIÁ của lô chứa `variantId` (ảnh chụp sản phẩm + giá CŨ đã nằm trong
+     * tay rebuild), chạy `during` trong lúc dừng rồi cho rebuild chạy tiếp tới hết. `atReplace` đọc trạng thái NGAY sau
+     * `replaceAll` (còn giữ khoá ghi — lượt xả hẹn sau rebuild chưa thể chen vào): bằng chứng ảnh chụp có ghi đè hay không.
+     */
+    const rebuildPausedAt = async <T>(
+      variantId: string,
+      during: () => Promise<void>,
+      atReplace: () => Promise<T>,
+    ) => {
+      const svc = index();
+      const replace = svc.replaceAll.bind(svc);
+      const seen: { value?: T } = {};
+      const spy = jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        const r = await replace(rows, since);
+        seen.value = await atReplace();
+        return r;
+      });
+      const gate = pauseAfterPriceRead(container, variantId);
+      const run = rebuildCatalogIndex(container);
+      try {
+        await gate.reached;
+        await during();
+      } finally {
+        gate.restore();
+      }
+      const result = await run.finally(() => spy.mockRestore());
+      return { result, atReplace: seen.value };
+    };
+
+    it("T-167: sửa giá trong lúc rebuild đang đọc nguồn → lượt xả ghi ngay (khoá ghi không bị rebuild giữ), rebuild không ghi đè bằng ảnh chụp cũ", async () => {
+      await baseline();
+      const pid = "prod_SCALE00010";
+      const vid = firstVariant(pid);
+      const [before] = await pricesOf(vid);
+      const NEW = before! + 7_000;
+
+      const { result, atReplace } = await rebuildPausedAt(
+        vid,
+        async () => {
+          await setSourcePrice(vid, NEW);
+          await index().markDirty([pid]);
+          // Trước T-167 rebuild giữ khoá suốt lúc đọc → lượt xả hết hạn chờ, giá cũ tới hết rebuild (~1 phút ở 50k).
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await pricesOf(vid)).toEqual([NEW]);
+        },
+        async () => ({ price: await pricesOf(vid), dirty: await isDirty(pid) }),
+      );
+
+      expect(result.superseded).toBe(false);
+      expect(result.kept).toBe(1);
+      // Ảnh chụp (giá CŨ đã đọc) không ghi đè bản đồng bộ; sản phẩm giữ lại được đánh dấu bẩn lại (review 🔴1).
+      expect(atReplace).toEqual({ price: [NEW], dirty: true });
+      expect(result.rows).toBe(expectedTotal);
+      await settle();
+      expect(await pricesOf(vid)).toEqual([NEW]);
+      expect(await isDirty(pid)).toBe(false);
+      expect(await count()).toBe(expectedTotal);
+      expect(await distinctKeys()).toBe(expectedTotal);
+
+      await setSourcePrice(vid, before!);
+      await syncCatalogProducts(container, [pid]);
+      expect(await pricesOf(vid)).toEqual([before]);
+    });
+
+    it("T-167: ẩn sản phẩm (draft) trong lúc rebuild đọc nguồn → không còn dòng sau rebuild", async () => {
+      await baseline();
+      const pid = "prod_SCALE00011";
+      expect(await count("product_id = ?", [pid])).toBe(SKUS_PER_PRODUCT);
+
+      const { result, atReplace } = await rebuildPausedAt(
+        firstVariant(pid),
+        async () => {
+          await db.raw(`UPDATE product SET status = 'draft' WHERE id = ?`, [pid]);
+          await index().markDirty([pid]);
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await count("product_id = ?", [pid])).toBe(0);
+        },
+        () => count("product_id = ?", [pid]),
+      );
+
+      expect(result.kept).toBe(1);
+      expect(atReplace).toBe(0);
+      await settle();
+      expect(await count("product_id = ?", [pid])).toBe(0);
+      expect(await count()).toBe(expectedTotal - SKUS_PER_PRODUCT);
+
+      await db.raw(`UPDATE product SET status = 'published' WHERE id = ?`, [pid]);
+      await syncCatalogProducts(container, [pid]);
+      expect(await count()).toBe(expectedTotal);
+    });
+
+    it("T-167: xoá sản phẩm trong lúc rebuild đọc nguồn → không dòng ma sau rebuild", async () => {
+      await baseline();
+      const pid = "prod_SCALE00012";
+      expect(await count("product_id = ?", [pid])).toBe(SKUS_PER_PRODUCT);
+
+      const { result, atReplace } = await rebuildPausedAt(
+        firstVariant(pid),
+        async () => {
+          await db.raw(`UPDATE product SET deleted_at = now() WHERE id = ?`, [pid]);
+          await index().markDirty([pid]);
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await count("product_id = ?", [pid])).toBe(0);
+        },
+        () => count("product_id = ?", [pid]),
+      );
+
+      expect(result.kept).toBe(1);
+      expect(atReplace).toBe(0);
+      await settle();
+      expect(await count("product_id = ?", [pid])).toBe(0);
+      expect(await count()).toBe(expectedTotal - SKUS_PER_PRODUCT);
+      expect(await distinctKeys()).toBe(expectedTotal - SKUS_PER_PRODUCT);
+
+      await db.raw(`UPDATE product SET deleted_at = NULL WHERE id = ?`, [pid]);
+      await syncCatalogProducts(container, [pid]);
+      expect(await count()).toBe(expectedTotal);
+    });
+
+    it("T-167: thay đổi chưa kịp xả trước replaceAll → dấu bẩn còn nguyên sau rebuild, lượt xả kế tiếp ghi bản mới", async () => {
+      await baseline();
+      const pid = "prod_SCALE00013";
+      const vid = firstVariant(pid);
+      const [before] = await pricesOf(vid);
+      const NEW = before! + 9_000;
+
+      const { result, atReplace } = await rebuildPausedAt(
+        vid,
+        async () => {
+          await setSourcePrice(vid, NEW);
+          await index().markDirty([pid]);
+        },
+        async () => ({ price: await pricesOf(vid), dirty: await isDirty(pid) }),
+      );
+
+      // Hai nhánh hợp lệ (T-167 cố ý cho lượt xả nền — job mỗi phút, lượt hẹn — chạy song song lúc rebuild đọc nguồn):
+      if (result.kept === 0) {
+        // (a) Không lượt xả nào lấy dấu trước replaceAll: ảnh chụp (đã cầm giá CŨ — móc dừng SAU khi đọc giá) được ghi,
+        // dấu đặt sau mốc bắt đầu còn nguyên.
+        expect(atReplace).toEqual({ price: [before], dirty: true });
+      } else {
+        // (b) Lượt xả nền đã đồng bộ sản phẩm (đọc nguồn sau thay đổi) trước replaceAll: bản đồng bộ được giữ và sản phẩm
+        // được đánh dấu bẩn lại trong replaceAll.
+        expect(result.kept).toBe(1);
+        expect(atReplace).toEqual({ price: [NEW], dirty: true });
+      }
+      // Bất biến chung: dấu không bị rebuild nuốt → lượt xả kế ghi giá mới, hàng đợi sạch.
+      await settle();
+      expect(await pricesOf(vid)).toEqual([NEW]);
+      expect(await isDirty(pid)).toBe(false);
+
+      await setSourcePrice(vid, before!);
+      await syncCatalogProducts(container, [pid]);
+    });
+
+    it("T-167 (review 🔴1): đồng bộ đọc nguồn TRƯỚC mốc rebuild nhưng ghi SAU mốc → thay đổi không phát sự kiện trước mốc không bị mất", async () => {
+      await baseline();
+      const svc = index();
+      const pid = "prod_SCALE00900";
+      const vid = firstVariant(pid);
+      const [before] = await pricesOf(vid);
+      const NEW = before! + 11_000;
+      let reachedWrite!: () => void;
+      const writeReached = new Promise<void>((r) => (reachedWrite = r));
+      let releaseWrite!: () => void;
+      const writeGate = new Promise<void>((r) => (releaseWrite = r));
+      const replaceProducts = svc.replaceProducts.bind(svc);
+      jest.spyOn(svc, "replaceProducts").mockImplementation(async (ids, rows) => {
+        if (ids.includes(pid)) {
+          reachedWrite();
+          await writeGate;
+        }
+        return replaceProducts(ids, rows);
+      });
+      let sinceTaken!: (s: string) => void;
+      const sinceP = new Promise<string>((r) => (sinceTaken = r));
+      const clock = svc.clockNow.bind(svc);
+      jest.spyOn(svc, "clockNow").mockImplementation(async () => {
+        const s = await clock();
+        sinceTaken(s);
+        return s;
+      });
+      const replace = svc.replaceAll.bind(svc);
+      let atReplace: { price: number[]; dirty: boolean } | undefined;
+      jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        const r = await replace(rows, since);
+        atReplace = { price: await pricesOf(vid), dirty: await isDirty(pid) };
+        return r;
+      });
+      try {
+        // 1) Lượt đồng bộ pid đã ĐỌC nguồn (giá cũ), dừng ngay trước replaceProducts (đang giữ khoá ghi).
+        // Lượt xả nền (job mỗi phút) cũng có thể lấy dấu này trước — móc trên replaceProducts dừng bất kỳ lượt nào ghi pid;
+        // lượt xả của ca chờ khoá (không đếm nó xử lý bao nhiêu).
+        await svc.markDirty([pid]);
+        const drain = drainCatalogIndex(container, { waitMs: 20_000 });
+        await writeReached;
+        // 2) Thay đổi KHÔNG phát sự kiện (price list tới giờ, bảng màu/size, link kho↔kênh): nguồn đổi, không dấu.
+        await setSourcePrice(vid, NEW);
+        const changedAt = (await db.raw(`SELECT clock_timestamp()::text AS t`)).rows[0].t as string;
+        // 3) Rebuild định kỳ (job */30) bắt đầu SAU thay đổi.
+        const run = rebuildCatalogIndex(container);
+        const since = await sinceP;
+        expect(
+          (await db.raw(`SELECT ?::timestamptz < ?::timestamptz AS ok`, [changedAt, since])).rows[0].ok,
+        ).toBe(true);
+        // 4) Lượt đồng bộ ghi (mốc ≥ since) bằng dữ liệu đọc TRƯỚC thay đổi, rồi xoá dấu.
+        releaseWrite();
+        await drain;
+        const result = await run;
+        expect(result.kept).toBe(1);
+        // Bản giữ lại (cũ) được đánh dấu bẩn lại cùng giao dịch replaceAll → lượt xả đọc nguồn mới nhất.
+        expect(atReplace).toEqual({ price: [before], dirty: true });
+        await settle();
+        expect(await pricesOf(vid)).toEqual([NEW]);
+      } finally {
+        releaseWrite();
+        jest.restoreAllMocks();
+        await setSourcePrice(vid, before!);
+        await syncCatalogProducts(container, [pid]);
+      }
+    });
+    it("T-167: hai rebuild đồng thời chạy tuần tự (mỗi lần thay là MỘT ảnh chụp, không xen lúc đọc); ảnh chụp cũ hơn ảnh chụp đã áp bị bỏ", async () => {
+      const svc = index();
+      const order: string[] = [];
+      const clock = svc.clockNow.bind(svc);
+      const replace = svc.replaceAll.bind(svc);
+      jest.spyOn(svc, "clockNow").mockImplementation(async () => {
+        order.push("đọc");
+        return clock();
+      });
+      jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        order.push("thay");
+        return replace(rows, since);
+      });
+      const [a, b] = await Promise.all([rebuildCatalogIndex(container), rebuildCatalogIndex(container)]);
+      expect(order).toEqual(["đọc", "thay", "đọc", "thay"]);
+      for (const r of [a, b]) {
+        expect(r.superseded).toBe(false);
+        expect(r.rows).toBe(expectedTotal);
+      }
+      expect(await count()).toBe(expectedTotal);
+      expect(await distinctKeys()).toBe(expectedTotal);
+      jest.restoreAllMocks();
+
+      // Chốt ở DB, không dựa vào khoá Redis (lease mất, tiến trình treo): ảnh chụp bắt đầu trước ảnh chụp đã áp → không ghi.
+      const older = await svc.clockNow();
+      const newer = await svc.clockNow();
+      const rows = (await db.raw(`SELECT * FROM catalog_variant_index`)).rows as CatalogIndexRow[];
+      expect((await svc.replaceAll(rows, newer)).applied).toBe(true);
+      const stale = await svc.replaceAll(rows.slice(0, 10), older);
+      expect(stale).toEqual({ applied: false, inserted: 0, keptProducts: [], keptRows: 0 });
+      expect(await count()).toBe(expectedTotal);
+    });
+
+    it("T-167: khoá ghi chỉ giữ lúc thay bảng — câu SQL trong khoá ≤ ⌈dòng/500⌉ + hằng số, không câu nào đọc nguồn, phần lớn câu chạy ngoài khoá", async () => {
+      // Đo theo SỐ CÂU, không theo đồng hồ (máy tải nặng làm wall-clock chập chờn). Trước T-167 mọi câu (kể cả đọc nguồn
+      // 50k SKU ~51–69 s, docs/db/connections.md §5) chạy trong khoá → tỉ lệ 1,0.
+      const locking = container.resolve(Modules.LOCKING);
+      const acquire = locking.acquire.bind(locking);
+      const release = locking.release.bind(locking);
+      const isIndexLock = (keys: string | string[]) =>
+        (Array.isArray(keys) ? keys : [keys]).includes(CATALOG_INDEX_LOCK);
+      // Chỉ khoá do REBUILD giữ: lượt xả nền (chủ `drain-…`, job mỗi phút/lượt hẹn) được phép chạy song song từ T-167.
+      const ownerOf = (args: unknown) => (args as { ownerId?: string } | undefined)?.ownerId ?? "";
+      let heldBy: string | null = null;
+      jest.spyOn(locking, "acquire").mockImplementation(async (keys, args) => {
+        await acquire(keys, args);
+        if (isIndexLock(keys) && !ownerOf(args).startsWith("drain-")) heldBy = ownerOf(args);
+      });
+      jest.spyOn(locking, "release").mockImplementation(async (keys, args) => {
+        if (isIndexLock(keys) && ownerOf(args) === heldBy) heldBy = null;
+        return release(keys, args);
+      });
+      const inLock: string[] = [];
+      let outside = 0;
+      const onQuery = (q: { sql?: string }) => {
+        const sql = q.sql ?? "";
+        // Câu thăm dò hàng đợi của lượt xả nền đang chờ khoá (dirtyCount) không thuộc rebuild — không tính bên nào.
+        if (/catalog_index_dirty/.test(sql)) return;
+        if (heldBy !== null) inLock.push(sql);
+        else outside += 1;
+      };
+      db.on("query", onQuery);
+      const result = await rebuildCatalogIndex(container).finally(() => db.removeListener("query", onQuery));
+      expect(result.rows).toBe(expectedTotal);
+      const SOURCE =
+        /\b(from|join)\s+"?(product|product_variant|price|price_set|price_list|inventory_item|inventory_level|reservation_item|product_category|sales_channel)"?(\s|$)/i;
+      expect(inLock.filter((s) => SOURCE.test(s))).toEqual([]);
+      expect(inLock.length).toBeLessThanOrEqual(Math.ceil(expectedTotal / 500) + 12);
+      // Đo 2026-10-27 (5.605 dòng): 21 câu trong khoá (BEGIN, 6 câu write log/chốt, DELETE, 12 INSERT, COMMIT, đếm cuối)
+      // trên 252 câu cả lượt (8 %); trước T-167: mọi câu trong khoá, gồm 391 câu đọc nguồn.
+      expect(inLock.length / (inLock.length + outside)).toBeLessThan(0.5);
     });
 
     it("kiểm cuối báo lỗi có số liệu khi bảng lệch số dòng vừa ghi (không im lặng)", async () => {

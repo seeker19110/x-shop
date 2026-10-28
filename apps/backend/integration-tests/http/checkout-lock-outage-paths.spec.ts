@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
 import { LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS } from "../../src/lib/checkout/errors";
 import { activeLeaseCount, LOCK_CALL_TIMEOUT_MS, lockKeys } from "../../src/lib/checkout/locks";
-import { CATALOG_INDEX_LOCK } from "../../src/lib/catalog/indexer";
+import { CATALOG_INDEX_LOCK, CATALOG_REBUILD_LOCK } from "../../src/lib/catalog/indexer";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
 import { AUDIT_MODULE } from "../../src/modules/audit";
@@ -150,7 +150,7 @@ medusaIntegrationTestRunner({
     afterEach(() => {
       restoreRedis();
       // Chỉ khóa checkout/tồn: lượt đồng bộ catalog do sự kiện chỉnh tồn kích có thể đang giữ lease hợp lệ (T-137/T-146).
-      expect(activeLeaseCount([CATALOG_INDEX_LOCK])).toBe(0);
+      expect(activeLeaseCount([CATALOG_INDEX_LOCK, CATALOG_REBUILD_LOCK])).toBe(0);
     });
 
     describe("hủy đơn", () => {
