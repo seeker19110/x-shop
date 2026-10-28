@@ -136,7 +136,7 @@ jobs:
       - name: Fixture không PII thật — `node scripts/check-fixtures.mjs` (QA-DATA-002)
         run: node scripts/check-fixtures.mjs
       - name: Test của các script kiểm kiến trúc/dữ liệu
-        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test && pnpm check:migrations:test
+        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs scripts/n-minus-1.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test && pnpm check:migrations:test
       - name: Schema module tuỳ biến (FK ON DELETE/index, NOT NULL, CHECK) — `pnpm check:schema` (DB-MODEL-004)
         run: pnpm check:schema
       # x-shop (T-102): migration đã có trên nhánh đích giữ nguyên byte (blob hash git) + migration mới không phá huỷ trong
@@ -220,6 +220,60 @@ jobs:
           start=$(date +%s)
           bash -euxo pipefail "$RUNNER_TEMP/readme-smoke.sh"
           echo "readme-smoke: $(( $(date +%s) - start )) giây" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # x-shop (T-163, OPS-DEPLOY-003, D-115): test tích hợp của bản N−1 (ref gốc) trên schema N (migration của HEAD) —
+  # `scripts/n-minus-1.mjs` (cây N−1 qua git archive, phủ migration HEAD, chứng minh schema trùng `db:migrate` của HEAD,
+  # rồi chạy `test:integration` của N−1). Job RIÊNG, song song với `gate` (không `needs`), để không kéo dài `gate`
+  # (~26/30 phút). KHÔNG nằm trong `quality.needs` nên không phải required check: chạy cả bộ test tích hợp (đo
+  # trong RUNBOOK §5) và chưa có số đo độ ổn định trên runner — đỏ hiện trên PR để người/agent đọc, không chặn merge.
+  # Chỉ chạy nặng khi có migration thêm/đổi/xoá so với ref gốc (bước detect, không cần cài phụ thuộc); không có → các
+  # bước sau `skipped`, job xanh trong vài giây. Ref gốc: ĐÚNG biểu thức của bước check-migrations trong `gate`.
+  n-minus-1:
+    name: n-minus-1
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        # Cùng digest với job `gate` (BASE-DEP-008).
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_USER: xshop
+          POSTGRES_PASSWORD: xshop
+          POSTGRES_DB: xshop
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://xshop:xshop@localhost:5432/xshop
+      REDIS_URL: redis://localhost:6379
+      MIGRATIONS_BASE_REF: >-
+        ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref)
+        || (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        && github.event.before) || 'HEAD~1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # ref gốc (nhánh đích / commit trước push) phải có trong clone
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - id: detect
+        name: Có migration thêm/đổi/xoá so với ref gốc? — `n-minus-1.mjs --detect-only`
+        run: node scripts/n-minus-1.mjs --detect-only
+      - if: steps.detect.outputs.run == 'true'
+        name: setup — khoá `setup:` của xt.yaml (cây HEAD; store pnpm này là cache cho cây N−1)
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      - if: steps.detect.outputs.run == 'true'
+        name: Test tích hợp bản N−1 trên schema N — `node scripts/n-minus-1.mjs`
+        env:
+          N1_WORKDIR: ${{ runner.temp }}
+        run: node scripts/n-minus-1.mjs
 
   # Required check `quality` (ruleset `.github/rulesets/main.json`): TỔNG HỢP mọi job con (WF-CI-001). `always()` — không
   # phải `!cancelled()`: run bị huỷ thì `quality` vẫn chạy và ĐỎ (job con `cancelled`/`skipped` ≠ `success`). Với
