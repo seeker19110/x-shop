@@ -100,7 +100,10 @@ test("ADR superseded được miễn heading nhưng phải trỏ tới ADR thay 
 test("supersededBy: chỉ đọc trong mục Status, không đọc thân bài; null/rỗng ổn", () => {
   assert.equal(supersededBy("## Trạng thái\nSuperseded by ADR-0007\n"), "0007");
   assert.equal(supersededBy("---\nstatus: superseded by ADR-0012\n---\n# x"), "0012");
-  assert.equal(supersededBy("## Trạng thái\nAccepted\n\n## Bối cảnh\nThay vì Superseded by ADR-0003 ..."), null);
+  assert.equal(
+    supersededBy("## Trạng thái\nAccepted\n\n## Bối cảnh\nThay vì Superseded by ADR-0003 ..."),
+    null,
+  );
   assert.equal(supersededBy(""), null);
   assert.equal(supersededBy(null), null);
 });
