@@ -157,7 +157,11 @@ không có dấu bẩn nào khác sửa lại. Đánh dấu bẩn lại sản ph
 **Giới hạn: rebuild do dấu `'*'`** (sự kiện không truy được phạm vi: xoá danh mục, đổi/xoá price list) chạy NGAY TRONG lượt
 xả (`drainCatalogIndex`). Trong lúc rebuild đó (~50 s ở 50k SKU), lượt xả theo sự kiện của cùng tiến trình (lượt hẹn gộp
 `scheduleCatalogDrain`) chờ nó xong; lượt xả của job mỗi phút và của tiến trình khác thì không bị chặn (khoá ghi rảnh). Số
-0,39–0,46 s dưới đây chỉ đúng cho rebuild gọi trực tiếp (job `x-catalog-index-rebuild`, `catalog:reindex`, seed).
+0,39–0,46 s dưới đây chỉ đúng cho rebuild gọi trực tiếp (job `x-catalog-index-rebuild`, `catalog:reindex`, seed). Nếu
+chính **job mỗi phút** (`x-catalog-index-drain` → `drainCatalogIndexForJob`) là lượt thấy `'*'` trước, rebuild chạy trọn
+(~50 s ở 50k SKU) trong khe job worker BullMQ `concurrency: 1` dùng chung với mọi scheduled job (outbox 10 s,
+expire-holds…) — trái ý D-081 ("không chờ trong job worker"). Đây là hành vi có từ trước T-167 (trước đó còn giữ cả khoá
+ghi suốt lúc đó), T-167 không làm nặng thêm; chưa sửa — tách rebuild `'*'` khỏi lượt xả là quyết định riêng (D-121).
 
 Đo 2026-10-27 trên DB riêng `PERF_DB_NAME=xshop_perf_t167 PERF_ORDERS=1000 node scripts/ops/perf-dataset.mjs` (10.024 sản
 phẩm / 50.105 dòng; cùng máy 4 CPU, loadavg 1 phút 4,4–5,6), script đo tạm qua `medusa exec`: bọc `acquire`/`release` của
