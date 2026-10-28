@@ -38,6 +38,8 @@
     "check:routes:test": "node --test scripts/check-routes.test.mjs",
     "check:env-doc": "node scripts/check-env-doc.mjs",
     "check:env-doc:test": "node --test scripts/check-env-doc.test.mjs",
+    "check:domains": "node scripts/check-domains.mjs",
+    "check:domains:test": "node --test scripts/check-domains.test.mjs",
     "check:units": "node scripts/check-units.mjs",
     "check:units:test": "node --test scripts/check-units.test.mjs",
     "check:sql-safety": "node scripts/check-sql-safety.mjs",

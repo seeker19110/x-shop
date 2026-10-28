@@ -4,7 +4,7 @@ Cập nhật 2026-10-26 theo cây mã thật. Miền = ngữ cảnh có từ v�
 
 | Miền                             | Spec                                       | Module backend (`apps/backend/src/modules/`) | Lõi thuần (`packages/domain/src/`) | Bất biến chính                                                 |
 | -------------------------------- | ------------------------------------------ | -------------------------------------------- | ---------------------------------- | -------------------------------------------------------------- |
-| Catalog (danh mục, biến thể, lọc) | SPEC-catalog                               | `fashion`, `catalog-import`, `catalog-index` | `catalog`, `catalog-admin`         | SKU = màu × size; lọc cùng biến thể + giá; xuất bản có kiểm    |
+| Catalog (danh mục, biến thể, lọc) | SPEC-catalog                               | `fashion`, `catalog-import`, `catalog-index` | `catalog`, `catalog-admin`, `catalog-revalidate` | SKU = màu × size; lọc cùng biến thể + giá; xuất bản có kiểm    |
 | Giá và tiền                      | SPEC-checkout                              | (trong `checkout`)                           | `money`, `pricing`                 | Tiền là số nguyên VND; tổng phân bổ giảm giá = tổng giảm       |
 | Checkout và đơn                  | SPEC-checkout                              | `checkout`                                   | `state`                            | Một đơn / một bộ reservation; idempotency; không bán vượt tồn  |
 | Thanh toán (VNPAY, COD)          | SPEC-payment                               | (trong `checkout`, `settlement`)             | `providers`, `ledger`              | Không thu tiền trùng; trạng thái tài chính đơn điệu            |
