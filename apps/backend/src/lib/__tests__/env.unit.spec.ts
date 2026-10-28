@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
+  ENV_SCHEMA_KEYS,
   DEV_CORS_DEFAULTS,
   DEV_PRIVATE_UPLOAD_DIRNAME,
   DEV_STOREFRONT_URL,
@@ -640,5 +642,15 @@ describe("FILE_STORAGE + S3_* (T-154 — file dùng chung giữa các bản sao)
     ]);
     // AWS (không endpoint) hợp lệ.
     expect(parseEnv({ ...production, S3_ENDPOINT: undefined, S3_REGION: "ap-southeast-1" }).ok).toBe(true);
+  });
+});
+
+describe("khoá schema ↔ script check-env-doc (BASE-CFG-003)", () => {
+  it("phân tích tĩnh của script trích ĐÚNG tập khoá của baseSchema (Object.keys(shape))", () => {
+    const script = path.resolve(process.cwd(), "../../scripts/check-env-doc.mjs"); // jest chạy từ apps/backend
+    const out = JSON.parse(execFileSync(process.execPath, [script, "--keys-json"], { encoding: "utf8" })) as {
+      backend: string[];
+    };
+    expect(out.backend).toEqual([...ENV_SCHEMA_KEYS].sort());
   });
 });

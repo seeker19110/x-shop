@@ -1,4 +1,14 @@
 {
-  "doc": {},
-  "schema": {}
+  "backend": {
+    "doc": {
+      "XS_SECURITY_KEY_NAMESPACE": "Chỉ test tích hợp: tách khoá Redis rate limit giữa các lần chạy (apps/backend/src/lib/admin-security/store.ts); đọc trực tiếp process.env, không qua schema nên không đổi hành vi."
+    },
+    "schema": {}
+  },
+  "storefront": {
+    "doc": {
+      "HOST": "Địa chỉ bind do `next dev`/`next start -H \"${HOST:-127.0.0.1}\"` đọc (BASE-SEC-010), không qua schema zod của storefront."
+    },
+    "schema": {}
+  }
 }

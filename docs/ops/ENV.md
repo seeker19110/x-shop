@@ -127,6 +127,9 @@ MEDUSA_BACKEND_URL=https://api.shop.example.vn
 # max_connections của Postgres. statement_timeout của phiên ứng dụng (mili giây); migration dài → nâng tạm cho lệnh migrate.
 # DB_POOL_MAX=10                 # kết nối; [1, 100]
 # DB_STATEMENT_TIMEOUT_MS=30000  # [1000, 3600000]
+# CHỈ TEST (không qua schema, không đặt ở production): tiền tố khoá Redis của rate limit admin để các lần chạy test tích hợp
+# dùng chung một Redis không rò bộ đếm sang nhau (apps/backend/src/lib/admin-security/store.ts).
+# XS_SECURITY_KEY_NAMESPACE=it-local
 # Log (T-090): JSON một dòng/stdout, đã che bí mật + PII. Ngưỡng: error|warn|info|http|verbose|debug|silly; vắng = info.
 # LOG_LEVEL=info
 # Mặc định an toàn (T-098, BASE-CFG-007, BASE-SEC-010). Bind: scripts `dev`/`start` của backend VÀ storefront chạy `medusa|next … -H "${HOST:-127.0.0.1}"` —

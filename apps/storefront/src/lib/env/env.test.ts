@@ -1,5 +1,8 @@
 // @vitest-environment node
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
+  clientEnvSchema,
   getAnalyticsTransport,
   getClientEnv,
   getServerEnv,
@@ -191,5 +194,16 @@ describe("NEXT_PUBLIC_ANALYTICS_TRANSPORT trong schema client (FE-BUILD-005)", (
     expect(getAnalyticsTransport()).toBe("none");
     vi.stubEnv("NEXT_PUBLIC_ANALYTICS_TRANSPORT", " ");
     expect(getAnalyticsTransport()).toBe("none");
+  });
+});
+
+describe("khoá schema ↔ script check-env-doc (BASE-CFG-003)", () => {
+  it("phân tích tĩnh của script trích ĐÚNG tập khoá của clientEnvSchema + serverEnvSchema", () => {
+    const script = fileURLToPath(new URL("../../../../../scripts/check-env-doc.mjs", import.meta.url));
+    const out = JSON.parse(execFileSync(process.execPath, [script, "--keys-json"], { encoding: "utf8" })) as {
+      storefront: string[];
+    };
+    const actual = [...Object.keys(clientEnvSchema.shape), ...Object.keys(serverEnvSchema.shape)].sort();
+    expect(out.storefront).toEqual(actual);
   });
 });
