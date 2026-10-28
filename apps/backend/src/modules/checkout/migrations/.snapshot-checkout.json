@@ -2458,6 +2458,22 @@
           "enumItems": [],
           "mappedType": "text"
         },
+        "vnp_create_date": {
+          "name": "vnp_create_date",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "text"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamptz",
@@ -2560,6 +2576,11 @@
           "name": "payment_attempt_amount_pos",
           "expression": "amount > 0",
           "definition": "check ((amount > 0))"
+        },
+        {
+          "name": "payment_attempt_vnp_create_date_format",
+          "expression": "vnp_create_date IS NULL OR vnp_create_date ~ '^[0-9]{14}$'",
+          "definition": "check ((vnp_create_date IS NULL OR vnp_create_date ~ '^[0-9]{14}$'))"
         }
       ],
       "foreignKeys": {},

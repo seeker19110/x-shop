@@ -169,6 +169,9 @@ export const PaymentAttempt = model
     payment_url: model.text().nullable(),
     expires_at: model.dateTime(),
     provider_txn_no: model.text().nullable(),
+    // T-170: đúng chuỗi `vnp_CreateDate` của URL thanh toán (yyyyMMddHHmmss GMT+7) — querydr/refund gửi lại làm
+    // `vnp_TransactionDate`. NULL = attempt trước T-170 (fallback `created_at`, RUNBOOK §1.2).
+    vnp_create_date: model.text().nullable(),
   })
   .indexes([
     { name: "IDX_payment_attempt_txn_ref_unique", on: ["txn_ref"], unique: true, where: null },
@@ -181,7 +184,13 @@ export const PaymentAttempt = model
     // T-074: trang đơn đọc mọi lượt thanh toán của đơn (index trên chỉ phủ lượt đang mở) — docs/db/explain/.
     { name: "IDX_payment_attempt_order_id", on: ["order_id"], where: null },
   ])
-  .checks([{ name: "payment_attempt_amount_pos", expression: (c) => `${c.amount} > 0` }]);
+  .checks([
+    { name: "payment_attempt_amount_pos", expression: (c) => `${c.amount} > 0` },
+    {
+      name: "payment_attempt_vnp_create_date_format",
+      expression: (c) => `${c.vnp_create_date} IS NULL OR ${c.vnp_create_date} ~ '^[0-9]{14}$'`,
+    },
+  ]);
 
 /**
  * Sổ cái tiền đã xác minh (đặc tả §6.1): mỗi khoản thu/hoàn là MỘT dòng, không ghi đè. UNIQUE(provider,

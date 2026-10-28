@@ -536,6 +536,7 @@ tables:
       - state
       - expires_at
       - provider_txn_no
+      - vnp_create_date
       - created_at
       - updated_at
       - deleted_at
