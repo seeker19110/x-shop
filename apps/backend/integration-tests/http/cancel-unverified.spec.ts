@@ -15,6 +15,7 @@ import { AUDIT_MODULE } from "../../src/modules/audit";
 import type AuditModuleService from "../../src/modules/audit/service";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
+import { returnsOf } from "../../src/workflows/returns/order-context";
 import { MockVnpayRefundGateway, setRefundGatewayForTest } from "../../src/workflows/returns/refund-gateway";
 import {
   createAdmin,
@@ -58,8 +59,14 @@ type J = Record<string, any>;
 class ScriptedGateway implements VnpayGateway {
   readonly results = new Map<string, QueryStatusResult>();
   readonly seen: string[] = [];
+  /** txnRef → promise phải xong trước khi trả lời (giữ lời gọi querydr — tức giữ khóa đơn của route — có chủ đích). */
+  readonly holds = new Map<string, Promise<void>>();
+  /** txnRef → báo khi lời gọi querydr bắt đầu. */
+  readonly started = new Map<string, () => void>();
   async queryStatus(input: { txnRef: string }): Promise<QueryStatusResult> {
     this.seen.push(input.txnRef);
+    this.started.get(input.txnRef)?.();
+    await this.holds.get(input.txnRef);
     return (
       this.results.get(input.txnRef) ?? { outcome: "not_paid", transactionNo: null, reason: "status_01" }
     );
@@ -411,6 +418,12 @@ medusaIntegrationTestRunner({
         const at = (iso: string | null) => ({ hold_expires_at: iso });
         expect(notUnverifiedReason(at(null), { state: "unknown" }, 0, now)).toBeNull();
         expect(notUnverifiedReason(at(null), { state: "pending" }, 0, now)).toBe("hold_active");
+        expect(notUnverifiedReason(at("2026-10-27T10:15:00.000Z"), { state: "created" }, 0, now)).toBe(
+          "hold_active",
+        );
+        expect(notUnverifiedReason(at("2026-10-27T10:15:00.000Z"), { state: "pending" }, 0, now)).toBe(
+          "hold_active",
+        );
         expect(notUnverifiedReason(at("2026-10-27T10:00:00.000Z"), { state: "created" }, 0, now)).toBeNull();
         expect(notUnverifiedReason(at("2026-10-27T10:00:00.001Z"), { state: "pending" }, 0, now)).toBe(
           "hold_active",
@@ -521,6 +534,77 @@ medusaIntegrationTestRunner({
         expect(await cancelRows(o.orderId)).toHaveLength(0);
         expect(await auditEntries(o.orderId)).toHaveLength(0);
         expect(await outboxOf(o.orderId, "order.cancelled")).toHaveLength(0);
+      });
+
+      it("querydr cuối báo ĐÃ TRẢ nhưng sự kiện đó đã xử lý trước với kết quả khác (đơn vẫn chờ, chưa có tiền) → 409 PAYMENT_NOT_UNVERIFIED payment_received, không hủy", async () => {
+        const o = await vnpayOrder("Đen/S", { unknown: true });
+        // Cùng event key querydr sẽ sinh (txn_ref|mã GD|00|00) đã nằm trong inbox với kết quả 04 → processVerified trả sớm.
+        const inbox = await service().recordInbox({
+          provider: "vnpay",
+          event_key: `${o.txnRef}|14999555|00|00`,
+          source: "ipn",
+          payload: { vnp_TxnRef: o.txnRef },
+          payload_hash: "probe",
+          verified: true,
+        });
+        await service().markInboxProcessed(inbox.id, { RspCode: "04", Message: "Invalid amount" });
+        gateway.results.set(o.txnRef, { outcome: "paid", transactionNo: "14999555", reason: "status_00" });
+        const res = await cancelUv(o.orderId);
+        expect({ status: res.status, code: res.data.code, reason: res.data.reason }).toEqual({
+          status: 409,
+          code: "PAYMENT_NOT_UNVERIFIED",
+          reason: "payment_received",
+        });
+        expect(await fin(o.orderId)).toMatchObject({ state: "awaiting_payment" });
+        expect(await service().listPaymentLedgers({ order_id: o.orderId })).toHaveLength(0);
+        expect(await inventoryLevel(container, fx, "Đen/S")).toEqual({ stocked: 50, reserved: 1 });
+        expect(await cancelRows(o.orderId)).toHaveLength(0);
+        expect(await auditEntries(o.orderId)).toHaveLength(0);
+      });
+
+      it("review 🟠1: lỗi khi ghi lệnh hủy hoặc audit (giả lập chết giữa chừng) → rollback cả việc hủy, không có 'đã hủy mà mất dấu'; gửi lại cùng khóa → hủy đủ, đúng một lệnh + một audit, lần sau replay", async () => {
+        const cases = [
+          ["x_order_cancel", "Trắng/S", () => jest.spyOn(returnsOf(container), "insertOrderCancel")],
+          ["audit", "Trắng/M", () => jest.spyOn(auditOf(), "record")],
+        ] as const;
+        for (const [name, variant, spyOn] of cases) {
+          const o = await vnpayOrder(variant, { unknown: true });
+          const ctx = { actor_type: "user", actor_id: staff.owner.userId, request_id: null, ip_hash: null };
+          const input = {
+            order_id: o.orderId,
+            actor_id: staff.owner.userId,
+            reason: REASON,
+            merchant_ref: MREF,
+            idempotency_key: key(),
+          };
+          const spy = spyOn().mockRejectedValueOnce(new Error("crash-simulated"));
+          await expect(cancelUnverified(container, input, ctx)).rejects.toThrow("crash-simulated");
+          spy.mockRestore();
+          expect({ name, state: (await fin(o.orderId)).state }).toEqual({ name, state: "awaiting_payment" });
+          expect((await service().listPaymentAttempts({ order_id: o.orderId })).map((p) => p.state)).toEqual([
+            "unknown",
+          ]);
+          expect(
+            (await service().listOpsExceptions({ order_id: o.orderId, kind: "payment_unknown" })).map(
+              (e) => e.state,
+            ),
+          ).toEqual(["open"]);
+          expect(await cancelRows(o.orderId)).toHaveLength(0);
+          expect(await auditEntries(o.orderId)).toHaveLength(0);
+          expect(await outboxOf(o.orderId, "order.cancelled")).toHaveLength(0);
+
+          expect(await cancelUnverified(container, input, ctx)).toEqual({
+            outcome: "cancelled",
+            from: "awaiting_payment",
+            replayed: false,
+          });
+          expect(await fin(o.orderId)).toMatchObject({ state: "cancelled" });
+          expect(await cancelRows(o.orderId)).toHaveLength(1);
+          expect(await auditEntries(o.orderId)).toHaveLength(1);
+          expect(await outboxOf(o.orderId, "order.cancelled")).toHaveLength(1);
+          expect(await inventoryLevel(container, fx, variant)).toEqual({ stocked: 50, reserved: 0 });
+          expect(await cancelUnverified(container, input, ctx)).toMatchObject({ replayed: true });
+        }
       });
 
       it("VNPAY đang tắt (không hỏi được cổng) → vẫn ghi đè được; IPN đến sau vẫn xác minh và đi AT09", async () => {
@@ -663,7 +747,43 @@ medusaIntegrationTestRunner({
         expect(await fin(o.orderId)).toMatchObject({ state: "cancelled" });
       });
 
-      it("IPN thành công ∥ hủy chưa xác minh ×8 lượt, thứ tự ngẫu nhiên → mỗi đơn đúng một kết cục; đã xác nhận thì route 409", async () => {
+      it("đua có chủ đích: IPN tới khi route đang giữ khóa đơn (querydr bị treo) → IPN chờ khóa, chưa ghi gì; route hủy xong, IPN đi AT09 (late_payment)", async () => {
+        const o = await vnpayOrder("Đen/M", { unknown: true });
+        let release!: () => void;
+        gateway.holds.set(o.txnRef, new Promise<void>((r) => (release = r)));
+        const started = new Promise<void>((r) => gateway.started.set(o.txnRef, r));
+        const route = cancelUv(o.orderId);
+        await started; // route đã qua kiểm tra trạng thái, đang giữ khóa `order:<id>` trong lời gọi querydr
+        const ipnDone = ipn(api, signer.pay(o.paymentUrl, "success"));
+        // IPN ghi inbox TRƯỚC khi lấy khóa đơn → chờ tới khi thấy dòng inbox = IPN đã tới và đang chờ khóa.
+        const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+        for (let i = 0; i < 100; i++) {
+          const rows = (await pg("webhook_inbox").whereLike("event_key", `${o.txnRef}|%`)) as unknown[];
+          if (rows.length > 0) break;
+          await sleep(50);
+        }
+        expect(await pg("webhook_inbox").whereLike("event_key", `${o.txnRef}|%`)).toHaveLength(1);
+        await sleep(200);
+        expect(await fin(o.orderId)).toMatchObject({ state: "awaiting_payment" });
+        expect(await service().listPaymentLedgers({ order_id: o.orderId })).toHaveLength(0);
+
+        release();
+        const [r, i] = await Promise.all([route, ipnDone]);
+        expect(r).toMatchObject({ status: 200, data: { state: "cancelled" } });
+        expect(i.data).toEqual(R.success);
+        expect(await fin(o.orderId)).toMatchObject({ state: "cancelled" });
+        expect((await service().listPaymentLedgers({ order_id: o.orderId })).map((l) => l.amount)).toEqual([
+          o.total,
+        ]);
+        expect(await service().listOpsExceptions({ order_id: o.orderId, kind: "late_payment" })).toHaveLength(
+          1,
+        );
+        expect(await outboxOf(o.orderId, "order.confirmed")).toHaveLength(0);
+        expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 50, reserved: 0 });
+        expect(await auditEntries(o.orderId)).toHaveLength(1);
+      });
+
+      it("IPN thành công ∥ hủy chưa xác minh ×8 lượt, độ trễ lệch cố định theo lượt → mỗi đơn đúng một kết cục; đã xác nhận thì route 409", async () => {
         const outcomes: string[] = [];
         const variants = ["Đen/S", "Đen/M", "Trắng/S", "Trắng/M"];
         for (let round = 0; round < 8; round++) {

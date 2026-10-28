@@ -85,10 +85,11 @@ và đã đối chiếu tay trên cổng merchant VNPAY theo `txn_ref` rằng KH
 3. Gọi (một `Idempotency-Key` mới cho mỗi đơn; mất mạng → gửi lại ĐÚNG khóa + nội dung đó):
 
    ```bash
+   KEY=$(uuidgen)   # tạo MỘT lần cho đơn này; gửi lại (mất mạng, 409 BUSY_RETRY, sau khi xác thực lại) dùng lại đúng $KEY
+   BODY='{"reason":"Đã tra txn_ref trên cổng merchant: không có giao dịch thành công","merchant_ref":"<mã trên cổng>"}'
    curl -sS -X POST "$BACKEND_URL/admin/x/orders/<order_id>/cancel-unverified" \
      -H "Authorization: Bearer <token phiên owner đã MFA>" -H "Content-Type: application/json" \
-     -H "Idempotency-Key: $(uuidgen)" \
-     -d '{"reason":"Đã tra txn_ref trên cổng merchant: không có giao dịch thành công","merchant_ref":"<mã trên cổng>"}'
+     -H "Idempotency-Key: $KEY" -d "$BODY"
    ```
 
 4. Kết quả: 200 `state=cancelled` → đơn hủy, hàng nhả, attempt `failed`, `payment_unknown` của đơn `resolved`

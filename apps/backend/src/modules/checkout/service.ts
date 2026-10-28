@@ -1,4 +1,4 @@
-import type { SqlEntityManager } from "@medusajs/framework/mikro-orm/knex";
+import type { Knex, SqlEntityManager } from "@medusajs/framework/mikro-orm/knex";
 import type { Logger } from "@medusajs/framework/types";
 import { generateEntityId, MedusaService } from "@medusajs/framework/utils";
 import {
@@ -1342,14 +1342,21 @@ class CheckoutModuleService extends MedusaService({
    * (`cancelOrderByCustomer` với `SHOP_CANCELLED`, attempt mở → failed) + đóng mọi ngoại lệ `payment_unknown` đang mở của
    * đơn (`resolved`, `detail` thêm cách xử lý, người, mã đối chiếu; `owner` giữ nếu đã có). Đơn đã rời `awaiting_payment`
    * → `cancelled: false`, không đổi gì. Tiền đến sau (IPN/querydr) đi AT09: `decideOnCapture(cancelled)` → `late_payment`.
+   *
+   * `inTx` (review T-165 🟠1): chạy trong CÙNG transaction sau khi hủy thành công, nhận transaction Knex của nó (cùng
+   * Postgres) và số `payment_unknown` đã đóng — người gọi ghi lệnh hủy theo Idempotency-Key + audit ở đây để hủy, dấu
+   * chống trùng và dấu vết truy vết commit/rollback cùng nhau. `inTx` ném → rollback toàn bộ.
    */
-  async cancelUnverifiedOrder(input: {
-    order_id: string;
-    display_ref: string;
-    now: Date;
-    actor_id: string;
-    merchant_ref: string;
-  }): Promise<{ cancelled: boolean; payment_unknown_closed: number }> {
+  async cancelUnverifiedOrder(
+    input: {
+      order_id: string;
+      display_ref: string;
+      now: Date;
+      actor_id: string;
+      merchant_ref: string;
+    },
+    inTx?: (trx: Knex.Transaction, paymentUnknownClosed: number) => Promise<void>,
+  ): Promise<{ cancelled: boolean; payment_unknown_closed: number }> {
     return this.repo_.transaction(async (em) => {
       const cancelled = await this.cancelOrderIn(em, {
         order_id: input.order_id,
@@ -1378,6 +1385,11 @@ class CheckoutModuleService extends MedusaService({
         ],
         em,
       );
+      if (inTx) {
+        const trx = em.getTransactionContext<Knex.Transaction>();
+        if (!trx) throw new Error("cancelUnverifiedOrder: thiếu transaction Knex");
+        await inTx(trx, closed.length);
+      }
       return { cancelled: true, payment_unknown_closed: closed.length };
     });
   }

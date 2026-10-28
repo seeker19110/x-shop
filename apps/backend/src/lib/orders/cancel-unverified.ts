@@ -5,7 +5,11 @@ import type CheckoutModuleService from "../../modules/checkout/service";
 import type { OrderCancelRow } from "../../modules/returns/service";
 import { ReturnsError } from "../../workflows/returns/errors";
 import { returnsOf } from "../../workflows/returns/order-context";
-import { audit, type AuditCtx } from "../../workflows/returns/refunds";
+import { AUDIT_MODULE } from "../../modules/audit";
+import type AuditModuleService from "../../modules/audit/service";
+import type { AuditEntry } from "../../modules/audit/service";
+import type { AuditCtx } from "../../workflows/returns/refunds";
+import { emitSecurityLog } from "../audit/record";
 import { CheckoutError } from "../checkout/errors";
 import { cancelNativeOrder } from "../checkout/jobs";
 import { queryAndProcess } from "../checkout/recheck";
@@ -94,8 +98,8 @@ function replay(row: OrderCancelRow, hash: string): UnverifiedCancelResult {
  *  4. Hỏi cổng lần cuối (querydr, cùng đường IPN — không qua breaker, như hủy thường): cổng báo đã trả → đơn được xác nhận
  *     như IPN và lệnh hủy trả 409 NOT_AWAITING_PAYMENT; không rõ/không hỏi được (VNPAY tắt) → tiếp tục ghi đè.
  *  5. Hủy native (nhả reservation, idempotent) → MỘT transaction module: `cancelled`, attempt mở → failed, mã → released,
- *     outbox `order.cancelled` (`SHOP_CANCELLED`), đóng `payment_unknown` → ghi lệnh hủy → audit
- *     `order.cancelled_unverified` (người, lý do, mã đối chiếu, attempt; không PII khách).
+ *     outbox `order.cancelled` (`SHOP_CANCELLED`), đóng `payment_unknown`, ghi lệnh hủy (`x_order_cancel`) và audit
+ *     `order.cancelled_unverified` (người, lý do, mã đối chiếu, attempt; không PII khách) — cùng commit/rollback.
  *
  * Tiền đến SAU (IPN/querydr thành công) đi AT09 sẵn có: ghi capture + ngoại lệ `late_payment` → kế toán hoàn (RUNBOOK §7);
  * đơn không phục hồi.
@@ -141,47 +145,64 @@ export async function cancelUnverified(
       const q = await queryAndProcess(container, input.order_id, { orderLockHeld: true });
       const after = await read();
       if (after.state !== "awaiting_payment") throw notAwaiting(after.state);
-      // querydr báo đã trả nhưng thiếu tiền (`record_only`) → đơn vẫn chờ mà đã có tiền: không ghi đè.
-      if ((await paidOf()) > 0) throw notUnverified("payment_received");
+      // Cổng báo ĐÃ TRẢ mà đơn vẫn chờ (vd. `processVerified` trả sớm vì inbox đã có kết quả khác cho cùng sự kiện), hoặc
+      // đã có tiền mà thiếu (`record_only`) → tiền có thể đã trừ: không ghi đè (review T-165 🟢2).
+      if (q.outcome === "paid" || (await paidOf()) > 0) throw notUnverified("payment_received");
 
-      // Native trước (idempotent), rồi chốt module: chết giữa chừng thì lần gọi sau thấy đơn còn chờ và làm lại an toàn.
+      // Native trước (idempotent), rồi chốt module: lỗi/chết giữa chừng thì lần gọi sau thấy đơn còn chờ và làm lại an toàn.
       await cancelNativeOrder(container, input.order_id);
-      const done = await s.cancelUnverifiedOrder({
-        order_id: input.order_id,
-        display_ref: after.display_ref,
-        now,
-        actor_id: input.actor_id,
-        merchant_ref: input.merchant_ref,
-      });
-      if (!done.cancelled) throw new CheckoutError("BUSY_RETRY");
-      await svc.insertOrderCancel({
-        order_id: input.order_id,
-        idempotency_key: key,
-        payload_hash: hash,
-        actor_id: input.actor_id,
-        reason: input.reason,
-        outcome: "cancelled",
-        from_state: "awaiting_payment",
-        refund_requested: false,
-        refund_id: null,
-      });
-      await audit(container, auditCtx, {
-        action: "order.cancelled_unverified",
-        resource_type: "order",
-        resource_id: input.order_id,
-        reason: input.reason,
-        changes: {
-          by: "staff",
-          from: "awaiting_payment",
-          to: "cancelled",
+      // Hủy + lệnh hủy theo Idempotency-Key + audit trong MỘT transaction (review T-165 🟠1): không có trạng thái "đã hủy mà
+      // mất dấu" — chết trước commit thì không có gì, gửi lại làm lại; sau commit thì gửi lại được kết quả cũ. Ghi audit
+      // trực tiếp (không qua `audit()` nuốt lỗi): audit lỗi → rollback, nhân viên nhận lỗi và gửi lại cùng khóa.
+      const written: { audit?: AuditEntry } = {};
+      const done = await s.cancelUnverifiedOrder(
+        {
+          order_id: input.order_id,
+          display_ref: after.display_ref,
+          now,
+          actor_id: input.actor_id,
           merchant_ref: input.merchant_ref,
-          payment_attempt_id: attempt.id,
-          txn_ref: attempt.txn_ref,
-          payment_state: attempt.state,
-          querydr: q.outcome,
-          payment_unknown_closed: done.payment_unknown_closed,
         },
-      });
+        async (trx, paymentUnknownClosed) => {
+          await svc.insertOrderCancel(
+            {
+              order_id: input.order_id,
+              idempotency_key: key,
+              payload_hash: hash,
+              actor_id: input.actor_id,
+              reason: input.reason,
+              outcome: "cancelled",
+              from_state: "awaiting_payment",
+              refund_requested: false,
+              refund_id: null,
+            },
+            trx,
+          );
+          written.audit = await container.resolve<AuditModuleService>(AUDIT_MODULE).record(
+            {
+              ...auditCtx,
+              action: "order.cancelled_unverified",
+              resource_type: "order",
+              resource_id: input.order_id,
+              reason: input.reason,
+              changes: {
+                by: "staff",
+                from: "awaiting_payment",
+                to: "cancelled",
+                merchant_ref: input.merchant_ref,
+                payment_attempt_id: attempt.id,
+                txn_ref: attempt.txn_ref,
+                payment_state: attempt.state,
+                querydr: q.outcome,
+                payment_unknown_closed: paymentUnknownClosed,
+              },
+            },
+            trx,
+          );
+        },
+      );
+      if (!done.cancelled) throw new CheckoutError("BUSY_RETRY");
+      if (written.audit !== undefined) emitSecurityLog(container, written.audit);
       return { outcome: "cancelled", from: "awaiting_payment", replayed: false } as const;
     });
   } catch (e) {
