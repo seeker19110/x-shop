@@ -896,3 +896,10 @@
 - Chọn: Server chặn /reject với refund return (409 RETURN_REFUND_NOT_REJECTABLE + next_steps), ẩn nút ở admin, không migration
 - Lý do (tiêu chí chất lượng cuối): (1) cưỡng chế điều RUNBOOK §7 đã ghi; số tiền do kiểm định chốt nên từ chối không có nghĩa nghiệp vụ; (2) không migration, down của (2) không an toàn khi đã có bản rejected + bản mới; (3) phạm vi nhỏ
 - Đường lùi: Bỏ chặn trong rejectRefund; hiện lại nút
+
+### D-128 · 2026-10-28T09:00:00+00:00 · T-170: attempt cũ thiếu vnp_create_date — lấy từ đâu
+
+- Phương án: (1) Fallback created_at + WARN; vận hành điền tay từ payment_url theo RUNBOOK §1.2 · (2) Migration điền lại một lần từ payment_url · (3) Helper đọc payment_url mỗi lần gọi
+- Chọn: Fallback created_at + WARN; vận hành điền tay từ payment_url theo RUNBOOK §1.2
+- Lý do (tiêu chí chất lượng cuối): (3) đơn giản: chưa có dữ liệu production, cột chỉ thiếu ở attempt tạo trước bản này; không thêm UPDATE hàng loạt (khoá bảng) hay phân tích URL ở đường nóng; (2) đường lùi rõ qua RUNBOOK
+- Đường lùi: Thêm migration điền lại từ payment_url

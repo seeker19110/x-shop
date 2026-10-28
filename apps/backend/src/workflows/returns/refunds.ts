@@ -13,6 +13,8 @@ import {
   sumVnd,
   type LedgerEntry,
   isNonEmpty,
+  isReturnRefund,
+  returnRefundNextSteps,
 } from "@x-shop/domain";
 import { recordAudit } from "../../lib/audit/record";
 import { maskFreeText } from "../../lib/audit/sanitize";
@@ -465,6 +467,14 @@ export async function approveRefund(
   return { refund: moved, changed: true };
 }
 
+/**
+ * Từ chối yêu cầu chưa duyệt (quyền `refund.approve`, lý do bắt buộc) — nhả số đang giữ. Đã `rejected` → trả nguyên
+ * (idempotent, kể cả hoàn theo trả hàng bị từ chối trước T-173 — gỡ theo RUNBOOK §7). Hoàn theo trả hàng KHÔNG từ chối
+ * được (T-173, D-127): bản `rejected` vẫn chiếm `IDX_x_refund_return_unique` và `returnReplacementAmount` chỉ mở lại sau
+ * `cancelled`, nên từ chối làm yêu cầu trả kẹt vĩnh viễn. Trả 409 `RETURN_REFUND_NOT_REJECTABLE` kèm `next_steps` tính
+ * theo cách hoàn + trạng thái (`returnRefundNextSteps`) và `evidence_required` (hoàn tay cần mã chứng từ). `reason` và
+ * `return_id` không đổi sau khi tạo nên kiểm ngoài transaction vẫn đúng khi đua với duyệt/thực hiện.
+ */
 export async function rejectRefund(
   container: Scope,
   id: string,
@@ -476,6 +486,21 @@ export async function rejectRefund(
   const r = await svc.getRefund(id);
   if (!r) throw new ReturnsError("NOT_FOUND", "Không tìm thấy yêu cầu hoàn tiền");
   if (r.state === "rejected") return r;
+  if (isReturnRefund(r)) {
+    const next = returnRefundNextSteps(r, RETURNS_CONFIG.refundMaxAttempts);
+    throw new ReturnsError(
+      "RETURN_REFUND_NOT_REJECTABLE",
+      "Hoàn theo trả hàng không từ chối được (số tiền do kiểm định chốt) — làm theo next_steps",
+      {
+        refund_id: r.id,
+        return_id: r.return_id,
+        state: r.state,
+        method: r.method,
+        next_steps: next,
+        evidence_required: r.method === "manual" && next.includes("execute"),
+      },
+    );
+  }
   const moved = await svc.updateRefund(null, id, ["requested"], {
     state: "rejected",
     rejected_by: actor.id,

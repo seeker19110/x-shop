@@ -36,12 +36,30 @@ async function heldByOther(): Promise<FakeLocking> {
   return l;
 }
 
+/**
+ * Tiến đồng hồ giả từng bước 10 ms tới khi `p` xong (tối đa `maxMs`): backoff của acquireOrdered có jitter ngẫu nhiên
+ * (đến ~1,5 x 80 ms/lần), nên số mili giây cần tiến để thấy kết quả không cố định — không đoán một bước tiến cố định.
+ */
+async function settle<T>(p: Promise<T>, maxMs: number): Promise<T> {
+  let done = false;
+  void p.then(
+    () => (done = true),
+    () => (done = true),
+  );
+  for (let t = 0; t < maxMs && !done; t += 10) await jest.advanceTimersByTimeAsync(10);
+  expect(done).toBe(true);
+  return p;
+}
+
 beforeEach(() => {
   resetShutdownStateForTest();
   jest.useFakeTimers();
+  // Jitter backoff của acquireOrdered cố định (0,5 → đúng `delay`): thời điểm thử lại lặp lại được.
+  jest.spyOn(Math, "random").mockReturnValue(0.5);
 });
 afterEach(() => {
   jest.useRealTimers();
+  jest.restoreAllMocks();
   resetShutdownStateForTest();
   expect(activeLeaseCount()).toBe(0);
 });
@@ -53,8 +71,7 @@ describe("acquireOrdered và tắt êm (T-174)", () => {
     const p = acquireOrdered(l, ["k1"], { ...opts("job"), abortWhenDraining: true }).catch((e: unknown) => e);
     await jest.advanceTimersByTimeAsync(300);
     shutdownState().draining = true;
-    await jest.advanceTimersByTimeAsync(200);
-    const err = await p;
+    const err = await settle(p, 1_000);
     expect(err).toBeInstanceOf(CheckoutError);
     expect((err as CheckoutError).code).toBe("BUSY_RETRY");
     expect(Date.now() - start).toBeLessThan(1_000);
@@ -70,8 +87,7 @@ describe("acquireOrdered và tắt êm (T-174)", () => {
     await jest.advanceTimersByTimeAsync(100);
     expect(l.owners.get("k1")).toBe("job");
     shutdownState().draining = true;
-    await jest.advanceTimersByTimeAsync(200);
-    expect(((await p) as CheckoutError).code).toBe("BUSY_RETRY");
+    expect(((await settle(p, 1_000)) as CheckoutError).code).toBe("BUSY_RETRY");
     expect(l.owners.has("k1")).toBe(false);
     expect(l.owners.get("k2")).toBe("OTHER");
     expect(activeLeaseCount()).toBe(0);
@@ -97,8 +113,7 @@ describe("acquireOrdered và tắt êm (T-174)", () => {
     shutdownState().draining = true;
     await jest.advanceTimersByTimeAsync(5_000);
     await l.release("k1", { ownerId: "OTHER" });
-    await jest.advanceTimersByTimeAsync(200);
-    expect(await p).toEqual(["k1"]);
+    expect(await settle(p, 1_000)).toEqual(["k1"]);
     await releaseOwned(l, "req", null);
   });
 });
