@@ -14,7 +14,9 @@ import { Migration } from "@medusajs/framework/mikro-orm/migrations";
  * điểm và đặt `lock_timeout` ở phiên migrate.
  *
  * Tên lớp duy nhất trên mọi module (`src/modules/__tests__/migration-names.unit.spec.ts`).
- * Đường lùi: `down` bỏ CHECK và cột — mã quay về fallback `created_at` (log WARN mỗi lần querydr/refund).
+ * Đường lùi: chỉ `down` SAU khi đã lùi mã về bản trước T-170 — mã T-170 INSERT cột này, `down` khi mã còn chạy làm mọi
+ * submit VNPAY lỗi 42703 (undefined_column). `down` bỏ CHECK và cột, làm mất giá trị đã lưu (điền lại từ `payment_url`
+ * theo RUNBOOK §1.2 nếu áp lại `up`).
  */
 const CHECK = {
   name: "payment_attempt_vnp_create_date_format",
