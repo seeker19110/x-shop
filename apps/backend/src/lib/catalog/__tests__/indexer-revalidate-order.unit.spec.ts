@@ -82,9 +82,11 @@ function setup(opts: { missingPrice?: boolean } = {}) {
       await new Promise((r) => setImmediate(r));
       order.push(`index:replaceProducts:${ids.join(",")}`);
     }),
-    replaceAll: jest.fn(async () => {
+    clockNow: jest.fn(async () => "2026-10-27 00:00:00.000001+00"),
+    replaceAll: jest.fn(async (rows: unknown[]) => {
       await new Promise((r) => setImmediate(r));
       order.push("index:replaceAll");
+      return { applied: true, inserted: rows.length, keptProducts: [], keptRows: 0 };
     }),
     countRows: jest.fn(async (ids?: string[]) => (ids ?? ["prod_1", "prod_2"]).length),
   };

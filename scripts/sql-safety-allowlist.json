@@ -37,12 +37,6 @@
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
-    "match": "`DELETE FROM ${TABLE}`",
-    "reason": "Chỉ nội suy hằng TABLE, không có đầu vào.",
-    "kind": "interpolation"
-  },
-  {
-    "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "SELECT count(*)::int AS n FROM ${TABLE}${w",
     "reason": "w = inList('product_id', ids): điều kiện sinh từ mã, id đi qua binding JSON.",
     "kind": "interpolation"
