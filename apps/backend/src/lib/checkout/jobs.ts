@@ -59,6 +59,7 @@ async function withLock<T>(
       waitMs,
       ttlSeconds: CHECKOUT_CONFIG.lockTtlSeconds,
       scope,
+      abortWhenDraining: true,
     });
   } catch (e) {
     if (readCheckoutError(e)?.code === "BUSY_RETRY") return "busy";

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CheckoutError } from "./errors";
 import { secondsToMs } from "@x-shop/domain";
+import { isDraining } from "../lifecycle/shutdown";
 
 /**
  * Khóa phân tán cho checkout trên Locking Module của Medusa (provider Redis) — đặc tả §6.2 "khóa theo tài nguyên, thứ
@@ -33,6 +34,12 @@ export interface AcquireOptions {
   scope: string;
   /** Hạn một lời gọi tới provider (mặc định `LOCK_CALL_TIMEOUT_MS`); quá hạn = hạ tầng khóa không trả lời. */
   callTimeoutMs?: number;
+  /**
+   * Đường JOB/subscriber (T-174, D-081 "mọi vòng chờ kiểm isDraining"): mỗi lần thử lại khi khóa bận mà tiến trình đang tắt
+   * → thôi chờ, báo `BUSY_RETRY` như hết hạn (đơn vị để lượt sau), không kéo dài tới `waitMs` vượt trần tắt êm. Mặc định
+   * TẮT: đường request HTTP (IPN, admin) vẫn chờ trọn để xử lý xong request đang chạy (T-094).
+   */
+  abortWhenDraining?: boolean;
 }
 
 /**
@@ -157,7 +164,7 @@ export async function acquireOrdered(
           break;
         } catch (e) {
           if (!isBusyError(e)) throw lockUnavailable(opts.scope, e);
-          if (Date.now() >= deadline) {
+          if (Date.now() >= deadline || (opts.abortWhenDraining === true && isDraining())) {
             throw new CheckoutError("BUSY_RETRY", undefined, { detail: { lock_scope: opts.scope } });
           }
           await sleep(Math.min(delay * (0.5 + Math.random()), Math.max(1, deadline - Date.now())));
