@@ -1588,7 +1588,7 @@ medusaIntegrationTestRunner({
                 const base = [...new Set(before.map((x) => `${x.lt}|${x.st}`))];
                 expect(base).toHaveLength(1);
                 // Mặc định khác giá trị helper đặt — nếu không, test không phân biệt được rò rỉ.
-                expect(base[0]).not.toMatch(/^5s\||\|10s$/);
+                expect(base[0]).not.toMatch(/(?:^5s\|)|(?:\|10s$)/);
 
                 // Nhánh thường: nhiều lời gọi song song (không phạm vi lẫn có phạm vi) trải qua nhiều kết nối.
                 await Promise.all([

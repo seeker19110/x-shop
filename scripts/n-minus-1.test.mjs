@@ -740,7 +740,7 @@ test("DB không phải cục bộ/CI → 2 trước khi tạo gì; --allow-remot
   const f = fake({ env: remote });
   assert.equal(await run("/repo", OPTS, f.deps), 2);
   assert.ok(!f.events.some((e) => e.startsWith("mkdtemp") || e.startsWith("CREATE")));
-  assert.ok(f.logs.some((l) => l.includes("db.prod.example.com")));
+  assert.ok(f.logs.some((l) => /\((?:db\.prod\.example\.com(?:, )?)+\)/.test(l)));
   const g = fake({ env: { ...remote, N1_PG_BASE_URL: "postgres://u:p@localhost:5432" } });
   assert.equal(await run("/repo", OPTS, g.deps), 2, "DATABASE_URL của test vẫn là DB lạ");
   const ok = fake({ env: remote });

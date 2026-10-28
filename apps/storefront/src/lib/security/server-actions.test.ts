@@ -111,7 +111,10 @@ function walk(dir: string, out: string[] = []): string[] {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) {
       if (!SKIP_DIRS.has(name)) walk(p, out);
-    } else if (new RegExp(`\\.${CODE_EXT}$`).test(name) && !/\.(test|spec)\.|\.d\.[cm]?ts$/.test(name)) {
+    } else if (
+      new RegExp(`\\.${CODE_EXT}$`).test(name) &&
+      !/(?:\.(?:test|spec)\.)|(?:\.d\.[cm]?ts$)/.test(name)
+    ) {
       out.push(p);
     }
   }
