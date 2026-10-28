@@ -274,7 +274,41 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   index/ràng buộc đã phát hành mà không tạo lại, trong `up()` — trừ khi file có chú thích
   `// @migration-contract: <lý do, nêu MigrationYYYYMMDDHHMMSS expand>`; SET NOT NULL đi đường `CHECK … NOT VALID` → `VALIDATE` →
   `SET NOT NULL` ở migration contract sau. `pnpm check:migrations:drift` (cần Postgres) — model DML khớp migration
-  (`medusa db:generate` không sinh gì, không module nào lỗi). Chạy test bản N−1 trên schema N: chưa có (T-163).
+  (`medusa db:generate` không sinh gì, không module nào lỗi).
+  **Bản N−1 trên schema N** (T-163, `scripts/n-minus-1.mjs`, job CI `n-minus-1`): code của ref gốc (cùng quy tắc với
+  `check:migrations`: `--base` > `MIGRATIONS_BASE_REF` > `origin/master`) chạy bộ test tích hợp của CHÍNH nó trên schema do
+  migration của HEAD tạo. Không có migration thêm/đổi/xoá so với ref gốc → bỏ qua ngay, exit 0. Cách làm: `git archive` ref gốc
+  vào thư mục tạm → `pnpm install --frozen-lockfile --prefer-offline --filter @x-shop/backend...` (store pnpm dùng chung với cây
+  HEAD làm cache) → phủ file migration thêm/đổi/xoá của HEAD lên thư mục `migrations/` của các module có ở bản N−1 → hai DB
+  dùng một lần `xshop_n1_<hex>_head|_base`: `medusa db:migrate` bằng mã HEAD và bằng mã N−1 + phần phủ, schema `public` (cột,
+  kiểu, NULL, DEFAULT, ràng buộc, index) phải trùng trên mọi bảng N−1 biết (bảng chỉ có ở HEAD — module/link mới — chỉ ghi
+  log) → xoá hai DB → `pnpm run test:integration` của cây N−1. Vì sao phủ thay cho "trỏ test vào DB đã migrate":
+  `medusaIntegrationTestRunner` (@medusajs/test-utils 2.22.1) tự tạo DB tên ngẫu nhiên cho mỗi suite, tự migrate bằng migration
+  của code đang nạp rồi xoá; phép so schema ở bước trước chứng minh phần phủ tái tạo đúng schema N. Suite đỏ được chạy lại riêng
+  trên schema N (xác nhận) và, sau khi gỡ phần phủ, trên schema N−1 (đối chứng). Mã thoát: 0 đạt/bỏ qua (suite chỉ chập chờn →
+  cảnh báo) · 1 suite xanh trên N−1 mà đỏ trên N = migration không tương thích ngược → tách expand/contract như trên · 2 không
+  kết luận được (ref gốc thiếu, cài/migrate lỗi, schema lệch — vd PR nâng `@medusajs/*` kèm migration, hoặc migration của
+  module mới ALTER bảng module cũ —, suite tự đỏ ngay trên schema N−1 của chính bản N−1). Dọn
+  thư mục tạm + DB của chính lần chạy ở mọi nhánh, cả SIGINT/SIGTERM (chuyển tín hiệu cho nhóm tiến trình con theo pid; DB
+  `medusa-*-integration-*` do runner tự xoá). Chạy ở máy (Postgres/Redis của `scripts/dev-services.sh`):
+
+  ```bash
+  N1_WORKDIR=/tmp node scripts/n-minus-1.mjs --base origin/master            # cả bộ test tích hợp của bản N−1
+  node scripts/n-minus-1.mjs --base origin/master --test-pattern checkout   # tập con (regex đường dẫn của Jest)
+  node scripts/n-minus-1.mjs --detect-only --base origin/master            # chỉ báo có migration đổi không
+  ```
+
+  Số đo ở máy dev (4 CPU, 2026-10-27/28): phần trước test (archive, cài cây N−1 từ store, build domain hai cây, hai lần
+  `db:migrate`, so schema) 30 s–1,5 phút; cả bộ test tích hợp của N−1 26m29s (ref gốc `bf24224~1`, 43 suite/619 ca) và 44m23s
+  (ref gốc `d63dc4e~1`, 45 suite/719 ca, máy đang tải 4–7,5 do phiên khác); chạy lại + đối chứng một suite ~2 phút mỗi lần.
+  Hai lần chạy thật đều đỏ, cả hai không phải do migration hỏng: (1) `bf24224~1` — `redact-http-db-error.spec.ts` tự đỏ ở chính
+  ref gốc (đỏ cả trên schema N−1) → nay ra mã 2 "N−1 TỰ ĐỎ"; (2) `d63dc4e~1` — `catalog-model.spec.ts` "hàng rào: CHECK
+  ops_exception.kind trên DB thật = OPS_EXCEPTION_KINDS" đỏ vì Migration20261027160101 nới CHECK thêm `job_circuit_open`: test
+  so BẰNG giữa schema và hằng của code nên luôn đỏ ở bản N−1 khi CHECK được nới, dù nới CHECK là tương thích ngược cho việc ghi
+  (mã 1 — đọc log, phân biệt hàng rào so bằng với lỗi thật; câu hỏi mở của T-163). Job `n-minus-1` chạy song song với `gate`
+  (không `needs`), không nằm trong `quality.needs` nên **không phải required check**: cả bộ test vượt timeout 30 phút của
+  runner theo số đo trên (D-119 đo bản có coverage 36m39s), và hàng rào so bằng làm đỏ giả. Đỏ → đọc log job (dòng
+  `KHÔNG TƯƠNG THÍCH`/`N−1 TỰ ĐỎ`/`CHẬP CHỜN`), sửa migration nếu là lỗi thật (không sửa test N−1).
 - **Ngưỡng quyết định lùi (đề xuất, chủ dự án duyệt — chưa có hạ tầng đo tự động):** trong 30 phút sau deploy, lùi nếu một trong:
   smoke §8.3 đỏ · tỷ lệ 5xx của `/store/x/*` > 2% trong 5 phút liên tiếp · p95 `POST /store/x/checkout/submit` vượt 2× số đo ở
   `docs/ops/perf/` trong 10 phút · có đơn đã đặt nhưng thiếu `order_finance`/`payment_attempt` (đối chiếu truy vấn §3.3.3). Người quyết
