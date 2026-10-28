@@ -515,14 +515,24 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
       await sleep(1_500); // lượt hẹn (250 ms) đã chạy và đang chờ khoá
       // Giả lập đồng bộ chậm: lượt xả nào bắt đầu ghi read model sẽ treo tới khi test nhả.
       await tableLock.query("BEGIN");
-      await tableLock.query("LOCK TABLE catalog_variant_index IN ACCESS EXCLUSIVE MODE");
+      // SHARE: chặn mọi GHI (DELETE/INSERT của đồng bộ cần ROW EXCLUSIVE) nhưng KHÔNG chặn đọc. ACCESS EXCLUSIVE cũ chặn cả
+      // câu đọc của job phút đang chạy dở (markExpiredPrices) — job hợp lệ bắt đầu trước tín hiệu thì treo, Medusa chờ nó →
+      // vượt trần → thoát 1: ca đỏ chập chờn khi tick phút rơi vào cửa sổ này (dựng lại 2026-10-28 bằng SIGTERM ngay trước
+      // mốc phút). Tick SAU tín hiệu thì job tự bỏ qua (isDraining, src/jobs/catalog-index-drain.ts).
+      await tableLock.query("LOCK TABLE catalog_variant_index IN SHARE MODE");
       const t0 = Date.now();
       be.child.kill("SIGTERM");
       await sleep(300);
       await redis.del(LOCK); // khoá nhả ngay sau tín hiệu — lượt chờ giành được nếu không biết đang tắt
       const exit = await Promise.race([be.exited, sleep(TIMEOUT + 5_000).then(() => null)]);
+      if (exit?.code !== 0) {
+        // Chẩn đoán: in phần cuối log của tiến trình con (lý do thoát — trần, lỗi handler tắt, lỗi cấp tiến trình).
+        throw new Error(
+          `thoát ${JSON.stringify(exit && { ...exit, ms: exit.at - t0 })}\n${be.output().slice(-6000)}`,
+        );
+      }
       expect(exit).toMatchObject({ code: 0, signal: null });
-      expect(exit!.at - t0).toBeLessThan(TIMEOUT);
+      expect(exit.at - t0).toBeLessThan(TIMEOUT);
       expect(await redis.get(LOCK)).toBeNull(); // không bỏ lại khoá tới hết lease
       await tableLock.query("COMMIT");
       expect(await dirty()).toBe(1); // dấu còn cho tiến trình khác/lần chạy sau
