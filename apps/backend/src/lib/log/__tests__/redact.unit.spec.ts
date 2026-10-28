@@ -4,6 +4,7 @@ import { inspect } from "node:util";
 import { knex } from "@medusajs/framework/mikro-orm/knex";
 import { PostgreSqlPlatform } from "@medusajs/framework/mikro-orm/postgresql";
 import { isSensitiveKey, MAX_TEXT, REDACTED, redactLog, redactText, shortHash } from "../redact";
+import { expectLinearOrUnder } from "../../__tests__/cpu-budget";
 
 /**
  * ReDoS (review T-090): đầu vào đối nghịch 32K ký tự cho TỪNG mẫu phải xong nhanh. Trần 50 ms CPU/lần (máy CI chậm vẫn dư —
@@ -82,28 +83,7 @@ describe("hiệu năng đầu vào đối nghịch (chống ReDoS)", () => {
     ["SQL knex: select danh sách rất dài", `select ${'"p0"."c", '.repeat(N / 10)} from "t" where "h" = 1`],
   ];
   it.each(cases)("%s → < 50 ms CPU hoặc tuyến tính", (_name, input) => {
-    redactText(input.slice(0, 100)); // làm nóng regex
-    // Thời gian CPU (không phải wall-clock): cổng chạy song song nhiều tiến trình làm wall-clock vượt trần dù regex
-    // không backtrack (63 ms khi máy tải nặng); backtracking thảm hoạ vẫn tốn hàng trăm ms CPU nên vẫn bị bắt.
-    // CPU của tiến trình gồm cả GC: lúc cổng tải nặng, min của 3 lần vẫn từng lên 168 ms rồi 108 ms dù chạy riêng chỉ
-    // ~3 ms. Nhiễu đó CỘNG một lượng gần như cố định vào mọi lần đo, còn backtracking thảm hoạ thì tăng ít nhất bậc hai
-    // theo độ dài. Vì vậy chỉ đỏ khi vượt trần VÀ không tuyến tính: T(n)/T(n/4) ≥ 8 (tuyến tính ≈ 4, bậc hai ≈ 16).
-    // Đo xen kẽ hai độ dài để nhiễu rơi như nhau lên cả hai.
-    const cpuMs = (s: string) => {
-      const t0 = process.cpuUsage();
-      redactText(s);
-      const d = process.cpuUsage(t0);
-      return (d.user + d.system) / 1000;
-    };
-    const quarterInput = input.slice(0, Math.ceil(input.length / 4));
-    let full = Infinity;
-    let quarter = Infinity;
-    for (let run = 0; run < 5; run++) {
-      quarter = Math.min(quarter, cpuMs(quarterInput));
-      full = Math.min(full, cpuMs(input));
-    }
-    if (full >= 50) expect(full / Math.max(quarter, 0.5)).toBeLessThan(8);
-    expect(full).toBeLessThan(2_000); // trần cứng: dù nhiễu cỡ nào, 2 s CPU cho 32 KiB là bất thường
+    expectLinearOrUnder(50, input, redactText);
   });
 });
 

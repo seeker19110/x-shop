@@ -13,6 +13,7 @@ import {
   xErrorHandler,
 } from "../error-handler";
 import { REDACTED } from "../../log/redact";
+import { expectLinearOrUnder } from "../../__tests__/cpu-budget";
 import { REQUEST_ID_PATTERN, traceIdOf } from "../trace";
 import { isNonEmpty } from "@x-shop/domain";
 
@@ -640,13 +641,11 @@ describe("toHttpProblem — dbErrorMapper không chép giá trị (T-157)", () =
     ["unique: không đuôi", `T with ${"a: b, ".repeat(N / 6)}already exist`],
   ];
   it.each(adversarial)("đối nghịch %s → < 50 ms CPU", (_n, input) => {
-    dbValueMessage(input.slice(0, 100), 400);
-    const t0 = process.cpuUsage();
-    dbValueMessage(input, 400);
-    dbValueMessage(input, 404);
-    toHttpProblem(new MedusaError(MedusaError.Types.INVALID_DATA, input), "t");
-    const d = process.cpuUsage(t0);
-    expect((d.user + d.system) / 1000).toBeLessThan(50);
+    expectLinearOrUnder(50, input, (s) => {
+      dbValueMessage(s, 400);
+      dbValueMessage(s, 404);
+      toHttpProblem(new MedusaError(MedusaError.Types.INVALID_DATA, s), "t");
+    });
   });
 });
 describe("toHttpProblem — thông điệp nghiệp vụ Medusa chép giá trị người gửi (T-159)", () => {
@@ -933,12 +932,10 @@ describe("toHttpProblem — thông điệp nghiệp vụ Medusa chép giá trị
     ["1 MB thiếu mid", `Option value ${"a".repeat(1_000_000)}`],
   ];
   it.each(adversarial)("đối nghịch %s → < 50 ms CPU", (_n, input) => {
-    echoedValueMessage(input.slice(0, 100));
-    const t0 = process.cpuUsage();
-    echoedValueMessage(input);
-    toHttpProblem(new MedusaError(T.INVALID_DATA, input), "t");
-    const d = process.cpuUsage(t0);
-    expect((d.user + d.system) / 1000).toBeLessThan(50);
+    expectLinearOrUnder(50, input, (s) => {
+      echoedValueMessage(s);
+      toHttpProblem(new MedusaError(T.INVALID_DATA, s), "t");
+    });
   });
 
   it("thông điệp quá dài khớp head+tail vẫn được che (đóng an toàn)", () => {
