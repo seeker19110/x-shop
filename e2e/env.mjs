@@ -88,6 +88,8 @@ export function storefrontEnv(publishableKey) {
   return {
     NEXT_PUBLIC_SITE_URL: URLS.storefront,
     NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: publishableKey,
+    // Cổng VNPAY giả lập http://localhost:<port> không thuộc allowlist https của safePaymentUrl (D-131).
+    NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS: URLS.mockVnpay,
     MEDUSA_BACKEND_URL: URLS.backendLb,
     XS_DATA_SOURCE: "backend",
     CATALOG_REVALIDATE_SECRET,

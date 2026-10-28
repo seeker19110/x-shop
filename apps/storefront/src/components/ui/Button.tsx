@@ -23,6 +23,10 @@ interface CommonProps {
 
 type ButtonOnly = CommonProps &
   Omit<ComponentPropsWithRef<"button">, keyof CommonProps> & { href?: undefined };
+/**
+ * Dạng liên kết. `href` đi qua safeHref (FE-SEC-002): chỉ "/…" cùng origin hoặc http(s)/mailto/tel; href tương đối không
+ * bắt đầu bằng "/" (vd. "san-pham", "?a=1", "#x") bị đổi thành "#" — luôn dùng đường dẫn tuyệt đối "/…".
+ */
 type LinkOnly = CommonProps & Omit<ComponentPropsWithRef<"a">, keyof CommonProps | "href"> & { href: string };
 
 export type ButtonProps = ButtonOnly | LinkOnly;

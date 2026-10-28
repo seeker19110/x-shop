@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { IMAGE_FALLBACK_SRC, safeHref, safeImgSrc, safePaymentUrl, safeUrl } from "./safe-url";
+import { IMAGE_FALLBACK_SRC, safeHref, safeImgSrc, safePaymentUrl, safeSrcSet, safeUrl } from "./safe-url";
 
 describe("safeUrl", () => {
   it.each([
@@ -98,7 +98,22 @@ describe("safeHref / safeImgSrc", () => {
     expect(safeImgSrc("data:image/svg+xml,<svg onload=alert(1)>")).toBe(IMAGE_FALLBACK_SRC);
     expect(safeImgSrc("javascript:alert(1)")).toBe(IMAGE_FALLBACK_SRC);
     expect(safeImgSrc("mailto:a@b.test")).toBe(IMAGE_FALLBACK_SRC);
+    expect(safeImgSrc("tel:+84")).toBe(IMAGE_FALLBACK_SRC);
     expect(safeImgSrc(undefined)).toBe(IMAGE_FALLBACK_SRC);
+  });
+});
+
+describe("safeSrcSet", () => {
+  it("giữ ứng viên an toàn, bỏ ứng viên xấu", () => {
+    expect(safeSrcSet("/a.jpg 640w, /b.jpg 1280w")).toBe("/a.jpg 640w, /b.jpg 1280w");
+    expect(safeSrcSet("/a.jpg 1x, javascript:alert(1) 2x")).toBe("/a.jpg 1x");
+    expect(safeSrcSet("//evil.com/a.jpg 1x, https://cdn.example/b.jpg")).toBe("https://cdn.example/b.jpg");
+  });
+  it("không còn ứng viên hoặc đầu vào lạ thì dùng ảnh dự phòng", () => {
+    expect(safeSrcSet("data:image/png;base64,AAAA 1x")).toBe(IMAGE_FALLBACK_SRC);
+    expect(safeSrcSet("")).toBe(IMAGE_FALLBACK_SRC);
+    expect(safeSrcSet(null)).toBe(IMAGE_FALLBACK_SRC);
+    expect(safeSrcSet(undefined)).toBe(IMAGE_FALLBACK_SRC);
   });
 });
 
@@ -142,5 +157,28 @@ describe("safePaymentUrl", () => {
     expect(safePaymentUrl(undefined)).toBeNull();
     expect(safePaymentUrl("https://pay.example.test/x", ["example.test"])).toBe("https://pay.example.test/x");
     expect(safePaymentUrl("https://sandbox.vnpayment.vn/x", ["example.test"])).toBeNull();
+  });
+});
+
+describe("safePaymentUrl: origin bổ sung (D-131)", () => {
+  const extra = ["http://localhost:3300"];
+  it("nhận đúng origin (scheme+host+port)", () => {
+    expect(safePaymentUrl("http://localhost:3300/pay?a=1", undefined, extra)).toBe(
+      "http://localhost:3300/pay?a=1",
+    );
+  });
+  it.each([
+    ["http://localhost:3301/pay"],
+    ["http://localhost/pay"],
+    ["https://localhost:3300/pay"],
+    ["http://127.0.0.1:3300/pay"],
+    ["http://localhost:3300.evil.com/pay"],
+    ["http://localhost:3300@evil.com/pay"],
+    ["http://user@localhost:3300/pay"],
+  ])("từ chối %j", (input) => {
+    expect(safePaymentUrl(input, undefined, extra)).toBeNull();
+  });
+  it("mặc định (không extra) từ chối http localhost", () => {
+    expect(safePaymentUrl("http://localhost:3300/pay", undefined, [])).toBeNull();
   });
 });

@@ -10,7 +10,7 @@ import { HOME_CONTENT } from "../lib/content/home";
 import { categoryHref } from "../lib/content/navigation";
 import { EMPTY_FILTER } from "@x-shop/domain";
 import styles from "./home.module.css";
-import { safeHref, safeImgSrc } from "../lib/safe-url";
+import { safeHref, safeImgSrc, safeSrcSet } from "../lib/safe-url";
 
 export const revalidate = 60;
 
@@ -54,7 +54,7 @@ export default async function HomePage() {
     <div className={styles.page}>
       <section aria-labelledby="hero-tieu-de" className={styles.hero}>
         <picture className={styles.heroPicture}>
-          <source media="(min-width: 48em)" srcSet={desktop.srcSet ?? desktop.src} />
+          <source media="(min-width: 48em)" srcSet={safeSrcSet(desktop.srcSet ?? desktop.src)} />
           <img {...mobile} alt="" className={styles.heroImage} />
         </picture>
         <div className={styles.heroCopy}>

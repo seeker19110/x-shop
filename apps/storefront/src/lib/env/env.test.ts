@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { parseVnpayExtraOrigins } from "./public";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -57,6 +58,7 @@ describe("parseClientEnv", () => {
       "NEXT_PUBLIC_ANALYTICS_TRANSPORT",
       "NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY",
       "NEXT_PUBLIC_SITE_URL",
+      "NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS",
     ]);
   });
 });
@@ -205,5 +207,46 @@ describe("khoá schema ↔ script check-env-doc (BASE-CFG-003)", () => {
     };
     const actual = [...Object.keys(clientEnvSchema.shape), ...Object.keys(serverEnvSchema.shape)].sort();
     expect(out.storefront).toEqual(actual);
+  });
+});
+
+describe("NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS (D-131)", () => {
+  const prod = { ...GOOD_CLIENT, NEXT_PUBLIC_SITE_URL: "https://shop.example.vn" };
+  const parse = (src: Record<string, string>) => parseClientEnv(src, { useDefaults: false });
+
+  it("vắng/rỗng: hợp lệ", () => {
+    expect(parseVnpayExtraOrigins(undefined, prod.NEXT_PUBLIC_SITE_URL)).toEqual([]);
+    expect(parseVnpayExtraOrigins("  ", prod.NEXT_PUBLIC_SITE_URL)).toEqual([]);
+    expect(() => parse({ ...prod, NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS: "" })).not.toThrow();
+  });
+  it("triển khai thật: từ chối http và localhost", () => {
+    for (const v of [
+      "http://pay.example.vn",
+      "https://localhost:3300",
+      "http://localhost:3300",
+      "https://127.0.0.1",
+    ])
+      expect(() => parse({ ...prod, NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS: v })).toThrow(
+        /NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS/,
+      );
+  });
+  it("triển khai thật: nhận origin https công khai", () => {
+    expect(
+      parseVnpayExtraOrigins("https://pay.example.vn, https://b.example.vn:8443", prod.NEXT_PUBLIC_SITE_URL),
+    ).toEqual(["https://pay.example.vn", "https://b.example.vn:8443"]);
+  });
+  it("dev (site localhost): nhận đúng origin http localhost, chuẩn hoá", () => {
+    expect(parseVnpayExtraOrigins("http://localhost:3300/", "http://localhost:3100")).toEqual([
+      "http://localhost:3300",
+    ]);
+  });
+  it.each([
+    ["http://localhost:3300/pay"],
+    ["http://u@localhost:3300"],
+    ["ftp://localhost"],
+    ["not a url"],
+    ["http://localhost:3300?x=1"],
+  ])("từ chối mục sai %j", (v) => {
+    expect(() => parseVnpayExtraOrigins(v, "http://localhost:3100")).toThrow();
   });
 });

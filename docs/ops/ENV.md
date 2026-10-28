@@ -204,6 +204,10 @@ NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=
 # CÔNG KHAI (schema client, T-098): none | beacon; vắng = none. beacon = `track()` gửi sendBeacon tới /api/analytics khi
 # người dùng đã đồng ý. Giá trị khác → getClientEnv() ném lỗi (layout/proxy không lên); `track()` thì coi như none.
 # NEXT_PUBLIC_ANALYTICS_TRANSPORT=none
+# CÔNG KHAI (schema client, D-131): origin cổng thanh toán bổ sung ngoài allowlist https VNPAY, phân tách dấu phẩy, so khớp
+# chính xác scheme+host+port. CHỈ dev/E2E (cổng giả lập, vd. http://localhost:3300); e2e/env.mjs đặt sẵn. Chỉ nhận origin
+# http/localhost khi NEXT_PUBLIC_SITE_URL cũng là localhost; triển khai thật có origin http/localhost → getClientEnv() ném lỗi.
+# NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS=
 # Bind (BASE-SEC-010): `next dev`/`next start` chạy với -H "${HOST:-127.0.0.1}" (mặc định của Next là 0.0.0.0). Sau LB/
 # container đặt HOST=0.0.0.0 tường minh. E2E (playwright) gọi thẳng `next start -p` nên không bị ảnh hưởng.
 # HOST=127.0.0.1

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { isNonEmpty } from "../presence";
 import { mediaUrlSchema } from "./media";
-import { ANALYTICS_TRANSPORTS } from "./public";
+import { ANALYTICS_TRANSPORTS, parseVnpayExtraOrigins } from "./public";
 
 /**
  * Cấu hình môi trường, validate bằng zod, tách server / client.
@@ -38,6 +38,8 @@ export const clientEnvSchema = z.object({
   NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: z.string().trim().min(1, "không được rỗng"),
   /** `beacon` = `track()` gửi sendBeacon tới /api/analytics khi đã đồng ý; vắng = `none` (chỉ dataLayer). */
   NEXT_PUBLIC_ANALYTICS_TRANSPORT: z.enum(ANALYTICS_TRANSPORTS).default("none"),
+  /** Origin cổng thanh toán bổ sung (dev/E2E, D-131): danh sách origin phân tách dấu phẩy; triển khai thật chỉ https, không localhost. */
+  NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS: z.string().optional(),
 });
 
 /** Độ dài tối thiểu của bí mật (≈ 256 bit nếu sinh ngẫu nhiên) — khớp MIN_SECRET_LENGTH của backend. */
@@ -109,6 +111,13 @@ export function parseClientEnv(source: Source, opts: { useDefaults: boolean }): 
   const raw = clean(source, Object.keys(clientEnvSchema.shape));
   const r = clientEnvSchema.safeParse(withDefaults(raw, opts.useDefaults));
   if (!r.success) throw format("client", r.error);
+  try {
+    parseVnpayExtraOrigins(r.data.NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS, r.data.NEXT_PUBLIC_SITE_URL);
+  } catch (e) {
+    throw new Error(
+      `Cấu hình client không hợp lệ: NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS — ${(e as Error).message}`,
+    );
+  }
   return r.data;
 }
 
@@ -148,6 +157,7 @@ export function getClientEnv(): ClientEnv {
       NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
       NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
       NEXT_PUBLIC_ANALYTICS_TRANSPORT: process.env.NEXT_PUBLIC_ANALYTICS_TRANSPORT,
+      NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS: process.env.NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS,
     },
     { useDefaults: shouldUseDefaults() },
   );
