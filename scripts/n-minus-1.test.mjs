@@ -6,14 +6,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_BASE as CHECK_MIGRATIONS_DEFAULT_BASE } from "./check-migrations.mjs";
+import { DEFAULT_BASE as CHECK_MIGRATIONS_DEFAULT_BASE, listMigrations } from "./check-migrations.mjs";
 import {
   DEFAULT_PG_BASE,
+  N1_ALLOW,
   SAFE_DB,
+  applyAllow,
   buildSteps,
+  caseName,
   classifyFailures,
   dbNames,
   diffSchemas,
+  failedDetails,
   failedSuites,
   formatDuration,
   hasChanges,
@@ -26,6 +30,7 @@ import {
   realDeps,
   run,
   schemaFromRows,
+  validateAllow,
 } from "./n-minus-1.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -191,6 +196,7 @@ function detectDeps(root, env, log) {
     env,
     log,
     proc: new EventEmitter(),
+    allow: [], // repo giả không có migration của N1_ALLOW thật
     resolveSha: forbid("resolveSha"),
     mkdtemp: forbid("mkdtemp"),
     admin: forbid("admin"),
@@ -385,6 +391,7 @@ function fake({
   adminFail = () => false,
   env = {},
   results = {},
+  allow = [],
 } = {}) {
   const events = [];
   const files = new Map();
@@ -399,6 +406,7 @@ function fake({
     log: { log: (m) => logs.push(m), error: (m) => logs.push(`E ${m}`) },
     now: () => (t += 1000),
     hex: () => "abc123",
+    allow,
     refExists: () => refOk,
     resolveSha: () => "0123456789abcdef0123",
     baseMigrations: () => base,
@@ -437,7 +445,23 @@ function fake({
             ? r
             : JSON.stringify({
                 testResults: [
-                  ...r.map((name) => ({ name, status: "failed" })),
+                  // Phần tử: tên suite (suite đỏ không có ca → lỗi nạp) hoặc { name, tests: [[describe…, ca]] }.
+                  ...r.map((s) =>
+                    typeof s === "string"
+                      ? { name: s, status: "failed" }
+                      : {
+                          name: s.name,
+                          status: "failed",
+                          assertionResults: [
+                            ...s.tests.map((path) => ({
+                              ancestorTitles: ["", ...path.slice(0, -1)],
+                              title: path.at(-1),
+                              status: "failed",
+                            })),
+                            { ancestorTitles: [""], title: "ca xanh", status: "passed" },
+                          ],
+                        },
+                  ),
                   { name: "/w/xshop-n1-T/base/apps/backend/ok.spec.ts", status: "passed" },
                 ],
               }),
@@ -699,4 +723,174 @@ test("run: hai lần chạy đồng thời → DB và thư mục tạm riêng, k
   assert.ok(a.events.every((e) => !e.includes("bbb222") && e !== "rm /w/B"));
   assert.ok(b.events.every((e) => !e.includes("aaa111") && e !== "rm /w/A"));
   assert.ok(a.events.includes("rm /w/A") && b.events.includes("rm /w/B"));
+});
+/* --------------------------------------------------------- danh sách miễn (D-123) ------------------------------ */
+
+const CHECKOUT_MIG = M("checkout", "Migration20261027100000");
+const ALLOW_A = {
+  suite: "apps/backend/integration-tests/http/a.spec.ts",
+  test: "nhóm › hàng rào so bằng",
+  migration: CHECKOUT_MIG,
+  reason: "hàng rào so bằng schema với hằng của bản N−1, migration nới CHECK",
+};
+const caseA = ["nhóm", "hàng rào so bằng"];
+
+test("caseName + failedDetails: tên ca như Jest in (bỏ describe rỗng); suite đỏ không có ca đỏ = lỗi nạp", () => {
+  assert.equal(caseName({ ancestorTitles: ["", "a", "b"], title: "c" }), "a › b › c");
+  assert.equal(caseName({ title: "c" }), "c");
+  const j = {
+    testResults: [
+      {
+        name: "/s/b.spec.ts",
+        status: "failed",
+        assertionResults: [
+          { ancestorTitles: ["", "x"], title: "đỏ", status: "failed" },
+          { ancestorTitles: ["", "x"], title: "xanh", status: "passed" },
+        ],
+      },
+      { name: "/s/a.spec.ts", status: "failed", assertionResults: [] },
+      {
+        name: "/s/c.spec.ts",
+        status: "failed",
+        testExecError: { message: "afterAll" },
+        assertionResults: [{ ancestorTitles: [], title: "t", status: "failed" }],
+      },
+      { name: "/s/d.spec.ts", status: "passed", assertionResults: [] },
+    ],
+  };
+  assert.deepEqual(failedDetails(JSON.stringify(j)), [
+    { name: "/s/a.spec.ts", failedTests: [], execError: true },
+    { name: "/s/b.spec.ts", failedTests: ["x › đỏ"], execError: false },
+    { name: "/s/c.spec.ts", failedTests: ["t"], execError: true },
+  ]);
+  assert.equal(failedDetails("{"), null);
+  assert.equal(failedDetails(null), null);
+});
+
+test("N1_ALLOW thật hợp lệ với migration của repo; tên ca có trong suite (chống gõ sai)", () => {
+  const root = join(here, "..");
+  assert.deepEqual(validateAllow(N1_ALLOW, listMigrations(root)), []);
+  assert.ok(N1_ALLOW.some((e) => e.migration.endsWith("/Migration20261027160101.ts")));
+  for (const e of N1_ALLOW) {
+    const src = readFileSync(join(root, e.suite), "utf8");
+    for (const part of e.test.split(" › "))
+      assert.ok(src.includes(JSON.stringify(part)), `${e.suite}: thiếu "${part}"`);
+  }
+});
+
+test("validateAllow: thiếu trường, lý do ngắn, migration không phải file migration / không còn, trùng mục", () => {
+  const have = [CHECKOUT_MIG];
+  assert.deepEqual(validateAllow([ALLOW_A], have), []);
+  assert.deepEqual(validateAllow([], []), []);
+  const errs = (e) => validateAllow([e], have).join("\n");
+  assert.match(errs({ ...ALLOW_A, test: "" }), /thiếu test/);
+  assert.match(errs({ ...ALLOW_A, suite: undefined }), /thiếu suite/);
+  assert.match(errs({ ...ALLOW_A, reason: "ngắn" }), /lý do < 20/);
+  assert.match(errs({ ...ALLOW_A, migration: "Migration20261027100000" }), /đường dẫn file migration/);
+  assert.match(
+    errs({ ...ALLOW_A, migration: M("checkout", "Migration20990101000000") }),
+    /không còn trong cây HEAD/,
+  );
+  assert.match(validateAllow([ALLOW_A, { ...ALLOW_A }], have).join("\n"), /trùng/);
+});
+
+test("applyAllow: miễn khi MỌI ca đỏ khớp mục có hiệu lực; còn lại giữ đỏ; mục không dùng được nhắc", () => {
+  const base = "/w/b";
+  const d = (name, failedTests, execError = false) => ({
+    name: `${base}/${name}`,
+    failedTests,
+    execError,
+  });
+  const on = new Set([CHECKOUT_MIG]);
+  // Khớp hết → miễn.
+  let r = applyAllow([d(ALLOW_A.suite, [ALLOW_A.test])], [ALLOW_A], on, base);
+  assert.deepEqual(r, {
+    remaining: [],
+    allowed: [{ suite: ALLOW_A.suite, tests: [ALLOW_A.test] }],
+    unused: [],
+  });
+  // Thêm một ca đỏ khác → cả suite vẫn đỏ, mục không tính là đã dùng.
+  r = applyAllow([d(ALLOW_A.suite, [ALLOW_A.test, "nhóm › ca khác"])], [ALLOW_A], on, base);
+  assert.deepEqual(r.remaining, [`${base}/${ALLOW_A.suite}`]);
+  assert.deepEqual(r.unused, [ALLOW_A]);
+  // Migration của mục không nằm trong phần phủ → mục không hiệu lực, không nhắc.
+  r = applyAllow([d(ALLOW_A.suite, [ALLOW_A.test])], [ALLOW_A], new Set(), base);
+  assert.deepEqual(r, {
+    remaining: [`${base}/${ALLOW_A.suite}`],
+    allowed: [],
+    unused: [],
+  });
+  // Cùng tên ca ở suite khác → không khớp. Lỗi nạp → không miễn.
+  r = applyAllow([d("apps/backend/integration-tests/http/z.spec.ts", [ALLOW_A.test])], [ALLOW_A], on, base);
+  assert.equal(r.remaining.length, 1);
+  r = applyAllow([d(ALLOW_A.suite, [ALLOW_A.test], true)], [ALLOW_A], on, base);
+  assert.equal(r.remaining.length, 1);
+  // Tên phải khớp chính xác (không regex/tiền tố).
+  r = applyAllow([d(ALLOW_A.suite, [`${ALLOW_A.test} `])], [ALLOW_A], on, base);
+  assert.equal(r.remaining.length, 1);
+  // Không có suite đỏ, mục có hiệu lực → nhắc.
+  assert.deepEqual(applyAllow([], [ALLOW_A], on, base).unused, [ALLOW_A]);
+});
+
+const SUITE_ALLOW = `/w/xshop-n1-T/base/${ALLOW_A.suite}`;
+
+test("run: suite chỉ đỏ ở ca đã miễn → 0, không chạy lại/đối chứng, log MIỄN", async () => {
+  const f = fake({
+    allow: [ALLOW_A],
+    codes: { test: 1 },
+    results: { test: [{ name: SUITE_ALLOW, tests: [caseA] }] },
+  });
+  assert.equal(await run("/repo", OPTS, f.deps), 0);
+  assert.ok(!f.events.includes("exec confirm") && !f.events.includes("exec control"));
+  assert.ok(f.logs.some((l) => l.includes(`MIỄN (N1_ALLOW): ${ALLOW_A.suite}`)));
+  assert.equal(f.events.at(-1), "rm /w/xshop-n1-T");
+});
+
+test("run: một suite được miễn, suite khác đỏ thật → chỉ chạy lại suite chưa miễn, mã 1", async () => {
+  const f = fake({
+    allow: [ALLOW_A],
+    codes: { test: 1, confirm: 1 },
+    results: {
+      test: [{ name: SUITE_ALLOW, tests: [caseA] }, SUITE_B],
+      confirm: [SUITE_B],
+      control: [],
+    },
+  });
+  let retested;
+  f.deps.exec = ((orig) => async (step) => {
+    if (step.id === "confirm") retested = step.args.filter((a) => a.startsWith("/w/"));
+    return orig(step);
+  })(f.deps.exec);
+  assert.equal(await run("/repo", OPTS, f.deps), 1);
+  assert.deepEqual(retested, [SUITE_B]);
+});
+
+test("run: lần chạy có phủ migration của mục mà test xanh → NHẮC; mục không hiệu lực thì im", async () => {
+  const green = fake({ allow: [ALLOW_A] });
+  assert.equal(await run("/repo", OPTS, green.deps), 0);
+  assert.ok(green.logs.some((l) => l.includes("NHẮC: mục N1_ALLOW")));
+  const other = {
+    ...ALLOW_A,
+    migration: M("checkout", "Migration20260101000000"),
+  };
+  const quiet = fake({ allow: [other] });
+  assert.equal(await run("/repo", OPTS, quiet.deps), 0);
+  assert.ok(!quiet.logs.some((l) => l.includes("NHẮC")));
+});
+
+test("run: mục N1_ALLOW nêu migration không còn ở cây HEAD → 2 ngay (kể cả --detect-only / không đổi migration)", async () => {
+  const bad = {
+    ...ALLOW_A,
+    migration: M("checkout", "Migration20990101000000"),
+  };
+  for (const [opts, head] of [
+    [OPTS, CHANGES_HEAD],
+    [{ ...OPTS, detectOnly: true }, CHANGES_HEAD],
+    [OPTS, CHANGES_BASE],
+  ]) {
+    const f = fake({ allow: [bad], head });
+    assert.equal(await run("/repo", opts, f.deps), 2);
+    assert.deepEqual(f.events, []);
+    assert.ok(f.logs.some((l) => l.includes("không còn trong cây HEAD")));
+  }
 });

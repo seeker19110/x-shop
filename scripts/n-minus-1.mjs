@@ -30,7 +30,8 @@
 // test tích hợp thường: DATABASE_URL/REDIS_URL của máy/CI; runner tự tạo/xoá DB của nó). Dọn (xoá thư mục tạm trừ
 // `--keep`, DROP DB do chính lần chạy tạo) ở mọi nhánh: thành công, lỗi, và SIGINT/SIGTERM (chuyển tín hiệu cho nhóm
 // tiến trình con đang chạy — theo pid, không theo tên — chờ nó thoát, dọn, rồi thoát 130/143).
-// Có suite đỏ → không quy ngay cho migration (lần chạy thật đầu tiên gặp ref gốc có test tự đỏ sẵn): chạy lại CHỈ các
+// Suite chỉ đỏ ở các ca nằm trong N1_ALLOW (D-123: hàng rào so bằng schema↔hằng code, migration gây lệch có trong phần
+// phủ) → được miễn. Có suite đỏ khác → không quy ngay cho migration (lần chạy thật đầu tiên gặp ref gốc có test tự đỏ sẵn): chạy lại CHỈ các
 // suite đỏ trên schema N (xác nhận) rồi gỡ phần phủ và chạy trên schema N−1 (đối chứng) — xem classifyFailures.
 //
 // Biến: N1_PG_BASE_URL (mặc định: DATABASE_URL bỏ tên DB, không có thì postgres://xshop:xshop@localhost:5432 — dịch vụ
@@ -250,6 +251,17 @@ export function buildSteps({ root, baseDir, pgBase, dbs, testPatterns = [], resu
  * không đọc được → null (không phân loại được).
  */
 export function failedSuites(json) {
+  return failedDetails(json)?.map((s) => s.name) ?? null;
+}
+
+/** Tên đầy đủ của một ca như Jest in: các `describe` không rỗng rồi tên ca, nối bằng " › ". */
+export const caseName = (a) => [...(a.ancestorTitles ?? []).filter(Boolean), a.title].join(" › ");
+
+/**
+ * Chi tiết suite đỏ từ báo cáo `jest --json`: [{ name, failedTests: [tên ca đỏ], execError }] — `execError` = suite đỏ mà
+ * không có ca đỏ nào (lỗi nạp/beforeAll/afterAll), không miễn được. Báo cáo không đọc được → null.
+ */
+export function failedDetails(json) {
   if (json === null || json === undefined) return null;
   let r;
   try {
@@ -260,8 +272,74 @@ export function failedSuites(json) {
   if (!Array.isArray(r?.testResults)) return null;
   return r.testResults
     .filter((t) => t.status === "failed")
-    .map((t) => t.name)
-    .sort();
+    .map((t) => {
+      const failedTests = (t.assertionResults ?? []).filter((a) => a.status === "failed").map(caseName);
+      return { name: t.name, failedTests, execError: failedTests.length === 0 || Boolean(t.testExecError) };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Danh sách miễn (D-123): ca của bản N−1 đỏ trên schema N theo thiết kế, không phải vì migration phá bản N−1. Mỗi mục:
+ *   suite     — đường dẫn suite tính từ gốc repo (cây N−1)
+ *   test      — tên ca đầy đủ, khớp CHÍNH XÁC `caseName` (describe › … › ca)
+ *   migration — đường dẫn file migration của HEAD gây lệch; mục chỉ có hiệu lực khi file này nằm trong phần phủ
+ *   reason    — lý do ≥ 20 ký tự
+ * Suite đỏ chỉ được miễn khi MỌI ca đỏ của nó khớp mục có hiệu lực (và suite không lỗi nạp). Mục có hiệu lực mà không khớp
+ * ca đỏ nào → nhắc xoá; mục nêu migration không còn trong cây HEAD → đỏ (exit 2).
+ */
+export const N1_ALLOW = [
+  {
+    suite: "apps/backend/integration-tests/http/catalog-model.spec.ts",
+    test: "kiểm trước xuất bản (ADM03, S-207) › bù trừ số đo người mẫu (T-144) › bù trừ thuộc tính/bảng size lỗi phải để lại dấu vết (T-155) › bù trừ lỗi → ngoại lệ vận hành catalog_compensation_failed (T-156, D-095) › hàng rào: CHECK ops_exception.kind trên DB thật = OPS_EXCEPTION_KINDS",
+    migration: "apps/backend/src/modules/checkout/migrations/Migration20261027160101.ts",
+    reason:
+      "Hàng rào so BẰNG giữa CHECK ops_exception_kind_check và hằng OPS_EXCEPTION_KINDS của chính bản N−1; Migration20261027160101 (T-097) NỚI CHECK thêm 'job_circuit_open' nên bản N−1 luôn thấy thừa một giá trị. Nới CHECK tương thích ngược cho việc ghi của N−1 (đo 2026-10-28: suite xanh trên schema N−1, chỉ ca này đỏ trên schema N). Rủi ro N−1 ĐỌC kind lạ: RUNBOOK §5, việc cần làm.",
+  },
+];
+const MIN_N1_ALLOW_REASON = 20;
+
+/** Lỗi cấu trúc của danh sách miễn so với các file migration đang có ở cây HEAD (mảng rỗng = hợp lệ). */
+export function validateAllow(allow, headMigrationPaths) {
+  const errors = [];
+  const have = new Set(headMigrationPaths);
+  const seen = new Set();
+  allow.forEach((e, i) => {
+    const at = `N1_ALLOW[${i}]`;
+    for (const k of ["suite", "test", "migration", "reason"])
+      if (typeof e?.[k] !== "string" || !e[k].trim()) errors.push(`${at}: thiếu ${k}`);
+    if (typeof e?.reason === "string" && e.reason.trim().length < MIN_N1_ALLOW_REASON)
+      errors.push(`${at}: lý do < ${MIN_N1_ALLOW_REASON} ký tự`);
+    if (typeof e?.migration === "string" && e.migration && !MIGRATION_FILE.test(e.migration))
+      errors.push(`${at}: migration phải là đường dẫn file migration (${e.migration})`);
+    else if (typeof e?.migration === "string" && e.migration && !have.has(e.migration))
+      errors.push(`${at}: migration ${e.migration} không còn trong cây HEAD — xoá hoặc sửa mục`);
+    const key = `${e?.suite}\0${e?.test}\0${e?.migration}`;
+    if (seen.has(key)) errors.push(`${at}: trùng mục trước`);
+    seen.add(key);
+  });
+  return errors;
+}
+
+/**
+ * Áp danh sách miễn lên suite đỏ (chi tiết từ failedDetails; `name` tuyệt đối trong cây N−1 `baseDir`). `overlaid` = tập
+ * đường dẫn migration đã phủ. → { remaining: [suite tuyệt đối còn đỏ], allowed: [{ suite, tests }], unused: [mục] }.
+ */
+export function applyAllow(details, allow, overlaid, baseDir) {
+  const active = allow.filter((e) => overlaid.has(e.migration));
+  const used = new Set();
+  const remaining = [];
+  const allowed = [];
+  const rel = (p) => (p.startsWith(`${baseDir}/`) ? p.slice(baseDir.length + 1) : p);
+  for (const s of details) {
+    const suite = rel(s.name);
+    const hits = s.failedTests.map((t) => active.find((e) => e.suite === suite && e.test === t));
+    if (!s.execError && hits.every(Boolean)) {
+      hits.forEach((e) => used.add(e));
+      allowed.push({ suite, tests: s.failedTests });
+    } else remaining.push(s.name);
+  }
+  return { remaining, allowed, unused: active.filter((e) => !used.has(e)) };
 }
 
 /**
@@ -495,10 +573,21 @@ export async function run(root, opts, deps = realDeps(root)) {
     return 2;
   }
   let changes;
+  let headMap;
   try {
-    changes = migrationChanges(deps.baseMigrations(opts.base), deps.headMigrations());
+    headMap = deps.headMigrations();
+    changes = migrationChanges(deps.baseMigrations(opts.base), headMap);
   } catch (e) {
     log.error(`${tag}: không đọc được migration: ${e.message}`);
+    return 2;
+  }
+  const allow = deps.allow ?? N1_ALLOW;
+  const allowErrors = validateAllow(
+    allow,
+    [...headMap.keys()].filter((p) => MIGRATION_FILE.test(p)),
+  );
+  if (allowErrors.length) {
+    for (const e of allowErrors) log.error(`${tag}: ${e}`);
     return 2;
   }
   const changed = hasChanges(changes);
@@ -576,7 +665,8 @@ export async function run(root, opts, deps = realDeps(root)) {
     if (aborted) throw new Error(`đã nhận ${aborted}`);
     const r = await timed(s.title, () => deps.exec(s));
     if (aborted) throw new Error(`đã nhận ${aborted}`);
-    return { code: r.code, failed: failedSuites(deps.readFile(s.results)) };
+    const details = failedDetails(deps.readFile(s.results));
+    return { code: r.code, details, failed: details?.map((d) => d.name) ?? null };
   };
   const pipeline = async () => {
     const sha = deps.resolveSha(opts.base);
@@ -640,30 +730,47 @@ export async function run(root, opts, deps = realDeps(root)) {
     log.log(`${tag}: schema N−1+overlay trùng schema HEAD trên mọi bảng bản N−1 biết`);
     for (const db of [dbs.head, dbs.base]) await dropDb(db);
     const short = sha.slice(0, 12);
+    const overlaid = new Set(plan.copy);
+    const remind = (entries) => {
+      for (const e of entries)
+        log.log(
+          `${tag}: NHẮC: mục N1_ALLOW (${e.suite} › "${e.test}", ${e.migration}) có hiệu lực nhưng không khớp ca đỏ nào — xoá nếu không còn cần`,
+        );
+    };
     const first = await testRun(steps.test);
     if (first.code === 0) {
+      remind(allow.filter((e) => overlaid.has(e.migration)));
       log.log(`${tag}: ĐẠT — test tích hợp của bản N−1 (${short}) xanh trên schema N`);
       return 0;
     }
-    if (!first.failed?.length) {
+    if (!first.details?.length) {
       log.error(
         `${tag}: LỖI: test tích hợp thoát mã ${first.code} mà báo cáo jest không nêu suite đỏ (${steps.test.results}) — không kết luận được`,
       );
       return 2;
     }
+    const { remaining, allowed, unused } = applyAllow(first.details, allow, overlaid, baseDir);
+    for (const a of allowed) for (const t of a.tests) log.log(`${tag}: MIỄN (N1_ALLOW): ${a.suite} › "${t}"`);
+    remind(unused);
+    if (!remaining.length) {
+      log.log(
+        `${tag}: ĐẠT — bản N−1 (${short}) xanh trên schema N, trừ ${allowed.length} suite chỉ đỏ ở ca đã miễn (N1_ALLOW, D-123)`,
+      );
+      return 0;
+    }
     log.error(
-      `${tag}: ${first.failed.length} suite đỏ trên schema N — chạy lại riêng chúng trên schema N (xác nhận) và schema N−1 (đối chứng)`,
+      `${tag}: ${remaining.length} suite đỏ trên schema N (ngoài danh sách miễn) — chạy lại riêng chúng trên schema N (xác nhận) và schema N−1 (đối chứng)`,
     );
-    const confirm = await testRun(steps.retest("confirm", "chạy lại suite đỏ — schema N", first.failed));
+    const confirm = await testRun(steps.retest("confirm", "chạy lại suite đỏ — schema N", remaining));
     unOverlay();
     const control = await testRun(
-      steps.retest("control", "đối chứng suite đỏ — schema N−1 (bỏ phủ)", first.failed),
+      steps.retest("control", "đối chứng suite đỏ — schema N−1 (bỏ phủ)", remaining),
     );
     if (confirm.failed === null || control.failed === null) {
       log.error(`${tag}: LỖI: không đọc được báo cáo jest của lần chạy lại — không kết luận được`);
       return 2;
     }
-    const c = classifyFailures(first.failed, confirm.failed, control.failed);
+    const c = classifyFailures(remaining, confirm.failed, control.failed);
     const rel = (p) => (p.startsWith(baseDir) ? p.slice(baseDir.length + 1) : p);
     for (const f of c.incompatible)
       log.error(`${tag}: KHÔNG TƯƠNG THÍCH: ${rel(f)} — xanh trên schema N−1, đỏ (2 lần) trên schema N`);
