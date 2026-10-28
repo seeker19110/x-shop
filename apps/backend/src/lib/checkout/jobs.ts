@@ -59,6 +59,7 @@ async function withLock<T>(
       waitMs,
       ttlSeconds: CHECKOUT_CONFIG.lockTtlSeconds,
       scope,
+      abortWhenDraining: true,
     });
   } catch (e) {
     if (readCheckoutError(e)?.code === "BUSY_RETRY") return "busy";
@@ -508,9 +509,23 @@ export const DEFAULT_OUTBOX_HANDLERS: Record<string, OutboxHandler> = {
       "order",
       () => syncNativePayment(container, orderId),
     );
-    if (r === "busy") throw new Error("đơn đang bận");
+    if (r === "busy") {
+      // Bận vì đang tắt (T-174): không phải lỗi của sự kiện → dispatcher hoãn, không tính lần thử.
+      if (isDraining()) throw new OutboxDrainingDeferral();
+      throw new Error("đơn đang bận");
+    }
   },
 };
+
+/** Hoãn sự kiện outbox vì tiến trình đang tắt (T-174): không tăng `attempts`, không báo breaker, không dead. */
+export class OutboxDrainingDeferral extends Error {
+  override readonly name = "OutboxDrainingDeferral";
+  constructor() {
+    super("đang tắt — hoãn sự kiện cho lượt sau");
+  }
+}
+/** Hẹn lại sau khi hoãn vì tắt: ngắn để instance khác nhận (claim lease đã đẩy `next_attempt_at` xa). */
+export const OUTBOX_DRAINING_DEFER_MS = secondsToMs(5);
 
 const logHandler: OutboxHandler = async (container, event) => {
   logger(container).info(`[outbox] ${event.type} ${event.event_key} (không có bộ xử lý — chỉ ghi log)`);
@@ -676,6 +691,11 @@ export async function dispatchOutbox(
       summary.sent.push(event.event_key);
       ok = true;
     } catch (e) {
+      if (e instanceof OutboxDrainingDeferral) {
+        await s.deferOutbox(event.id, new Date((opts.now ?? clock()).getTime() + OUTBOX_DRAINING_DEFER_MS));
+        summary.deferred.push(event.event_key);
+        continue;
+      }
       const failed = event.attempts + 1;
       const message = e instanceof Error ? e.message : String(e);
       const info = retryInfoOf(e);

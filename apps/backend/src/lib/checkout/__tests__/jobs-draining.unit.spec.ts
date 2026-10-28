@@ -5,7 +5,14 @@ import type { OutboxClaim } from "../../../modules/checkout/service";
 import { fakeOutboxDb } from "../../outbox/__tests__/fake-outbox-store";
 import { resetShutdownStateForTest, shutdownState } from "../../lifecycle/shutdown";
 import { acquireOrdered } from "../locks";
-import { codConfirmTimeout, dispatchOutbox, expireHolds, reconcileAttempts } from "../jobs";
+import { CheckoutError } from "../errors";
+import {
+  codConfirmTimeout,
+  DEFAULT_OUTBOX_HANDLERS,
+  dispatchOutbox,
+  expireHolds,
+  reconcileAttempts,
+} from "../jobs";
 
 /**
  * T-172/D-081: ba vòng lặp job kiểm `isDraining()` ở RANH GIỚI giữa hai đơn vị — đơn vị đang xử lý chạy trọn, đơn vị sau
@@ -197,6 +204,51 @@ describe("dispatchOutbox — dừng khi đang tắt", () => {
     const r = await dispatchOutbox(f.container, { handlers: { "test.x": async () => undefined } });
     expect(r.sent).toHaveLength(3);
     expect(r.stopped).toBeNull();
+  });
+});
+
+describe("payment.native_sync — khoá bận vì đang tắt (T-174)", () => {
+  const orderLockContainer = (base: MedusaContainer): MedusaContainer =>
+    ({
+      resolve: (key: string) => (key === Modules.LOCKING ? {} : base.resolve(key)),
+    }) as unknown as MedusaContainer;
+
+  it("attempts=7, đang tắt, khoá bận → hoãn: không dead, attempts vẫn 7, breaker không đổi", async () => {
+    const db = fakeOutboxDb([
+      { id: "obx_1", type: "payment.native_sync", attempts: 7, payload: { order_id: "order_1" } },
+    ]);
+    (acquireOrdered as jest.Mock).mockImplementationOnce(async () => {
+      shutdownState().draining = true;
+      throw new CheckoutError("BUSY_RETRY");
+    });
+    const before = new Date();
+    const r = await dispatchOutbox(orderLockContainer(db.container), {
+      handlers: DEFAULT_OUTBOX_HANDLERS,
+      now: before,
+    });
+    const row = db.outbox[0]!;
+    expect(row.attempts).toBe(7);
+    expect(row.state).toBe("pending");
+    expect(row.last_error).toBeNull();
+    expect(row.next_attempt_at.getTime()).toBeGreaterThan(before.getTime());
+    expect(r.deferred).toEqual(["payment.native_sync:obx_1"]);
+    expect(r.retried).toEqual([]);
+    expect(r.dead).toEqual([]);
+    expect(db.breakers.size).toBe(0);
+    expect(db.exceptions).toEqual([]);
+  });
+
+  it("đối chứng: khoá bận khi KHÔNG tắt vẫn là lỗi tạm (attempts + 1, breaker ghi lỗi)", async () => {
+    const db = fakeOutboxDb([
+      { id: "obx_1", type: "payment.native_sync", attempts: 2, payload: { order_id: "order_1" } },
+    ]);
+    (acquireOrdered as jest.Mock).mockImplementationOnce(async () => {
+      throw new CheckoutError("BUSY_RETRY");
+    });
+    const r = await dispatchOutbox(orderLockContainer(db.container), { handlers: DEFAULT_OUTBOX_HANDLERS });
+    expect(db.outbox[0]!.attempts).toBe(3);
+    expect(r.retried).toEqual(["payment.native_sync:obx_1"]);
+    expect(db.breakers.size).toBe(1);
   });
 });
 
