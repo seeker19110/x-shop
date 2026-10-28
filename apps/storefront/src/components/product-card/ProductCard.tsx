@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Swatch, type SwatchOption } from "../ui/ColorSwatch";
 import { Price, discountPercent } from "../ui/Price";
 import styles from "./ProductCard.module.css";
+import { safeImgSrc } from "../../lib/safe-url";
 
 export const PRODUCT_CARD_MAX_SWATCHES = 5;
 
@@ -53,7 +54,7 @@ export function ProductCard({
     <article className={styles.card}>
       <div className={styles.media}>
         <Image
-          src={image.src}
+          src={safeImgSrc(image.src)}
           alt={image.alt}
           fill
           sizes={PRODUCT_CARD_IMAGE_SIZES}
@@ -62,7 +63,7 @@ export function ProductCard({
         />
         {hoverImage ? (
           <Image
-            src={hoverImage.src}
+            src={safeImgSrc(hoverImage.src)}
             alt=""
             fill
             sizes={PRODUCT_CARD_IMAGE_SIZES}

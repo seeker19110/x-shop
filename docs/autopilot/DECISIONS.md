@@ -924,3 +924,10 @@
 - Chọn: Mặc định hằng vnpayment.vn/vnpay.vn chỉ https; thêm NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS tuỳ chọn (zod) cho dev/E2E, production từ chối origin http/localhost lúc khởi động
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: production vẫn chặt (https + host VNPAY), không nới theo NODE_ENV ngầm; tiêu chí 3: cấu hình tường minh, validate lúc khởi động, test được; E2E chỉ cần đặt biến trong e2e/env.mjs
 - Đường lùi: Bỏ biến, quay về hằng D-130 (một file safe-url.ts + env schema)
+
+### D-132 · 2026-10-28T11:49:06+00:00 · D-131: dấu hiệu từ chối origin VNPAY bổ sung http/localhost — NODE_ENV=production không dùng được vì E2E chạy next start ở production
+
+- Phương án: (1) Chỉ cho origin http/localhost khi NEXT_PUBLIC_SITE_URL là localhost; site URL công khai thì schema ném lỗi lúc khởi động · (2) Thêm cờ NEXT_PUBLIC_DEPLOY_ENV · (3) Giữ NODE_ENV và đổi E2E sang https giả
+- Chọn: Chỉ cho origin http/localhost khi NEXT_PUBLIC_SITE_URL là localhost; site URL công khai thì schema ném lỗi lúc khởi động
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: triển khai thật luôn có site URL công khai nên origin http/localhost bị từ chối; tiêu chí 3: không thêm cờ dễ đặt sai, E2E giữ nguyên cách chạy; bổ sung D-131
+- Đường lùi: Đổi điều kiện trong parseVnpayExtraOrigins (apps/storefront/src/lib/env/public.ts)

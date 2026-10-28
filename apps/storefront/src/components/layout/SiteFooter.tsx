@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { POLICY_LINKS, SELLER } from "../../lib/content/site";
 import styles from "./Footer.module.css";
+import { safeHref } from "../../lib/safe-url";
 
 export function SiteFooter() {
   return (
@@ -22,7 +23,7 @@ export function SiteFooter() {
           <ul className={styles.list}>
             {POLICY_LINKS.map((l) => (
               <li key={l.href}>
-                <Link href={l.href} className={styles.link}>
+                <Link href={safeHref(l.href)} className={styles.link}>
                   {l.label}
                 </Link>
               </li>

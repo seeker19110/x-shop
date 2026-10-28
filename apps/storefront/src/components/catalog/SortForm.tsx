@@ -1,5 +1,6 @@
 import { SORTS, serializeFilter, type CatalogFilter, type Sort } from "@x-shop/domain";
 import styles from "./CatalogView.module.css";
+import { safeHref } from "../../lib/safe-url";
 
 const SORT_LABEL: Record<Sort, string> = {
   newest: "Mới nhất",
@@ -11,7 +12,7 @@ const SORT_LABEL: Record<Sort, string> = {
 export function SortForm({ basePath, filter }: { basePath: string; filter: CatalogFilter }) {
   const rest = new URLSearchParams(serializeFilter({ ...filter, sort: "newest", page: 1 }));
   return (
-    <form method="get" action={basePath} className={styles.sortForm}>
+    <form method="get" action={safeHref(basePath)} className={styles.sortForm}>
       {[...rest].map(([k, v]) => (
         <input key={`${k}=${v}`} type="hidden" name={k} value={v} />
       ))}

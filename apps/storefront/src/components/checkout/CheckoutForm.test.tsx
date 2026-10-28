@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axe from "axe-core";
 import type { QuoteView, SubmitResult } from "../../lib/checkout/types";
-import { CheckoutForm, safePaymentUrl } from "./CheckoutForm";
+import { CheckoutForm } from "./CheckoutForm";
+import { safePaymentUrl } from "../../lib/safe-url";
 
 const m = vi.hoisted(() => ({
   quote: vi.fn(),

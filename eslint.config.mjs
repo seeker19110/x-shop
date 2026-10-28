@@ -117,6 +117,31 @@ const UNITS_RESTRICTED_SYNTAX = [
   },
 ];
 
+/**
+ * FE-SEC-002 (T-178): thuộc tính JSX `href`/`src`/`srcSet` (và `action`/`formAction` của form/button/input) chỉ nhận (a) chuỗi literal, (b) template route nội bộ bắt đầu bằng "/",
+ * (c) lời gọi helper đã khai. Template phải có ký tự thứ hai khác "/" và "\\" (chặn `/${u}` thành `//evil`). Spread
+ * (`{...props}`) không bị bắt — cố ý để nguyên, review tay. Mọi giá trị khác (biến, `obj.href`, `a ?? b`…) phải đi qua `safeHref`/`safeImgSrc`/`safeUrl`.
+ * Helper route nội bộ cho phép (tự dựng đường dẫn "/…" từ handle/bộ lọc, không nhận URL ngoài): hrefFor, categoryHref,
+ * productHref. Thêm helper mới phải sửa danh sách này (cố ý: thêm một cửa vào là quyết định có xem xét).
+ */
+const SAFE_URL_HELPERS =
+  "safeUrl|safeHref|safeImgSrc|safeSrcSet|safePaymentUrl|hrefFor|categoryHref|productHref";
+const SAFE_URL_VALUES = `Literal, TemplateLiteral[quasis.0.value.raw=/^[/][^/\\\\]/], CallExpression[callee.name=/^(${SAFE_URL_HELPERS})$/]`;
+const URL_ATTRIBUTE_SYNTAX = [
+  {
+    selector: `JSXAttribute[name.name=/^(href|src|srcSet)$/] > JSXExpressionContainer.value > :not(${SAFE_URL_VALUES})`,
+    message:
+      "href/src/srcSet nhận biểu thức không an toàn (FE-SEC-002): bọc bằng safeHref()/safeImgSrc()/safeSrcSet()/safeUrl() ở lib/safe-url.ts, hoặc dùng helper route nội bộ (hrefFor, categoryHref, productHref), hoặc template bắt đầu bằng '/'.",
+  },
+  {
+    // `action`/`formAction` chỉ là URL trên form/button/input (prop `action` của component khác là ReactNode — không bắt).
+    // Hàm Server Action/`useActionState` (định danh `action` hoặc kết thúc bằng `Action`) không phải URL nên được qua.
+    selector: `JSXOpeningElement[name.name=/^(form|button|input)$/] > JSXAttribute[name.name=/^(action|formAction)$/] > JSXExpressionContainer.value > :not(${SAFE_URL_VALUES}, Identifier[name=/^(action|[A-Za-z]+Action)$/])`,
+    message:
+      "action/formAction của form/button/input nhận biểu thức không an toàn (FE-SEC-002): bọc bằng safeHref() hoặc dùng hàm Server Action (định danh `action`/`…Action`).",
+  },
+];
+
 export default tseslint.config(
   {
     ignores: [
@@ -251,6 +276,20 @@ export default tseslint.config(
         ...BASE_RESTRICTED_SYNTAX,
         ...UNITS_RESTRICTED_SYNTAX,
         ...UNITS_DURATION_SYNTAX,
+      ],
+    },
+  },
+  {
+    // FE-SEC-002 (T-178): siết cổng — thêm luật href/src cho mã storefront (không test). Ghi đè no-restricted-syntax
+    // nên lặp luật chung + units (cùng ngoại lệ file units như khối XC-UNITS-009).
+    files: ["apps/storefront/src/**/*.tsx"],
+    ignores: ["**/*.test.tsx", "**/__tests__/**"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...BASE_RESTRICTED_SYNTAX,
+        ...UNITS_RESTRICTED_SYNTAX,
+        ...URL_ATTRIBUTE_SYNTAX,
       ],
     },
   },

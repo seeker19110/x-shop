@@ -5,6 +5,7 @@ import type { ComponentPropsWithRef, MouseEvent, ReactNode } from "react";
 import styles from "./Button.module.css";
 import { cx } from "./cx";
 import { VisuallyHidden } from "./VisuallyHidden";
+import { safeHref } from "../../lib/safe-url";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost";
 export type ButtonSize = "md" | "lg";
@@ -22,6 +23,10 @@ interface CommonProps {
 
 type ButtonOnly = CommonProps &
   Omit<ComponentPropsWithRef<"button">, keyof CommonProps> & { href?: undefined };
+/**
+ * Dạng liên kết. `href` đi qua safeHref (FE-SEC-002): chỉ "/…" cùng origin hoặc http(s)/mailto/tel; href tương đối không
+ * bắt đầu bằng "/" (vd. "san-pham", "?a=1", "#x") bị đổi thành "#" — luôn dùng đường dẫn tuyệt đối "/…".
+ */
 type LinkOnly = CommonProps & Omit<ComponentPropsWithRef<"a">, keyof CommonProps | "href"> & { href: string };
 
 export type ButtonProps = ButtonOnly | LinkOnly;
@@ -56,7 +61,7 @@ export function Button(props: ButtonProps) {
     return (
       <Link
         {...anchor}
-        href={href}
+        href={safeHref(href)}
         className={cls}
         aria-busy={loading || undefined}
         aria-disabled={inert || undefined}
