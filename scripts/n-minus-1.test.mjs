@@ -1,0 +1,702 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_BASE as CHECK_MIGRATIONS_DEFAULT_BASE } from "./check-migrations.mjs";
+import {
+  DEFAULT_PG_BASE,
+  SAFE_DB,
+  buildSteps,
+  classifyFailures,
+  dbNames,
+  diffSchemas,
+  failedSuites,
+  formatDuration,
+  hasChanges,
+  migrationChanges,
+  moduleOf,
+  normalizeDefault,
+  parseArgs,
+  pgBaseUrl,
+  planOverlay,
+  realDeps,
+  run,
+  schemaFromRows,
+} from "./n-minus-1.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const M = (mod, name) => `apps/backend/src/modules/${mod}/migrations/${name}.ts`;
+
+/* ---------------------------------------------------------- chọn ref gốc --------------------------------------- */
+
+test("parseArgs: ref gốc cùng quy tắc check-migrations (--base > MIGRATIONS_BASE_REF > origin/master)", () => {
+  assert.equal(parseArgs([], {}).base, CHECK_MIGRATIONS_DEFAULT_BASE);
+  assert.equal(parseArgs([], {}).base, "origin/master");
+  assert.equal(parseArgs([], { MIGRATIONS_BASE_REF: "abc123" }).base, "abc123");
+  assert.equal(parseArgs(["--base", "HEAD~3"], { MIGRATIONS_BASE_REF: "abc123" }).base, "HEAD~3");
+  assert.equal(parseArgs(["--base=origin/dev"], {}).base, "origin/dev");
+  // Biến rỗng (CI nội suy ra chuỗi rỗng) → mặc định, không phải ref rỗng.
+  assert.equal(parseArgs([], { MIGRATIONS_BASE_REF: "" }).base, "origin/master");
+});
+
+test("parseArgs: cờ khác và lỗi tham số", () => {
+  const o = parseArgs(
+    ["--detect-only", "--keep", "--workdir", "/w", "--test-pattern", "health", "--test-pattern=refund"],
+    { N1_WORKDIR: "/khac" },
+  );
+  assert.deepEqual(o, {
+    base: "origin/master",
+    detectOnly: true,
+    keep: true,
+    workdir: "/w",
+    testPatterns: ["health", "refund"],
+  });
+  assert.equal(parseArgs([], { N1_WORKDIR: "/env" }).workdir, "/env");
+  assert.throws(() => parseArgs(["--lạ"], {}), /tham số lạ/);
+  assert.throws(() => parseArgs(["--base"], {}), /--base cần/);
+  assert.throws(() => parseArgs(["--base", "--keep"], {}), /--base cần/);
+  assert.throws(() => parseArgs(["--base="], {}), /--base cần/);
+  assert.throws(() => parseArgs(["--test-pattern="], {}), /rỗng/);
+});
+
+test("ci.yml: job n-minus-1 dùng ĐÚNG biểu thức ref gốc của bước check-migrations; không phải required check", () => {
+  const yml = readFileSync(join(here, "../.github/workflows/ci.yml"), "utf8");
+  const expr = (block) => {
+    const m = /MIGRATIONS_BASE_REF: >-\n((?:\s+.*\n){3})/.exec(block);
+    assert.ok(m, "thiếu MIGRATIONS_BASE_REF");
+    return m[1].replace(/\s+/g, " ").trim();
+  };
+  const jobAt = (name) => {
+    const start = yml.search(new RegExp(`^  ${name}:\\s*$`, "m"));
+    assert.ok(start >= 0, `thiếu job ${name}`);
+    const rest = yml.slice(start + 1);
+    const end = rest.search(/^ {2}\S/m);
+    return rest.slice(0, end < 0 ? undefined : end);
+  };
+  const gate = jobAt("gate");
+  const n1 = jobAt("n-minus-1");
+  const checkStep = gate.indexOf("name: Migration cũ bất biến");
+  assert.ok(checkStep >= 0, "không thấy bước check-migrations trong job gate");
+  assert.equal(expr(n1), expr(gate.slice(checkStep)));
+  assert.match(n1, /fetch-depth: 0/);
+  assert.match(n1, /timeout-minutes: \d+/);
+  assert.match(n1, /postgres:16-alpine@sha256:/);
+  assert.match(n1, /redis:7-alpine@sha256:/);
+  assert.match(n1, /node scripts\/n-minus-1\.mjs --detect-only/);
+  assert.match(n1, /steps\.detect\.outputs\.run == 'true'/);
+  assert.doesNotMatch(n1, /^\s+needs:/m, "chạy song song với gate, không needs");
+  const needs = /needs: \[([^\]]*)\]/
+    .exec(jobAt("quality"))[1]
+    .split(",")
+    .map((s) => s.trim());
+  assert.ok(!needs.includes("n-minus-1"), "n-minus-1 không phải required check (D-115/T-163)");
+  assert.ok(needs.includes("gate"), "job gate giữ tên");
+});
+
+/* ---------------------------------------------------- phát hiện migration ------------------------------------ */
+
+test("migrationChanges: thêm/đổi/xoá; file không phải migration bỏ qua; rỗng → không đổi", () => {
+  const base = new Map([
+    [M("a", "Migration20260101000000"), "h1"],
+    [M("a", "Migration20260102000000"), "h2"],
+    [M("b", "Migration20260103000000"), "h3"],
+    ["apps/backend/src/modules/a/migrations/.snapshot-a.json", "s1"],
+  ]);
+  const head = new Map([
+    [M("a", "Migration20260101000000"), "h1"],
+    [M("a", "Migration20260102000000"), "h2-sua"],
+    [M("c", "Migration20260104000000"), "h4"],
+    ["apps/backend/src/modules/a/migrations/.snapshot-a.json", "s2"],
+  ]);
+  const c = migrationChanges(base, head);
+  assert.deepEqual(c, {
+    added: [M("c", "Migration20260104000000")],
+    changed: [M("a", "Migration20260102000000")],
+    removed: [M("b", "Migration20260103000000")],
+  });
+  assert.equal(hasChanges(c), true);
+  assert.equal(hasChanges(migrationChanges(base, new Map(base))), false);
+  assert.equal(hasChanges(migrationChanges(new Map(), new Map())), false);
+  // Chỉ snapshot đổi → không phải thay đổi schema.
+  const snapOnly = new Map(base);
+  snapOnly.set("apps/backend/src/modules/a/migrations/.snapshot-a.json", "khac");
+  assert.equal(hasChanges(migrationChanges(base, snapOnly)), false);
+});
+
+test("planOverlay: chép vào module có ở N−1, xoá file bị xoá, module chỉ có ở HEAD thì bỏ qua", () => {
+  assert.equal(moduleOf(M("checkout", "Migration1")), "checkout");
+  const changes = {
+    added: [M("checkout", "Migration20261027100000"), M("moi", "Migration20261027110000")],
+    changed: [M("audit", "Migration20260101000000")],
+    removed: [M("audit", "Migration20250101000000"), M("moi", "Migration20250101000000")],
+  };
+  const plan = planOverlay(changes, (m) => m !== "moi");
+  assert.deepEqual(plan, {
+    copy: [M("checkout", "Migration20261027100000"), M("audit", "Migration20260101000000")],
+    remove: [M("audit", "Migration20250101000000")],
+    newModules: ["moi"],
+  });
+  assert.deepEqual(
+    planOverlay({ added: [], changed: [], removed: [] }, () => true),
+    {
+      copy: [],
+      remove: [],
+      newModules: [],
+    },
+  );
+});
+
+test("phát hiện migration trên repo git thật (blob hash cây làm việc, kể cả chưa commit)", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "n1-git-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const g = (...a) =>
+    execFileSync("git", ["-C", root, "-c", "user.email=t@example.invalid", "-c", "user.name=t", ...a], {
+      stdio: "pipe",
+    });
+  g("init", "-q", "-b", "main");
+  const dir = join(root, "apps/backend/src/modules/a/migrations");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "Migration20260101000000.ts"), "export class Migration20260101000000 {}\n");
+  g("add", ".");
+  g("commit", "-q", "-m", "base");
+  const logs = [];
+  const log = { log: (m) => logs.push(m), error: (m) => logs.push(`E ${m}`) };
+  const out = join(root, "gh-output");
+  const opts = { base: "HEAD", detectOnly: true, keep: false, workdir: "", testPatterns: [] };
+  // Không đổi → run=false.
+  const env1 = { GITHUB_OUTPUT: out };
+  assert.equal(await run(root, opts, detectDeps(root, env1, log)), 0);
+  assert.equal(readFileSync(out, "utf8"), "run=false\n");
+  // Thêm migration chưa commit → run=true và log tên file.
+  writeFileSync(join(dir, "Migration20260202000000.ts"), "export class Migration20260202000000 {}\n");
+  assert.equal(await run(root, opts, detectDeps(root, env1, log)), 0);
+  assert.equal(readFileSync(out, "utf8"), "run=false\nrun=true\n");
+  assert.ok(logs.some((l) => l.includes("Migration20260202000000.ts")));
+  // Ref không có → 2, không ghi output.
+  assert.equal(await run(root, { ...opts, base: "khong-co" }, detectDeps(root, env1, log)), 2);
+  assert.equal(readFileSync(out, "utf8"), "run=false\nrun=true\n");
+});
+
+/** Deps thật (git qua check-migrations, ghi file thật); I/O nặng ném lỗi nếu bị gọi (detect-only không được chạm). */
+function detectDeps(root, env, log) {
+  const forbid = (name) => () => {
+    throw new Error(`detect-only không được gọi ${name}`);
+  };
+  return {
+    ...realDeps(root),
+    env,
+    log,
+    proc: new EventEmitter(),
+    resolveSha: forbid("resolveSha"),
+    mkdtemp: forbid("mkdtemp"),
+    admin: forbid("admin"),
+    exec: forbid("exec"),
+  };
+}
+
+/* -------------------------------------------------------------- dựng lệnh ------------------------------------ */
+
+test("pgBaseUrl: N1_PG_BASE_URL > DATABASE_URL (bỏ tên DB/query) > mặc định", () => {
+  assert.equal(
+    pgBaseUrl({ N1_PG_BASE_URL: "postgres://u:p@h:6543/", DATABASE_URL: "x" }),
+    "postgres://u:p@h:6543",
+  );
+  assert.equal(
+    pgBaseUrl({ DATABASE_URL: "postgres://xshop:xshop@localhost:5432/xshop?sslmode=disable" }),
+    "postgres://xshop:xshop@localhost:5432",
+  );
+  assert.equal(pgBaseUrl({ DATABASE_URL: "postgres://db.local/xshop" }), "postgres://db.local");
+  assert.equal(pgBaseUrl({}), DEFAULT_PG_BASE);
+});
+
+test("dbNames: tên an toàn, hai lần chạy đồng thời không trùng", () => {
+  const a = dbNames();
+  const b = dbNames();
+  assert.match(a.head, SAFE_DB);
+  assert.match(a.base, SAFE_DB);
+  assert.notEqual(a.head, a.base);
+  assert.notEqual(a.head, b.head);
+  assert.deepEqual(dbNames("abc"), { head: "xshop_n1_abc_head", base: "xshop_n1_abc_base" });
+  assert.throws(() => dbNames('x"; drop database xshop; --'), /không an toàn/);
+  assert.throws(() => dbNames("ABC"), /không an toàn/);
+});
+
+test("buildSteps: lệnh cài/build/migrate/test, cwd và DATABASE_URL đúng cây/DB", () => {
+  const s = buildSteps({
+    root: "/repo",
+    baseDir: "/tmp/w/base",
+    pgBase: "postgres://u:p@h:5432",
+    dbs: { head: "xshop_n1_x_head", base: "xshop_n1_x_base" },
+    testPatterns: ["health", "refund"],
+    resultsDir: "/tmp/w",
+  });
+  assert.deepEqual(
+    [s.install.cmd, ...s.install.args],
+    ["pnpm", "install", "--frozen-lockfile", "--prefer-offline", "--filter", "@x-shop/backend..."],
+  );
+  assert.equal(s.install.cwd, "/tmp/w/base");
+  assert.equal(s.buildHead.cwd, "/repo");
+  assert.equal(s.buildBase.cwd, "/tmp/w/base");
+  for (const [m, cwd, db] of [
+    [s.migrateHead, "/repo/apps/backend", "xshop_n1_x_head"],
+    [s.migrateBase, "/tmp/w/base/apps/backend", "xshop_n1_x_base"],
+  ]) {
+    assert.deepEqual(m.args.slice(0, 3), ["exec", "medusa", "db:migrate"]);
+    assert.ok(m.args.includes("--execute-safe-links"), "không hỏi tương tác khi sync link");
+    assert.ok(m.args.includes("--skip-scripts"));
+    assert.equal(m.cwd, cwd);
+    assert.equal(m.env.DATABASE_URL, `postgres://u:p@h:5432/${db}`);
+    assert.equal(m.env.NODE_ENV, "development");
+    assert.equal(m.env.REDIS_URL, "");
+    assert.equal(m.quiet, true);
+  }
+  assert.deepEqual(s.test.args, [
+    "run",
+    "test:integration",
+    "health",
+    "refund",
+    "--json",
+    "--outputFile=/tmp/w/test.json",
+  ]);
+  assert.equal(s.test.results, "/tmp/w/test.json");
+  assert.equal(s.test.cwd, "/tmp/w/base/apps/backend");
+  assert.equal(s.test.env, undefined, "test N−1 dùng môi trường như lệnh test tích hợp thường");
+  assert.deepEqual(
+    buildSteps({ root: "/r", baseDir: "/b", pgBase: "p", dbs: { head: "h", base: "b" } }).test.args,
+    ["run", "test:integration", "--json", "--outputFile=/b/test.json"],
+  );
+  // Chạy lại theo đường dẫn tuyệt đối (không phải regex — đường dẫn có `.`/`-`).
+  const r = s.retest("control", "đối chứng", ["/tmp/w/base/apps/backend/integration-tests/http/a.spec.ts"]);
+  assert.deepEqual(r.args, [
+    "run",
+    "test:integration",
+    "--runTestsByPath",
+    "/tmp/w/base/apps/backend/integration-tests/http/a.spec.ts",
+    "--json",
+    "--outputFile=/tmp/w/control.json",
+  ]);
+  assert.equal(r.results, "/tmp/w/control.json");
+  assert.equal(r.cwd, "/tmp/w/base/apps/backend");
+});
+
+/* ---------------------------------------------------------------- so schema ---------------------------------- */
+
+const col = (table_name, column_name, extra = {}) => ({
+  table_name,
+  column_name,
+  data_type: "text",
+  udt_name: "text",
+  character_maximum_length: null,
+  is_nullable: "YES",
+  column_default: null,
+  ...extra,
+});
+
+test("schemaFromRows + diffSchemas: trùng, bảng chỉ ở HEAD, bảng chỉ ở N−1, cột/ràng buộc/index lệch", () => {
+  const rows = {
+    columns: [col("x", "id", { is_nullable: "NO" }), col("x", "note"), col("y", "id")],
+    constraints: [{ table_name: "x", conname: "x_pkey", def: "PRIMARY KEY (id)" }],
+    indexes: [{ table_name: "x", indexname: "IDX_x_note", indexdef: "CREATE INDEX ... (note)" }],
+  };
+  const a = schemaFromRows(rows);
+  assert.deepEqual(diffSchemas(a, schemaFromRows(rows)), { onlyHead: [], onlyBase: [], mismatched: [] });
+  assert.deepEqual(a.get("x"), [
+    "column id text/text not null default -",
+    "column note text/text null default -",
+    "constraint x_pkey PRIMARY KEY (id)",
+    "index IDX_x_note CREATE INDEX ... (note)",
+  ]);
+  const head = schemaFromRows({
+    ...rows,
+    columns: [
+      ...rows.columns,
+      col("x", "shipping", { data_type: "jsonb", udt_name: "jsonb" }),
+      col("moi", "id"),
+    ],
+  });
+  const base = schemaFromRows({ ...rows, columns: [...rows.columns, col("cu", "id")], indexes: [] });
+  const d = diffSchemas(head, base);
+  assert.deepEqual(d.onlyHead, ["moi"]);
+  assert.deepEqual(d.onlyBase, ["cu"]);
+  assert.deepEqual(d.mismatched, [
+    {
+      table: "x",
+      onlyHead: ["column shipping jsonb/jsonb null default -", "index IDX_x_note CREATE INDEX ... (note)"],
+      onlyBase: [],
+    },
+  ]);
+  // NOT NULL khác nhau cũng là lệch.
+  const nn = diffSchemas(
+    schemaFromRows({ columns: [col("x", "a", { is_nullable: "NO" })] }),
+    schemaFromRows({ columns: [col("x", "a")] }),
+  );
+  assert.equal(nn.mismatched.length, 1);
+});
+
+test("normalizeDefault: ULID literal sinh lúc migrate (workflow_execution.run_id) không tính là lệch; DEFAULT khác vẫn so", () => {
+  assert.equal(normalizeDefault("'01M5ZTSN6XEE7XCYPMS5PHQBA4'::text"), "'<ulid>'::text");
+  assert.equal(normalizeDefault(null), "-");
+  assert.equal(normalizeDefault(undefined), "-");
+  assert.equal(normalizeDefault("0"), "0");
+  assert.equal(normalizeDefault("'pending'::text"), "'pending'::text");
+  // 26 ký tự nhưng có chữ thường/ký tự ngoài Crockford (I, L, O, U) → không phải ULID, giữ nguyên.
+  assert.equal(normalizeDefault("'01m5ztsn6xee7xcyp ms5phqba4'"), "'01m5ztsn6xee7xcyp ms5phqba4'");
+  assert.equal(normalizeDefault("'01M5ZTSN6XEE7XCYPMS5PHQBAI'::text"), "'01M5ZTSN6XEE7XCYPMS5PHQBAI'::text");
+  const run1 = schemaFromRows({
+    columns: [col("workflow_execution", "run_id", { column_default: "'01M5ZTSN6XEE7XCYPMS5PHQBA4'::text" })],
+  });
+  const run2 = schemaFromRows({
+    columns: [col("workflow_execution", "run_id", { column_default: "'01M5ZTSXGRRA2RPW9JGV9T5GV1'::text" })],
+  });
+  assert.deepEqual(diffSchemas(run1, run2).mismatched, []);
+  const other = schemaFromRows({ columns: [col("x", "s", { column_default: "'a'::text" })] });
+  const other2 = schemaFromRows({ columns: [col("x", "s", { column_default: "'b'::text" })] });
+  assert.equal(diffSchemas(other, other2).mismatched.length, 1);
+});
+
+test("formatDuration", () => {
+  assert.equal(formatDuration(0), "0s");
+  assert.equal(formatDuration(59_400), "59s");
+  assert.equal(formatDuration(60_000), "1m00s");
+  assert.equal(formatDuration(1_234_567), "20m35s");
+});
+
+/* ------------------------------------------------------------ quy trình + dọn ---------------------------------- */
+
+const SAME = new Map([["x", ["column id text/text not null default -"]]]);
+const CHANGES_BASE = new Map([[M("checkout", "Migration20260101000000"), "h1"]]);
+const CHANGES_HEAD = new Map([
+  [M("checkout", "Migration20260101000000"), "h1"],
+  [M("checkout", "Migration20261027100000"), "h2"],
+]);
+
+/** Deps giả ghi lại sự kiện theo thứ tự. `codes[id]` = mã thoát của bước; `onExec[id]` = hàm thay exec. */
+function fake({
+  base = CHANGES_BASE,
+  head = CHANGES_HEAD,
+  refOk = true,
+  codes = {},
+  onExec = {},
+  schemas = { head: SAME, base: SAME },
+  adminFail = () => false,
+  env = {},
+  results = {},
+} = {}) {
+  const events = [];
+  const files = new Map();
+  const proc = new EventEmitter();
+  proc.exitCalls = [];
+  proc.exit = (c) => proc.exitCalls.push(c);
+  const logs = [];
+  let t = 0;
+  const deps = {
+    env,
+    proc,
+    log: { log: (m) => logs.push(m), error: (m) => logs.push(`E ${m}`) },
+    now: () => (t += 1000),
+    hex: () => "abc123",
+    refExists: () => refOk,
+    resolveSha: () => "0123456789abcdef0123",
+    baseMigrations: () => base,
+    headMigrations: () => head,
+    mkdtemp: (parent) => {
+      events.push(`mkdtemp ${parent}`);
+      return `${parent}/xshop-n1-T`;
+    },
+    mkdir: () => undefined,
+    rm: (d) => events.push(`rm ${d}`),
+    extract: async (sha, dir) => events.push(`extract ${sha} ${dir}`),
+    exists: (p) => p.includes("/checkout/"),
+    // FS ảo: file của cây HEAD (/repo/…) luôn có; file khác chỉ có khi đã ghi.
+    readFile: (p) => (files.has(p) ? files.get(p) : p.startsWith("/repo/") ? `HEAD ${p}` : null),
+    writeFile: (p, d) => {
+      files.set(p, d);
+      events.push(`write ${p}`);
+    },
+    unlink: (p) => {
+      files.delete(p);
+      events.push(`unlink ${p}`);
+    },
+    admin: async (_pg, sql) => {
+      if (adminFail(sql)) throw new Error(`admin lỗi: ${sql}`);
+      events.push(sql.replace(/ WITH \(FORCE\)$/, ""));
+    },
+    readSchema: async (_pg, db) => (db.endsWith("_head") ? schemas.head : schemas.base),
+    exec: async (step) => {
+      events.push(`exec ${step.id}`);
+      // `results[id]` = suite đỏ → báo cáo `jest --json` giả ở step.results (chuỗi "rác" = báo cáo hỏng).
+      const r = results[step.id];
+      if (step.results && r !== undefined)
+        files.set(
+          step.results,
+          typeof r === "string"
+            ? r
+            : JSON.stringify({
+                testResults: [
+                  ...r.map((name) => ({ name, status: "failed" })),
+                  { name: "/w/xshop-n1-T/base/apps/backend/ok.spec.ts", status: "passed" },
+                ],
+              }),
+        );
+      if (onExec[step.id]) return onExec[step.id](step);
+      return { code: codes[step.id] ?? 0 };
+    },
+    killCurrent: async (sig) => events.push(`kill ${sig}`),
+    appendFile: (f, s) => events.push(`append ${f} ${s.split("\n")[0]}`),
+  };
+  return { deps, events, logs, proc, files };
+}
+const OPTS = { base: "origin/master", detectOnly: false, keep: false, workdir: "/w", testPatterns: [] };
+
+test("run: không có migration đổi → 0 ngay, không tạo thư mục/DB, không chạy lệnh, có log", async () => {
+  const f = fake({ head: CHANGES_BASE });
+  assert.equal(await run("/repo", OPTS, f.deps), 0);
+  assert.deepEqual(f.events, []);
+  assert.ok(f.logs.some((l) => /không có migration .*bỏ qua/.test(l)));
+});
+
+test("run: --detect-only ghi run=true|false vào GITHUB_OUTPUT, không chạy gì nặng", async () => {
+  const yes = fake({ env: { GITHUB_OUTPUT: "/o" } });
+  assert.equal(await run("/repo", { ...OPTS, detectOnly: true }, yes.deps), 0);
+  assert.deepEqual(yes.events, ["append /o run=true"]);
+  const no = fake({ head: CHANGES_BASE, env: { GITHUB_OUTPUT: "/o" } });
+  assert.equal(await run("/repo", { ...OPTS, detectOnly: true }, no.deps), 0);
+  assert.deepEqual(no.events, ["append /o run=false"]);
+});
+
+test("run: ref gốc không có → 2, không làm gì", async () => {
+  const f = fake({ refOk: false });
+  assert.equal(await run("/repo", OPTS, f.deps), 2);
+  assert.deepEqual(f.events, []);
+  assert.ok(f.logs.some((l) => l.startsWith("E ") && l.includes("không có trong repo")));
+});
+
+test("run: đường xanh — đúng thứ tự, DB xoá TRƯỚC test, thư mục tạm xoá cuối, bảng thời gian vào step summary", async () => {
+  const f = fake({ env: { GITHUB_STEP_SUMMARY: "/sum" } });
+  assert.equal(await run("/repo", OPTS, f.deps), 0);
+  assert.deepEqual(f.events, [
+    "mkdtemp /w",
+    "extract 0123456789abcdef0123 /w/xshop-n1-T/base",
+    "exec install",
+    `write /w/xshop-n1-T/base/${M("checkout", "Migration20261027100000")}`,
+    "exec build-head",
+    "exec build-base",
+    'CREATE DATABASE "xshop_n1_abc123_head"',
+    'CREATE DATABASE "xshop_n1_abc123_base"',
+    "exec migrate-head",
+    "exec migrate-base",
+    'DROP DATABASE IF EXISTS "xshop_n1_abc123_head"',
+    'DROP DATABASE IF EXISTS "xshop_n1_abc123_base"',
+    "exec test",
+    "rm /w/xshop-n1-T",
+    "append /sum ### n-minus-1 (ref gốc origin/master) — mã 0",
+  ]);
+  assert.ok(f.logs.some((l) => l.includes("ĐẠT")));
+  assert.ok(f.logs.some((l) => /\| tổng \| \d+s \|/.test(l)));
+  assert.equal(f.proc.listenerCount("SIGINT"), 0, "gỡ handler tín hiệu");
+  assert.equal(f.proc.listenerCount("SIGTERM"), 0);
+});
+
+const SUITE_A = "/w/xshop-n1-T/base/apps/backend/integration-tests/http/a.spec.ts";
+const SUITE_B = "/w/xshop-n1-T/base/apps/backend/integration-tests/http/b.spec.ts";
+const SUITE_C = "/w/xshop-n1-T/base/apps/backend/integration-tests/http/c.spec.ts";
+const COPIED = `/w/xshop-n1-T/base/${M("checkout", "Migration20261027100000")}`;
+
+test("run: suite đỏ trên schema N, xanh trên N−1 (đối chứng) → 1; chạy lại đúng suite đỏ; gỡ phủ TRƯỚC đối chứng", async () => {
+  const f = fake({
+    codes: { test: 1, confirm: 1 },
+    results: { test: [SUITE_A], confirm: [SUITE_A], control: [] },
+  });
+  let controlSaw;
+  f.deps.exec = ((orig) => async (step) => {
+    if (step.id === "control") controlSaw = f.files.has(COPIED);
+    return orig(step);
+  })(f.deps.exec);
+  assert.equal(await run("/repo", OPTS, f.deps), 1);
+  const i = (e) => f.events.indexOf(e);
+  assert.ok(i("exec test") < i("exec confirm") && i("exec confirm") < i(`unlink ${COPIED}`));
+  assert.ok(i(`unlink ${COPIED}`) < i("exec control"));
+  assert.equal(controlSaw, false, "đối chứng chạy khi migration HEAD đã gỡ khỏi cây N−1");
+  assert.equal(f.events.at(-1), "rm /w/xshop-n1-T");
+  assert.ok(
+    f.logs.some((l) => l.includes("KHÔNG TƯƠNG THÍCH: apps/backend/integration-tests/http/a.spec.ts")),
+  );
+  assert.ok(f.logs.some((l) => l.startsWith("E ") && l.includes("không tương thích ngược")));
+});
+
+test("run: suite đỏ cả trên schema N−1 của chính nó → 2 (không quy cho migration)", async () => {
+  const f = fake({
+    codes: { test: 1, confirm: 1, control: 1 },
+    results: { test: [SUITE_A], confirm: [SUITE_A], control: [SUITE_A] },
+  });
+  assert.equal(await run("/repo", OPTS, f.deps), 2);
+  assert.ok(f.logs.some((l) => l.includes("N−1 TỰ ĐỎ")));
+  assert.ok(!f.logs.some((l) => l.includes("không tương thích ngược")));
+});
+
+test("run: suite đỏ lần đầu, xanh khi chạy lại cả hai schema → 0 kèm cảnh báo chập chờn", async () => {
+  const f = fake({ codes: { test: 1 }, results: { test: [SUITE_A], confirm: [], control: [] } });
+  assert.equal(await run("/repo", OPTS, f.deps), 0);
+  assert.ok(f.logs.some((l) => l.includes("CHẬP CHỜN")));
+});
+
+test("run: mã test ≠ 0 mà báo cáo jest thiếu/hỏng/không nêu suite đỏ → 2", async () => {
+  for (const results of [{}, { test: "{rác" }, { test: [] }]) {
+    const f = fake({ codes: { test: 1 }, results });
+    assert.equal(await run("/repo", OPTS, f.deps), 2, JSON.stringify(results));
+    assert.ok(!f.events.includes("exec confirm"));
+  }
+  const g = fake({ codes: { test: 1, confirm: 1 }, results: { test: [SUITE_A], control: "{rác" } });
+  assert.equal(await run("/repo", OPTS, g.deps), 2);
+});
+
+test("classifyFailures: bảng phân loại", () => {
+  assert.deepEqual(classifyFailures([SUITE_A, SUITE_B, SUITE_C], [SUITE_A, SUITE_B], [SUITE_B]), {
+    incompatible: [SUITE_A],
+    baseRed: [SUITE_B],
+    flaky: [SUITE_C],
+    code: 1,
+  });
+  assert.equal(classifyFailures([SUITE_B], [], [SUITE_B]).code, 2);
+  assert.equal(classifyFailures([SUITE_C], [], []).code, 0);
+  assert.equal(classifyFailures([], [], []).code, 0);
+});
+
+test("failedSuites: đọc báo cáo jest --json (chuỗi/Buffer), hỏng → null", () => {
+  const j = {
+    testResults: [
+      { name: "/b.spec.ts", status: "failed" },
+      { name: "/a.spec.ts", status: "failed" },
+      { name: "/c.spec.ts", status: "passed" },
+    ],
+  };
+  assert.deepEqual(failedSuites(JSON.stringify(j)), ["/a.spec.ts", "/b.spec.ts"]);
+  assert.deepEqual(failedSuites(Buffer.from(JSON.stringify(j))), ["/a.spec.ts", "/b.spec.ts"]);
+  assert.deepEqual(failedSuites(j), ["/a.spec.ts", "/b.spec.ts"]);
+  assert.equal(failedSuites(null), null);
+  assert.equal(failedSuites("{"), null);
+  assert.equal(failedSuites("{}"), null);
+  assert.deepEqual(failedSuites({ testResults: [] }), []);
+});
+
+test("run: cài phụ thuộc lỗi → 2, không tạo DB, vẫn xoá thư mục tạm", async () => {
+  const f = fake({ codes: { install: 1 } });
+  assert.equal(await run("/repo", OPTS, f.deps), 2);
+  assert.ok(!f.events.some((e) => e.startsWith("CREATE")));
+  assert.equal(f.events.at(-1), "rm /w/xshop-n1-T");
+});
+
+test("run: db:migrate HEAD lỗi → 2, xoá cả hai DB đã tạo và thư mục, không chạy test", async () => {
+  const f = fake({ codes: { "migrate-head": 1 } });
+  assert.equal(await run("/repo", OPTS, f.deps), 2);
+  assert.ok(!f.events.includes("exec test"));
+  assert.deepEqual(f.events.slice(-3), [
+    'DROP DATABASE IF EXISTS "xshop_n1_abc123_head"',
+    'DROP DATABASE IF EXISTS "xshop_n1_abc123_base"',
+    "rm /w/xshop-n1-T",
+  ]);
+});
+
+test("run: tạo DB thứ hai lỗi → chỉ xoá DB đã tạo (không DROP DB không phải của mình)", async () => {
+  const f = fake({ adminFail: (sql) => sql.startsWith('CREATE DATABASE "xshop_n1_abc123_base"') });
+  assert.equal(await run("/repo", OPTS, f.deps), 2);
+  const drops = f.events.filter((e) => e.startsWith("DROP"));
+  assert.deepEqual(drops, ['DROP DATABASE IF EXISTS "xshop_n1_abc123_head"']);
+});
+
+test("run: xoá DB lỗi → log nhắc xoá tay, vẫn xoá thư mục, mã giữ nguyên", async () => {
+  const f = fake({ adminFail: (sql) => sql.startsWith("DROP") });
+  assert.equal(await run("/repo", OPTS, f.deps), 0);
+  assert.ok(f.logs.some((l) => l.includes("xoá tay")));
+  assert.equal(f.events.at(-1), "rm /w/xshop-n1-T");
+});
+
+test("run: overlay không tái tạo schema N → 2, không chạy test, in bảng lệch", async () => {
+  const f = fake({
+    schemas: { head: SAME, base: new Map([["x", ["column id text/text null default -"]]]) },
+  });
+  assert.equal(await run("/repo", OPTS, f.deps), 2);
+  assert.ok(!f.events.includes("exec test"));
+  assert.ok(f.logs.some((l) => l.includes("bảng x lệch")));
+  assert.ok(f.events.includes('DROP DATABASE IF EXISTS "xshop_n1_abc123_base"'));
+});
+
+test("run: bảng chỉ có ở HEAD (module/link mới) → chỉ log, vẫn chạy test", async () => {
+  const f = fake({ schemas: { head: new Map([...SAME, ["x_moi", ["column id"]]]), base: SAME } });
+  assert.equal(await run("/repo", OPTS, f.deps), 0);
+  assert.ok(f.logs.some((l) => l.includes("chỉ có ở schema HEAD") && l.includes("x_moi")));
+});
+
+test("run: --keep giữ thư mục tạm nhưng vẫn xoá DB", async () => {
+  const f = fake();
+  assert.equal(await run("/repo", { ...OPTS, keep: true }, f.deps), 0);
+  assert.ok(!f.events.some((e) => e.startsWith("rm ")));
+  assert.equal(f.events.filter((e) => e.startsWith("DROP")).length, 2);
+});
+
+for (const [sig, code] of [
+  ["SIGTERM", 143],
+  ["SIGINT", 130],
+]) {
+  test(`run: ${sig} giữa lúc test → chuyển tín hiệu cho tiến trình con, dọn MỘT lần, thoát ${code} (runner thoát 0 không tính xanh)`, async () => {
+    let release;
+    const f = fake({
+      onExec: {
+        test: () =>
+          new Promise((resolve) => {
+            release = resolve;
+            setImmediate(() => f.proc.emit(sig, sig));
+          }),
+      },
+    });
+    f.deps.killCurrent = async (s) => {
+      f.events.push(`kill ${s}`);
+      release({ code: 0 }); // runner của Medusa bắt SIGTERM rồi thoát 0
+    };
+    assert.equal(await run("/repo", OPTS, f.deps), code);
+    await new Promise((r) => setImmediate(r));
+    assert.ok(f.events.includes(`kill ${sig}`));
+    assert.equal(
+      f.events.filter((e) => e.startsWith("rm ")).length,
+      1,
+      "dọn một lần dù handler và finally cùng gọi",
+    );
+    assert.deepEqual(f.proc.exitCalls, [code]);
+    assert.ok(!f.logs.some((l) => l.includes("ĐẠT")));
+  });
+}
+
+test("run: SIGTERM giữa db:migrate → DB đã tạo bị xoá đúng một lần, không chạy bước sau", async () => {
+  const f = fake({
+    onExec: {
+      "migrate-head": () => {
+        f.proc.emit("SIGTERM", "SIGTERM");
+        return { code: 0 };
+      },
+    },
+  });
+  assert.equal(await run("/repo", OPTS, f.deps), 143);
+  await new Promise((r) => setImmediate(r));
+  assert.ok(!f.events.includes("exec migrate-base"));
+  assert.ok(!f.events.includes("exec test"));
+  assert.equal(f.events.filter((e) => e === 'DROP DATABASE IF EXISTS "xshop_n1_abc123_head"').length, 1);
+  assert.equal(f.events.filter((e) => e.startsWith("rm ")).length, 1);
+});
+
+test("run: hai lần chạy đồng thời → DB và thư mục tạm riêng, không xoá của nhau", async () => {
+  const a = fake();
+  const b = fake();
+  a.deps.hex = () => "aaa111";
+  b.deps.hex = () => "bbb222";
+  a.deps.mkdtemp = (p) => (a.events.push("mkdtemp"), `${p}/A`);
+  b.deps.mkdtemp = (p) => (b.events.push("mkdtemp"), `${p}/B`);
+  const [ra, rb] = await Promise.all([run("/repo", OPTS, a.deps), run("/repo", OPTS, b.deps)]);
+  assert.deepEqual([ra, rb], [0, 0]);
+  assert.ok(a.events.every((e) => !e.includes("bbb222") && e !== "rm /w/B"));
+  assert.ok(b.events.every((e) => !e.includes("aaa111") && e !== "rm /w/A"));
+  assert.ok(a.events.includes("rm /w/A") && b.events.includes("rm /w/B"));
+});
