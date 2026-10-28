@@ -1241,6 +1241,7 @@ paths:
       tags: [Admin returns and refunds]
       operationId: adminRejectRefund
       summary: "Từ chối yêu cầu hoàn chưa duyệt (nhả số đang giữ)"
+      description: "Hoàn theo trả hàng (`reason = return` / có `return_id`) không từ chối được → 409 `RETURN_REFUND_NOT_REJECTABLE` kèm `refund_id`, `return_id`, `state`, `next_steps` (duyệt → thực hiện; đổi cách hoàn: `failed` → hủy → tạo lại theo `return_id`)."
       security:
         - adminSession: []
         - adminBearer: []

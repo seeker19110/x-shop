@@ -35,6 +35,11 @@ export const RETURNS_ERROR_STATUS = {
   NOT_AWAITING_PAYMENT: 409,
   /** T-165: đơn chờ thanh toán nhưng thanh toán không ở diện "chưa xác minh" (còn hạn, đã có kết quả, đã thu). */
   PAYMENT_NOT_UNVERIFIED: 409,
+  /**
+   * T-173: hoàn theo trả hàng (`return_id`) không từ chối được — bản `rejected` vẫn chiếm chỉ mục duy nhất theo yêu cầu
+   * trả nên yêu cầu trả sẽ kẹt. Kèm `next_steps` (duyệt → thực hiện → hủy khi `failed` → tạo lại theo `return_id`).
+   */
+  RETURN_REFUND_NOT_REJECTABLE: 409,
 } as const;
 
 export type ReturnsErrorCode = keyof typeof RETURNS_ERROR_STATUS;

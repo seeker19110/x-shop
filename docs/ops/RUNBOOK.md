@@ -376,8 +376,8 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   quyền `refund.approve`, lý do bắt buộc) — nhả số tiền ngay, chưa có gì gửi cổng — rồi tạo `auto`/`manual` mới. Hoặc
   duyệt → `execute` (→ `failed`, `attempts = 0`) → hủy như dòng trên. Hoàn do hủy đơn bị từ chối mở lại được bằng
   `POST /admin/x/refunds` `reason: "cancellation"`. **Hoàn theo trả hàng (`reason = return`) KHÔNG từ chối** — chỉ bản
-  `cancelled` mới mở lại được theo `return_id` — nên đi đường duyệt → `execute` → hủy → mở lại
-  (`reason: "return"`, `return_id`).
+  `cancelled` mới mở lại được theo `return_id`; server trả 409 `RETURN_REFUND_NOT_REJECTABLE` (T-173), Admin ẩn nút
+  "Từ chối" — nên đi đường duyệt → `execute` → hủy → mở lại (`reason: "return"`, `return_id`).
 - **Không nhả tiền khi cổng CÓ THỂ đã hoàn:** yêu cầu `unknown`/`processing` (timeout, 5xx, đứt mạng — có ngoại lệ
   `refund_unknown`) hoặc `failed` đã gửi cổng (`attempts > 0`) giữ nguyên; khi cổng tắt, `execute`/`cancel` trả 409 và
   không đổi trạng thái. Thoát cần cổng trả lời (cổng bật → `execute` hỏi cùng mã rồi mới gửi lại) — chưa có đường chốt
