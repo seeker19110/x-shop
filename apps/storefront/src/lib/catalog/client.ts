@@ -27,6 +27,13 @@ interface ListOptions {
   pageSize?: number;
 }
 
+/** Chỉ http(s) (env đã qua zod khi khởi động — kiểm lại tại điểm gửi). */
+function assertHttpBase(base: string): string {
+  const protocol = new URL(base).protocol;
+  if (protocol !== "https:" && protocol !== "http:") throw new Error("MEDUSA_BACKEND_URL phải là http(s)");
+  return base;
+}
+
 async function backendGet<T>(
   path: string,
   params?: URLSearchParams,
@@ -34,7 +41,7 @@ async function backendGet<T>(
   extraHeaders: Record<string, string> = {},
   tags: readonly string[] = LIST_TAGS,
 ): Promise<T> {
-  const base = getServerEnv().MEDUSA_BACKEND_URL;
+  const base = assertHttpBase(getServerEnv().MEDUSA_BACKEND_URL);
   const qs = params && params.size > 0 ? `?${params.toString()}` : "";
   let res: Response;
   try {

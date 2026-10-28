@@ -108,6 +108,14 @@ function toDetail(data: Record<string, unknown>): GhnDetail | null {
   };
 }
 
+/** Ghép URL GHN; chỉ chấp nhận http(s) (cấu hình đã qua zod khi khởi động — kiểm lại tại điểm gửi). */
+function ghnUrl(baseUrl: string, path: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  const protocol = new URL(base).protocol;
+  if (protocol !== "https:" && protocol !== "http:") throw new Error("[ghn] baseUrl phải là http(s)");
+  return `${base}${path}`;
+}
+
 /** sandbox/live: HTTP tới GHN_BASE_URL với Token + ShopId (chỉ server), có hạn chờ. */
 export class HttpGhnClient implements GhnClient {
   readonly mode: GhnRuntimeConfig["mode"];
@@ -146,7 +154,7 @@ export class HttpGhnClient implements GhnClient {
   ): Promise<{ status: number; code: number | null; data: unknown; message: string }> {
     let res: Response;
     try {
-      res = await fetch(`${this.cfg.baseUrl.replace(/\/+$/, "")}${path}`, {
+      res = await fetch(ghnUrl(this.cfg.baseUrl, path), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
