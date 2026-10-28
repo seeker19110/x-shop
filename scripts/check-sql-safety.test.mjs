@@ -282,3 +282,86 @@ test("repo thật: quét sạch (exit 0)", () => {
   const r = spawnSync("node", [join(here, "check-sql-safety.mjs")], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
 });
+// --- Đợt review T-179: đối số trộn `${}` + `+`, biến trần truy tới khai báo, sink/đầu SQL mở rộng ---
+
+test("scanSource: đối số trộn template `${}` và `+` — phần nối `+ x` cũng phải khai idents", () => {
+  const f = scanSource(
+    "q.whereRaw(`${COL} < ? ` + (period as any).raw_user_suffix, [to]);\nconst COL = 'c';",
+  );
+  assert.equal(f.length, 1);
+  assert.deepEqual(f[0].exprs, ["COL", "(period as any).raw_user_suffix"]);
+  assert.deepEqual(scanSource('db.raw("select * from t where " + cond)')[0].exprs, ["cond"]);
+  assert.deepEqual(scanSource("db.raw('select ' + `${A} from ` + B)")[0].exprs, ["A", "B"]);
+});
+
+test("main: trộn `${}` + `+` — allowlist chỉ khai phần `${}` thì vẫn đỏ; khai đủ mới xanh", () => {
+  const src = "const COL = 'c';\nq.whereRaw(`${COL} < ? ` + suffix, [to]);";
+  const al = (idents) =>
+    JSON.stringify([
+      {
+        file: "apps/x/src/a.ts",
+        match: "COL",
+        idents,
+        reason: "lý do đủ dài ở đây ok",
+      },
+    ]);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": src }, al(["COL"]))), 1);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": src }, al(["COL", "suffix"]))), 0);
+});
+
+test("scanSource: biến trần ở sink truy tới khai báo gần nhất; khởi tạo được kiểm như sink trực tiếp", () => {
+  assert.deepEqual(scanSource("const sql = 'select 1';\nq.whereRaw(sql);")[0].exprs, []);
+  assert.deepEqual(scanSource("const sql = `select ${x} from t`;\nq.whereRaw(sql);")[0].exprs, ["x"]);
+  assert.deepEqual(scanSource("let sql = 'a ' + tail;\nq.whereRaw(sql);")[0].exprs, ["tail"]);
+  assert.deepEqual(scanSource("function f(sql) {\n q.whereRaw(sql);\n}")[0].exprs, ["sql"]);
+  // khai báo gần nhất thắng (mục `match: sql` không còn phủ mọi `.whereRaw(sql)` trong tệp)
+  const two = "const sql = 'a';\nq.whereRaw(sql);\nconst sql2 = 1;\nconst sql = `b ${y}`;\nq.whereRaw(sql);";
+  assert.deepEqual(
+    scanSource(two).map((f) => f.exprs),
+    [[], ["y"]],
+  );
+});
+
+test("main: mục dynamic `sql` không che khai báo template có nội suy chưa khai idents", () => {
+  const src = "const sql = `select * from t where ${w}`;\nq.whereRaw(sql);";
+  const al = (idents) =>
+    JSON.stringify([
+      {
+        file: "apps/x/src/a.ts",
+        kind: "dynamic",
+        match: "sql",
+        ...(idents && { idents }),
+        reason: "lý do đủ dài ở đây ok",
+      },
+      // chính template khai báo cũng là một phát hiện (sql-template) và có mục riêng
+      { file: "apps/x/src/a.ts", match: "select * from t", idents: ["w"], reason: "lý do đủ dài ở đây ok" },
+    ]);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": src }, al(null))), 1);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": src }, al(["w"]))), 0);
+});
+
+test("scanSource: template SQL mở đầu bằng chú thích hoặc ngoặc vẫn được nhận ra", () => {
+  assert.deepEqual(kinds("const q = `-- ghi chú\nSELECT * FROM t WHERE a = ${a}`;"), ["sql-template"]);
+  assert.deepEqual(kinds("const q = `/* c */ select ${a}`;"), ["sql-template"]);
+  assert.deepEqual(kinds("const q = `(SELECT ${a})`;"), ["sql-template"]);
+  assert.deepEqual(kinds("const q = `  -- a\n  -- b\n ( with x as (select ${a}) select 1)`;"), [
+    "sql-template",
+  ]);
+  assert.deepEqual(scanSource("const s = `-- chỉ là ghi chú ${a}`;"), []);
+});
+
+test('scanSource: sink fromRaw/andWhereRaw/orHavingRaw, `?.raw(`, `.raw?.(`, `["raw"](` đều bị bắt', () => {
+  for (const call of [
+    "q.fromRaw(`${a}`)",
+    "q.andWhereRaw(`${a}`)",
+    "q.orHavingRaw(`${a}`)",
+    "q.orWhereRaw(`${a}`)",
+    "q.joinRaw(`${a}`)",
+    "q?.raw(`${a}`)",
+    "q.raw?.(`${a}`)",
+    'q["raw"](`${a}`)',
+    "q['whereRaw'](`${a}`)",
+  ])
+    assert.deepEqual(kinds(call), ["interpolation"], call);
+  assert.deepEqual(scanSource('q["raw"]("select 1")'), []);
+});

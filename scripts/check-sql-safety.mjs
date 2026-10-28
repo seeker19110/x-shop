@@ -9,6 +9,9 @@
 // Nội suy `${…}` (T-179): MỖI biểu thức nội suy trong sink/template SQL phải là hằng định danh được khai trong mục allowlist
 // (`idents`: liệt kê nguyên văn từng biểu thức) — không phải biến tham số/đầu vào; biểu thức là tên hằng trần (HOA_SNAKE) còn
 // phải được khai `const`/`import` trong chính tệp. Mọi giá trị đi qua binding (`?`/`:name`), không nội suy.
+// GIỚI HẠN: `idents` so theo CHỮ biểu thức, không theo nguồn gốc dữ liệu — người duyệt allowlist chịu trách nhiệm xác nhận
+// mỗi biểu thức là hằng/mảnh SQL do mã dựng (không từ input); script không chứng minh được điều đó. Biến trần ở sink được truy
+// tới khai báo `const|let|var` gần nhất trong tệp (heuristic, không phân tích phạm vi/luồng dữ liệu).
 // Mọi phát hiện phải có dòng trong scripts/sql-safety-allowlist.json: { file, match, reason } — `match` là chuỗi con của
 // đối số/literal đã gộp khoảng trắng, `reason` giải thích vì sao an toàn (định danh/hằng từ mã, KHÔNG từ input; giá trị đi
 // qua tham số `?`/`$n`); `kind` (tuỳ chọn) khoá loại phát hiện, bắt buộc nên dùng cho đối số trần như `sql`. Dòng allowlist không khớp phát hiện nào → lỗi (không để allowlist mục nát). Test không bị quét.
@@ -18,9 +21,17 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const SINK =
-  /\.(raw|whereRaw|orWhereRaw|havingRaw|orderByRaw|groupByRaw|joinRaw|selectRaw|execute|query)\s*(?:<[^>()]*>)?\(/g;
-const SQL_START = /^\s*(select|insert\s+into|update|delete\s+from|with|alter|drop|create|truncate|merge)\b/i;
+const SINK_NAMES =
+  "raw|whereRaw|andWhereRaw|orWhereRaw|havingRaw|orHavingRaw|orderByRaw|groupByRaw|joinRaw|fromRaw|selectRaw|execute|query";
+// `.raw(`, `?.raw(`, `.raw?.(`, `x["raw"](` đều là sink.
+const SINK = new RegExp(
+  `(?:\\??\\.\\s*(${SINK_NAMES})|\\[\\s*(?:'(${SINK_NAMES})'|"(${SINK_NAMES})")\\s*\\])\\s*(?:\\?\\.)?\\s*(?:<[^>()]*>)?\\(`,
+  "g",
+);
+// Bỏ chú thích/ngoặc đầu (`-- …\nSELECT`, `/* */ SELECT`, `(SELECT`) trước khi so động từ SQL.
+const LEADING_NOISE = /^(?:\s+|\(|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)+/;
+const SQL_VERB = /^(select|insert\s+into|update|delete\s+from|with|alter|drop|create|truncate|merge)\b/i;
+const startsLikeSql = (text) => SQL_VERB.test(text.replace(LEADING_NOISE, ""));
 const SOURCE_FILE = /\.(ts|tsx|js|mjs|cjs)$/;
 const SKIP_FILE =
   /(^|\/)(__tests__|integration-tests|node_modules|dist|\.next|\.medusa|migrations)\/|\.(test|spec)\.[a-z]+$|\.d\.ts$/;
@@ -248,6 +259,51 @@ function isDeclaredConst(src, name) {
   return decl.test(src) || imp.test(src);
 }
 
+/** Biểu thức phải khai trong `idents` của một chuỗi SQL: nối `+` được tách; template → các `${…}`; phần khác → chính nó. */
+function sqlExprs(expr) {
+  const out = [];
+  for (const part of splitConcat(expr)) {
+    const t = part.trim();
+    if (!t || STATIC_STR.test(t) || STATIC_TPL.test(t)) continue;
+    if (t.startsWith("`") && t.endsWith("`") && interpolationExprs(t).length)
+      out.push(...interpolationExprs(t));
+    else out.push(squash(t));
+  }
+  return out;
+}
+
+const BARE_IDENT = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * Biểu thức của đối số sink. Biến trần (`whereRaw(sql)`): truy tới khai báo `const|let|var sql =` gần nhất phía trên trong cùng
+ * tệp và kiểm khởi tạo như sink trực tiếp; không thấy khai báo (tham số hàm…) hay không phải chuỗi tĩnh → chính tên biến.
+ */
+function argExprs(src, mask, open, arg) {
+  const name = arg.trim();
+  if (!BARE_IDENT.test(name)) return sqlExprs(arg);
+  const decl = [
+    ...src
+      .slice(0, open)
+      .matchAll(
+        new RegExp(`\\b(?:const|let|var)\\s+${name.replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=(?!=)`, "g"),
+      ),
+  ].pop();
+  if (!decl) return [name];
+  const start = decl.index + decl[0].length;
+  let depth = 0;
+  let i = start;
+  for (; i < src.length; i++) {
+    if (!mask[i]) continue;
+    const c = src[i];
+    if ("([{".includes(c)) depth++;
+    else if (")]}".includes(c)) depth--;
+    else if (c === ";" && depth === 0) break;
+    if (depth < 0) break;
+  }
+  const init = src.slice(start, i);
+  return isStaticSql(init) ? [] : sqlExprs(init);
+}
+
 /** Phát hiện trong một tệp: [{ line, kind, sink?, text }]. */
 export function scanSource(src) {
   const { mask, literals } = tokenize(src);
@@ -269,19 +325,13 @@ export function scanSource(src) {
     if (isStaticSql(arg)) continue;
     sinkRanges.push([open, open + 1 + arg.length]);
     const kind = arg.includes("${") ? "interpolation" : /[+]/.test(arg) ? "concat" : "dynamic";
-    const exprs =
-      kind === "concat"
-        ? splitConcat(arg)
-            .filter((p) => !STATIC_STR.test(p.trim()) && !STATIC_TPL.test(p.trim()))
-            .map(squash)
-        : interpolationExprs(arg);
-    add(open, kind, m[1], arg, exprs);
+    add(open, kind, m[1] ?? m[2] ?? m[3], arg, argExprs(src, mask, open, arg));
   }
 
   for (const lit of literals) {
     // literal nằm trong đối số của sink đã báo → không báo lần hai
     if (sinkRanges.some(([a, b]) => lit.start >= a && lit.end <= b)) continue;
-    if (!SQL_START.test(lit.text.slice(1))) continue;
+    if (!startsLikeSql(lit.text.slice(1))) continue;
     if (lit.kind === "tpl" && lit.interp) {
       add(lit.start, "sql-template", undefined, lit.text, interpolationExprs(lit.text));
       continue;

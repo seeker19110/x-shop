@@ -3,13 +3,15 @@
     "file": "apps/backend/src/lib/checkout/vnpay-gateway.ts",
     "match": "input.txnRef",
     "reason": "Không phải SQL: `query` là truy vấn trạng thái giao dịch/hoàn tiền của cổng thanh toán (gateway.query), không chạm DB.",
-    "kind": "dynamic"
+    "kind": "dynamic",
+    "idents": ["input.txnRef"]
   },
   {
     "file": "apps/backend/src/workflows/returns/refunds.ts",
     "match": "req",
     "reason": "Không phải SQL: `query` là truy vấn trạng thái giao dịch/hoàn tiền của cổng thanh toán (gateway.query), không chạm DB.",
-    "kind": "dynamic"
+    "kind": "dynamic",
+    "idents": ["await providerRequestOf(container, r, actor)"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/query.ts",
@@ -97,25 +99,29 @@
     "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "q.sql",
     "reason": "q = listingSql(...): chuỗi do query.ts dựng từ literal + `?`, giá trị ở q.bindings (xem allowlist query.ts).",
-    "kind": "dynamic"
+    "kind": "dynamic",
+    "idents": ["q.sql"]
   },
   {
     "file": "apps/backend/src/modules/checkout/service.ts",
     "match": "sql",
     "reason": "Hàm bọc `exec(sql, params)`: mọi nơi gọi truyền literal/template do mã dựng, giá trị ở `params` (đã rà từng chỗ gọi, cùng allowlist này).",
-    "kind": "dynamic"
+    "kind": "dynamic",
+    "idents": ["sql"]
   },
   {
     "file": "apps/backend/src/modules/shipping/service.ts",
     "match": "sql",
     "reason": "Hàm bọc `exec(sql, params)`: mọi nơi gọi truyền literal/template do mã dựng, giá trị ở `params` (đã rà từng chỗ gọi, cùng allowlist này).",
-    "kind": "dynamic"
+    "kind": "dynamic",
+    "idents": ["sql"]
   },
   {
     "file": "apps/backend/src/modules/notify/service.ts",
     "match": "sql",
     "reason": "Hàm bọc `exec(sql, params)`: mọi nơi gọi truyền literal/template do mã dựng, giá trị ở `params` (đã rà từng chỗ gọi, cùng allowlist này).",
-    "kind": "dynamic"
+    "kind": "dynamic",
+    "idents": ["sql"]
   },
   {
     "file": "apps/backend/src/modules/checkout/service.ts",
