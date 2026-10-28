@@ -15,61 +15,83 @@
     "file": "apps/backend/src/modules/catalog-index/query.ts",
     "match": "WITH g AS (",
     "reason": "Giá trị người dùng đi qua bindings `?` (inList/anyOf/termSql trả {sql, bindings}); `${TABLE}` là hằng của mã; `ORDER[f.sort]` tra bảng hằng ORDER theo enum đã kiểm của bộ lọc (pageSql, bản tham chiếu).",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["TABLE", "w.sql", "ORDER[f.sort]"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/query.ts",
     "match": "SELECT v.value, v.label",
     "reason": "Tên cột facet lấy từ FACET_COLUMNS (enum cố định FacetName), không từ request; Giá trị người dùng đi qua bindings `?` (inList/anyOf/termSql trả {sql, bindings}); `${TABLE}` là hằng của mã.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["col", "c.label", "c.extra", "c.rank", "TABLE", "s.sql", "w.sql"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/query.ts",
     "match": "WITH v AS MATERIALIZED",
     "reason": "Các mảnh (scopeWhere/qCte/flags/facet) do hàm trong mã dựng; từ khoá, kênh, danh mục, giá, màu/size/chất liệu đều qua `use({sql:'?'…})` vào bindings; `ORDER[f.sort]` là bảng hằng.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": [
+      "TABLE",
+      "scopeWhere()",
+      "qCte()",
+      "flags()",
+      "terms.length ? \" AND product_id IN (SELECT product_id FROM q)\" : \"\"",
+      "ORDER[f.sort]",
+      "use({ sql: \"?\", bindings: [pageSize] })",
+      "use({ sql: \"?\", bindings: [(f.page - 1) * pageSize] })",
+      "facet(\"color\", \"fs AND fm AND fp\")",
+      "facet(\"size\", \"fc AND fm AND fp\")",
+      "facet(\"material\", \"fc AND fs AND fp\")"
+    ]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "DELETE FROM ${TABLE} WHERE ${del.sql}",
     "reason": "del = inList('product_id', ids): cột là literal, id đi qua một binding JSON.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["TABLE", "del.sql"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "SELECT count(*)::int AS n FROM ${TABLE}${w",
     "reason": "w = inList('product_id', ids): điều kiện sinh từ mã, id đi qua binding JSON.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["TABLE", "w ? ` WHERE ${w.sql}` : \"\""]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "catalog_index_dirty${",
     "reason": "Nhánh ' WHERE …' là literal cố định chọn theo cờ boolean dueOnly.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["dueOnly ? \" WHERE next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()\" : \"\""]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "SELECT DISTINCT product_id FROM ${TABLE} WHERE ${w.sql}",
     "reason": "w = inList('variant_id', ids): id đi qua binding JSON.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["TABLE", "w.sql"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "price_valid_until <= ?",
     "reason": "Chỉ nội suy hằng TABLE; thời điểm đi qua binding `?`.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["TABLE"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "ORDER BY product_id, variant_rank, variant_id",
     "reason": "parts ghép từ inList/literal cố định trong chính hàm; kênh, id, danh mục đi qua bindings.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["TABLE", "parts.join(\" AND \")"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
     "match": "SELECT h AS handle",
     "reason": "ch = inList('sales_channel_id', ids): id kênh đi qua binding JSON.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["TABLE", "ch.sql"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/service.ts",
@@ -99,54 +121,63 @@
     "file": "apps/backend/src/modules/checkout/service.ts",
     "match": "ACTIVE_ATTEMPT_STATES.map",
     "reason": "Nội suy chuỗi `?, ?, …` đúng số phần tử của hằng ACTIVE_ATTEMPT_STATES; giá trị ở params.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["ACTIVE_ATTEMPT_STATES.map(() => \"?\").join(\", \")"]
   },
   {
     "file": "apps/backend/src/modules/checkout/service.ts",
     "match": "retryableCodes.map",
     "reason": "Nội suy chuỗi `?, ?, …` theo số mã; chính các mã đi qua params.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["retryableCodes.map(() => \"?\").join(\", \")"]
   },
   {
     "file": "apps/backend/src/modules/checkout/service.ts",
     "match": "COUNTED_COUPON_STATES.map",
     "reason": "Nội suy chuỗi `?, ?, …` đúng số phần tử của hằng COUNTED_COUPON_STATES; giá trị ở params.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["COUNTED_COUPON_STATES.map(() => \"?\").join(\", \")"]
   },
   {
     "file": "apps/backend/src/modules/checkout/service.ts",
     "match": "${from.map",
     "reason": "`from` là mảng literal cố định theo `to`; nội suy chỉ dãy `?`, giá trị ở params.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["from.map(() => \"?\").join(\", \")"]
   },
   {
     "file": "apps/backend/src/modules/checkout/service.ts",
     "match": "WHERE order_id IN (${marks}) AND state = 'preparing'",
     "reason": "marks = dãy `?` theo số orderIds; id đi qua params.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["marks"]
   },
   {
     "file": "apps/backend/src/modules/checkout/service.ts",
     "match": "WHERE order_id IN (${marks}) AND state IN ('created'",
     "reason": "marks = dãy `?` theo số orderIds; id đi qua params.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["marks"]
   },
   {
     "file": "apps/backend/src/modules/shipping/service.ts",
     "match": "${COLUMNS}",
     "reason": "COLUMNS là hằng danh sách cột của mã (SELECT/RETURNING); giá trị dùng `?`.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["COLUMNS"]
   },
   {
     "file": "apps/backend/src/modules/returns/service.ts",
     "match": "not ${sql}",
-    "reason": "`sql` là literal cố định `starts_with(\"idempotency_key\", ?)`, tiền tố đi qua binding; chỉ chọn thêm `not`."
+    "reason": "`sql` là literal cố định `starts_with(\"idempotency_key\", ?)`, tiền tố đi qua binding; chỉ chọn thêm `not`.",
+    "idents": ["sql"]
   },
   {
     "file": "apps/backend/src/modules/returns/service.ts",
     "match": "RETURN_LINE_TABLE",
     "reason": "RETURN_LINE_TABLE là hằng tên bảng của mã, không có đầu vào.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["RETURN_LINE_TABLE"]
   },
   {
     "file": "apps/backend/src/modules/returns/service.ts",
@@ -158,42 +189,49 @@
     "file": "apps/backend/src/modules/settlement/service.ts",
     "match": "sl.target_id = ${alias}.id",
     "reason": "`alias` chỉ nhận literal \"s\"/\"l\" từ hai chỗ gọi notSeen trong mã.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["alias"]
   },
   {
     "file": "apps/backend/src/modules/settlement/service.ts",
     "match": "${col} >=",
     "reason": "`col` luôn là literal tên cột do reportSummary truyền (created_at, delivered_at, occurred_at, coalesce(succeeded_at, updated_at)); giá trị thời gian qua binding.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["col"]
   },
   {
     "file": "apps/backend/src/modules/settlement/service.ts",
     "match": "${col} <",
     "reason": "Như trên: tên cột là literal trong mã, giá trị qua binding.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["col"]
   },
   {
     "file": "apps/backend/src/modules/settlement/service.ts",
     "match": "from ${COD_OUTSTANDING_FROM}",
     "reason": "COD_OUTSTANDING_FROM là hằng chuỗi FROM của mã (xây từ LINE_TABLE hằng); không có đầu vào.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["COD_OUTSTANDING_FROM"]
   },
   {
     "file": "apps/backend/src/modules/settlement/service.ts",
     "match": "select 'ops' as source",
     "reason": "`union` ghép các hằng DISCREPANCY_TABLE/COD_OUTSTANDING_FROM; không có đầu vào.",
-    "kind": "sql-template"
+    "kind": "sql-template",
+    "idents": ["DISCREPANCY_TABLE", "COD_OUTSTANDING_FROM"]
   },
   {
     "file": "apps/backend/src/modules/settlement/service.ts",
     "match": "from (${union}) x ${where} order by ${PRIORITY_RANK}",
     "reason": "`union`, `where` (literal chứa `?`), PRIORITY_RANK đều là hằng của mã; filter nguồn/loại/ưu tiên và limit/offset đi qua params.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["union", "where", "PRIORITY_RANK"]
   },
   {
     "file": "apps/backend/src/modules/settlement/service.ts",
     "match": "from (${union}) x ${where} group by",
     "reason": "`union`, `where` là hằng của mã; filter đi qua params.",
-    "kind": "interpolation"
+    "kind": "interpolation",
+    "idents": ["union", "where"]
   }
 ]

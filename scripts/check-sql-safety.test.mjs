@@ -5,7 +5,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { applyAllowlist, isStaticSql, listSources, main, scanSource, tokenize } from "./check-sql-safety.mjs";
+import {
+  applyAllowlist,
+  interpolationExprs,
+  isStaticSql,
+  listSources,
+  main,
+  scanSource,
+  tokenize,
+} from "./check-sql-safety.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -150,9 +158,124 @@ test("main: 0 khi sạch, 1 khi có phát hiện chưa duyệt, 2 khi allowlist 
 
 test("main: phát hiện được duyệt bằng allowlist → 0", () => {
   const al = JSON.stringify([
-    { file: "apps/x/src/a.ts", match: "${T}", reason: "T là hằng tên bảng do mã định nghĩa" },
+    { file: "apps/x/src/a.ts", match: "${T}", idents: ["T"], reason: "T là hằng tên bảng do mã định nghĩa" },
   ]);
-  assert.equal(main(fixture({ "apps/x/src/a.ts": "db.raw(`select * from ${T}`);" }, al)), 0);
+  assert.equal(
+    main(fixture({ "apps/x/src/a.ts": "const T = 'tbl';\ndb.raw(`select * from ${T}`);" }, al)),
+    0,
+  );
+});
+
+// --- T-179: nội suy `${…}` chỉ là hằng định danh được khai trong allowlist ---
+
+test("interpolationExprs: lấy biểu thức mức ngoài cùng, bỏ qua chuỗi thường và template lồng", () => {
+  assert.deepEqual(interpolationExprs("`from ${T} where ${a.b(1, 2)} = ?`"), ["T", "a.b(1, 2)"]);
+  assert.deepEqual(interpolationExprs("`${x ? `u ${y}` : ''}`"), ["x ? `u ${y}` : ''"]);
+  assert.deepEqual(interpolationExprs('"không ${phải} nội suy"'), []);
+  assert.deepEqual(interpolationExprs("`tiếng Việt ${ten} \\${không}`"), ["ten"]);
+  assert.deepEqual(interpolationExprs("`không có`"), []);
+});
+
+test("scanSource: gắn danh sách biểu thức nội suy; hằng HOA trần phải được khai const/import", () => {
+  const ok = scanSource("const TABLE = 't';\ndb.raw(`delete from ${TABLE} where id = ?`, [id]);");
+  assert.deepEqual(ok[0].exprs, ["TABLE"]);
+  assert.deepEqual(ok[0].undeclared, []);
+  const imp = scanSource("import { TABLE } from './t';\ndb.raw(`delete from ${TABLE}`);");
+  assert.deepEqual(imp[0].undeclared, []);
+  const param = scanSource("function f(TABLE) {\n db.raw(`delete from ${TABLE}`);\n}");
+  assert.deepEqual(param[0].undeclared, ["TABLE"]);
+  assert.deepEqual(scanSource("db.raw(`select * from t where a = ${a}`)")[0].exprs, ["a"]);
+  assert.deepEqual(scanSource('db.raw("select " + col + " from t")')[0].exprs, ["col"]);
+});
+
+const IDENT_FINDING = {
+  "a.ts": [
+    {
+      line: 1,
+      kind: "interpolation",
+      sink: "raw",
+      text: "`from ${T} where ${col} = ?`",
+      exprs: ["T", "col"],
+      undeclared: [],
+    },
+  ],
+};
+const entry = (extra) => [
+  { file: "a.ts", match: "from ${T}", reason: "T, col là hằng của mã; giá trị qua `?`", ...extra },
+];
+
+test("applyAllowlist: mỗi biểu thức nội suy phải được khai trong idents, thiếu → chưa duyệt", () => {
+  assert.deepEqual(applyAllowlist(IDENT_FINDING, entry({ idents: ["T", "col"] })), {
+    unapproved: [],
+    errors: [],
+  });
+  const missing = applyAllowlist(IDENT_FINDING, entry({ idents: ["T"] }));
+  assert.equal(missing.unapproved.length, 1);
+  assert.match(missing.unapproved[0].text, /\$\{col\}/);
+  assert.equal(applyAllowlist(IDENT_FINDING, entry({})).unapproved.length, 1); // không idents = không được nội suy gì
+  assert.equal(applyAllowlist(IDENT_FINDING, entry({ idents: [] })).unapproved.length, 1);
+});
+
+test("applyAllowlist: ident thừa/không dùng, idents sai kiểu → lỗi allowlist", () => {
+  const stale = applyAllowlist(IDENT_FINDING, entry({ idents: ["T", "col", "khac"] }));
+  assert.match(stale.errors.join("\n"), /ident "khac" không dùng/);
+  const bad = applyAllowlist(IDENT_FINDING, entry({ idents: ["T", "col", 5, ""] }));
+  assert.match(bad.errors.join("\n"), /idents phải là mảng chuỗi/);
+  assert.match(
+    applyAllowlist(IDENT_FINDING, entry({ idents: "T" })).errors.join("\n"),
+    /idents phải là mảng/,
+  );
+});
+
+test("applyAllowlist: hằng HOA không khai trong tệp (tham số/biến cục bộ) không được allowlist cứu", () => {
+  const f = {
+    "a.ts": [
+      { line: 1, kind: "interpolation", sink: "raw", text: "`from ${T}`", exprs: ["T"], undeclared: ["T"] },
+    ],
+  };
+  const r = applyAllowlist(f, entry({ idents: ["T"] }));
+  assert.equal(r.unapproved.length, 1);
+  assert.match(r.unapproved[0].text, /không được khai const\/import/);
+});
+
+test("main: nội suy biến đến từ tham số/đầu vào bị chặn dù có dòng allowlist không khai idents", () => {
+  const src = "export function f(input) {\n  return db.raw(`select * from t order by ${input.sort}`);\n}";
+  const noIdents = JSON.stringify([
+    { file: "apps/x/src/a.ts", match: "order by", reason: "lý do đủ dài nhưng quên khai idents" },
+  ]);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": src }, noIdents)), 1);
+  const withIdents = JSON.stringify([
+    {
+      file: "apps/x/src/a.ts",
+      match: "order by",
+      idents: ["input.sort"],
+      reason: "lý do đủ dài, đã khai idents",
+    },
+  ]);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": src }, withIdents)), 0);
+});
+
+test("main: hằng HOA là tham số (không khai const) → 1 kể cả khi allowlist khai idents", () => {
+  const src = "export function f(TABLE) {\n  return db.raw(`delete from ${TABLE}`);\n}";
+  const al = JSON.stringify([
+    { file: "apps/x/src/a.ts", match: "delete from", idents: ["TABLE"], reason: "lý do đủ dài ở đây ok" },
+  ]);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": src }, al)), 1);
+});
+
+test("main: whereRaw/knex.raw/template SQL ngoài sink đều chịu kiểm idents; giá trị qua binding thì sạch", () => {
+  const al = (extra) =>
+    JSON.stringify([{ file: "apps/x/src/a.ts", match: "where", reason: "lý do đủ dài ở đây ok", ...extra }]);
+  const where = "const COL = 'c';\nq.whereRaw(`${COL} > ?`, [v]);";
+  assert.equal(main(fixture({ "apps/x/src/a.ts": where }, "[]")), 1);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": where }, al({ match: "> ?", idents: ["COL"] }))), 0);
+  const tpl = "const q = `select * from t where a = ${a}`;";
+  assert.equal(main(fixture({ "apps/x/src/a.ts": tpl }, al({ match: "select" }))), 1);
+  assert.equal(main(fixture({ "apps/x/src/a.ts": tpl }, al({ match: "select", idents: ["a"] }))), 0);
+  assert.equal(
+    main(fixture({ "apps/x/src/a.ts": "knex.raw('select * from t where a = ?', [a]);" }, "[]")),
+    0,
+  );
 });
 
 test("repo thật: quét sạch (exit 0)", () => {

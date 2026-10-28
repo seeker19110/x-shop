@@ -6,6 +6,9 @@
 //     mà ĐỐI SỐ ĐẦU không phải chuỗi/literal tĩnh: có `${…}`, có nối `+`, hay là biến/biểu thức gọi hàm.
 //  2. Literal (template hoặc chuỗi nối `+`) mở đầu bằng động từ SQL (select/insert into/update/delete from/with/…) mà có `${…}`
 //     hoặc đang nối `+` với biểu thức — dù chưa đưa thẳng vào sink.
+// Nội suy `${…}` (T-179): MỖI biểu thức nội suy trong sink/template SQL phải là hằng định danh được khai trong mục allowlist
+// (`idents`: liệt kê nguyên văn từng biểu thức) — không phải biến tham số/đầu vào; biểu thức là tên hằng trần (HOA_SNAKE) còn
+// phải được khai `const`/`import` trong chính tệp. Mọi giá trị đi qua binding (`?`/`:name`), không nội suy.
 // Mọi phát hiện phải có dòng trong scripts/sql-safety-allowlist.json: { file, match, reason } — `match` là chuỗi con của
 // đối số/literal đã gộp khoảng trắng, `reason` giải thích vì sao an toàn (định danh/hằng từ mã, KHÔNG từ input; giá trị đi
 // qua tham số `?`/`$n`); `kind` (tuỳ chọn) khoá loại phát hiện, bắt buộc nên dùng cho đối số trần như `sql`. Dòng allowlist không khớp phát hiện nào → lỗi (không để allowlist mục nát). Test không bị quét.
@@ -159,16 +162,103 @@ export function isStaticSql(expr) {
   });
 }
 
+/** Cắt biểu thức theo `+` ở mức ngoài cùng (ngoài chuỗi, ngoài ngoặc). */
+function splitConcat(t) {
+  const parts = [];
+  let cur = "";
+  let q = null;
+  let depth = 0;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) {
+      cur += c;
+      if (c === "\\") cur += t[++i] ?? "";
+      else if (c === q) q = null;
+    } else if (c === "'" || c === '"' || c === "`") {
+      q = c;
+      cur += c;
+    } else if (c === "+" && depth === 0 && t[i + 1] !== "+") {
+      parts.push(cur);
+      cur = "";
+    } else {
+      if ("([{".includes(c)) depth++;
+      else if (")]}".includes(c)) depth--;
+      cur += c;
+    }
+  }
+  parts.push(cur);
+  return parts;
+}
+
+/** Vị trí ngay sau template literal bắt đầu ở `i` (`s[i] === "`"`); gom biểu thức `${…}` mức ngoài cùng vào `out`. */
+function skipTemplate(s, i, out) {
+  i++;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "\\") i += 2;
+    else if (c === "`") return i + 1;
+    else if (c === "$" && s[i + 1] === "{") {
+      const start = i + 2;
+      let j = start;
+      let depth = 0;
+      while (j < s.length) {
+        const d = s[j];
+        if (d === "'" || d === '"') {
+          j++;
+          while (j < s.length && s[j] !== d) j += s[j] === "\\" ? 2 : 1;
+          j++;
+        } else if (d === "`") j = skipTemplate(s, j, null);
+        else if (d === "{") {
+          depth++;
+          j++;
+        } else if (d === "}") {
+          if (depth === 0) break;
+          depth--;
+          j++;
+        } else j++;
+      }
+      out?.push(squash(s.slice(start, j)));
+      i = j + 1;
+    } else i++;
+  }
+  return i;
+}
+
+/** Biểu thức `${…}` mức ngoài cùng của mọi template literal mức ngoài cùng trong `text`. */
+export function interpolationExprs(text) {
+  const out = [];
+  let q = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === "\\") i++;
+      else if (c === q) q = null;
+    } else if (c === "'" || c === '"') q = c;
+    else if (c === "`") i = skipTemplate(text, i, out) - 1;
+  }
+  return out;
+}
+
+const BARE_CONST = /^[A-Z][A-Z0-9_]*$/;
+
+/** Tên hằng trần có được khai `const`/`import` trong tệp không (không phải tham số/biến cục bộ cùng tên). */
+function isDeclaredConst(src, name) {
+  const decl = new RegExp(`^\\s*(?:export\\s+)?const\\s+${name}\\b`, "m");
+  const imp = new RegExp(`^\\s*import\\b[^;]*\\b${name}\\b[^;]*\\bfrom\\b`, "m");
+  return decl.test(src) || imp.test(src);
+}
+
 /** Phát hiện trong một tệp: [{ line, kind, sink?, text }]. */
 export function scanSource(src) {
   const { mask, literals } = tokenize(src);
   const out = [];
   const seen = new Set();
-  const add = (idx, kind, sink, text) => {
+  const add = (idx, kind, sink, text, exprs = []) => {
     const key = `${idx}:${kind}`;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ line: lineOf(src, idx), kind, sink, text: squash(text) });
+    const undeclared = exprs.filter((e) => BARE_CONST.test(e) && !isDeclaredConst(src, e));
+    out.push({ line: lineOf(src, idx), kind, sink, text: squash(text), exprs, undeclared });
   };
 
   const sinkRanges = [];
@@ -179,7 +269,13 @@ export function scanSource(src) {
     if (isStaticSql(arg)) continue;
     sinkRanges.push([open, open + 1 + arg.length]);
     const kind = arg.includes("${") ? "interpolation" : /[+]/.test(arg) ? "concat" : "dynamic";
-    add(open, kind, m[1], arg);
+    const exprs =
+      kind === "concat"
+        ? splitConcat(arg)
+            .filter((p) => !STATIC_STR.test(p.trim()) && !STATIC_TPL.test(p.trim()))
+            .map(squash)
+        : interpolationExprs(arg);
+    add(open, kind, m[1], arg, exprs);
   }
 
   for (const lit of literals) {
@@ -187,7 +283,7 @@ export function scanSource(src) {
     if (sinkRanges.some(([a, b]) => lit.start >= a && lit.end <= b)) continue;
     if (!SQL_START.test(lit.text.slice(1))) continue;
     if (lit.kind === "tpl" && lit.interp) {
-      add(lit.start, "sql-template", undefined, lit.text);
+      add(lit.start, "sql-template", undefined, lit.text, interpolationExprs(lit.text));
       continue;
     }
     // chuỗi thường nối `+` với biểu thức: nhìn token liền trước/sau ở mức mã
@@ -205,7 +301,14 @@ export function applyAllowlist(findingsByFile, allowlist) {
   const errors = [];
   const used = new Set();
   const unapproved = [];
+  const usedIdents = allowlist.map(() => new Set());
   allowlist.forEach((a, idx) => {
+    if (
+      a &&
+      a.idents !== undefined &&
+      !(Array.isArray(a.idents) && a.idents.every((x) => typeof x === "string" && x.trim()))
+    )
+      errors.push(`allowlist[${idx}] (${a.file}): idents phải là mảng chuỗi không rỗng`);
     if (!a || typeof a.file !== "string" || typeof a.match !== "string" || !a.match.trim())
       errors.push(`allowlist[${idx}]: thiếu file/match`);
     else if (typeof a.reason !== "string" || a.reason.trim().length < MIN_REASON)
@@ -222,11 +325,33 @@ export function applyAllowlist(findingsByFile, allowlist) {
           (a.kind === undefined || a.kind === f.kind) &&
           (a.kind === "dynamic" ? f.text === a.match : f.text.includes(a.match)),
       );
-      if (idx >= 0) used.add(idx);
-      else unapproved.push({ file, ...f });
+      if (idx < 0) {
+        unapproved.push({ file, ...f });
+        continue;
+      }
+      used.add(idx);
+      const idents = Array.isArray(allowlist[idx].idents) ? allowlist[idx].idents : [];
+      for (const e of f.exprs ?? []) if (idents.includes(e)) usedIdents[idx].add(e);
+      const missing = (f.exprs ?? []).filter((e) => !idents.includes(e));
+      if (missing.length)
+        unapproved.push({
+          file,
+          ...f,
+          text: `nội suy chưa khai trong idents của allowlist: ${missing.map((e) => "${" + e + "}").join(", ")} — ${f.text}`,
+        });
+      else if (f.undeclared?.length)
+        unapproved.push({
+          file,
+          ...f,
+          text: `hằng ${f.undeclared.join(", ")} không được khai const/import trong tệp — ${f.text}`,
+        });
     }
   }
   allowlist.forEach((a, idx) => {
+    if (a && used.has(idx) && Array.isArray(a.idents))
+      for (const e of a.idents)
+        if (!usedIdents[idx].has(e))
+          errors.push(`allowlist[${idx}] (${a.file}): ident "${e}" không dùng trong phát hiện nào — xoá`);
     if (a && !used.has(idx) && typeof a.match === "string" && a.match)
       errors.push(`allowlist[${idx}] (${a.file}): "${a.match}" không khớp phát hiện nào — xoá dòng mục nát`);
   });
