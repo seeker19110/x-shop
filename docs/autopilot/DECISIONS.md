@@ -882,3 +882,10 @@
 - Chọn: Không ghi đè mã (hoàn tay khi conflict); dùng lại payment_unknown reason attempt_txn_conflict; đối soát giữ late_after_cancel (không tự đóng); đóng late_payment khi ròng cả đơn ≤ 0
 - Lý do (tiêu chí chất lượng cuối): (1) an toàn tiền: không mất dấu mã, không tự đóng chênh lệch tiền khi chưa có người xác nhận; (3) không thêm migration nới CHECK (chạm n-minus-1); quy tắc ròng cả đơn chặt và đúng với hoàn tay không gắn capture
 - Đường lùi: Đổi linkAttemptToCapture / thêm kind / sửa settlement auto-resolve
+
+### D-126 · 2026-10-28T05:14:28+00:00 · T-169: refund khi cổng hoàn tắt/từ chối dứt khoát — nhả tiền, phạm vi xung đột, chọn provider khi cổng tắt, nơi lưu lý do
+
+- Phương án: (1) Từ chối dứt khoát → failed giữ tiền, kế toán hủy có lý do (audit) mới nhả, thử lại được; đơn có xung đột mã → auto chọn manual cho mọi refund của đơn; provider tường minh khi cổng tắt → 409 lúc tạo; lý do ghi vào note · (2) Tự hủy nhả ngay; xét xung đột theo từng khoản thu; cho tạo rồi thất bại lúc execute; cột method_reason mới
+- Chọn: Từ chối dứt khoát → failed giữ tiền, kế toán hủy có lý do (audit) mới nhả, thử lại được; đơn có xung đột mã → auto chọn manual cho mọi refund của đơn; provider tường minh khi cổng tắt → 409 lúc tạo; lý do ghi vào note
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn tiền: không tự nhả khi có thể thử lại/đối chiếu, mọi lần nhả có người + audit; chặn sớm thay vì tạo yêu cầu chắc chắn kẹt; (3) không thêm migration
+- Đường lùi: Đổi refund-route/refundMachine; thêm cột method_reason bằng migration mới
