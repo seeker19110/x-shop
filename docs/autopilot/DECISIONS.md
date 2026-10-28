@@ -846,3 +846,10 @@
 - Chọn: lock_timeout cục bộ 10 s quanh câu chờ khoá, hết hạn trả 409 IMPORT_IN_PROGRESS + Retry-After
 - Lý do (tiêu chí chất lượng cuối): (1) không treo Admin, không 500, chưa ghi gì; giữ giao ước 5 lần nhập song song (201+200×4) mà try-lock phá; nâng statement_timeout vẫn treo và vẫn 500
 - Đường lùi: Đổi importLockWaitMs hoặc bỏ lockImport
+
+### D-121 · 2026-10-28T00:10:38+00:00 · T-167: rebuild catalog ngoài khoá — cách không mất thay đổi song song; rebuild do dấu '*' chạy ở đâu
+
+- Phương án: (1) Bảng catalog_index_write_log (migration mới) ghi mốc từng sản phẩm; replaceAll(rows, since) giữ dòng đã đồng bộ từ since và bỏ ảnh chụp cũ hơn; rebuild '*' chạy ngay trong lượt xả · (2) Chỉ xả lại dấu từ mốc bắt đầu (D-076 nguyên văn) · (3) Như (1) nhưng tách rebuild '*' ra chạy nền
+- Chọn: Bảng catalog_index_write_log (migration mới) ghi mốc từng sản phẩm; replaceAll(rows, since) giữ dòng đã đồng bộ từ since và bỏ ảnh chụp cũ hơn; rebuild '*' chạy ngay trong lượt xả
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: xả lại dấu không đủ vì lượt xả song song đã xoá dấu → replaceAll ghi đè ảnh cũ/dòng ma (đã tái hiện); chốt ở DB không dựa lease Redis; khoá ghi 46,7 s → 2,4–2,9 s ở 50k SKU; (3) đơn giản: chạy nền thêm xử lý shutdown D-081 mà lợi ích chỉ cho chính tiến trình đang rebuild
+- Đường lùi: Bỏ dùng write log trong replaceAll; quay lại rebuild trong khoá (bảng giữ nguyên, migration có down)
