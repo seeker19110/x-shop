@@ -10,6 +10,7 @@ import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
 import { KEY_PREFIX } from "../../src/lib/admin-security/store";
 import { DENY_AUDIT_THROTTLE } from "../../src/lib/audit/deny-throttle";
 import { SECURITY_EVENTS } from "../../src/lib/audit/events";
+import { INPUT_ANON_GLOBAL_CAP } from "../../src/lib/audit/input";
 import { outcomeOfStatus } from "../../src/lib/audit/http";
 import { hashIdentifier } from "../../src/lib/audit/record";
 import { SecurityAuditRecord } from "../../src/lib/audit/schema";
@@ -879,9 +880,155 @@ medusaIntegrationTestRunner({
           });
           const cfg = rows.find((r) => r.action === SECURITY_EVENTS.CONFIG_CHANGED) as Row;
           expect(cfg).toMatchObject({ outcome: "failure", resource_id: sid, changes: { status: 400 } });
-          // Tên trường lạ được ghi (không giá trị); thông điệp lỗi Medusa (chép giá trị) không được ghi.
-          expect((cfg.changes as Row).fields).toEqual(["name", "password"]);
-          expectWellFormed(rows, [owner.email, secret, "Invalid request"]);
+          // Thân bị từ chối: KHÔNG chép tên trường (client tự đặt khoá được); thông điệp lỗi Medusa không được ghi.
+          expect((cfg.changes as Row).fields).toBeUndefined();
+          expectWellFormed(rows, [owner.email, secret, "Invalid request", "password"]);
+        });
+
+        it("🟠1 review: ghi native mang quyền settings.manage ngoài 4 nhóm (vùng, kênh bán, hồ sơ giao, kho, lý do trả, thuế, workflow) → config.changed suy từ bảng quyền", async () => {
+          const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+          const tag = randomUUID().slice(0, 6);
+          const reg = await call("POST", "/admin/regions", owner.headers, {
+            name: `Vùng ${tag}`,
+            currency_code: "vnd",
+            countries: [],
+          });
+          expect(reg.status).toBe(200);
+          const regionId = (reg.data.region as { id: string }).id;
+          expect(
+            (await call("POST", `/admin/regions/${regionId}`, owner.headers, { automatic_taxes: false }))
+              .status,
+          ).toBe(200);
+          const sc = await call("POST", "/admin/sales-channels", owner.headers, { name: `Kênh ${tag}` });
+          expect(sc.status).toBe(200);
+          const sp = await call("POST", "/admin/shipping-profiles", owner.headers, {
+            name: `Hồ sơ ${tag}`,
+            type: "default",
+          });
+          expect(sp.status).toBe(200);
+          const sl = await call("POST", "/admin/stock-locations", owner.headers, { name: `Kho ${tag}` });
+          expect(sl.status).toBe(200);
+          const rr = await call("POST", "/admin/return-reasons", owner.headers, {
+            value: `ly_do_${tag}`,
+            label: `Lý do ${tag}`,
+          });
+          expect(rr.status).toBe(200);
+          // Bị từ chối ở schema / không tồn tại → vẫn có dấu vết (failure), không tên trường.
+          const tax = await call("POST", "/admin/tax-regions", owner.headers, {
+            country_code: "la",
+            ten_la: "x",
+          });
+          expect(tax.status).toBeGreaterThanOrEqual(400);
+          const wf = await call("POST", "/admin/workflows-executions/khong-co/run", owner.headers, {
+            input: {},
+          });
+          expect(wf.status).toBeGreaterThanOrEqual(400);
+          expect((await call("DELETE", `/admin/regions/${regionId}`, owner.headers)).status).toBe(200);
+
+          const rows = await waitRows({ action: SECURITY_EVENTS.CONFIG_CHANGED, actor_id: owner.userId }, 9);
+          expect(rows).toHaveLength(9);
+          const got = rows.map((r) => [
+            r.resource_type,
+            (r.changes as Row).operation,
+            r.outcome,
+            (r.changes as Row).route,
+          ]);
+          const order = (x: unknown[], y: unknown[]) => JSON.stringify(x).localeCompare(JSON.stringify(y));
+          expect(got.filter((g) => g[2] === "success").sort(order)).toEqual(
+            [
+              ["region", "create", "success", "POST /admin/regions"],
+              ["region", "update", "success", "POST /admin/regions/:id"],
+              ["region", "delete", "success", "DELETE /admin/regions/:id"],
+              ["sales_channel", "create", "success", "POST /admin/sales-channels"],
+              ["shipping_profile", "create", "success", "POST /admin/shipping-profiles"],
+              ["stock_location", "create", "success", "POST /admin/stock-locations"],
+              ["return_reason", "create", "success", "POST /admin/return-reasons"],
+            ].sort(order),
+          );
+          const byRoute = Object.fromEntries(rows.map((r) => [String((r.changes as Row).route), r]));
+          expect(byRoute["POST /admin/regions"]).toMatchObject({
+            resource_id: regionId,
+            changes: { fields: ["countries", "currency_code", "name"], derived_from: "rbac_permission" },
+          });
+          expect(byRoute["POST /admin/regions/:id"]).toMatchObject({ resource_id: regionId });
+          expect(byRoute["POST /admin/sales-channels"]?.resource_id).toBe(
+            (sc.data.sales_channel as { id: string }).id,
+          );
+          const failed = rows.filter((r) => r.outcome === "failure");
+          expect(failed.map((r) => r.resource_type).sort()).toEqual(["tax_region", "workflows_execution"]);
+          for (const f of failed) expect((f.changes as Row).fields).toBeUndefined();
+
+          // Vai trò không có settings.manage → 403 (rbac.denied), không có config.changed.
+          const catalog = await createAdmin(rawApi, container, { roles: ["catalog_manager"] });
+          expect(
+            (await call("POST", "/admin/regions", catalog.headers, { name: "x", currency_code: "vnd" }))
+              .status,
+          ).toBe(403);
+          await sleep(500);
+          expect(
+            await list({ action: SECURITY_EVENTS.CONFIG_CHANGED, actor_id: catalog.userId }),
+          ).toHaveLength(0);
+          expectWellFormed(rows, [owner.email, `Vùng ${tag}`, `Kênh ${tag}`, `Lý do ${tag}`]);
+        });
+
+        it("🟠3 review: chấp nhận lời mời — không token (401) → 1 dòng vô danh không tên trường; thành công → invite_accepted, id user từ phản hồi", async () => {
+          await resetAuditThrottle();
+          const rid = `req-t175-acc-${randomUUID().slice(0, 8)}`;
+          const anon = await call(
+            "POST",
+            "/admin/invites/accept",
+            { "x-request-id": rid },
+            { first_name: "a", last_name: "b", ten_khach_nguyen_van_a: 1 },
+          );
+          expect(anon.status).toBe(401);
+          const denied = await waitRows({ request_id: rid }, 1);
+          expect(denied).toHaveLength(1);
+          expect(denied[0]).toMatchObject({
+            action: SECURITY_EVENTS.CONFIG_CHANGED,
+            actor_type: "anonymous",
+            actor_id: null,
+            outcome: "failure",
+            resource_type: "user",
+            resource_id: null,
+            changes: { operation: "invite_accepted", status: 401 },
+          });
+          expect((denied[0]?.changes as Row).fields).toBeUndefined();
+
+          const email = `moi-nhan-${randomUUID()}@x-shop.test`;
+          const password = `pw-${randomUUID()}`;
+          const [invite] = await container.resolve(Modules.USER).createInvites([{ email }]);
+          const reg = await call(
+            "POST",
+            "/auth/user/emailpass/register",
+            {},
+            {
+              email,
+              password,
+              invite_token: invite!.token,
+            },
+          );
+          expect(reg.status).toBe(200);
+          const authIdentityId = jwtPayload(String(reg.data.token)).auth_identity_id as string;
+          const rid2 = `req-t175-acc-ok-${randomUUID().slice(0, 8)}`;
+          const acc = await call(
+            "POST",
+            `/admin/invites/accept?token=${encodeURIComponent(invite!.token)}`,
+            { authorization: `Bearer ${String(reg.data.token)}`, "x-request-id": rid2 },
+            { first_name: "Nhân", last_name: "Viên" },
+          );
+          expect(acc.status).toBe(200);
+          const userId = (acc.data.user as { id: string }).id;
+          const ok = await waitRows({ request_id: rid2, action: SECURITY_EVENTS.CONFIG_CHANGED }, 1);
+          expect(ok).toHaveLength(1);
+          expect(ok[0]).toMatchObject({
+            actor_type: "auth_identity",
+            actor_id: authIdentityId,
+            outcome: "success",
+            resource_type: "user",
+            resource_id: userId,
+            changes: { operation: "invite_accepted", status: 200, fields: ["first_name", "last_name"] },
+          });
+          expectWellFormed([...denied, ...ok], [email, password, invite!.token, "Nhân", "nguyen_van_a"]);
         });
       });
 
@@ -1054,6 +1201,131 @@ medusaIntegrationTestRunner({
           ).flat();
           expect(rows.every((r) => r.action === SECURITY_EVENTS.INPUT_DESERIALIZE_FAILED)).toBe(true);
           expect(byOccurrence(rows)).toEqual([1, 10]);
+        });
+
+        /** Request thô với method tuỳ ý (axios/fetch không gửi được mọi method). */
+        function rawMethod(method: string, path: string, headers: Record<string, string>, body: string) {
+          const u = new URL(baseUrl());
+          return new Promise<number>((resolve, reject) => {
+            const r = http.request(
+              {
+                host: u.hostname,
+                port: u.port,
+                method,
+                path,
+                headers: {
+                  "user-agent": UA,
+                  "content-type": "application/json",
+                  "content-length": String(Buffer.byteLength(body)),
+                  ...headers,
+                },
+              },
+              (res) => {
+                res.resume();
+                res.on("end", () => resolve(res.statusCode ?? 0));
+              },
+            );
+            r.on("error", reject);
+            r.end(body);
+          });
+        }
+
+        it("🟠2/M9 review: cùng IP, 32 method × 32 đường dẫn khác nhau, JSON hỏng → khoá gộp không có method/đường dẫn: 2 dòng (lần 1, 10)", async () => {
+          await resetAuditThrottle();
+          const methods = [
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "GET",
+            "OPTIONS",
+            "PROPFIND",
+            "MKCOL",
+            "LOCK",
+            "UNLOCK",
+          ];
+          methods.push(
+            "COPY",
+            "MOVE",
+            "REPORT",
+            "SEARCH",
+            "PURGE",
+            "MERGE",
+            "NOTIFY",
+            "SUBSCRIBE",
+            "UNSUBSCRIBE",
+          );
+          methods.push(
+            "ACL",
+            "BIND",
+            "REBIND",
+            "UNBIND",
+            "LINK",
+            "UNLINK",
+            "CHECKOUT",
+            "MKACTIVITY",
+            "MKCALENDAR",
+          );
+          methods.push("PROPPATCH", "SOURCE", "M-SEARCH", "QUERY");
+          expect(methods).toHaveLength(32);
+          const rid = `req-t175-m-${randomUUID().slice(0, 8)}`;
+          const statuses: number[] = [];
+          for (const [i, m] of methods.entries())
+            statuses.push(
+              await rawMethod(
+                m,
+                `/store/khong-co-${i}-${randomUUID().slice(0, 4)}`,
+                { "x-request-id": `${rid}-${i}` },
+                "{hong",
+              ),
+            );
+          expect(statuses).toEqual(Array(32).fill(400));
+          await sleep(800);
+          const rows = (
+            await Promise.all(methods.map((_m, i) => list({ request_id: `${rid}-${i}` })))
+          ).flat();
+          expect(rows.every((r) => r.action === SECURITY_EVENTS.INPUT_DESERIALIZE_FAILED)).toBe(true);
+          expect(byOccurrence(rows)).toEqual([1, 10]);
+          // Đích vẫn ghi method + đường dẫn của lần được ghi.
+          expect(
+            String(rows.find((r) => ((r.changes as Row).throttle as Row).occurrence === 1)?.resource_id),
+          ).toMatch(/^POST \/store\/khong-co-0-/);
+        });
+
+        it(`🟠2 review: nhiều IP vô danh (X-Forwarded-For, proxy tin cậy loopback) → không quá trần chung ${INPUT_ANON_GLOBAL_CAP} dòng/cửa sổ`, async () => {
+          await resetAuditThrottle();
+          const n = INPUT_ANON_GLOBAL_CAP + 15;
+          const rid = `req-t175-cap-${randomUUID().slice(0, 8)}`;
+          for (let i = 0; i < n; i++) {
+            const res = await rawBody(
+              "POST",
+              "/auth/user/emailpass",
+              {
+                "x-request-id": `${rid}-${i}`,
+                "x-forwarded-for": `198.51.${100 + Math.floor(i / 200)}.${(i % 200) + 1}`,
+              },
+              "{hong",
+            );
+            expect(res.status).toBe(400);
+          }
+          await sleep(1200);
+          const rows = (
+            await Promise.all(Array.from({ length: n }, (_v, i) => list({ request_id: `${rid}-${i}` })))
+          ).flat();
+          expect(rows).toHaveLength(INPUT_ANON_GLOBAL_CAP);
+          // Mỗi IP là lần 1 của nhóm nguồn của nó — chỉ trần chung chặn phần vượt.
+          expect(new Set(rows.map((r) => ((r.changes as Row).throttle as Row).occurrence))).toEqual(
+            new Set([1]),
+          );
+          expect(new Set(rows.map((r) => r.ip_hash)).size).toBe(INPUT_ANON_GLOBAL_CAP);
+          // Actor đã xác thực không bị trần vô danh chặn.
+          const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+          const rid2 = `req-t175-cap-owner-${randomUUID().slice(0, 8)}`;
+          expect(
+            (await call("GET", "/admin/x/audit?outcome=sai", { ...owner.headers, "x-request-id": rid2 }))
+              .status,
+          ).toBe(422);
+          expect(await waitRows({ request_id: rid2 }, 1)).toHaveLength(1);
         });
       });
     });
