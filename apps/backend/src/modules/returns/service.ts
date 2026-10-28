@@ -457,18 +457,24 @@ export default class ReturnsModuleService {
     return toRefund(row as Record<string, unknown>);
   }
 
-  /** Chuyển trạng thái hoàn tiền nếu còn ở một trong `from`. null = nhánh khác đã chuyển trước. */
+  /**
+   * Chuyển trạng thái hoàn tiền nếu còn ở một trong `from` (và, khi có `expect_attempts`, số lần đã gửi cổng vẫn đúng
+   * bằng giá trị đó — CAS cho quyết định dựa trên "chưa từng gửi", T-169). null = nhánh khác đã chuyển trước.
+   */
   async updateRefund(
     db: Db | null,
     id: string,
     from: readonly RefundState[],
-    patch: Partial<RefundRow> & { attempts_increment?: boolean },
+    patch: Partial<RefundRow> & { attempts_increment?: boolean; expect_attempts?: number },
   ): Promise<RefundRow | null> {
     const d = db ?? this.db;
-    const { attempts_increment, ...rest } = patch;
+    const { attempts_increment, expect_attempts, ...rest } = patch;
     const [row] = (await d(REFUND_TABLE)
       .where({ id })
       .whereIn("state", [...from])
+      .modify((q) => {
+        if (expect_attempts !== undefined) q.where("attempts", expect_attempts);
+      })
       .update({
         ...rest,
         ...(attempts_increment === true && { attempts: d.raw('"attempts" + 1') }),

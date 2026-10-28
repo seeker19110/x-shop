@@ -63,15 +63,18 @@ const AUTO_MANUAL_TEXT: Record<AutoManualReason, string> = {
   exceeds_single_capture: "số tiền vượt phần còn lại của một giao dịch gốc",
 };
 
-/** Ghi chú của refund `auto` → `manual`: giữ ghi chú người tạo, nối lý do (mã máy đọc được trong ngoặc). */
-export function autoManualNote(note: string | null, reason: AutoManualReason): string {
-  const tag = `[Hoàn tay do hệ thống chọn: ${AUTO_MANUAL_TEXT[reason]} (${reason})]`;
+/**
+ * Ghi chú của refund `auto` → `manual`: giữ ghi chú người tạo, nối MỌI lý do (mã máy đọc được trong ngoặc) — vd. ở
+ * sandbox/live đơn có xung đột mã ghi cả `attempt_txn_conflict` lẫn `provider_disabled` (RUNBOOK §7).
+ */
+export function autoManualNote(note: string | null, reasons: readonly AutoManualReason[]): string {
+  const tag = `[Hoàn tay do hệ thống chọn: ${reasons.map((r) => AUTO_MANUAL_TEXT[r]).join("; ")} (${reasons.join(", ")})]`;
   const own = note?.trim() ?? "";
   return isNonEmpty(own) ? `${own} ${tag}` : tag;
 }
 
 export type RefundRoute =
-  { method: "provider"; capture: CaptureInfo } | { method: "manual"; reason: AutoManualReason | null };
+  { method: "provider"; capture: CaptureInfo } | { method: "manual"; reasons: AutoManualReason[] };
 
 /**
  * Định tuyến phương thức hoàn (T-169). `provider` chỉ khi cổng hoàn BẬT và có khoản thu VNPAY gắn attempt đủ chỗ; chọn
@@ -85,7 +88,7 @@ export function routeRefund(
   amount: number,
   requested: RefundMethod | "auto",
 ): RefundRoute {
-  if (requested === "manual") return { method: "manual", reason: null };
+  if (requested === "manual") return { method: "manual", reasons: [] };
   const { gatewayEnabled } = sources;
   const vnpay = sources.captures.filter((c) => c.provider === "vnpay");
   const pick = pickProviderCapture(sources.captures, refunds, amount);
@@ -116,12 +119,15 @@ export function routeRefund(
       { provider_refundable: linkedRoom },
     );
   }
-  if (vnpay.length === 0) return { method: "manual", reason: null };
-  if (!gatewayEnabled) return { method: "manual", reason: "provider_disabled" };
-  if (sources.txnConflict) return { method: "manual", reason: "attempt_txn_conflict" };
+  if (vnpay.length === 0) return { method: "manual", reasons: [] };
+  // Xung đột mã ghi TRƯỚC (cần đối chiếu dù cổng có bật); cổng tắt ghi kèm — không lý do nào che lý do kia.
+  const blocked: AutoManualReason[] = [];
+  if (sources.txnConflict) blocked.push("attempt_txn_conflict");
+  if (!gatewayEnabled) blocked.push("provider_disabled");
+  if (blocked.length > 0) return { method: "manual", reasons: blocked };
   if (pick) return { method: "provider", capture: pick };
   return {
     method: "manual",
-    reason: vnpay.some((c) => !c.linked) ? "capture_unlinked" : "exceeds_single_capture",
+    reasons: [vnpay.some((c) => !c.linked) ? "capture_unlinked" : "exceeds_single_capture"],
   };
 }

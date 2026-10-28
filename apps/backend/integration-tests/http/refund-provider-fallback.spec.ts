@@ -15,6 +15,7 @@ import {
   type ProviderRefundResult,
   type RefundGateway,
 } from "../../src/workflows/returns/refund-gateway";
+import { cancelRefund, SYSTEM_AUDIT } from "../../src/workflows/returns/refunds";
 import { createMfaAdmin, type HttpClient, type MfaAdmin } from "../helpers/auth";
 import { DEV_VNPAY, ipn, type Api } from "../helpers/checkout-api";
 import { seedCatalog, type CatalogFixture } from "../helpers/checkout-fixtures";
@@ -32,6 +33,14 @@ class ThrowingRefundGateway implements RefundGateway {
   }
   async query(_req: ProviderRefundRequest): Promise<ProviderRefundResult> {
     throw new Error("HTTP 503 Service Unavailable");
+  }
+}
+
+/** Cổng ĐÃ hoàn (ghi nhận ở "cổng") nhưng trả `failed` — đường "cổng có thể đã hoàn nhưng trả lỗi". */
+class LyingRefundGateway extends MockVnpayRefundGateway {
+  override async refund(req: ProviderRefundRequest): Promise<ProviderRefundResult> {
+    await super.refund(req);
+    return { outcome: "failed", providerRef: null, reason: "response_99" };
   }
 }
 
@@ -374,6 +383,47 @@ medusaIntegrationTestRunner({
         expect(
           (await checkout().listOpsExceptions({ order_id: o.orderId, kind: "refund_unknown" })).length,
         ).toBe(1);
+      });
+
+      it("cổng ĐÃ hoàn nhưng trả `failed` (attempts > 0) → hủy phải hỏi cổng: chốt succeeded, không nhả tiền, không cho hoàn tay thêm", async () => {
+        const { o, id } = await approvedProviderRefund();
+        const lying = new LyingRefundGateway(DEV_VNPAY);
+        setRefundGatewayForTest(lying);
+        expect((await execute(id)).status).toBe(502);
+        expect(await row(id)).toMatchObject({ state: "failed", attempts: 1 });
+        expect(lying.totalRefunded()).toBe(o.total);
+        const cancelled = await cancel(id);
+        expect({ status: cancelled.status, code: cancelled.data.code }).toEqual({
+          status: 409,
+          code: "INVALID_STATE",
+        });
+        expect((await row(id)).state).toBe("succeeded");
+        expect((await createRefund(other(o, o.total, "manual"))).data.code).toBe("REFUND_EXCEEDS_CAPTURED");
+        expect(await moneyOf(o.orderId)).toMatchObject({ succeeded: o.total, held: 0 });
+        expect(lying.totalRefunded()).toBe(o.total);
+      });
+
+      it("CAS hủy khoá `attempts = 0`: khoá đơn hết hạn, lệnh hủy đọc bản cũ (chưa gửi) trong khi yêu cầu ĐÃ gửi cổng → không đổi trạng thái", async () => {
+        const { o, id } = await approvedProviderRefund();
+        mock.faults.push("fail");
+        expect((await execute(id)).status).toBe(502);
+        const sent = await row(id);
+        expect(sent).toMatchObject({ state: "failed", attempts: 1 });
+        // Mô phỏng đọc cũ: hai lần đọc đầu của cancelRefund thấy bản `failed` chưa gửi (attempts 0).
+        const svc = returns();
+        const spy = jest
+          .spyOn(svc, "getRefund")
+          .mockResolvedValueOnce({ ...sent, attempts: 0 })
+          .mockResolvedValueOnce({ ...sent, attempts: 0 });
+        try {
+          await expect(
+            cancelRefund(container, id, { id: "kiem-thu", roles: ["accountant"] }, "đua", SYSTEM_AUDIT),
+          ).rejects.toMatchObject({ code: "INVALID_STATE", detail: { state: "failed", attempts: 1 } });
+        } finally {
+          spy.mockRestore();
+        }
+        expect(await row(id)).toMatchObject({ state: "failed", attempts: 1 });
+        expect(await moneyOf(o.orderId)).toMatchObject({ held: o.total });
       });
 
       it("`failed` ĐÃ gửi cổng (attempts > 0) rồi cổng tắt → không hủy mù (409), giữ `failed`, không tăng lượt", async () => {

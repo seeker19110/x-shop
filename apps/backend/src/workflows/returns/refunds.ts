@@ -179,7 +179,8 @@ export async function insertRefundLocked(
   }
   const route = routeRefund(sources, refunds, d.amount, d.method);
   const capture = route.method === "provider" ? route.capture : null;
-  const note = route.method === "manual" && route.reason ? autoManualNote(d.note, route.reason) : d.note;
+  const note =
+    route.method === "manual" && route.reasons.length > 0 ? autoManualNote(d.note, route.reasons) : d.note;
   const approvalRequired = d.amount > RETURNS_CONFIG.refundApprovalThresholdVnd;
   const autoApprove = d.requester_can_approve && !approvalRequired;
   return svc.insertRefund(trx, {
@@ -625,7 +626,11 @@ async function refuseBeforeSend(
   let after = r;
   if (neverSentToProvider(r) && !(r.state === "failed" && r.last_error === reason)) {
     const svc = returnsOf(container);
-    const moved = await svc.updateRefund(null, r.id, [r.state], { state: "failed", last_error: reason });
+    const moved = await svc.updateRefund(null, r.id, [r.state], {
+      state: "failed",
+      last_error: reason,
+      ...(r.state === "failed" && { expect_attempts: 0 }),
+    });
     after = moved ?? ((await svc.getRefund(r.id)) as RefundRow);
     if (moved && r.state === "approved") {
       await audit(container, auditCtx, {
@@ -828,7 +833,10 @@ export async function cancelRefund(
         state: r.state,
       });
     }
-    if (r.method === "provider" && !neverSentToProvider(r)) {
+    // Hoàn qua cổng chưa từng gửi (attempts = 0) → hủy không hỏi cổng; CAS phía dưới khoá thêm `attempts = 0` để dù khoá
+    // Redis hết hạn và một lần thực hiện chen vào gửi cổng, lệnh hủy cũng không nhả tiền của yêu cầu đã gửi (T-169).
+    const skipProviderCheck = r.method === "provider" && neverSentToProvider(r);
+    if (r.method === "provider" && !skipProviderCheck) {
       const gateway = getRefundGateway();
       if (!gateway.enabled) {
         throw new ReturnsError(
@@ -878,10 +886,18 @@ export async function cancelRefund(
       cancelled_by: actor.id,
       cancelled_at: new Date(),
       cancel_reason: reason,
+      ...(skipProviderCheck && { expect_attempts: 0 }),
     });
     if (!moved) {
       const now = (await svc.getRefund(id)) as RefundRow;
       if (now.state === "cancelled") return { refund: now, changed: false };
+      if (now.state === "failed") {
+        // CAS `attempts = 0` hụt: yêu cầu vừa được gửi cổng — phải đối chiếu trước khi hủy, gọi lại sau.
+        throw new ReturnsError("INVALID_STATE", "Yêu cầu vừa được gửi tới cổng — gọi hủy lại để đối chiếu", {
+          state: now.state,
+          attempts: now.attempts,
+        });
+      }
       throw new ReturnsError("INVALID_STATE", "Chỉ hủy được yêu cầu hoàn tiền đã thất bại", {
         state: now.state,
       });

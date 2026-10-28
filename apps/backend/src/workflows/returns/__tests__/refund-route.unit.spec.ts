@@ -53,17 +53,26 @@ describe("routeRefund — auto", () => {
   it("cổng tắt → manual (provider_disabled)", () => {
     expect(route(src([cap("T1", 500_000)]), [], 1, "auto", false)).toEqual({
       method: "manual",
-      reason: "provider_disabled",
+      reasons: ["provider_disabled"],
     });
   });
   it("đơn đang có attempt_txn_conflict → manual dù khoản thu đầu còn chỗ (cách hiểu chặt)", () => {
     const r = route(src([cap("T1", 500_000), cap("T2", 500_000, false)], true), [], 1, "auto", true);
-    expect(r).toEqual({ method: "manual", reason: "attempt_txn_conflict" });
+    expect(r).toEqual({ method: "manual", reasons: ["attempt_txn_conflict"] });
+  });
+  it("sandbox/live (cổng tắt) + xung đột mã → ghi CẢ HAI lý do, xung đột trước (RUNBOOK §7)", () => {
+    const sources = src([cap("T1", 500_000), cap("T2", 500_000, false)], true);
+    const r = route(sources, [], 1, "auto", false);
+    expect(r).toEqual({ method: "manual", reasons: ["attempt_txn_conflict", "provider_disabled"] });
+    if (r.method !== "manual") throw new Error("phải là manual");
+    expect(autoManualNote("Tiền về sau", r.reasons)).toMatch(
+      /^Tiền về sau \[Hoàn tay do hệ thống chọn: đơn có khoản thu xung đột .*; cổng hoàn tiền đang tắt .* \(attempt_txn_conflict, provider_disabled\)\]$/,
+    );
   });
   it("khoản thu gắn attempt đã bị refund cổng chiếm hết, còn khoản không gắn → manual (capture_unlinked)", () => {
     const sources = src([cap("T1", 500_000), cap("T2", 500_000, false)]);
     const r = route(sources, [providerRefund("T1", 500_000)], 500_000, "auto", true);
-    expect(r).toEqual({ method: "manual", reason: "capture_unlinked" });
+    expect(r).toEqual({ method: "manual", reasons: ["capture_unlinked"] });
   });
   it("refund cổng đã hủy/từ chối không chiếm chỗ (biên: trạng thái nhả)", () => {
     const refunds = [providerRefund("T1", 500_000, "cancelled"), providerRefund("T1", 500_000, "rejected")];
@@ -71,12 +80,12 @@ describe("routeRefund — auto", () => {
   });
   it("vượt phần còn lại của mọi khoản thu gắn attempt → manual (exceeds_single_capture)", () => {
     const r = route(src([cap("T1", 300_000), cap("T2", 300_000)]), [], 500_000, "auto", true);
-    expect(r).toEqual({ method: "manual", reason: "exceeds_single_capture" });
+    expect(r).toEqual({ method: "manual", reasons: ["exceeds_single_capture"] });
   });
   it("COD / không có khoản thu VNPAY → manual không ghi lý do (kể cả cổng tắt)", () => {
     const cod = src([cap("cod:X", 500_000, false, "cod")]);
-    expect(route(cod, [], 1, "auto", false)).toEqual({ method: "manual", reason: null });
-    expect(route(src([]), [], 1, "auto", true)).toEqual({ method: "manual", reason: null });
+    expect(route(cod, [], 1, "auto", false)).toEqual({ method: "manual", reasons: [] });
+    expect(route(src([]), [], 1, "auto", true)).toEqual({ method: "manual", reasons: [] });
   });
 });
 
@@ -84,7 +93,7 @@ describe("routeRefund — manual / provider", () => {
   it("manual luôn là manual, không lý do", () => {
     expect(route(src([cap("T1", 1)]), [], 1, "manual", false)).toEqual({
       method: "manual",
-      reason: null,
+      reasons: [],
     });
   });
   it("provider khi cổng tắt → 409 REFUND_PROVIDER_DISABLED", () => {
@@ -115,13 +124,18 @@ describe("routeRefund — manual / provider", () => {
 
 describe("autoManualNote", () => {
   it("giữ ghi chú người tạo, nối lý do có mã máy đọc", () => {
-    expect(autoManualNote("Hoàn bù", "provider_disabled")).toBe(
+    expect(autoManualNote("Hoàn bù", ["provider_disabled"])).toBe(
       "Hoàn bù [Hoàn tay do hệ thống chọn: cổng hoàn tiền đang tắt ở môi trường này (provider_disabled)]",
+    );
+  });
+  it("nhiều lý do → nối văn bản bằng `; ` và mã bằng `, ` theo thứ tự", () => {
+    expect(autoManualNote(null, ["attempt_txn_conflict", "provider_disabled"])).toContain(
+      "(attempt_txn_conflict, provider_disabled)]",
     );
   });
   it("ghi chú rỗng/null/khoảng trắng → chỉ lý do", () => {
     for (const note of [null, "", "   "]) {
-      expect(autoManualNote(note, "capture_unlinked")).toMatch(
+      expect(autoManualNote(note, ["capture_unlinked"])).toMatch(
         /^\[Hoàn tay do hệ thống chọn: .*\(capture_unlinked\)\]$/,
       );
     }
