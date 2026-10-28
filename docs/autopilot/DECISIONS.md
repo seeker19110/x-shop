@@ -910,3 +910,17 @@
 - Chọn: A: thêm mục L vào PLAN-2 (49 task T-175…T-223 cho 91 mục tự làm được; 85 mục C cần người/hạ tầng, 35 mục D chặn bởi task chờ người giữ ở Chờ người)
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 1–3: còn 91 mục agent đóng được bằng Gate máy kiểm; giữ chung PLAN của vòng nên loop status/record không đổi cấu hình; ưu tiên bảo mật > tiền/tồn > độ tin cậy > tuân thủ > tài liệu
 - Đường lùi: Xoá mục L khỏi PLAN-2 (task chưa làm không có tác dụng phụ)
+
+### D-130 · 2026-10-28T11:24:33+00:00 · Allowlist host VNPAY cho safePaymentUrl ở storefront (T-178): đặt ở đâu?
+
+- Phương án: (1) Hằng VNPAY_HOST_SUFFIXES = vnpayment.vn, vnpay.vn trong safe-url.ts · (2) Biến môi trường NEXT_PUBLIC_VNPAY_HOSTS validate bằng zod · (3) Không kiểm host, chỉ kiểm scheme
+- Chọn: Hằng VNPAY_HOST_SUFFIXES = vnpayment.vn, vnpay.vn trong safe-url.ts
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: chặt hơn phương án 3; tiêu chí 3: hằng test được, không thêm cấu hình sai được ở runtime; host sandbox sandbox.vnpayment.vn và production vnpayment.vn đều là subdomain hợp lệ (theo URL mặc định trong apps/backend env); host production thật chưa xác minh với hợp đồng merchant (RK-006) — đổi khi có khoá thật
+- Đường lùi: Sửa VNPAY_HOST_SUFFIXES hoặc chuyển sang env ở safe-url.ts (một file)
+
+### D-131 · 2026-10-28T11:34:26+00:00 · safePaymentUrl chặn http://localhost của E2E (review T-178 🔴): sửa thế nào? (thay D-130)
+
+- Phương án: (1) Mặc định hằng vnpayment.vn/vnpay.vn chỉ https; thêm NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS tuỳ chọn (zod) cho dev/E2E, production từ chối origin http/localhost lúc khởi động · (2) Bỏ kiểm host khi NODE_ENV khác production · (3) Đổi E2E mock dùng https host giả
+- Chọn: Mặc định hằng vnpayment.vn/vnpay.vn chỉ https; thêm NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS tuỳ chọn (zod) cho dev/E2E, production từ chối origin http/localhost lúc khởi động
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: production vẫn chặt (https + host VNPAY), không nới theo NODE_ENV ngầm; tiêu chí 3: cấu hình tường minh, validate lúc khởi động, test được; E2E chỉ cần đặt biến trong e2e/env.mjs
+- Đường lùi: Bỏ biến, quay về hằng D-130 (một file safe-url.ts + env schema)
