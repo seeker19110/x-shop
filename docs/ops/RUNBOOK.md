@@ -363,23 +363,32 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 - Gồm cả đơn đã hủy chưa xác minh (§1.1) và đơn hết hạn mà tiền về sau. Khoản thu đến sau được gắn vào attempt (attempt
   vẫn `failed`, mang `provider_txn_no` của khoản thu — T-168) nên đối soát VNPAY tìm được giao dịch gốc, và ở `mock`
   (dev/CI) hoàn qua cổng (`method` `provider`/`auto`) chạy được.
-- **sandbox/live: chọn `method: "manual"` NGAY TỪ ĐẦU** — cổng hoàn luôn tắt khi chưa có ủy quyền hoàn thật. KHÔNG tạo
-  refund `provider`/`auto`: `execute` trả 409 `REFUND_PROVIDER_DISABLED`, yêu cầu kẹt ở `approved` và giữ số tiền (tạo
-  `manual` sau đó bị 422 `REFUND_EXCEEDS_CAPTURED`, hủy yêu cầu bị 409 `INVALID_STATE` — lỗi có từ trước, sửa ở T-169).
-  Hoàn ngoài hệ thống rồi `execute` kèm `evidence_ref` (mã chứng từ chuyển khoản).
+- **sandbox/live (cổng hoàn tắt khi chưa có ủy quyền hoàn thật — T-169):** `method: "auto"` (mặc định; cũng là cách hệ
+  thống tạo hoàn khi hủy đơn và khi kiểm định trả hàng) tự chọn `manual`; `note` của refund có thêm
+  `[Hoàn tay do hệ thống chọn: … (provider_disabled)]`. Hoàn ngoài hệ thống rồi `execute` kèm `evidence_ref` (mã chứng từ
+  chuyển khoản). Chọn `provider` tường minh khi cổng tắt → 409 `REFUND_PROVIDER_DISABLED` ngay lúc tạo (không giữ tiền).
+- Yêu cầu `provider` tạo TRƯỚC khi cổng tắt (hoặc trước T-169), hay trỏ khoản thu không còn giao dịch gốc: `execute` →
+  409 `REFUND_PROVIDER_DISABLED` / 422 `REFUND_METHOD_UNAVAILABLE` và yêu cầu chuyển `failed` (`last_error` =
+  `provider_disabled` / `method_unavailable`, `attempts = 0` = chưa từng gửi cổng). Vẫn giữ số tiền cho tới khi **hủy**
+  (`POST /admin/x/refunds/:id/cancel`, lý do bắt buộc — hủy ngay, không cần hỏi cổng vì chưa gửi) → tạo `manual` cùng số
+  tiền. Bản ghi cũ còn kẹt ở `approved`: gọi `execute` một lần để chuyển `failed`, rồi hủy.
+- **Không nhả tiền khi cổng CÓ THỂ đã hoàn:** yêu cầu `unknown`/`processing` (timeout, 5xx, đứt mạng — có ngoại lệ
+  `refund_unknown`) hoặc `failed` đã gửi cổng (`attempts > 0`) giữ nguyên; khi cổng tắt, `execute`/`cancel` trả 409 và
+  không đổi trạng thái. Thoát cần cổng trả lời (cổng bật → `execute` hỏi cùng mã rồi mới gửi lại) — chưa có đường chốt
+  tay. ĐỪNG chuyển khoản ngoài hệ thống cho khách trong lúc chờ: nếu cổng đã hoàn là hoàn hai lần; đối chiếu trên cổng
+  merchant theo `txn_ref` của đơn trước.
 - `late_payment` tự đóng (`detail.resolution = refunded`, `refund_id`) khi tiền của đơn đã hủy được trả lại hết (ledger ròng
   = 0, cổng hoặc tay); hoàn một phần → còn mở. Trên sao kê VNPAY dòng khoản thu này là chênh lệch `late_after_cancel` (gắn
   đúng khoản thu/đơn), dòng hoàn khớp `matched`.
-- Attempt `failed` nhận khoản thu với mã giao dịch KHÁC mã nó đang mang (thông báo thất bại có mã rồi tiền về với mã
-  khác, hoặc hai giao dịch thành công sau khi đơn đã hủy; với mọi kết cục của đơn — kể cả đơn chưa hủy được xác nhận):
-  hệ thống KHÔNG ghi đè mã cũ, mở `payment_unknown` (`detail.reason = attempt_txn_conflict`, `provider_txn_id` = khoản thu
-  mới, `attempt_provider_txn_no` = mã đang gắn). Khoản thu mới không hoàn qua cổng được (422 `REFUND_METHOD_UNAVAILABLE`
-  lúc `execute`) → đối chiếu trên cổng merchant theo `txn_ref` + `provider_txn_id` rồi hoàn `manual` có chứng từ; đừng
-  chọn `provider`/`auto` cho khoản này (yêu cầu kẹt `approved` như trên).
-- Attempt đã `captured` (đơn đã thu tiền) nhận giao dịch thành công thứ hai khác mã: KHÔNG có `attempt_txn_conflict`;
-  chỉ có ngoại lệ theo trạng thái đơn — `overpayment` nếu đơn đã xác nhận (AT36), `late_payment` nếu đơn đã hủy. Khoản
-  thu thứ hai không gắn attempt (hoàn qua cổng 422; đối soát không gắn được dòng sao kê vào chính khoản thu đó — dòng cùng
-  `txn_ref` dồn vào khoản thu đầu) → hoàn `manual` có chứng từ, đối chiếu tay; xử lý ở T-169.
+- Attempt (`failed` hoặc `captured`) nhận khoản thu với mã giao dịch KHÁC mã nó đang mang (thông báo thất bại có mã rồi
+  tiền về với mã khác; hai giao dịch thành công sau khi đơn đã hủy; hay AT36 — giao dịch thành công thứ hai khi đơn đã
+  thu/đã xác nhận; với mọi kết cục của đơn): hệ thống KHÔNG ghi đè mã cũ, mở `payment_unknown` (`detail.reason =
+  attempt_txn_conflict`, `provider_txn_id` = khoản thu mới, `attempt_provider_txn_no` = mã đang gắn, `attempt_state`,
+  `order_state`), bên cạnh ngoại lệ theo trạng thái đơn (`overpayment` nếu đã xác nhận, `late_payment` nếu đã hủy).
+  Khoản thu mới không gắn attempt: không hoàn qua cổng được và đối soát không gắn được dòng sao kê vào chính nó (dòng
+  cùng `txn_ref` dồn vào khoản thu đầu) → đối chiếu trên cổng merchant theo `txn_ref` + `provider_txn_id` rồi hoàn
+  `manual` có chứng từ. Khi `payment_unknown` này còn mở, `auto` tự chọn `manual` (`note` … `(attempt_txn_conflict)`);
+  `provider` cho khoản không gắn → 422 `REFUND_METHOD_UNAVAILABLE` ngay lúc tạo. Đóng ngoại lệ sau khi đã hoàn/đối chiếu.
 
 ## 8. Deploy
 
