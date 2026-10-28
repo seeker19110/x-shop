@@ -12,6 +12,10 @@
     "reason": "chưa có test tự động trong bộ test đơn vị — kiểm bằng `pnpm load:smoke` và `pnpm perf:budget` (lab), kết quả ở docs/ops/perf/."
   },
   {
+    "id": "S-605",
+    "reason": "chưa có test tự động trong CI — diễn tập tay: apps/backend/integration-tests/ops/redis-loss-drill.ts là script diễn tập không chạy trong CI nên không tính là phủ."
+  },
+  {
     "id": "S-606",
     "reason": "chưa có test tự động — kiểm tay theo docs/ops/RUNBOOK.md (diễn tập); task kiểm runbook tự động là T-213 (scripts/check-runbook.mjs)."
   }

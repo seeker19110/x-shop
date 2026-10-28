@@ -75,7 +75,7 @@ export function criteriaSection(text) {
 export function parseCriteria(text) {
   const out = [];
   for (const line of text.split(/\r?\n/)) {
-    const m = /^#{2,4}\s+(S-\d{3})\b(.*)$/.exec(line);
+    const m = /^#{2,4}\s+(S-\d+)\b(.*)$/.exec(line);
     if (!m) continue;
     const aliases = [...m[2].matchAll(/\bAT-?(\d{1,2})\b/g)].map((a) => `AT${a[1].padStart(2, "0")}`);
     out.push({ id: m[1], aliases: [...new Set(aliases)], title: m[2].trim() });
@@ -105,6 +105,8 @@ export function checkSpec(name, text, today = new Date()) {
   } else {
     const ids = parseCriteria(section).map((c) => c.id);
     if (ids.length === 0) errors.push(`${name}: mục "Tiêu chí chấp nhận" không có ID "### S-NNN"`);
+    for (const id of ids.filter((x) => !/^S-\d{3}$/.test(x)))
+      errors.push(`${name}: ID tiêu chí ${id} phải đúng dạng S-NNN (3 chữ số)`);
     const dup = ids.filter((id, i) => ids.indexOf(id) !== i);
     for (const id of new Set(dup)) errors.push(`${name}: trùng ID tiêu chí ${id}`);
     if (ids.length > 0 && !ERROR_CASE.test(section))
@@ -128,7 +130,7 @@ export function run(dir = join(root, SPECS_DIR), today = new Date()) {
   return { code: errors.length ? 1 : 0, errors, specs: files.length };
 }
 
-const FEAT = /^feat(\([^)]*\))?!?:/;
+const FEAT = /^feat(\([^)]*\))?!?:/i;
 
 /** Lỗi của một PR theo luật 4. `commits`: mảng subject. Không phải `feat` → không lỗi. */
 export function checkPrSpec({ title = "", commits = [], body = "" }, dir = join(root, SPECS_DIR)) {

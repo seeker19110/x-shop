@@ -21,11 +21,13 @@ export const ALLOWLIST_FILE = "scripts/spec-trace-allowlist.json";
 const TEST_ROOTS = ["apps", "packages", "e2e", "scripts"];
 const SKIP_DIRS = new Set(["node_modules", ".next", "dist", "build", "coverage", ".medusa", ".turbo"]);
 const TEST_NAME = /\.(test|spec)\.[cm]?[jt]sx?$/;
-const TEST_DIR = /(^|\/)(__tests__|integration-tests|e2e)\//;
+// Fixture của chính bộ kiểm không được tính là phủ (chúng chứa ID giả lập).
+const SELF_TESTS = new Set(["scripts/spec-trace.test.mjs", "scripts/check-specs.test.mjs"]);
 
+/** Chỉ file `*.test.*`/`*.spec.*` tính là test; script diễn tập (vd integration-tests/ops/*.ts) không chạy trong CI nên không tính. */
 export function isTestFile(relPath) {
   const p = relPath.split(sep).join("/");
-  return /\.[cm]?[jt]sx?$/.test(p) && (TEST_NAME.test(p) || TEST_DIR.test(p));
+  return TEST_NAME.test(p) && !SELF_TESTS.has(p);
 }
 
 export function listTestFiles(base = root) {
@@ -85,7 +87,16 @@ export function trace(criteria, testRefs, allowlist = []) {
     errors.push(
       `${c.spec} ${c.id}: không test nào nhắc (${[c.id, ...c.aliases].join("/")}) và không có trong allowlist`,
     );
-  return { covered, allowed, missing, errors };
+  // Bí danh AT dùng chung giữa nhiều tiêu chí: một test nhắc AT đó phủ tất cả → chỉ cảnh báo (dữ liệu spec), không lỗi.
+  const warnings = [];
+  const owners = new Map();
+  for (const c of criteria) for (const a of c.aliases) owners.set(a, [...(owners.get(a) ?? []), c.id]);
+  for (const [a, ids] of owners)
+    if (new Set(ids).size > 1)
+      warnings.push(
+        `bí danh ${a} dùng chung ${[...new Set(ids)].join(", ")} — nên gắn ID S-NNN riêng vào test để không phủ chéo`,
+      );
+  return { covered, allowed, missing, errors, warnings };
 }
 
 export function loadCriteria(dir = join(root, SPECS_DIR)) {
@@ -121,6 +132,7 @@ export function run(base = root) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const r = run();
+  for (const w of r.warnings ?? []) console.warn(`spec-trace: cảnh báo: ${w}`);
   for (const e of r.errors) console.error(`spec-trace: ${e}`);
   if (r.code === 0) {
     console.log(
