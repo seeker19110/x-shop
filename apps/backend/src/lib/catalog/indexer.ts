@@ -342,10 +342,11 @@ export const CATALOG_REBUILD_LOCK = `${CATALOG_INDEX_LOCK}:rebuild`;
 /**
  * Rebuild toàn phần (T-167, D-076): đọc nguồn theo lô `SOURCE_CHUNK` sản phẩm và gom mọi dòng NGOÀI khoá ghi (đồng bộ
  * theo sự kiện vẫn chạy — thay đổi trong lúc rebuild không trễ theo nó), chỉ giữ khoá ghi lúc thay cả bảng trong MỘT
- * giao dịch (`replaceAll`) — người đọc thấy bảng cũ tới khi commit. Không mất thay đổi xen giữa:
+ * giao dịch (`replaceAll`) — người đọc thấy bảng cũ tới khi commit. Thay đổi xen giữa không bị ghi đè vĩnh viễn:
  * - `since` = đồng hồ DB lấy TRƯỚC mọi lần đọc nguồn;
- * - sản phẩm được đồng bộ ghi từ `since` (write log, cùng giao dịch ghi) → giữ bản đồng bộ — nó đọc nguồn sau thay đổi,
- *   gồm cả xoá/ẩn (không dòng ma);
+ * - sản phẩm được đồng bộ ghi từ `since` (write log, cùng giao dịch ghi) → giữ bản đồng bộ (gồm cả xoá/ẩn — không dòng
+ *   ma) VÀ đánh dấu bẩn lại trong cùng giao dịch: mốc write log là lúc GHI, lượt đồng bộ có thể đã đọc nguồn trước
+ *   `since` nên bỏ mất thay đổi không phát sự kiện mà ảnh chụp có — lượt xả hẹn ngay sau rebuild đọc lại nguồn mới nhất;
  * - thay đổi chưa kịp đồng bộ → dấu bẩn của nó còn trong hàng đợi (chỉ đồng bộ xong mới xoá dấu) → lượt xả kế tiếp ghi
  *   bản mới ngay khi khoá ghi nhả;
  * - ảnh chụp cũ hơn ảnh chụp đã áp → bỏ (`superseded`).
@@ -403,6 +404,8 @@ async function rebuildOutsideLock(container: MedusaContainer): Promise<RebuildRe
   }
   // Read model đã thay (đã commit) → báo storefront làm mới cả catalog (T-142). Ngoài khoá ghi: chỉ ghi outbox.
   await notifyCatalogChanged(container, { all: true });
+  // Sản phẩm giữ bản đồng bộ đã được đánh dấu bẩn lại trong replaceAll → xả ngay, không chờ job mỗi phút.
+  if (res.keptProducts.length > 0) scheduleCatalogDrain(container, 0);
   const total = res.inserted + res.keptRows;
   reportBuild(container, "rebuild", { ...report, rows: total }, stored);
   logger.info(
