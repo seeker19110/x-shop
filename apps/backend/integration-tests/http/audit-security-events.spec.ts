@@ -3,11 +3,12 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, generateJwtToken, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import Redis from "ioredis";
 import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
 import { KEY_PREFIX } from "../../src/lib/admin-security/store";
+import { DENY_AUDIT_THROTTLE } from "../../src/lib/audit/deny-throttle";
 import { SECURITY_EVENTS } from "../../src/lib/audit/events";
 import { outcomeOfStatus } from "../../src/lib/audit/http";
 import { hashIdentifier } from "../../src/lib/audit/record";
@@ -17,7 +18,15 @@ import { AUDIT_MODULE } from "../../src/modules/audit";
 import type { AuditEntry, AuditListFilter } from "../../src/modules/audit/service";
 import type AuditModuleService from "../../src/modules/audit/service";
 import seedCatalog from "../../src/scripts/seed-catalog";
-import { createAdmin, createMfaAdmin, enrollTotp, jwtPayload, noThrow, totp } from "../helpers/auth";
+import {
+  createAdmin,
+  createMfaAdmin,
+  enrollTotp,
+  jwtPayload,
+  noThrow,
+  totp,
+  type MfaAdmin,
+} from "../helpers/auth";
 
 jest.setTimeout(300 * 1000);
 
@@ -32,6 +41,13 @@ const UA_EMAIL = "qa.tester@example.test";
 const UA_PHONE = "0912345678";
 const UA = `x-shop-test/1.0 (${UA_EMAIL}; ${UA_PHONE})`;
 const ORIGIN = "http://localhost:9000";
+/** PNG 1×1 hợp lệ (cùng mẫu security.spec.ts). */
+const PNG = Buffer.from(
+  "89504e470d0a1a0a0000000d4948445200000001000000010806000000" +
+    "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082",
+  "hex",
+);
+const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -83,13 +99,26 @@ medusaIntegrationTestRunner({
       );
 
     /**
-     * Xoá bộ đếm gộp audit (`audit.rbac_denied:*` — cùng tiền tố cho mọi nhóm gộp) để ca kiểm "lần 1 của nhóm" không phụ
-     * thuộc ca trước trong cùng cửa sổ 60 s (mọi request test cùng IP 127.0.0.1).
+     * Cửa sổ gộp audit là cửa sổ CỐ ĐỊNH canh theo epoch (`windowStartMs`, 60 s): một loạt request vắt qua ranh giới cửa sổ
+     * cho occurrence [1, 1] thay vì [1, 10] (flake đã gặp ở ca "đổi email mỗi lần", T-175). Gần ranh giới → chờ sang cửa sổ
+     * mới rồi mới bắt đầu loạt request.
      */
-    const resetAuditThrottle = () =>
-      container
+    const awayFromWindowEdge = async (marginMs = 10_000) => {
+      const windowMs = DENY_AUDIT_THROTTLE.windowMs;
+      const left = windowMs - (Date.now() % windowMs);
+      if (left < marginMs) await sleep(left + 200);
+    };
+
+    /**
+     * Xoá bộ đếm gộp audit (`audit.rbac_denied:*` — cùng tiền tố cho mọi nhóm gộp) để ca kiểm "lần 1 của nhóm" không phụ
+     * thuộc ca trước trong cùng cửa sổ 60 s (mọi request test cùng IP 127.0.0.1); tránh ranh giới cửa sổ (ở trên).
+     */
+    const resetAuditThrottle = async () => {
+      await awayFromWindowEdge();
+      await container
         .resolve(ContainerRegistrationKeys.PG_CONNECTION)
         .raw(`DELETE FROM rate_limit_counter WHERE bucket LIKE 'audit.rbac_denied:%'`);
+    };
 
     /** Chờ đủ `n` dòng (ghi sau `finish`), rồi chờ thêm một nhịp để chắc không có dòng thừa. */
     async function waitRows(filter: AuditListFilter, n: number, timeoutMs = 15_000): Promise<Row[]> {
@@ -599,6 +628,433 @@ medusaIntegrationTestRunner({
         expect(res.status).not.toBe(200);
         await sleep(600);
         expect(await list({ action: SECURITY_EVENTS.DATA_ACCESSED, actor_id: owner.userId })).toHaveLength(0);
+      });
+    });
+
+    describe("T-175: upload, đổi cấu hình native, 403 MFA/xác thực lại, đầu vào bị từ chối", () => {
+      const baseUrl = () => String((rawApi as unknown as { defaults: { baseURL: string } }).defaults.baseURL);
+      const byOccurrence = (rows: Row[]) =>
+        rows
+          .map((r) => ((r.changes as Row).throttle as Row).occurrence)
+          .sort((a, b) => Number(a) - Number(b));
+
+      async function upload(
+        headers: Record<string, string>,
+        files: Array<{ name: string; type: string; data: Buffer }>,
+      ): Promise<{ status: number; body: Record<string, unknown> }> {
+        const form = new FormData();
+        for (const f of files)
+          form.append("files", new Blob([new Uint8Array(f.data)], { type: f.type }), f.name);
+        const res = await fetch(new URL("/admin/uploads", baseUrl()), {
+          method: "POST",
+          body: form,
+          headers: { "user-agent": UA, ...headers },
+        });
+        const text = await res.text();
+        let body: Record<string, unknown> = {};
+        try {
+          body = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          // không phải JSON
+        }
+        return { status: res.status, body };
+      }
+
+      /** Thân thô (JSON hỏng) — axios tự tuần tự hoá nên dùng fetch. */
+      async function rawBody(method: string, path: string, headers: Record<string, string>, body: string) {
+        const res = await fetch(new URL(path, baseUrl()), {
+          method,
+          body,
+          headers: { "user-agent": UA, "content-type": "application/json", ...headers },
+        });
+        return { status: res.status, body: await res.text() };
+      }
+
+      /** Token cùng phiên nhưng đổi claim (mốc MFA cũ) — ký bằng JWT secret của app như mfa.spec.ts. */
+      function forgeToken(base: MfaAdmin, claims: Record<string, unknown>) {
+        const payload = jwtPayload(base.headers.authorization.slice("Bearer ".length));
+        const { http: cfg } = container.resolve(ContainerRegistrationKeys.CONFIG_MODULE).projectConfig;
+        const { exp: _exp, ...rest } = payload;
+        const token = generateJwtToken(
+          { ...rest, ...claims },
+          { secret: cfg.jwtSecret as string, expiresIn: "1d" },
+        );
+        return { authorization: `Bearer ${token}` };
+      }
+      const staleMfa = (a: MfaAdmin) =>
+        forgeToken(a, { mfa_challenge_completed_at: new Date(Date.now() - 6 * 60_000).toISOString() });
+
+      async function storeId(): Promise<string> {
+        const stores = await container.resolve(Modules.STORE).listStores({});
+        if (stores[0]) return stores[0].id;
+        const [created] = await container.resolve(Modules.STORE).createStores([{ name: "x-shop test" }]);
+        return created!.id;
+      }
+
+      describe("upload", () => {
+        it("PNG hợp lệ → file.uploaded success (id file, số file, MIME đã kiểm; không tên file); xoá → file.deleted", async () => {
+          const owner = await createAdmin(rawApi, container, { roles: ["owner"] });
+          const up = await upload(owner.headers, [
+            { name: "nguyen-van-a-0912345678.png", type: "application/octet-stream", data: PNG },
+          ]);
+          expect(up.status).toBe(200);
+          const fileId = (up.body.files as Array<{ id: string }>)[0]!.id;
+          const rows = await waitRows({ action: SECURITY_EVENTS.FILE_UPLOADED, actor_id: owner.userId }, 1);
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            outcome: "success",
+            resource_type: "file",
+            resource_id: fileId,
+            changes: { status: 200, file_count: 1, total_bytes: PNG.length, mime_types: ["image/png"] },
+          });
+
+          const del = await call("DELETE", `/admin/uploads/${encodeURIComponent(fileId)}`, owner.headers);
+          expect(del.status).toBe(200);
+          const deleted = await waitRows({ action: SECURITY_EVENTS.FILE_DELETED, actor_id: owner.userId }, 1);
+          expect(deleted).toHaveLength(1);
+          expect(deleted[0]).toMatchObject({
+            outcome: "success",
+            resource_type: "file",
+            resource_id: fileId,
+          });
+          expectWellFormed([...rows, ...deleted], [owner.email, "nguyen-van-a", "0912345678"]);
+        });
+
+        it("bị từ chối: SVG giả PNG (415), không phải multipart (415) → file.uploaded failure; vai trò thiếu quyền (403) → chỉ rbac.denied", async () => {
+          const owner = await createAdmin(rawApi, container, { roles: ["owner"] });
+          const bad = await upload(owner.headers, [{ name: "logo.png", type: "image/png", data: SVG }]);
+          expect(bad.status).toBe(415);
+          const failed = await waitRows({ action: SECURITY_EVENTS.FILE_UPLOADED, actor_id: owner.userId }, 1);
+          expect(failed).toHaveLength(1);
+          expect(failed[0]).toMatchObject({
+            outcome: "failure",
+            resource_id: null,
+            changes: { status: 415, error_code: "UNSUPPORTED_MEDIA_TYPE", file_count: 1 },
+          });
+          expect((failed[0]?.changes as Row).mime_types).toBeUndefined();
+          // Không phải multipart → chặn trước multer (uploadPrecheck) → vẫn có dấu vết.
+          expect((await call("POST", "/admin/uploads", owner.headers, { files: [] })).status).toBe(415);
+          const both = await waitRows({ action: SECURITY_EVENTS.FILE_UPLOADED, actor_id: owner.userId }, 2);
+          expect(both).toHaveLength(2);
+
+          const support = await createAdmin(rawApi, container, { roles: ["support"] });
+          const denied403 = await upload(support.headers, [{ name: "a.png", type: "image/png", data: PNG }]);
+          expect(denied403.status).toBe(403);
+          const denied = await waitRows({ action: SECURITY_EVENTS.RBAC_DENIED, actor_id: support.userId }, 1);
+          expect(denied).toHaveLength(1);
+          expect(
+            await list({ action: SECURITY_EVENTS.FILE_UPLOADED, actor_id: support.userId }),
+          ).toHaveLength(0);
+          expectWellFormed([...both, ...denied], [owner.email, support.email, "<svg"]);
+        });
+      });
+
+      describe("đổi cấu hình qua route native", () => {
+        it("store, khoá API (tạo/thu hồi/xoá), lời mời (tạo/xoá), user (token đặt lại, xoá) → config.changed; không giá trị/khoá bí mật/email", async () => {
+          const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+          const sid = await storeId();
+          const storeName = `Cửa hàng ${randomUUID().slice(0, 6)}`;
+          expect(
+            (await call("POST", `/admin/stores/${sid}`, owner.headers, { name: storeName })).status,
+          ).toBe(200);
+
+          const key = await call("POST", "/admin/api-keys", owner.headers, {
+            title: "Kho đối tác",
+            type: "secret",
+          });
+          expect(key.status).toBe(200);
+          const apiKey = key.data.api_key as { id: string; token: string };
+          expect(apiKey.token.length).toBeGreaterThan(10);
+          expect((await call("POST", `/admin/api-keys/${apiKey.id}/revoke`, owner.headers, {})).status).toBe(
+            200,
+          );
+          expect((await call("DELETE", `/admin/api-keys/${apiKey.id}`, owner.headers)).status).toBe(200);
+
+          const inviteEmail = `moi-${randomUUID()}@x-shop.test`;
+          const inv = await call("POST", "/admin/invites", owner.headers, { email: inviteEmail });
+          expect(inv.status).toBe(200);
+          const inviteId = (inv.data.invite as { id: string }).id;
+          expect((await call("DELETE", `/admin/invites/${inviteId}`, owner.headers)).status).toBe(200);
+
+          const target = await createAdmin(rawApi, container, { roles: [] });
+          const reset = await call("POST", `/admin/users/${target.userId}/reset-password`, owner.headers, {});
+          expect(reset.status).toBe(200);
+          const resetToken = String(reset.data.token);
+          expect((await call("DELETE", `/admin/users/${target.userId}`, owner.headers)).status).toBe(200);
+
+          const rows = await waitRows({ action: SECURITY_EVENTS.CONFIG_CHANGED, actor_id: owner.userId }, 8);
+          expect(rows).toHaveLength(8);
+          const order = (x: unknown[], y: unknown[]) => JSON.stringify(x).localeCompare(JSON.stringify(y));
+          expect(
+            rows
+              .map((r) => [r.resource_type, r.resource_id, (r.changes as Row).operation, r.outcome])
+              .sort(order),
+          ).toEqual(
+            [
+              ["store", sid, "update", "success"],
+              ["api_key", apiKey.id, "create", "success"],
+              ["api_key", apiKey.id, "revoke", "success"],
+              ["api_key", apiKey.id, "delete", "success"],
+              ["invite", inviteId, "create", "success"],
+              ["invite", inviteId, "delete", "success"],
+              ["user", target.userId, "reset_password_token_issued", "success"],
+              ["user", target.userId, "delete", "success"],
+            ].sort(order),
+          );
+          const byOp = Object.fromEntries(
+            rows.map((r) => [`${String(r.resource_type)}:${String((r.changes as Row).operation)}`, r]),
+          );
+          expect((byOp["store:update"]?.changes as Row).fields).toEqual(["name"]);
+          expect((byOp["invite:create"]?.changes as Row).fields).toEqual(["email"]);
+          expect((byOp["api_key:create"]?.changes as Row).fields).toEqual(["title", "type"]);
+          // Phản hồi reset-password chứa token của NGƯỜI KHÁC → actor vẫn là owner (token phản hồi ở /admin không được đọc).
+          expect(byOp["user:reset_password_token_issued"]).toMatchObject({
+            actor_type: "user",
+            actor_id: owner.userId,
+          });
+          expectWellFormed(rows, [
+            owner.email,
+            target.email,
+            inviteEmail,
+            storeName,
+            apiKey.token,
+            resetToken,
+          ]);
+        });
+
+        it("bị từ chối: owner chưa MFA → 403 MFA_REQUIRED = rbac.denied; vai trò thiếu quyền → rbac.denied; không có config.changed", async () => {
+          const noMfa = await createAdmin(rawApi, container, { roles: ["owner"] });
+          const res = await call("POST", "/admin/api-keys", noMfa.headers, { title: "x", type: "secret" });
+          expect(res).toMatchObject({ status: 403, data: { code: "MFA_REQUIRED" } });
+          const support = await createAdmin(rawApi, container, { roles: ["support"] });
+          const sid = await storeId();
+          expect((await call("POST", `/admin/stores/${sid}`, support.headers, { name: "x" })).status).toBe(
+            403,
+          );
+
+          const mfa = await waitRows({ action: SECURITY_EVENTS.RBAC_DENIED, actor_id: noMfa.userId }, 1);
+          expect(mfa).toHaveLength(1);
+          expect(mfa[0]).toMatchObject({
+            outcome: "denied",
+            resource_type: "route",
+            resource_id: "POST /admin/api-keys",
+            changes: { reason: "MFA_REQUIRED", permission: "settings.manage" },
+          });
+          const forbidden = await waitRows(
+            { action: SECURITY_EVENTS.RBAC_DENIED, actor_id: support.userId },
+            1,
+          );
+          expect(forbidden[0]).toMatchObject({ changes: { reason: "missing_permission" } });
+          for (const a of [noMfa, support])
+            expect(await list({ action: SECURITY_EVENTS.CONFIG_CHANGED, actor_id: a.userId })).toHaveLength(
+              0,
+            );
+          expectWellFormed([...mfa, ...forbidden], [noMfa.email, support.email]);
+        });
+
+        it("lỗi schema native (trường lạ) → config.changed failure + ĐÚNG MỘT input.validation_failed (handler lỗi và bộ quan sát không ghi trùng)", async () => {
+          const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+          const sid = await storeId();
+          const rid = `req-t175-schema-${randomUUID().slice(0, 8)}`;
+          const secret = `mat-khau-${randomUUID()}`;
+          const res = await call(
+            "POST",
+            `/admin/stores/${sid}`,
+            { ...owner.headers, "x-request-id": rid },
+            { name: "x", password: secret },
+          );
+          expect(res.status).toBe(400);
+          const rows = await waitRows({ request_id: rid }, 2);
+          expect(rows.map((r) => r.action).sort()).toEqual(
+            [SECURITY_EVENTS.CONFIG_CHANGED, SECURITY_EVENTS.INPUT_VALIDATION_FAILED].sort(),
+          );
+          const input = rows.find((r) => r.action === SECURITY_EVENTS.INPUT_VALIDATION_FAILED) as Row;
+          expect(input).toMatchObject({
+            actor_type: "user",
+            actor_id: owner.userId,
+            outcome: "failure",
+            resource_type: "http_route",
+            resource_id: "POST /admin/stores/:id",
+            changes: { status: 400, cause: "medusa_schema", error_code: "INVALID_DATA" },
+          });
+          const cfg = rows.find((r) => r.action === SECURITY_EVENTS.CONFIG_CHANGED) as Row;
+          expect(cfg).toMatchObject({ outcome: "failure", resource_id: sid, changes: { status: 400 } });
+          // Tên trường lạ được ghi (không giá trị); thông điệp lỗi Medusa (chép giá trị) không được ghi.
+          expect((cfg.changes as Row).fields).toEqual(["name", "password"]);
+          expectWellFormed(rows, [owner.email, secret, "Invalid request"]);
+        });
+      });
+
+      describe("403 MFA_REQUIRED / REAUTH_REQUIRED", () => {
+        it("cổng: mốc MFA cũ hơn 5 phút ở thao tác reauth → rbac.denied REAUTH_REQUIRED; MFA mới → được (không thêm dòng)", async () => {
+          const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+          const target = await createAdmin(rawApi, container, { roles: [] });
+          const url = `/admin/x/users/${target.userId}/roles`;
+          const res = await call("POST", url, staleMfa(owner), { role: "support" });
+          expect(res).toMatchObject({ status: 403, data: { code: "REAUTH_REQUIRED" } });
+          expect((await call("POST", url, owner.headers, { role: "support" })).status).toBe(201);
+          const rows = await waitRows({ action: SECURITY_EVENTS.RBAC_DENIED, actor_id: owner.userId }, 1);
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            outcome: "denied",
+            // rbac.denied ghi đường dẫn đã chuẩn hoá của cổng (normalizeAdminPath — chữ thường), như các lần từ chối khác.
+            resource_id: `POST ${url.toLowerCase()}`,
+            changes: { reason: "REAUTH_REQUIRED", permission: "user.manage" },
+          });
+          expectWellFormed(rows, [owner.email]);
+        });
+
+        it("trong route (hoàn tiền vượt ngưỡng): mốc MFA cũ → 403 REAUTH_REQUIRED = rbac.denied in_route; chưa MFA → MFA_REQUIRED ở cổng", async () => {
+          const acc = await createMfaAdmin(rawApi, container, { roles: ["accountant"] });
+          const body = { order_id: "order_khong_co", reason: "cancellation" };
+          const key = { "idempotency-key": `t175-${randomUUID()}` };
+          const res = await call("POST", "/admin/x/refunds", { ...staleMfa(acc), ...key }, body);
+          expect(res).toMatchObject({ status: 403, data: { code: "REAUTH_REQUIRED" } });
+          const inRoute = await waitRows({ action: SECURITY_EVENTS.RBAC_DENIED, actor_id: acc.userId }, 1);
+          expect(inRoute).toHaveLength(1);
+          expect(inRoute[0]).toMatchObject({
+            resource_id: "POST /admin/x/refunds",
+            changes: { reason: "REAUTH_REQUIRED", in_route: true },
+          });
+
+          const plain = await createAdmin(rawApi, container, { roles: ["accountant"] });
+          const gate = await call("POST", "/admin/x/refunds", { ...plain.headers, ...key }, body);
+          expect(gate).toMatchObject({ status: 403, data: { code: "MFA_REQUIRED" } });
+          const atGate = await waitRows({ action: SECURITY_EVENTS.RBAC_DENIED, actor_id: plain.userId }, 1);
+          expect(atGate[0]).toMatchObject({
+            changes: { reason: "MFA_REQUIRED", permission: "refund.request" },
+          });
+          expectWellFormed([...inRoute, ...atGate], [acc.email, plain.email]);
+        });
+
+        it("ĐỒNG THỜI: 12 request MFA_REQUIRED song song của một actor → gộp (lần 1, 10), không trùng", async () => {
+          const noMfa = await createAdmin(rawApi, container, { roles: ["owner"] });
+          await awayFromWindowEdge();
+          const all = await Promise.all(
+            Array.from({ length: 12 }, () =>
+              call("POST", "/admin/api-keys", noMfa.headers, { title: "x", type: "secret" }),
+            ),
+          );
+          expect(all.map((r) => r.status)).toEqual(Array(12).fill(403));
+          const rows = await waitRows({ action: SECURITY_EVENTS.RBAC_DENIED, actor_id: noMfa.userId }, 2);
+          expect(byOccurrence(rows)).toEqual([1, 10]);
+        });
+      });
+
+      describe("đầu vào bị từ chối", () => {
+        it("JSON hỏng (ở đăng nhập, thân có mật khẩu) → input.deserialize_failed vô danh, một dòng, không chép thân", async () => {
+          await resetAuditThrottle();
+          const rid = `req-t175-json-${randomUUID().slice(0, 8)}`;
+          const secret = `pw-${randomUUID()}`;
+          const res = await rawBody(
+            "POST",
+            "/auth/user/emailpass",
+            { "x-request-id": rid },
+            `{"email":"nan@x-shop.test","password":"${secret}"`,
+          );
+          expect(res.status).toBe(400);
+          expect(res.body).not.toContain(secret);
+          const rows = await waitRows({ request_id: rid }, 1);
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            action: SECURITY_EVENTS.INPUT_DESERIALIZE_FAILED,
+            actor_type: "anonymous",
+            actor_id: null,
+            outcome: "failure",
+            resource_type: "http_route",
+            resource_id: "POST /auth/user/emailpass",
+            changes: { status: 400, cause: "body_parse", error_code: "INVALID_DATA" },
+          });
+          expectWellFormed(rows, [secret, "nan@x-shop.test"]);
+        });
+
+        it("tham số đường dẫn mã hoá hỏng → input.deserialize_failed (path_decode, nhãn cố định); NUL trong thân → input.validation_failed", async () => {
+          await resetAuditThrottle();
+          const rid = `req-t175-uri-${randomUUID().slice(0, 8)}`;
+          const bad = await call(
+            "POST",
+            "/auth/%E0%A4%A/emailpass",
+            { "x-request-id": rid },
+            { email: "a@b.vn" },
+          );
+          expect(bad.status).toBe(400);
+          const uri = await waitRows(
+            { request_id: rid, action: SECURITY_EVENTS.INPUT_DESERIALIZE_FAILED },
+            1,
+          );
+          expect(uri).toHaveLength(1);
+          expect(uri[0]).toMatchObject({
+            resource_id: "POST (đường dẫn không hợp lệ)",
+            changes: { status: 400, cause: "path_decode", error_code: "INVALID_PATH" },
+          });
+
+          await resetAuditThrottle();
+          const rid2 = `req-t175-nul-${randomUUID().slice(0, 8)}`;
+          const nul = await call(
+            "POST",
+            "/auth/user/emailpass",
+            { "x-request-id": rid2 },
+            { email: "nul\u0000@x-shop.test", password: "x" },
+          );
+          expect(nul.status).toBe(400);
+          const rows = await waitRows(
+            { request_id: rid2, action: SECURITY_EVENTS.INPUT_VALIDATION_FAILED },
+            1,
+          );
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            changes: { status: 400, cause: "problem_code", error_code: "INVALID_CHARACTERS" },
+          });
+          expectWellFormed([...uri, ...rows], ["nul\u0000@", "a@b.vn"]);
+        });
+
+        it("422 VALIDATION của route dự án → input.validation_failed có tên tham số (không giá trị); request hợp lệ → không ghi", async () => {
+          const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+          const rid = `req-t175-422-${randomUUID().slice(0, 8)}`;
+          const res = await call("GET", "/admin/x/audit?outcome=loi-0912345678", {
+            ...owner.headers,
+            "x-request-id": rid,
+          });
+          expect(res.status).toBe(422);
+          const rows = await waitRows({ request_id: rid }, 1);
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            action: SECURITY_EVENTS.INPUT_VALIDATION_FAILED,
+            actor_id: owner.userId,
+            resource_id: "GET /admin/x/audit",
+            changes: { status: 422, error_code: "VALIDATION", cause: "problem_code", params: ["outcome"] },
+          });
+          const okRid = `req-t175-ok-${randomUUID().slice(0, 8)}`;
+          const ok = await call("GET", "/admin/x/audit?outcome=failure", {
+            ...owner.headers,
+            "x-request-id": okRid,
+          });
+          expect(ok.status).toBe(200);
+          expect(await waitRows({ request_id: okRid }, 0, 500)).toHaveLength(0);
+          expectWellFormed(rows, [owner.email, "0912345678", "loi-"]);
+        });
+
+        it("ĐỒNG THỜI: 12 JSON hỏng song song cùng IP (email khác nhau) → gộp theo nguồn: đúng 2 dòng (lần 1, 10)", async () => {
+          await resetAuditThrottle();
+          const rid = `req-t175-flood-${randomUUID().slice(0, 8)}`;
+          const all = await Promise.all(
+            Array.from({ length: 12 }, (_v, i) =>
+              rawBody(
+                "POST",
+                "/auth/user/emailpass",
+                { "x-request-id": `${rid}-${i}` },
+                `{"email":"f${i}@x-shop.test",`,
+              ),
+            ),
+          );
+          expect(all.map((r) => r.status)).toEqual(Array(12).fill(400));
+          await sleep(800);
+          const rows = (
+            await Promise.all(Array.from({ length: 12 }, (_v, i) => list({ request_id: `${rid}-${i}` })))
+          ).flat();
+          expect(rows.every((r) => r.action === SECURITY_EVENTS.INPUT_DESERIALIZE_FAILED)).toBe(true);
+          expect(byOccurrence(rows)).toEqual([1, 10]);
+        });
       });
     });
   },
