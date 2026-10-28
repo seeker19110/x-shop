@@ -3,7 +3,8 @@
 // `packages/domain/src/*` phải khớp danh sách khai trong docs/architecture/domains.md.
 //  - thư mục chưa khai trong bảng  → lỗi (thêm miền hoặc gán vào miền sẵn có);
 //  - tên khai trong bảng mà thư mục không tồn tại → lỗi (bảng mục nát);
-//  - thư mục kỹ thuật (không phải miền) nằm trong TECH_DIRS kèm lý do thì được bỏ qua.
+//  - ở packages/domain/src còn kiểm cả file `*.ts` lẻ cấp một (trừ index.ts, test) — miền mới có thể là một file;
+//  - thư mục/file kỹ thuật (không phải miền) nằm trong TECH_DIRS / CORE_FILES kèm lý do thì được bỏ qua.
 // Bảng: cột 3 = module backend, cột 4 = lõi thuần; tên là chuỗi trong dấu backtick (`checkout`), ô như "(trong `checkout`)"
 // vẫn đọc ra `checkout`. Thoát 0 = đạt; 1 = lệch; 2 = không đọc được đầu vào.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -17,33 +18,51 @@ export const CORE_DIR = "packages/domain/src";
 /** Thư mục kỹ thuật, không phải miền: tên → lý do (bắt buộc, không rỗng). */
 export const TECH_DIRS = {
   __tests__: "test dùng chung của các module, không chứa logic miền",
-  __fixtures__: "dữ liệu mẫu cho test",
-  shared: "mã kỹ thuật dùng chung giữa các miền, không sở hữu dữ liệu",
-  utils: "tiện ích kỹ thuật không gắn miền",
-  testing: "helper test",
 };
 
-/** Đọc bảng miền → { modules: Set, core: Set }. */
+/** File `*.ts` lẻ ở cấp một của packages/domain/src, không phải miền: tên file → lý do. (`index.ts` và `*.test.ts` luôn bỏ qua.) */
+export const CORE_FILES = {
+  "units.ts": "tiện ích đơn vị dùng chung của lõi, không sở hữu dữ liệu miền",
+  "presence.ts": "tiện ích kiểm giá trị hiện diện (null/rỗng) dùng chung, không sở hữu dữ liệu miền",
+  "result.ts": "kiểu Result dùng chung của lõi, không sở hữu dữ liệu miền",
+};
+
+/**
+ * Đọc bảng miền → { modules: Set, core: Set }. Chỉ đọc bảng có tiêu đề cột chứa "Module backend" và "Lõi thuần"
+ * (xác định cột theo tiêu đề); bảng khác bị bỏ qua.
+ */
 export function parseDomains(text) {
   const modules = new Set();
   const core = new Set();
-  let body = false; // chỉ đọc các dòng SAU dòng phân cách `| --- |` (tiêu đề cột cũng có backtick)
+  let cols = null; // { m, c } của bảng đang đọc; null = bảng không phải bảng miền
+  let header = null;
+  let inBody = false;
   for (const line of (text ?? "").replace(/\r\n/g, "\n").split("\n")) {
     if (!line.trim().startsWith("|")) {
-      body = false;
+      cols = null;
+      header = null;
+      inBody = false;
       continue;
     }
     const cells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
-    if (cells.length >= 4 && /^[\s:-]+$/.test(cells[2])) {
-      body = true;
+    if (cells.every((c) => /^[\s:-]+$/.test(c))) {
+      // dòng phân cách: dòng ngay trước là tiêu đề
+      inBody = true;
+      const m = header ? header.findIndex((h) => /module backend/i.test(h)) : -1;
+      const c = header ? header.findIndex((h) => /lõi thuần/i.test(h)) : -1;
+      cols = m >= 0 && c >= 0 ? { m, c } : null;
       continue;
     }
-    if (!body || cells.length < 4) continue;
+    if (!inBody) {
+      header = cells;
+      continue;
+    }
+    if (!cols) continue;
     for (const [idx, set] of [
-      [2, modules],
-      [3, core],
+      [cols.m, modules],
+      [cols.c, core],
     ]) {
-      for (const m of cells[idx].matchAll(/`([^`]+)`/g)) set.add(m[1]);
+      for (const x of (cells[idx] ?? "").matchAll(/`([^`]+)`/g)) set.add(x[1]);
     }
   }
   return { modules, core };
@@ -52,6 +71,14 @@ export function parseDomains(text) {
 export function listDirs(dir) {
   return readdirSync(dir)
     .filter((n) => statSync(join(dir, n)).isDirectory())
+    .sort();
+}
+
+/** File `*.ts` cấp một, trừ `index.ts` và test (`*.test.ts`, `*.spec.ts`). */
+export function listSourceFiles(dir) {
+  return readdirSync(dir)
+    .filter((n) => statSync(join(dir, n)).isFile())
+    .filter((n) => /\.tsx?$/.test(n) && n !== "index.ts" && !/\.(test|spec)\.tsx?$/.test(n))
     .sort();
 }
 
@@ -69,13 +96,17 @@ export function compareSet(label, dirs, declared, tech = TECH_DIRS) {
   return errors;
 }
 
-export function check(root, tech = TECH_DIRS) {
+export function check(root, tech = TECH_DIRS, coreFiles = CORE_FILES) {
   const docPath = join(root, DOMAINS_DOC);
   if (!existsSync(docPath)) throw new Error(`không thấy ${DOMAINS_DOC}`);
   const { modules, core } = parseDomains(readFileSync(docPath, "utf8"));
+  const coreDir = join(root, CORE_DIR);
   return [
     ...compareSet(MODULES_DIR, listDirs(join(root, MODULES_DIR)), modules, tech),
-    ...compareSet(CORE_DIR, listDirs(join(root, CORE_DIR)), core, tech),
+    ...compareSet(CORE_DIR, [...listDirs(coreDir), ...listSourceFiles(coreDir)].sort(), core, {
+      ...tech,
+      ...coreFiles,
+    }),
   ];
 }
 

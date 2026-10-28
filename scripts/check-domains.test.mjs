@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { check, compareSet, parseDomains, TECH_DIRS } from "./check-domains.mjs";
+import { check, compareSet, CORE_FILES, parseDomains, TECH_DIRS } from "./check-domains.mjs";
 
 const DOC = `# Miền
 
@@ -14,12 +14,18 @@ const DOC = `# Miền
 | C | S | — | \`state\`, \`ledger\` | z |
 `;
 
-function fixture({ doc = DOC, modules = ["alpha", "beta"], core = ["money", "state", "ledger"] } = {}) {
+function fixture({
+  doc = DOC,
+  modules = ["alpha", "beta"],
+  core = ["money", "state", "ledger"],
+  files = [],
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), "dom-"));
   mkdirSync(join(root, "docs/architecture"), { recursive: true });
   writeFileSync(join(root, "docs/architecture/domains.md"), doc);
   for (const m of modules) mkdirSync(join(root, "apps/backend/src/modules", m), { recursive: true });
   for (const c of core) mkdirSync(join(root, "packages/domain/src", c), { recursive: true });
+  for (const f of files) writeFileSync(join(root, "packages/domain/src", f), "export {};\n");
   return root;
 }
 
@@ -65,7 +71,7 @@ test("allowlist với lý do rỗng không có hiệu lực", () => {
 });
 
 test("TECH_DIRS: mọi mục có lý do", () => {
-  for (const [k, v] of Object.entries(TECH_DIRS)) assert.ok(v.trim().length >= 10, k);
+  for (const [k, v] of Object.entries({ ...TECH_DIRS, ...CORE_FILES })) assert.ok(v.trim().length >= 10, k);
 });
 
 test("thiếu domains.md → ném lỗi", () => {
@@ -76,4 +82,38 @@ test("thiếu domains.md → ném lỗi", () => {
 test("tên có dấu gạch được khớp nguyên văn", () => {
   const doc = DOC.replaceAll("`alpha`", "`catalog-import`");
   assert.deepEqual(check(fixture({ doc, modules: ["catalog-import", "beta"] })), []);
+});
+
+test("file lẻ cấp một của lõi chưa khai → lỗi (miền mới dạng file)", () => {
+  const errs = check(fixture({ files: ["inventory.ts"] }));
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /packages\/domain\/src\/inventory\.ts chưa khai/);
+});
+
+test("file lẻ: index.ts, test và file trong CORE_FILES được bỏ qua", () => {
+  assert.deepEqual(check(fixture({ files: ["index.ts", "a.test.ts", "units.ts", "result.ts"] })), []);
+});
+
+test("file lẻ khai trong bảng thì đạt; khai mà không có file → lỗi", () => {
+  const doc = DOC.replace("`money`", "`money`, `inventory.ts`");
+  assert.deepEqual(check(fixture({ doc, files: ["inventory.ts"] })), []);
+  assert.match(check(fixture({ doc })).join("\n"), /khai `inventory\.ts` nhưng/);
+});
+
+test("bảng khác (không có cột Module backend/Lõi thuần) bị bỏ qua", () => {
+  const doc = `${DOC}\n| Tên | Ghi chú | \`x\` | \`y\` |\n| --- | --- | --- | --- |\n| a | b | \`zzz\` | \`www\` |\n`;
+  assert.deepEqual(check(fixture({ doc })), []);
+});
+
+test("hai bảng miền: reset giữa các bảng, cột xác định theo tiêu đề (đảo cột)", () => {
+  const doc = `${DOC}\n| Miền | Lõi thuần | Module backend |\n| --- | --- | --- |\n| D | \`extra\` | \`gamma\` |\n`;
+  const { modules, core } = parseDomains(doc);
+  assert.ok(modules.has("gamma") && core.has("extra"));
+  assert.ok(!modules.has("extra") && !core.has("gamma"));
+});
+
+test("dòng không phải bảng chen giữa reset trạng thái thân bảng", () => {
+  const doc = `${DOC}\nvăn bản\n| a | b | \`q\` | \`r\` |\n`;
+  const { modules } = parseDomains(doc);
+  assert.ok(!modules.has("q"));
 });
