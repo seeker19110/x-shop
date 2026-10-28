@@ -31,6 +31,9 @@ import {
   type OrderContext,
 } from "./order-context";
 import { getRefundGateway, type ProviderRefundRequest, type ProviderRefundResult } from "./refund-gateway";
+import { autoManualNote, routeRefund, type CaptureInfo, type RefundSources } from "./refund-route";
+
+export type { CaptureInfo, RefundSources } from "./refund-route";
 
 type Scope = Pick<MedusaContainer, "resolve">;
 
@@ -64,28 +67,56 @@ export async function audit(
   }
 }
 
-/** Khoản đã thu hợp lệ của đơn. COD đã giao: tiền hãng thu hộ là khoản thu (chứng từ COD đối soát riêng ở T-028). */
-export interface CaptureInfo {
-  provider: string;
-  provider_txn_id: string;
-  amount: number;
-}
-
+/** Khoản thu của đơn (ledger + COD đã giao), đánh dấu khoản nào gắn attempt (`linked` — hoàn qua cổng được). */
 export async function capturesOf(container: Scope, ctx: OrderContext): Promise<CaptureInfo[]> {
-  const rows = await checkoutOf(container).listPaymentLedgers(
-    { order_id: ctx.fin.order_id, kind: "capture" },
-    { order: { created_at: "ASC" } },
+  const checkout = checkoutOf(container);
+  const [rows, attempts] = await Promise.all([
+    checkout.listPaymentLedgers(
+      { order_id: ctx.fin.order_id, kind: "capture" },
+      { order: { created_at: "ASC" } },
+    ),
+    checkout.listPaymentAttempts({ order_id: ctx.fin.order_id }),
+  ]);
+  const attemptTxns = new Set(
+    attempts.map((a) => a.provider_txn_no).filter((t): t is string => isNonEmpty(t)),
   );
   const caps: CaptureInfo[] = rows.map((r) => ({
     provider: r.provider,
     provider_txn_id: r.provider_txn_id,
     amount: Number(r.amount),
+    linked: attemptTxns.has(r.provider_txn_id),
   }));
   const s = ctx.shipment;
   if (s && s.state === "delivered" && s.cod_amount > 0) {
-    caps.push({ provider: "cod", provider_txn_id: `cod:${s.client_order_code}`, amount: s.cod_amount });
+    caps.push({
+      provider: "cod",
+      provider_txn_id: `cod:${s.client_order_code}`,
+      amount: s.cod_amount,
+      linked: false,
+    });
   }
   return caps;
+}
+
+/**
+ * Nguồn tiền để định tuyến hoàn (`routeRefund`, T-169). Đọc TRƯỚC transaction: khoản thu và liên kết attempt chỉ thêm,
+ * không đổi; xung đột mở song song cùng lúc chỉ có thể làm `auto` chọn cổng cho một khoản thu ĐÃ gắn attempt (vẫn hoàn
+ * đúng giao dịch gốc của nó).
+ */
+export async function refundSourcesOf(container: Scope, ctx: OrderContext): Promise<RefundSources> {
+  const [captures, open] = await Promise.all([
+    capturesOf(container, ctx),
+    checkoutOf(container).listOpsExceptions({
+      order_id: ctx.fin.order_id,
+      kind: "payment_unknown",
+      state: ["open", "in_progress"],
+    }),
+  ]);
+  const txnConflict = open.some(
+    (e) => (e.detail as { reason?: unknown } | null)?.reason === "attempt_txn_conflict",
+  );
+  // Chỉ đọc cờ bật/tắt (không gọi mạng) — vẫn đọc NGOÀI transaction theo DB-TX-003.
+  return { captures, txnConflict, gatewayEnabled: getRefundGateway().enabled };
 }
 
 /**
@@ -107,26 +138,6 @@ function entriesOf(captures: readonly CaptureInfo[], refunds: readonly RefundRow
 export function refundableOf(captures: readonly CaptureInfo[], refunds: readonly RefundRow[]): number {
   const t = ledgerTotals(entriesOf(captures, refunds));
   return Math.max(0, t.captured - t.refundSucceeded - t.refundHeld);
-}
-
-/** Khoản thu VNPAY còn đủ chỗ cho một lần hoàn qua cổng (mỗi refund cổng gắn MỘT giao dịch gốc). */
-function pickProviderCapture(
-  captures: readonly CaptureInfo[],
-  refunds: readonly RefundRow[],
-  amount: number,
-): CaptureInfo | null {
-  for (const c of captures.filter((x) => x.provider === "vnpay")) {
-    const used = sumVnd(
-      refunds
-        .filter(
-          (r) =>
-            r.method === "provider" && r.capture_ref === c.provider_txn_id && refundOccupiesCapture(r.state),
-        )
-        .map((r) => r.amount),
-    );
-    if (c.amount - used >= amount) return c;
-  }
-  return null;
 }
 
 interface RefundDraft {
@@ -153,9 +164,10 @@ export async function insertRefundLocked(
   svc: ReturnsModuleService,
   trx: Knex.Transaction,
   ctx: OrderContext,
-  captures: readonly CaptureInfo[],
+  sources: RefundSources,
   d: RefundDraft,
 ): Promise<RefundRow> {
+  const { captures } = sources;
   const refunds = await svc.listRefundsOfOrder(ctx.fin.order_id, trx);
   const allowed = checkRefundAllowed(entriesOf(captures, refunds), d.amount);
   if (!allowed.ok) {
@@ -165,22 +177,9 @@ export async function insertRefundLocked(
           refundable: refundableOf(captures, refunds),
         });
   }
-  const pick = pickProviderCapture(captures, refunds, d.amount);
-  let method: RefundMethod;
-  if (d.method === "provider") {
-    if (!pick) {
-      const hasVnpay = captures.some((c) => c.provider === "vnpay");
-      throw hasVnpay
-        ? new ReturnsError(
-            "REFUND_SPLIT_REQUIRED",
-            "Số tiền vượt một giao dịch gốc — chia thành nhiều lần hoàn",
-          )
-        : new ReturnsError("REFUND_METHOD_UNAVAILABLE", "Đơn không có giao dịch cổng để hoàn — dùng manual");
-    }
-    method = "provider";
-  } else if (d.method === "manual") method = "manual";
-  else method = pick ? "provider" : "manual";
-  const capture = method === "provider" ? pick : null;
+  const route = routeRefund(sources, refunds, d.amount, d.method);
+  const capture = route.method === "provider" ? route.capture : null;
+  const note = route.method === "manual" && route.reason ? autoManualNote(d.note, route.reason) : d.note;
   const approvalRequired = d.amount > RETURNS_CONFIG.refundApprovalThresholdVnd;
   const autoApprove = d.requester_can_approve && !approvalRequired;
   return svc.insertRefund(trx, {
@@ -188,7 +187,7 @@ export async function insertRefundLocked(
     return_id: d.return_id,
     reason: d.reason,
     amount: d.amount,
-    method,
+    method: route.method,
     provider: capture ? capture.provider : "manual",
     capture_ref: capture ? capture.provider_txn_id : null,
     state: autoApprove ? "approved" : "requested",
@@ -196,7 +195,7 @@ export async function insertRefundLocked(
     requested_by: d.requested_by,
     approved_by: autoApprove ? d.requested_by : null,
     approved_at: autoApprove ? new Date() : null,
-    note: d.note,
+    note,
     idempotency_key: d.idempotency_key,
     payload_hash: d.payload_hash,
   });
@@ -298,7 +297,8 @@ export async function createRefund(
   if (input.reason !== "cancellation" && input.reason !== "return" && input.amount === null) {
     throw new ReturnsError("VALIDATION", "Cần số tiền hoàn", { field: "amount" });
   }
-  const captures = await capturesOf(container, ctx);
+  const sources = await refundSourcesOf(container, ctx);
+  const { captures } = sources;
   try {
     const refund = await svc.transaction(async (trx) => {
       await svc.lockOrder(trx, input.order_id);
@@ -309,7 +309,7 @@ export async function createRefund(
         input.reason === "return"
           ? await returnReplacementAmount(svc, trx, input)
           : (input.amount ?? refundableOf(captures, await svc.listRefundsOfOrder(input.order_id, trx)));
-      const row = await insertRefundLocked(svc, trx, ctx, captures, {
+      const row = await insertRefundLocked(svc, trx, ctx, sources, {
         reason: input.reason,
         amount,
         return_id: input.reason === "return" ? input.return_id : null,
@@ -379,7 +379,8 @@ export async function openCancellationRefund(
   if (prior) return prior;
   const ctx = await loadOrderContext(container, orderId);
   if (ctx.fin.state !== "cancelled") return null;
-  const captures = await capturesOf(container, ctx);
+  const sources = await refundSourcesOf(container, ctx);
+  const { captures } = sources;
   try {
     const row = await svc.transaction(async (trx) => {
       await svc.lockOrder(trx, orderId);
@@ -387,7 +388,7 @@ export async function openCancellationRefund(
       if (again) return again;
       const amount = refundableOf(captures, await svc.listRefundsOfOrder(orderId, trx));
       if (amount <= 0) return null;
-      return insertRefundLocked(svc, trx, ctx, captures, {
+      return insertRefundLocked(svc, trx, ctx, sources, {
         reason: "cancellation",
         amount,
         return_id: null,
@@ -496,14 +497,19 @@ async function providerRequestOf(
   r: RefundRow,
   actor: Actor,
 ): Promise<ProviderRefundRequest> {
-  const capture = r.capture_ref as string;
+  const capture = r.capture_ref ?? "";
   const svc = checkoutOf(container);
-  const attempts = capture.startsWith("ref:")
-    ? await svc.listPaymentAttempts({ order_id: r.order_id, txn_ref: capture.slice(4) })
-    : await svc.listPaymentAttempts({ order_id: r.order_id, provider_txn_no: capture });
+  // Giao dịch gốc = attempt mang ĐÚNG mã của khoản thu (kể cả dạng `ref:<txn_ref>` khi IPN không có mã) — cùng phép so
+  // với `capturesOf().linked` và đối soát. Attempt mang mã khác (xung đột, T-169) không được dùng thay.
+  const attempts = isNonEmpty(capture)
+    ? await svc.listPaymentAttempts({ order_id: r.order_id, provider_txn_no: capture })
+    : [];
   const pa = attempts[0];
   if (!pa)
-    throw new ReturnsError("REFUND_METHOD_UNAVAILABLE", "Không tìm thấy giao dịch gốc để hoàn qua cổng");
+    throw new ReturnsError(
+      "REFUND_METHOD_UNAVAILABLE",
+      "Không tìm thấy giao dịch gốc để hoàn qua cổng — dùng manual",
+    );
   const [ledger] = await svc.listPaymentLedgers({
     order_id: r.order_id,
     kind: "capture",
@@ -595,6 +601,49 @@ function assertCanRetry(r: RefundRow): void {
   );
 }
 
+/**
+ * Yêu cầu hoàn qua cổng CHƯA từng rời hệ thống: `approved`, hoặc `failed` chưa gửi lần nào (`attempts` chỉ tăng khi vào
+ * `processing`, ngay trước khi gọi cổng). Chỉ những yêu cầu này được chốt `failed`/hủy mà không đối chiếu với cổng.
+ */
+const neverSentToProvider = (r: RefundRow): boolean =>
+  r.state === "approved" || (r.state === "failed" && r.attempts === 0);
+
+/**
+ * Cổng/hệ thống từ chối DỨT KHOÁT trước khi gửi (T-169): cổng hoàn tắt (409 `REFUND_PROVIDER_DISABLED`) hoặc không có
+ * giao dịch gốc (422 `REFUND_METHOD_UNAVAILABLE`). Yêu cầu chưa từng gửi → `failed` + `last_error` = lý do (hủy được ngay,
+ * nhả số giữ — `cancelRefund`), audit `refund.failed` một lần. Yêu cầu có thể đã tới cổng (`processing`/`unknown`/`failed`
+ * đã gửi) → GIỮ NGUYÊN: cổng có thể đã hoàn, chỉ đối chiếu mới chốt được (không nhả tiền → không hoàn hai lần). Trả lỗi
+ * gốc kèm trạng thái sau cùng để route ném ra.
+ */
+async function refuseBeforeSend(
+  container: Scope,
+  r: RefundRow,
+  error: ReturnsError,
+  reason: "provider_disabled" | "method_unavailable",
+  auditCtx: AuditCtx,
+): Promise<ReturnsError> {
+  let after = r;
+  if (neverSentToProvider(r) && !(r.state === "failed" && r.last_error === reason)) {
+    const svc = returnsOf(container);
+    const moved = await svc.updateRefund(null, r.id, [r.state], { state: "failed", last_error: reason });
+    after = moved ?? ((await svc.getRefund(r.id)) as RefundRow);
+    if (moved && r.state === "approved") {
+      await audit(container, auditCtx, {
+        action: "refund.failed",
+        resource_type: "refund",
+        resource_id: r.id,
+        changes: { ...refundChanges(after), attempts: after.attempts, provider_reason: reason },
+      });
+    }
+  }
+  return new ReturnsError(error.code, error.message, {
+    ...error.detail,
+    state: after.state,
+    attempts: after.attempts,
+    last_error: after.last_error,
+  });
+}
+
 export interface ExecuteResult {
   refund: RefundRow;
   outcome: "succeeded" | "failed" | "unknown" | "already_succeeded";
@@ -605,6 +654,7 @@ export interface ExecuteResult {
  *  - `manual`: cần `evidence_ref` (mã chứng từ chuyển khoản/COD) → succeeded;
  *  - `provider`: approved|failed → processing → gọi cổng với `provider_request_id` cố định. Timeout → `unknown` + ngoại lệ
  *    `refund_unknown`; gọi lại → HỎI cổng cùng mã trước, chỉ gửi lại khi cổng chưa từng nhận (AT16 — không hoàn trùng).
+ *    Cổng tắt / không có giao dịch gốc → `refuseBeforeSend` (T-169): chưa gửi → `failed` có lý do; có thể đã gửi → giữ.
  * Đã succeeded → trả nguyên (idempotent).
  */
 export async function executeRefund(
@@ -660,12 +710,26 @@ export async function executeRefund(
     } else {
       const gateway = getRefundGateway();
       if (!gateway.enabled) {
-        throw new ReturnsError(
-          "REFUND_PROVIDER_DISABLED",
-          "Hoàn qua cổng chưa được bật ở môi trường này — dùng hoàn ngoài hệ thống có chứng từ",
+        throw await refuseBeforeSend(
+          container,
+          r,
+          new ReturnsError(
+            "REFUND_PROVIDER_DISABLED",
+            "Hoàn qua cổng chưa được bật ở môi trường này — hủy yêu cầu rồi hoàn ngoài hệ thống (manual) có chứng từ",
+          ),
+          "provider_disabled",
+          auditCtx,
         );
       }
-      const req = await providerRequestOf(container, r, actor);
+      let req: ProviderRefundRequest;
+      try {
+        req = await providerRequestOf(container, r, actor);
+      } catch (e) {
+        if (e instanceof ReturnsError && e.code === "REFUND_METHOD_UNAVAILABLE") {
+          throw await refuseBeforeSend(container, r, e, "method_unavailable", auditCtx);
+        }
+        throw e;
+      }
       let known: ProviderRefundResult | null = null;
       if (r.state === "unknown" || r.state === "processing") {
         // Lần trước chưa rõ kết quả (timeout/sập giữa chừng) → hỏi CÙNG mã trước khi gửi lại.
@@ -741,7 +805,9 @@ export async function executeRefund(
  * Hủy yêu cầu hoàn `failed` (T-044, quyền `refund.execute`, lý do bắt buộc): `failed → cancelled` nhả số đang giữ để mở
  * yêu cầu MỚI (duyệt lại từ đầu — S-403). Dưới khóa `order:<id>` (cùng khóa với execute) nên không đua với một lần thực
  * hiện. Hoàn qua cổng: HỎI cổng cùng mã trước — cổng báo đã hoàn → chốt `succeeded`, không hủy (409); cổng không trả lời
- * rõ → 409 REFUND_PROVIDER_UNCONFIRMED (gọi lại sau); không hỏi được (cổng tắt) → 409, không hủy mù. Đã hủy → trả nguyên.
+ * rõ → 409 REFUND_PROVIDER_UNCONFIRMED (gọi lại sau); không hỏi được (cổng tắt) → 409, không hủy mù. Ngoại lệ (T-169):
+ * yêu cầu CHƯA từng gửi cổng (`attempts = 0` — bị từ chối dứt khoát trước khi gửi) hủy ngay, không cần hỏi cổng. Đã hủy
+ * → trả nguyên.
  */
 export async function cancelRefund(
   container: Scope,
@@ -762,12 +828,13 @@ export async function cancelRefund(
         state: r.state,
       });
     }
-    if (r.method === "provider") {
+    if (r.method === "provider" && !neverSentToProvider(r)) {
       const gateway = getRefundGateway();
       if (!gateway.enabled) {
         throw new ReturnsError(
           "REFUND_PROVIDER_DISABLED",
-          "Không đối chiếu được với cổng ở môi trường này — chưa thể hủy yêu cầu hoàn qua cổng",
+          "Không đối chiếu được với cổng ở môi trường này — chưa thể hủy yêu cầu hoàn qua cổng đã gửi",
+          { attempts: r.attempts },
         );
       }
       const req = await providerRequestOf(container, r, actor);

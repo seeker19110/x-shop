@@ -35,7 +35,7 @@ import {
   type OrderContext,
   type OrderLine,
 } from "./order-context";
-import { audit, capturesOf, insertRefundLocked, type Actor, type AuditCtx } from "./refunds";
+import { audit, insertRefundLocked, refundSourcesOf, type Actor, type AuditCtx } from "./refunds";
 import { createReplacementOrderWorkflow, replacementAttemptId } from "./replacement-order";
 
 type Scope = Pick<MedusaContainer, "resolve">;
@@ -1047,7 +1047,11 @@ export async function inspectReturn(
     // đơn) — kiểm định chỉ quyết tồn, không mở thêm hoàn tiền.
     const carrier = isCarrierReturn(cur);
     const refundable = cur.kind === "return" && !carrier;
-    const captures = refundable ? await capturesOf(container, ctx) : [];
+    // Nguồn tiền (khoản thu, cờ xung đột mã, cổng bật/tắt) để định tuyến hoàn, đọc NGOÀI transaction — `auto` chọn
+    // manual khi cổng tắt/khoản thu không gắn attempt (T-169). Không hoàn được → không tạo refund, nguồn rỗng.
+    const sources = refundable
+      ? await refundSourcesOf(container, ctx)
+      : { captures: [], txnConflict: false, gatewayEnabled: false };
     const refund = await svc.transaction(async (trx) => {
       await svc.lockOrder(trx, cur.order_id);
       const moved = await svc.updateReturn(trx, id, ["received"], {
@@ -1083,7 +1087,7 @@ export async function inspectReturn(
         await svc.updateReturn(trx, id, ["inspected"], { state: "closed", closed_at: new Date() });
         return null;
       }
-      return insertRefundLocked(svc, trx, ctx, captures, {
+      return insertRefundLocked(svc, trx, ctx, sources, {
         reason: "return",
         amount: total,
         return_id: id,

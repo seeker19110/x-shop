@@ -6,8 +6,9 @@ import { getVnpayConfig } from "../../lib/checkout/config";
  * HỎI LẠI cùng nghiệp vụ, không tạo refund mới (AT16). Kết quả mơ hồ luôn là `unknown`, không bao giờ suy ra thất bại.
  *
  * Phạm vi T-027: chỉ có bản giả lập (VNPAY_MODE=mock, dev/CI) dựng thân request bằng `vnpay.buildRefund` của domain.
- * Ủy quyền hiện tại không cho gọi refund thật → ở sandbox/live cổng bị TẮT (fail-closed): hoàn `provider` trả 409
- * REFUND_PROVIDER_DISABLED, kế toán dùng phương thức `manual` có chứng từ. Bật HTTP thật là việc riêng khi có ủy quyền.
+ * Ủy quyền hiện tại không cho gọi refund thật → ở sandbox/live cổng bị TẮT (fail-closed): `auto` tự chọn `manual`, tạo
+ * `provider` trả 409 REFUND_PROVIDER_DISABLED; yêu cầu `provider` có từ trước → `failed` chưa gửi, hủy được (T-169). Kế
+ * toán hoàn `manual` có chứng từ. Bật HTTP thật là việc riêng khi có ủy quyền.
  */
 export interface ProviderRefundRequest {
   requestId: string;
