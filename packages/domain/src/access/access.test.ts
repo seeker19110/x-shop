@@ -43,6 +43,20 @@ describe("RBAC — AT21", () => {
     expect(can(["accountant"], "refund.execute")).toBe(true);
     expect(can(["support", "warehouse"], "return.inspect")).toBe(true);
   });
+  it("payment.override (T-165, D-118): chỉ owner — kế toán đọc thanh toán nhưng không ghi đè; tổ hợp vai trò không lách", () => {
+    expect(can(["owner"], "payment.override")).toBe(true);
+    for (const r of ROLES.filter((x) => x !== "owner")) {
+      expect({ r, ok: can([r], "payment.override") }).toEqual({ r, ok: false });
+    }
+    expect(can(["accountant"], "payment.read")).toBe(true);
+    expect(
+      can(
+        ROLES.filter((x) => x !== "owner"),
+        "payment.override",
+      ),
+    ).toBe(false);
+    expect(permissionsOf(["accountant", "order_staff"])).not.toContain("payment.override");
+  });
   it("chỉ owner quản lý người dùng/cấu hình", () => {
     for (const r of ROLES.filter((x) => x !== "owner")) {
       expect(can([r], "user.manage")).toBe(false);

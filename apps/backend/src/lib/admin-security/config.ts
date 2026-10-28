@@ -37,6 +37,8 @@ export const SENSITIVE_PERMISSIONS: readonly Permission[] = [
   "settings.manage",
   "customer.export",
   "settlement.import",
+  // T-165: ghi đè thanh toán chưa xác minh (hủy đơn mà tiền có thể đã trừ) — cùng mức với hoàn tiền.
+  "payment.override",
 ];
 
 export const isSensitive = (perm: Permission): boolean => SENSITIVE_PERMISSIONS.includes(perm);

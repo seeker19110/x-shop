@@ -44,7 +44,7 @@
 ## Ma trận vai trò (đặc tả §5.4)
 | Vai trò | Quyền chính |
 |---|---|
-| owner | `*` |
+| owner | `*` (gồm `payment.override` — hủy đơn thanh toán chưa xác minh, T-165/D-118: chỉ owner, MFA) |
 | catalog_manager | `catalog.*`, `content.*`, `price.write` |
 | order_staff | `order.read`, `order.confirm`, `fulfillment.*` |
 | warehouse | `inventory.*`, `return.receive`, `return.inspect` |
