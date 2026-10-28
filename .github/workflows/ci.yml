@@ -224,14 +224,17 @@ jobs:
   # x-shop (T-163, OPS-DEPLOY-003, D-115): test tích hợp của bản N−1 (ref gốc) trên schema N (migration của HEAD) —
   # `scripts/n-minus-1.mjs` (cây N−1 qua git archive, phủ migration HEAD, chứng minh schema trùng `db:migrate` của HEAD,
   # rồi chạy `test:integration` của N−1). Job RIÊNG, song song với `gate` (không `needs`), để không kéo dài `gate`
-  # (~26/30 phút). KHÔNG nằm trong `quality.needs` nên không phải required check: chạy cả bộ test tích hợp (đo
-  # trong RUNBOOK §5) và chưa có số đo độ ổn định trên runner — đỏ hiện trên PR để người/agent đọc, không chặn merge.
+  # (~26/30 phút). KHÔNG nằm trong `quality.needs` (không phải required check của ruleset), NHƯNG `xt.py merge-check`
+  # của khung xét MỌI check của PR nên job đỏ vẫn CHẶN merge do máy — D-124 chấp nhận: đây là cổng thật cho PR có
+  # migration. Mã 1 (không tương thích) và 2 (không kết luận được) đều đỏ, kèm annotation `::error::` nêu hướng xử lý;
+  # bảng xử lý theo nguyên nhân ở RUNBOOK §5 "Xử lý job n-minus-1 đỏ".
   # Chỉ chạy nặng khi có migration thêm/đổi/xoá so với ref gốc (bước detect, không cần cài phụ thuộc); không có → các
   # bước sau `skipped`, job xanh trong vài giây. Ref gốc: ĐÚNG biểu thức của bước check-migrations trong `gate`.
   n-minus-1:
     name: n-minus-1
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Cả bộ test (26–44 phút ở máy dev) + khi có ca đỏ: 2 lần xác nhận + 1 đối chứng chỉ trên suite đỏ (D-124).
+    timeout-minutes: 60
     services:
       postgres:
         # Cùng digest với job `gate` (BASE-DEP-008).
