@@ -292,8 +292,9 @@ medusaIntegrationTestRunner({
       // Chờ thêm hơn một cửa sổ để mọi lượt gửi gộp đã chạy.
       await new Promise((r) => setTimeout(r, 2 * CATALOG_REVALIDATE_POLICY.windowMs + 500));
       const hooks = withTag(t0);
-      const rows = await rowsFor(await productId(), t0);
-      const windows = new Set(rows.map((r) => r.event_key.split(":")[3]));
+      // Chỉ dòng của sản phẩm (`catalog.revalidate:p:<mốc cửa sổ>:<id>`) — phần tử [2] là mốc cửa sổ.
+      const rows = await rowsFor(await productId(), t0, false);
+      const windows = new Set(rows.map((r) => r.event_key.split(":")[2]));
       expect(windows.size).toBe(rows.length); // một dòng mỗi (sản phẩm, cửa sổ)
       expect(hooks).toHaveLength(rows.length); // một webhook mỗi cửa sổ
       expect(rows.length).toBeLessThan(8);
