@@ -182,8 +182,25 @@ medusaIntegrationTestRunner({
       const CHUNK_ROWS = 500;
       const COLUMNS = 25;
       const inserts: number[] = [];
+      // Chỉ đếm INSERT trong giao dịch replaceAll của rebuild: từ T-167 lượt xả nền (job mỗi phút, lượt hẹn) được phép
+      // đồng bộ song song lúc rebuild đọc nguồn — INSERT của nó không thuộc phép đo. replaceAll giữ khoá ghi nên trong
+      // khoảng này không lượt đồng bộ nào ghi xen.
+      let inReplace = false;
+      let inserted = -1;
+      const svc = index();
+      const replace = svc.replaceAll.bind(svc);
+      jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        inReplace = true;
+        try {
+          const r = await replace(rows, since);
+          inserted = r.inserted;
+          return r;
+        } finally {
+          inReplace = false;
+        }
+      });
       const onQuery = (q: { sql?: string; bindings?: unknown[] }) => {
-        if (/^insert into "catalog_variant_index"/i.test(q.sql ?? ""))
+        if (inReplace && /^insert into "catalog_variant_index"/i.test(q.sql ?? ""))
           inserts.push((q.bindings ?? []).length);
       };
       db.on("query", onQuery);
@@ -193,9 +210,11 @@ medusaIntegrationTestRunner({
       } finally {
         db.removeListener("query", onQuery);
       }
-      expect(inserts).toHaveLength(Math.ceil(expectedTotal / CHUNK_ROWS));
+      // `inserted` = dòng ảnh chụp thực ghi (trừ sản phẩm giữ bản đồng bộ nếu lượt xả nền chen lúc đọc — thường 0).
+      expect(inserted).toBeGreaterThan(expectedTotal - 10 * SKUS_PER_PRODUCT);
+      expect(inserts).toHaveLength(Math.ceil(inserted / CHUNK_ROWS));
       expect(Math.max(...inserts)).toBe(CHUNK_ROWS * COLUMNS);
-      expect(inserts.reduce((a, b) => a + b, 0)).toBe(expectedTotal * COLUMNS);
+      expect(inserts.reduce((a, b) => a + b, 0)).toBe(inserted * COLUMNS);
     });
 
     it("đồng bộ theo lô lớn (mọi sản phẩm sinh một lần gọi) cũng đủ dòng", async () => {
@@ -395,10 +414,19 @@ medusaIntegrationTestRunner({
         async () => ({ price: await pricesOf(vid), dirty: await isDirty(pid) }),
       );
 
-      expect(result.kept).toBe(0);
-      // Ảnh chụp đã cầm giá cũ (móc dừng SAU khi đọc giá); dấu đặt sau mốc bắt đầu không bị rebuild nuốt.
-      expect(atReplace).toEqual({ price: [before], dirty: true });
-      expect(await drainCatalogIndex(container, { waitMs: 5_000 })).toBe(1);
+      // Hai nhánh hợp lệ (T-167 cố ý cho lượt xả nền — job mỗi phút, lượt hẹn — chạy song song lúc rebuild đọc nguồn):
+      if (result.kept === 0) {
+        // (a) Không lượt xả nào lấy dấu trước replaceAll: ảnh chụp (đã cầm giá CŨ — móc dừng SAU khi đọc giá) được ghi,
+        // dấu đặt sau mốc bắt đầu còn nguyên.
+        expect(atReplace).toEqual({ price: [before], dirty: true });
+      } else {
+        // (b) Lượt xả nền đã đồng bộ sản phẩm (đọc nguồn sau thay đổi) trước replaceAll: bản đồng bộ được giữ và sản phẩm
+        // được đánh dấu bẩn lại trong replaceAll.
+        expect(result.kept).toBe(1);
+        expect(atReplace).toEqual({ price: [NEW], dirty: true });
+      }
+      // Bất biến chung: dấu không bị rebuild nuốt → lượt xả kế ghi giá mới, hàng đợi sạch.
+      await settle();
       expect(await pricesOf(vid)).toEqual([NEW]);
       expect(await isDirty(pid)).toBe(false);
 
@@ -442,8 +470,10 @@ medusaIntegrationTestRunner({
       });
       try {
         // 1) Lượt đồng bộ pid đã ĐỌC nguồn (giá cũ), dừng ngay trước replaceProducts (đang giữ khoá ghi).
+        // Lượt xả nền (job mỗi phút) cũng có thể lấy dấu này trước — móc trên replaceProducts dừng bất kỳ lượt nào ghi pid;
+        // lượt xả của ca chờ khoá (không đếm nó xử lý bao nhiêu).
         await svc.markDirty([pid]);
-        const drain = drainCatalogIndex(container);
+        const drain = drainCatalogIndex(container, { waitMs: 20_000 });
         await writeReached;
         // 2) Thay đổi KHÔNG phát sự kiện (price list tới giờ, bảng màu/size, link kho↔kênh): nguồn đổi, không dấu.
         await setSourcePrice(vid, NEW);
@@ -456,7 +486,7 @@ medusaIntegrationTestRunner({
         ).toBe(true);
         // 4) Lượt đồng bộ ghi (mốc ≥ since) bằng dữ liệu đọc TRƯỚC thay đổi, rồi xoá dấu.
         releaseWrite();
-        expect(await drain).toBe(1);
+        await drain;
         const result = await run;
         expect(result.kept).toBe(1);
         // Bản giữ lại (cũ) được đánh dấu bẩn lại cùng giao dịch replaceAll → lượt xả đọc nguồn mới nhất.
@@ -511,19 +541,24 @@ medusaIntegrationTestRunner({
       const release = locking.release.bind(locking);
       const isIndexLock = (keys: string | string[]) =>
         (Array.isArray(keys) ? keys : [keys]).includes(CATALOG_INDEX_LOCK);
-      let held = false;
+      // Chỉ khoá do REBUILD giữ: lượt xả nền (chủ `drain-…`, job mỗi phút/lượt hẹn) được phép chạy song song từ T-167.
+      const ownerOf = (args: unknown) => (args as { ownerId?: string } | undefined)?.ownerId ?? "";
+      let heldBy: string | null = null;
       jest.spyOn(locking, "acquire").mockImplementation(async (keys, args) => {
         await acquire(keys, args);
-        if (isIndexLock(keys)) held = true;
+        if (isIndexLock(keys) && !ownerOf(args).startsWith("drain-")) heldBy = ownerOf(args);
       });
       jest.spyOn(locking, "release").mockImplementation(async (keys, args) => {
-        if (isIndexLock(keys)) held = false;
+        if (isIndexLock(keys) && ownerOf(args) === heldBy) heldBy = null;
         return release(keys, args);
       });
       const inLock: string[] = [];
       let outside = 0;
       const onQuery = (q: { sql?: string }) => {
-        if (held) inLock.push(q.sql ?? "");
+        const sql = q.sql ?? "";
+        // Câu thăm dò hàng đợi của lượt xả nền đang chờ khoá (dirtyCount) không thuộc rebuild — không tính bên nào.
+        if (/catalog_index_dirty/.test(sql)) return;
+        if (heldBy !== null) inLock.push(sql);
         else outside += 1;
       };
       db.on("query", onQuery);

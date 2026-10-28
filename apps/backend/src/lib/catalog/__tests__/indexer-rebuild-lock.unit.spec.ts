@@ -3,7 +3,13 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { CATALOG_INDEX_MODULE } from "../../../modules/catalog-index";
 import { CHECKOUT_MODULE } from "../../../modules/checkout";
 import type { DirtyClaim } from "../../../modules/catalog-index/service";
-import { CATALOG_INDEX_LOCK, CATALOG_REBUILD_LOCK, drainCatalogIndex, REBUILD_MARK } from "../indexer";
+import {
+  CATALOG_INDEX_LOCK,
+  CATALOG_REBUILD_LOCK,
+  drainCatalogIndex,
+  rebuildCatalogIndex,
+  REBUILD_MARK,
+} from "../indexer";
 import type { ProductSource } from "../product-source";
 
 /**
@@ -106,7 +112,7 @@ function setup(opts: { rebuildBusy?: boolean } = {}) {
     clockNow: jest.fn(async () => "2026-10-27 00:00:01.000001+00"),
     replaceAll: jest.fn(async (rows: unknown[]) => {
       log.push(`replaceAll${state()}`);
-      return { applied: true, inserted: rows.length, keptProducts: [], keptRows: 0 };
+      return { applied: true, inserted: rows.length, keptProducts: [] as string[], keptRows: 0 };
     }),
     countRows: jest.fn(async (ids?: string[]) => (ids ?? ["prod_1", "prod_2"]).length),
   };
@@ -178,5 +184,39 @@ describe("lượt xả gặp dấu '*' (T-167)", () => {
       index.clearDirty.mock.calls.flat(2).some((c) => (c as DirtyClaim).product_id === REBUILD_MARK),
     ).toBe(false);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("dấu '*'"));
+  });
+});
+
+/**
+ * Review T-167 🔴1/🟢A: sản phẩm giữ bản đồng bộ được đánh dấu bẩn lại trong replaceAll → rebuild xong phải HẸN lượt xả
+ * ngay (không để bản có thể cũ chờ job mỗi phút). Không giữ sản phẩm nào → không hẹn.
+ */
+describe("rebuild xong hẹn lượt xả cho sản phẩm giữ bản đồng bộ (T-167)", () => {
+  async function run(keptProducts: string[]) {
+    const { container, index } = setup();
+    // Hàng đợi rỗng: lượt xả hẹn (nếu có) chỉ gọi claimDirty rồi thôi.
+    index.claimDirty.mockImplementation(async () => []);
+    index.replaceAll.mockImplementation(async (rows: unknown[]) => ({
+      applied: true,
+      inserted: rows.length - keptProducts.length,
+      keptProducts,
+      keptRows: keptProducts.length,
+    }));
+    const result = await rebuildCatalogIndex(container);
+    expect(index.claimDirty).not.toHaveBeenCalled(); // rebuild không tự xả trong chính lời gọi
+    await new Promise((r) => setTimeout(r, 100)); // lượt hẹn `scheduleCatalogDrain(container, 0)` chạy trên timer
+    return { result, index };
+  }
+
+  it("có sản phẩm giữ lại → lượt xả hẹn chạy (claimDirty được gọi)", async () => {
+    const { result, index } = await run(["prod_1"]);
+    expect(result.kept).toBe(1);
+    expect(index.claimDirty).toHaveBeenCalled();
+  });
+
+  it("không giữ sản phẩm nào → không hẹn lượt xả", async () => {
+    const { result, index } = await run([]);
+    expect(result.kept).toBe(0);
+    expect(index.claimDirty).not.toHaveBeenCalled();
   });
 });
