@@ -23,7 +23,16 @@ export const REQUIRED = [
 ];
 
 /** Dòng liên kết/thay thế (được phép thêm/sửa trong khối Status của ADR đã chốt). */
-export const LINK_RE = /^\s*(?:[-*]\s*)?(?:links?|liên kết|superseded by|bị thay thế bởi|supersedes|thay)\b/i;
+export const LINK_RE =
+  /^\s*(?:[-*]\s*)?(?:links?|liên kết|superseded by|bị thay thế bởi|bị thay bởi|supersedes|thay thế|thay)\s*:?\s*ADR-\d{4}/iu;
+const W = "(?![\\p{L}\\p{N}_])"; // ranh giới từ hiểu Unicode (\b của JS không xử lý chữ có dấu)
+/** Từ đầu hợp lệ của giá trị Status (ép bởi check-adr); phần sau tuỳ ý. */
+export const STATUS_VALUE_RE = new RegExp(
+  `^(?:proposed|accepted|rejected|deprecated|superseded by ADR-\\d{4}|đề xuất|chấp nhận|từ chối|lỗi thời|bị thay bởi ADR-\\d{4})${W}`,
+  "iu",
+);
+/** Giá trị Status chưa chốt (ADR còn được sửa tự do). */
+export const UNFINAL_VALUE_RE = new RegExp(`^(?:proposed|draft|đề xuất|nháp)${W}`, "iu");
 const STATUS_LINE_RE = /^\s*(?:[-*]\s*)?(?:trạng thái|status)\s*:/i;
 
 /**
@@ -38,7 +47,8 @@ export function parseStatus(lines) {
       const mutable = new Set();
       for (let i = 1; i < close; i++)
         if (/^status\s*:/i.test(lines[i]) || LINK_RE.test(lines[i])) mutable.add(i);
-      return { start: 0, end: close + 1, mutable };
+      const value = lines.findIndex((l, i) => i > 0 && i < close && /^status\s*:/i.test(l));
+      return { start: 0, end: close + 1, mutable, value };
     }
   }
   for (let i = 0; i < lines.length; i++) {
@@ -50,16 +60,24 @@ export function parseStatus(lines) {
       const first = lines.findIndex((l, j) => j > i && j < end && l.trim() !== "");
       if (first >= 0) mutable.add(first);
       for (let j = i + 1; j < end; j++) if (LINK_RE.test(lines[j])) mutable.add(j);
-      return { start: i, end, mutable };
+      return { start: i, end, mutable, value: first };
     }
     if (STATUS_LINE_RE.test(lines[i])) {
       let end = i + 1;
       const mutable = new Set([i]);
       while (end < lines.length && LINK_RE.test(lines[end])) mutable.add(end++);
-      return { start: i, end, mutable };
+      return { start: i, end, mutable, value: i };
     }
   }
   return null;
+}
+
+/** Giá trị Status (bỏ nhãn `Status:`/`- Trạng thái:`), "" nếu không có. */
+export function statusValue(text) {
+  const lines = toLines(text);
+  const st = parseStatus(lines);
+  if (!st || st.value < 0) return "";
+  return lines[st.value].replace(/^\s*(?:[-*]\s*)?(?:(?:trạng thái|status)\s*:)?\s*/iu, "").trim();
 }
 
 const toLines = (t) => (t ?? "").replace(/\r\n/g, "\n").split("\n");
@@ -97,6 +115,11 @@ export function lintAdr(text) {
     const m = /^#{2}\s+(.+?)\s*$/.exec(l);
     if (m) headings.push({ name: norm(m[1]), line: i });
   });
+  if (parseStatus(lines) && !STATUS_VALUE_RE.test(statusValue(text))) {
+    errors.push(
+      "Status phải bắt đầu bằng Proposed|Accepted|Rejected|Deprecated|Superseded by ADR-NNNN (hoặc Đề xuất|Chấp nhận|Từ chối|Lỗi thời|Bị thay bởi ADR-NNNN)",
+    );
+  }
   for (const [label, accepted] of REQUIRED) {
     const h = headings.find((x) => accepted.includes(x.name));
     if (!h) {

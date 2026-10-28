@@ -1,27 +1,22 @@
 #!/usr/bin/env node
-// ADR đã chốt bất biến (ARC-ADR-004, BASE-DOC-003): so ADR có Status accepted (hoặc đã superseded/deprecated — cũng là
-// quyết định đã chốt) ở ref gốc với HEAD. Chỉ được đổi dòng/mục Status và dòng liên kết ("Superseded by", "Links").
+// ADR đã chốt bất biến (ARC-ADR-004, BASE-DOC-003): so ADR đã chốt (mặc định; chỉ Proposed/Đề xuất/Draft/Nháp là chưa chốt — gồm
+// accepted/superseded/deprecated/rejected, kể cả giá trị lạ) ở ref gốc với HEAD. Chỉ được đổi dòng/mục Status và dòng liên kết ("Superseded by", "Links").
 //  - đổi chỗ khác → vi phạm; xoá/đổi tên ADR đã chốt → vi phạm; ADR mới/đang proposed → bỏ qua.
 //  - Status ở HEAD vẫn phải là trạng thái đã chốt (không "gỡ" accepted về proposed để lách).
 // Ref gốc: `--base <ref>` > biến ADR_BASE_REF > `origin/master`. CI: PR → origin/<nhánh đích>; push → commit trước push.
 // So HEAD (commit), không so working tree. Cần lịch sử nhánh đích (CI: fetch-depth: 0). Thoát 0 = đạt; 1 = vi phạm/lỗi.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { parseStatus } from "./check-adr.mjs";
+import { UNFINAL_VALUE_RE, parseStatus, statusValue } from "./check-adr.mjs";
 
 export const DEFAULT_BASE = "origin/master";
-const FINAL_RE = /\b(?:accepted|superseded|deprecated)\b/i;
-const NEGATED_RE = /\b(?:not|never|chưa|không)\s+(?:yet\s+|được\s+)?(?:accepted|superseded|deprecated)\b/i;
 const MARK = "\u0000STATUS\u0000";
 
 const split = (t) => (t ?? "").replace(/\r\n/g, "\n").split("\n");
 
-/** Trạng thái đã chốt? Chỉ xét dòng giá trị/liên kết của khối Status ĐẦU TIÊN; "not accepted"/"chưa …" không tính. */
+/** Đã chốt? MẶC ĐỊNH là có; chỉ chưa chốt khi giá trị Status bắt đầu bằng Proposed/Đề xuất/Draft/Nháp (khối đầu tiên). */
 export function isFinal(text) {
-  const lines = split(text);
-  const st = parseStatus(lines);
-  if (!st) return false;
-  return lines.some((l, i) => st.mutable.has(i) && FINAL_RE.test(l) && !NEGATED_RE.test(l));
+  return !UNFINAL_VALUE_RE.test(statusValue(text));
 }
 
 /**

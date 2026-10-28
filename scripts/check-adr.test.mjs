@@ -45,6 +45,32 @@ test("thiếu heading và rỗng được báo", () => {
   assert.ok(e.some((x) => x.includes("Điều kiện đọc lại") && x.includes("rỗng")));
 });
 
+test("Status phải bắt đầu bằng từ khoá cố định; bản tiếng Việt và phần sau tuỳ ý", () => {
+  const withStatus = (v) => GOOD.replace("## Trạng thái\nAccepted", `## Trạng thái\n${v}`);
+  for (const v of [
+    "Accepted — ghi chú",
+    "Chấp nhận (2026-11-01)",
+    "Proposed",
+    "Đề xuất",
+    "Rejected",
+    "Từ chối",
+    "Deprecated",
+    "Lỗi thời",
+    "Superseded by ADR-0009",
+    "Bị thay bởi ADR-0009",
+  ]) {
+    assert.deepEqual(lintAdr(withStatus(v)), [], v);
+  }
+  for (const v of ["Đã duyệt", "Acceptedly", "Superseded by ADR-9", "ok"]) {
+    assert.ok(
+      lintAdr(withStatus(v)).some((e) => e.includes("Status phải bắt đầu")),
+      v,
+    );
+  }
+  assert.ok(lintAdr("# x\n\n- Status: Đã duyệt\n").some((e) => e.includes("Status phải bắt đầu")));
+  assert.ok(!lintAdr("# x\n\n- Status: Chấp nhận\n").some((e) => e.includes("Status phải bắt đầu")));
+});
+
 test("Considered Options < 2 mục bị báo", () => {
   const e = lintAdr(GOOD.replace("2. B — chọn\n", ""));
   assert.ok(e.some((x) => x.includes(">= 2")));

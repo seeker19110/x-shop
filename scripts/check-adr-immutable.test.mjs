@@ -70,8 +70,8 @@ test("isFinal / immutablePart: nhận dạng Status ở ba kiểu, bỏ đúng p
   assert.equal(isFinal(ADR("Proposed")), false);
   assert.equal(isFinal(BULLET("Superseded by ADR-0004")), true);
   assert.equal(isFinal("---\nstatus: accepted\n---\n# x"), true);
-  assert.equal(isFinal(""), false);
-  assert.equal(isFinal(null), false);
+  assert.equal(isFinal(""), true); // không nhận ra trạng thái → coi là đã chốt (chặt)
+  assert.equal(isFinal(null), true);
   assert.equal(immutablePart(ADR("Accepted")), immutablePart(ADR("Superseded by ADR-0009")));
   assert.equal(immutablePart(ADR("Accepted").replace(/\n/g, "\r\n")), immutablePart(ADR("Accepted")));
   assert.notEqual(immutablePart(ADR("Accepted")), immutablePart(ADR("Accepted", "thêm\n")));
@@ -235,10 +235,23 @@ test("thay đổi hợp lệ: đổi Status + thêm Superseded by/Links/Supersed
 });
 
 test("isFinal: ranh giới từ và phủ định; chỉ khối Status đầu tiên", () => {
-  assert.equal(isFinal(ADR("Not accepted")), false);
-  assert.equal(isFinal(ADR("Chưa accepted")), false);
-  assert.equal(isFinal(ADR("Unaccepted")), false);
-  assert.equal(isFinal(ADR("Proposed (chưa chốt)")), false);
+  for (const v of [
+    "Chấp nhận (2026-11-01)",
+    "Đã duyệt",
+    "Accepted — not deprecated",
+    "Accepted (x), chưa superseded",
+    "Accepted (x) — không deprecated",
+    "Rejected",
+    "Từ chối",
+    "Lỗi thời",
+    "Bị thay bởi ADR-0009",
+    "lạ hoắc",
+  ]) {
+    assert.equal(isFinal(ADR(v)), true, v);
+  }
+  for (const v of ["Proposed (chưa chốt)", "Đề xuất", "Draft", "Nháp 1", "proposed"])
+    assert.equal(isFinal(ADR(v)), false, v);
+  assert.equal(isFinal(ADR("Proposedly")), true); // ranh giới từ Unicode
   assert.equal(isFinal(ADR("Accepted")), true);
   assert.equal(isFinal(ADR("Deprecated")), true);
   assert.equal(
@@ -258,4 +271,14 @@ test("immutablePart: dòng liên kết ngoài mục Status không bị bỏ; dò
     immutablePart(ADR("Accepted")),
     immutablePart(ADR("Accepted").replace("## Trạng thái", "## Status")),
   );
+});
+
+test("dời dòng '- Trạng thái:' bullet xuống cuối file bị chặn; dòng 'thay' trơn không phải liên kết", () => {
+  const bullet = BULLET("Accepted");
+  const moved = bullet.replace("- Trạng thái: Accepted\n", "") + "- Trạng thái: Accepted\n";
+  assert.ok(compareAdr("a.md", bullet, moved).length > 0);
+  const base = ADR("Accepted");
+  assert.ok(compareAdr("a.md", base, ADR("Accepted\n\nthay đổi cách tính phí vận chuyển")).length > 0);
+  assert.deepEqual(compareAdr("a.md", base, ADR("Accepted\n\nThay thế ADR-0009")), []);
+  assert.deepEqual(compareAdr("a.md", base, ADR("Chấp nhận (2026-11-01)\n\nThay ADR-0009")), []);
 });
