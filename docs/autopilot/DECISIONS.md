@@ -874,3 +874,10 @@
 - Chọn: Chấp nhận là cổng thật cho PR có migration: mã 2 (không kết luận được) đỏ kèm annotation hướng xử lý; phân loại theo CA; chập chờn (đỏ lần đầu, xác nhận ≥2 lần đều xanh) → mã 2 đỏ có annotation; mã 0 chỉ khi lần đầu xanh hoặc mọi ca đỏ đều được miễn; so schema thêm trigger/function/policy/enum/precision/identity/generated; mục N1_ALLOW đang hiệu lực mà không khớp → NHẮC (sửa câu chữ D-123)
 - Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: kiểm N−1 chỉ có giá trị nếu chặn được; autopilot chỉ đọc exit code nên 'chập chờn → 0' là cho qua (D-114); trigger là hàng rào ghi của audit/settlement/refund nên bỏ sót là lọt thật; chi phí 45 phút chỉ áp PR có migration
 - Đường lùi: Chuyển job sang workflow_dispatch/cron, bỏ khỏi pull_request
+
+### D-125 · 2026-10-28T03:21:39+00:00 · T-168: xung đột mã giao dịch trên attempt failed; loại ngoại lệ; đối soát late_after_cancel; quy tắc đóng late_payment
+
+- Phương án: (1) Không ghi đè mã (hoàn tay khi conflict); dùng lại payment_unknown reason attempt_txn_conflict; đối soát giữ late_after_cancel (không tự đóng); đóng late_payment khi ròng cả đơn ≤ 0 · (2) Ghi đè mã khi mã cũ chỉ từ thông báo thất bại; kind ngoại lệ mới; tự đóng chênh lệch; đóng theo từng capture_ref
+- Chọn: Không ghi đè mã (hoàn tay khi conflict); dùng lại payment_unknown reason attempt_txn_conflict; đối soát giữ late_after_cancel (không tự đóng); đóng late_payment khi ròng cả đơn ≤ 0
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn tiền: không mất dấu mã, không tự đóng chênh lệch tiền khi chưa có người xác nhận; (3) không thêm migration nới CHECK (chạm n-minus-1); quy tắc ròng cả đơn chặt và đúng với hoàn tay không gắn capture
+- Đường lùi: Đổi linkAttemptToCapture / thêm kind / sửa settlement auto-resolve
