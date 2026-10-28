@@ -1,0 +1,8 @@
+# Dương tính giả đã xác minh (2026-10-28): giá trị giả trong test, không phải bí mật thật.
+# Chỉ thêm fingerprint cụ thể (commit:file:rule:line) sau khi đọc giá trị — không bỏ qua theo thư mục/luật.
+# notify.spec.ts:189 — base64 của "token-thu-nghiem"."mac-thu-nghiem" (hình dạng payload cũ trước T-149).
+a128d4900e4744fe98cee5ab163fdaa5aa7aa0d3:apps/backend/integration-tests/http/notify.spec.ts:generic-api-key:189
+# outbox-payload.unit.spec.ts:52 — token tra cứu dựng tay cho test che payload (order_01JABC + HMAC giả).
+a128d4900e4744fe98cee5ab163fdaa5aa7aa0d3:apps/backend/src/lib/outbox/__tests__/outbox-payload.unit.spec.ts:generic-api-key:52
+# ghn-retry.unit.spec.ts:26 — token GHN giả "tok-12345678" cho mock sandbox.
+fe20c3df28226349b377f7124bfea4b7a59f6e67:apps/backend/src/lib/shipping/__tests__/ghn-retry.unit.spec.ts:generic-api-key:26
