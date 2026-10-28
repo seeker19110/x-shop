@@ -35,6 +35,10 @@ function probe(port) {
   });
 }
 
+/** Log injection: bỏ xuống dòng/ký tự điều khiển khỏi giá trị do client/upstream điều khiển. */
+const oneLine = (v) =>
+  [...String(v).replace(/[\r\n]/g, " ")].map((c) => (c.charCodeAt(0) < 0x20 ? " " : c)).join("");
+
 function json(res, status, body) {
   res
     .writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" })
@@ -63,7 +67,7 @@ const server = createServer(async (req, res) => {
   );
   proxied.on("error", (e) => {
     stats.errors += 1;
-    console.error(`[lb] ${up.name} ${req.method} ${req.url}: ${e.message}`);
+    console.error(`[lb] ${up.name} ${oneLine(req.method)} ${oneLine(req.url)}: ${oneLine(e.message)}`);
     if (!res.headersSent) json(res, 502, { error: "upstream", replica: up.name });
     else res.destroy();
   });

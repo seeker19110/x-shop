@@ -25,6 +25,9 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const backendDir = path.join(root, "apps/backend");
+/** Che userinfo của URL trong thông điệp lỗi (vd. DATABASE_URL kèm mật khẩu): `//user:pass@` → `//***@`. */
+const redactUrlUserinfo = (s) => s.replace(/\/\/[^\s/@]*@/g, "//***@");
+
 const log = (m) => console.log(`[e2e] ${m}`);
 
 /** Chạy lệnh, chờ xong; mã thoát khác 0 → ném lỗi. */
@@ -136,6 +139,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(`[e2e] LỖI: ${e instanceof Error ? e.message : e}`);
+  console.error(`[e2e] LỖI: ${redactUrlUserinfo(e instanceof Error ? e.message : String(e))}`);
   process.exit(1);
 });
