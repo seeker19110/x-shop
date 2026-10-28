@@ -19,6 +19,7 @@ import { readCheckoutError } from "../../lib/checkout/errors";
 import { cancelNativeOrder } from "../../lib/checkout/jobs";
 import { lockKeys } from "../../lib/checkout/locks";
 import { adjustInventory } from "../../lib/inventory/adjust";
+import { isInventoryGuardViolation } from "../../lib/inventory/guard";
 import { shippedFromLocations } from "../../lib/shipping/fulfillment";
 import { SEED } from "../../scripts/seed";
 import { sizeChartsOfProducts } from "../../lib/catalog/size-chart-snapshot";
@@ -415,9 +416,10 @@ async function ensureReplacementOrder(
     return result.order_id;
   } catch (e) {
     const known = readCheckoutError(e);
-    if (known?.code === "INSUFFICIENT_STOCK") {
+    // Hàng rào DB (T-185) từ chối giữ hàng lúc commit → cùng nghĩa không đủ hàng.
+    if (known?.code === "INSUFFICIENT_STOCK" || (!known && isInventoryGuardViolation(e))) {
       throw new ReturnsError("INSUFFICIENT_STOCK", "Size muốn đổi hiện không đủ hàng", {
-        lines: known.detail?.lines ?? [],
+        lines: known?.detail?.lines ?? [],
       });
     }
     throw known ?? e;

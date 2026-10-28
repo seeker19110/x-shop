@@ -27,6 +27,7 @@ import type { ShipmentRow } from "../../modules/shipping/service";
 import { toSafeInteger } from "../checkout/cart";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
+import { isInventoryGuardViolation } from "../inventory/guard";
 
 /**
  * Fulfillment NATIVE của Medusa cho vận đơn GHN (T-043, S-303 "1 shipment / 1 fulfillment").
@@ -498,7 +499,19 @@ export async function applyStock(
         });
       }
       await consumeReservations(container, g.lines);
-      await setStocked(container, g, after);
+      try {
+        await setStocked(container, g, after);
+      } catch (e) {
+        // Hàng rào DB (T-185): đường ghi khác (không qua khóa) đã giữ thêm giữa lúc kiểm và lúc trừ → dữ liệu lệch, cần
+        // người xem — cùng nhánh STOCK_INCONSISTENT ở trên (stocked không đổi vì ghi bị từ chối).
+        if (!isInventoryGuardViolation(e)) throw e;
+        throw new FulfillmentSyncError("STOCK_INCONSISTENT", "Tồn không đủ để ghi nhận xuất kho", {
+          inventory_item_id: g.inventory_item_id,
+          location_id: g.location_id,
+          stocked_quantity: before,
+          quantity: g.quantity,
+        });
+      }
       const input = {
         inventory_item_id: g.inventory_item_id,
         location_id: g.location_id,
