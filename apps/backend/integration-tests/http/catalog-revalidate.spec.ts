@@ -5,7 +5,8 @@ import { updateProductVariantsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { catalogRevalidate as protocol } from "@x-shop/domain";
 import { CURRENCY } from "../../src/lib/catalog/constants";
-import { rebuildCatalogIndex } from "../../src/lib/catalog/indexer";
+import { CATALOG_INDEX_LOCK, rebuildCatalogIndex } from "../../src/lib/catalog/indexer";
+import { acquireOrdered, releaseOwned } from "../../src/lib/checkout/locks";
 import {
   CATALOG_REVALIDATE_EVENT,
   CATALOG_REVALIDATE_POLICY,
@@ -17,7 +18,6 @@ import seedCatalog from "../../src/scripts/seed-catalog";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import { storeHeaders } from "../helpers/auth";
-import { pauseSourceReadAfter } from "../helpers/catalog-rebuild";
 
 /**
  * T-142 (D-070, BE-CACHE-007): sửa giá ở backend → webhook ĐÃ KÝ tới storefront (ở đây: máy chủ HTTP giả đóng vai route
@@ -303,42 +303,71 @@ medusaIntegrationTestRunner({
       expect(rows.every((r) => r.state === "sent")).toBe(true);
     });
 
-    it("T-167: sửa giá trong lúc rebuild đang đọc nguồn → đồng bộ không chờ rebuild; webhook `catalog` của rebuild tới SAU khi read model có giá mới", async () => {
-      const pid = await productId();
+    it("T-167: webhook `catalog` của rebuild ghi SAU replaceAll — khoá ghi bị giữ lâu hơn một cửa sổ gộp mà storefront vẫn chỉ đọc được giá mới", async () => {
+      const [variant] = await container
+        .resolve(Modules.PRODUCT)
+        .listProductVariants({ sku: SKU }, { select: ["id"] });
       const indexPrices = async (): Promise<number[]> =>
         (await db().raw(`SELECT price FROM catalog_variant_index WHERE sku = ?`, [SKU])).rows.map(
           (r: { price: string | number }) => Number(r.price),
         );
-      const NEW = 499_000;
-      const isNew = (p: unknown) => Array.isArray(p) && p.length > 0 && p.every((x) => x === NEW);
+      const OLD = (await indexPrices())[0]!;
+      const NEW = OLD + 13_000;
+      // Đổi giá ở NGUỒN không qua workflow (không sự kiện → không lượt xả): read model chỉ đổi giá đúng lúc replaceAll.
+      const setSourcePrice = (amount: number) =>
+        db().raw(
+          `UPDATE price SET amount = ?, raw_amount = jsonb_build_object('value', ?::text, 'precision', 20)
+            WHERE currency_code = ? AND price_list_id IS NULL AND deleted_at IS NULL AND price_set_id IN (
+              SELECT price_set_id FROM product_variant_price_set WHERE variant_id = ? AND deleted_at IS NULL)`,
+          [amount, amount, CURRENCY, variant!.id],
+        );
       // Storefront giả đọc read model ngay lúc nhận webhook (lúc storefront thật nạp lại danh sách).
       sf.state.probe = indexPrices;
 
-      const gate = pauseSourceReadAfter(container, pid);
-      const run = rebuildCatalogIndex(container);
+      // Giữ khoá ghi: rebuild đọc nguồn xong (ngoài khoá) thì đứng chờ ngay trước replaceAll.
+      const locking = container.resolve(Modules.LOCKING);
+      const owner = `t167-test-${Date.now()}`;
+      await acquireOrdered(locking, [CATALOG_INDEX_LOCK], {
+        ownerId: owner,
+        waitMs: 10_000,
+        ttlSeconds: 30,
+        scope: "test",
+      });
+      let rebuildWaiting!: () => void;
+      const waiting = new Promise<void>((r) => (rebuildWaiting = r));
+      const acquire = locking.acquire.bind(locking);
+      jest.spyOn(locking, "acquire").mockImplementation(async (keys, args) => {
+        const k = Array.isArray(keys) ? keys : [keys];
+        if (k.includes(CATALOG_INDEX_LOCK) && (args as { ownerId?: string } | undefined)?.ownerId !== owner)
+          rebuildWaiting();
+        return acquire(keys, args);
+      });
+      let run: Promise<unknown> | undefined;
+      const started = Date.now();
       try {
-        await gate.reached; // rebuild đã cầm ảnh chụp với giá CŨ
-        await setPrice(NEW); // workflow thật → sự kiện → dấu bẩn → lượt xả hẹn trước
-        // Khoá ghi không bị rebuild giữ lúc đọc nguồn → lượt xả đồng bộ ngay (trước T-167: chờ hết rebuild).
-        await eventually(indexPrices, isNew);
+        await setSourcePrice(NEW);
+        run = rebuildCatalogIndex(container);
+        await waiting;
+        // Hơn hai cửa sổ: nếu outbox "cả catalog" được ghi TRƯỚC replaceAll, webhook đã tới lúc bảng còn giá cũ.
+        await new Promise((r) => setTimeout(r, 2 * CATALOG_REVALIDATE_POLICY.windowMs + 1_000));
+        expect(await indexPrices()).toEqual([OLD]);
       } finally {
-        gate.restore();
+        await releaseOwned(locking, owner, [CATALOG_INDEX_LOCK]);
+        jest.restoreAllMocks();
       }
-      const released = Date.now();
-      const result = await run;
-      expect(result.superseded).toBe(false);
-      expect(result.kept).toBeGreaterThanOrEqual(1);
-      expect(isNew(await indexPrices())).toBe(true); // ảnh chụp cũ không ghi đè
-
-      // Webhook "cả catalog" do rebuild ghi SAU replaceAll: lúc storefront nhận, read model đã là giá mới.
+      await run;
+      expect((await indexPrices()).every((p) => p === NEW)).toBe(true);
       const hooks = await eventually(
-        () => sf.received.filter((r) => r.at >= released && r.body.tags.includes(protocol.CATALOG_TAG)),
+        () => sf.received.filter((r) => r.at >= started && r.body.tags.includes(protocol.CATALOG_TAG)),
         (r) => r.length > 0,
       );
       for (const h of hooks) {
         expect(h.verified).toBe(true);
         expect(h.probe).toEqual((await indexPrices()).map(() => NEW));
       }
+      // Trả giá cũ qua workflow thật (sự kiện → đồng bộ) để ca khác không đọc giá của ca này.
+      sf.state.probe = null;
+      await setPrice(OLD);
     });
   },
 });

@@ -14,7 +14,7 @@ import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import type { CatalogIndexRow } from "../../src/modules/catalog-index/service";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
-import { pauseSourceReadAfter } from "../helpers/catalog-rebuild";
+import { pauseAfterPriceRead } from "../helpers/catalog-rebuild";
 
 jest.setTimeout(300 * 1000);
 
@@ -232,7 +232,7 @@ medusaIntegrationTestRunner({
           [variantId],
         )
       ).rows.map((r: { price: string | number }) => Number(r.price));
-    /** Đổi giá niêm yết ở NGUỒN (bảng price của biến thể sinh ở `generate`). */
+    /** Đổi giá niêm yết ở NGUỒN (bảng price của biến thể sinh ở `generate`) — không phát sự kiện. */
     const setSourcePrice = (variantId: string, amount: number) =>
       db.raw(
         `UPDATE price SET amount = ?, raw_amount = jsonb_build_object('value', ?::text, 'precision', 20)
@@ -241,17 +241,43 @@ medusaIntegrationTestRunner({
       );
     const isDirty = async (productId: string): Promise<boolean> =>
       (await db.raw(`SELECT 1 FROM catalog_index_dirty WHERE product_id = ?`, [productId])).rows.length > 0;
+    /** Biến thể đầu (si = 0) của sản phẩm sinh ở `generate`. */
+    const firstVariant = (pid: string) => `variant_SCALE${pid.slice("prod_SCALE".length)}0`;
     /**
-     * Chạy rebuild, dừng nó ngay sau khi đọc xong lô nguồn chứa `productId` (ảnh chụp CŨ của sản phẩm đã nằm trong tay
-     * rebuild), chạy `during` trong lúc dừng rồi cho rebuild chạy tiếp tới hết.
+     * Xả tới khi không còn dấu đến hạn (gồm lượt xả rebuild hẹn cho sản phẩm giữ bản đồng bộ) — ca sau không gặp khoá
+     * ghi bận vì lượt xả nền của ca trước.
      */
+    const settle = async () => {
+      for (let i = 0; i < 20 && (await index().dirtyCount(true)) > 0; i++)
+        await drainCatalogIndex(container, { waitMs: 5_000 });
+      expect(await index().dirtyCount(true)).toBe(0);
+      await new Promise((r) => setTimeout(r, 300));
+    };
     /** Mốc sạch: bảng đúng nguồn và hàng đợi rỗng (dấu còn sót của ca trước đã được rebuild này phủ). */
     const baseline = async () => {
       await rebuildCatalogIndex(container);
+      await settle();
       await db.raw(`DELETE FROM catalog_index_dirty`);
     };
-    const rebuildPausedAt = async (productId: string, during: () => Promise<void>) => {
-      const gate = pauseSourceReadAfter(container, productId);
+    /**
+     * Chạy rebuild, dừng nó ngay sau khi đọc xong GIÁ của lô chứa `variantId` (ảnh chụp sản phẩm + giá CŨ đã nằm trong
+     * tay rebuild), chạy `during` trong lúc dừng rồi cho rebuild chạy tiếp tới hết. `atReplace` đọc trạng thái NGAY sau
+     * `replaceAll` (còn giữ khoá ghi — lượt xả hẹn sau rebuild chưa thể chen vào): bằng chứng ảnh chụp có ghi đè hay không.
+     */
+    const rebuildPausedAt = async <T>(
+      variantId: string,
+      during: () => Promise<void>,
+      atReplace: () => Promise<T>,
+    ) => {
+      const svc = index();
+      const replace = svc.replaceAll.bind(svc);
+      const seen: { value?: T } = {};
+      const spy = jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        const r = await replace(rows, since);
+        seen.value = await atReplace();
+        return r;
+      });
+      const gate = pauseAfterPriceRead(container, variantId);
       const run = rebuildCatalogIndex(container);
       try {
         await gate.reached;
@@ -259,29 +285,37 @@ medusaIntegrationTestRunner({
       } finally {
         gate.restore();
       }
-      return run;
+      const result = await run.finally(() => spy.mockRestore());
+      return { result, atReplace: seen.value };
     };
 
     it("T-167: sửa giá trong lúc rebuild đang đọc nguồn → lượt xả ghi ngay (khoá ghi không bị rebuild giữ), rebuild không ghi đè bằng ảnh chụp cũ", async () => {
       await baseline();
       const pid = "prod_SCALE00010";
-      const vid = "variant_SCALE000100";
+      const vid = firstVariant(pid);
       const [before] = await pricesOf(vid);
       const NEW = before! + 7_000;
 
-      const result = await rebuildPausedAt(pid, async () => {
-        await setSourcePrice(vid, NEW);
-        await index().markDirty([pid]);
-        // Lượt xả KHÔNG chờ khoá (như job phút): trước T-167 rebuild giữ khoá suốt lúc đọc → trả 0, giá cũ tới ~1 phút.
-        expect(await drainCatalogIndex(container)).toBe(1);
-        expect(await pricesOf(vid)).toEqual([NEW]);
-      });
+      const { result, atReplace } = await rebuildPausedAt(
+        vid,
+        async () => {
+          await setSourcePrice(vid, NEW);
+          await index().markDirty([pid]);
+          // Trước T-167 rebuild giữ khoá suốt lúc đọc → lượt xả hết hạn chờ, giá cũ tới hết rebuild (~1 phút ở 50k).
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await pricesOf(vid)).toEqual([NEW]);
+        },
+        async () => ({ price: await pricesOf(vid), dirty: await isDirty(pid) }),
+      );
 
       expect(result.superseded).toBe(false);
       expect(result.kept).toBe(1);
-      expect(await pricesOf(vid)).toEqual([NEW]); // không bị ảnh chụp đọc trước khi sửa ghi đè
-      expect(await isDirty(pid)).toBe(false);
+      // Ảnh chụp (giá CŨ đã đọc) không ghi đè bản đồng bộ; sản phẩm giữ lại được đánh dấu bẩn lại (review 🔴1).
+      expect(atReplace).toEqual({ price: [NEW], dirty: true });
       expect(result.rows).toBe(expectedTotal);
+      await settle();
+      expect(await pricesOf(vid)).toEqual([NEW]);
+      expect(await isDirty(pid)).toBe(false);
       expect(await count()).toBe(expectedTotal);
       expect(await distinctKeys()).toBe(expectedTotal);
 
@@ -295,14 +329,20 @@ medusaIntegrationTestRunner({
       const pid = "prod_SCALE00011";
       expect(await count("product_id = ?", [pid])).toBe(SKUS_PER_PRODUCT);
 
-      const result = await rebuildPausedAt(pid, async () => {
-        await db.raw(`UPDATE product SET status = 'draft' WHERE id = ?`, [pid]);
-        await index().markDirty([pid]);
-        expect(await drainCatalogIndex(container)).toBe(1);
-        expect(await count("product_id = ?", [pid])).toBe(0);
-      });
+      const { result, atReplace } = await rebuildPausedAt(
+        firstVariant(pid),
+        async () => {
+          await db.raw(`UPDATE product SET status = 'draft' WHERE id = ?`, [pid]);
+          await index().markDirty([pid]);
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await count("product_id = ?", [pid])).toBe(0);
+        },
+        () => count("product_id = ?", [pid]),
+      );
 
       expect(result.kept).toBe(1);
+      expect(atReplace).toBe(0);
+      await settle();
       expect(await count("product_id = ?", [pid])).toBe(0);
       expect(await count()).toBe(expectedTotal - SKUS_PER_PRODUCT);
 
@@ -316,14 +356,20 @@ medusaIntegrationTestRunner({
       const pid = "prod_SCALE00012";
       expect(await count("product_id = ?", [pid])).toBe(SKUS_PER_PRODUCT);
 
-      const result = await rebuildPausedAt(pid, async () => {
-        await db.raw(`UPDATE product SET deleted_at = now() WHERE id = ?`, [pid]);
-        await index().markDirty([pid]);
-        expect(await drainCatalogIndex(container)).toBe(1);
-        expect(await count("product_id = ?", [pid])).toBe(0);
-      });
+      const { result, atReplace } = await rebuildPausedAt(
+        firstVariant(pid),
+        async () => {
+          await db.raw(`UPDATE product SET deleted_at = now() WHERE id = ?`, [pid]);
+          await index().markDirty([pid]);
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await count("product_id = ?", [pid])).toBe(0);
+        },
+        () => count("product_id = ?", [pid]),
+      );
 
       expect(result.kept).toBe(1);
+      expect(atReplace).toBe(0);
+      await settle();
       expect(await count("product_id = ?", [pid])).toBe(0);
       expect(await count()).toBe(expectedTotal - SKUS_PER_PRODUCT);
       expect(await distinctKeys()).toBe(expectedTotal - SKUS_PER_PRODUCT);
@@ -336,18 +382,23 @@ medusaIntegrationTestRunner({
     it("T-167: thay đổi chưa kịp xả trước replaceAll → dấu bẩn còn nguyên sau rebuild, lượt xả kế tiếp ghi bản mới", async () => {
       await baseline();
       const pid = "prod_SCALE00013";
-      const vid = "variant_SCALE000130";
+      const vid = firstVariant(pid);
       const [before] = await pricesOf(vid);
       const NEW = before! + 9_000;
 
-      const result = await rebuildPausedAt(pid, async () => {
-        await setSourcePrice(vid, NEW);
-        await index().markDirty([pid]);
-      });
+      const { result, atReplace } = await rebuildPausedAt(
+        vid,
+        async () => {
+          await setSourcePrice(vid, NEW);
+          await index().markDirty([pid]);
+        },
+        async () => ({ price: await pricesOf(vid), dirty: await isDirty(pid) }),
+      );
 
       expect(result.kept).toBe(0);
-      expect(await isDirty(pid)).toBe(true); // rebuild không nuốt dấu đặt sau mốc bắt đầu của nó
-      expect(await drainCatalogIndex(container)).toBe(1);
+      // Ảnh chụp đã cầm giá cũ (móc dừng SAU khi đọc giá); dấu đặt sau mốc bắt đầu không bị rebuild nuốt.
+      expect(atReplace).toEqual({ price: [before], dirty: true });
+      expect(await drainCatalogIndex(container, { waitMs: 5_000 })).toBe(1);
       expect(await pricesOf(vid)).toEqual([NEW]);
       expect(await isDirty(pid)).toBe(false);
 
@@ -355,6 +406,70 @@ medusaIntegrationTestRunner({
       await syncCatalogProducts(container, [pid]);
     });
 
+    it("T-167 (review 🔴1): đồng bộ đọc nguồn TRƯỚC mốc rebuild nhưng ghi SAU mốc → thay đổi không phát sự kiện trước mốc không bị mất", async () => {
+      await baseline();
+      const svc = index();
+      const pid = "prod_SCALE00900";
+      const vid = firstVariant(pid);
+      const [before] = await pricesOf(vid);
+      const NEW = before! + 11_000;
+      let reachedWrite!: () => void;
+      const writeReached = new Promise<void>((r) => (reachedWrite = r));
+      let releaseWrite!: () => void;
+      const writeGate = new Promise<void>((r) => (releaseWrite = r));
+      const replaceProducts = svc.replaceProducts.bind(svc);
+      jest.spyOn(svc, "replaceProducts").mockImplementation(async (ids, rows) => {
+        if (ids.includes(pid)) {
+          reachedWrite();
+          await writeGate;
+        }
+        return replaceProducts(ids, rows);
+      });
+      let sinceTaken!: (s: string) => void;
+      const sinceP = new Promise<string>((r) => (sinceTaken = r));
+      const clock = svc.clockNow.bind(svc);
+      jest.spyOn(svc, "clockNow").mockImplementation(async () => {
+        const s = await clock();
+        sinceTaken(s);
+        return s;
+      });
+      const replace = svc.replaceAll.bind(svc);
+      let atReplace: { price: number[]; dirty: boolean } | undefined;
+      jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        const r = await replace(rows, since);
+        atReplace = { price: await pricesOf(vid), dirty: await isDirty(pid) };
+        return r;
+      });
+      try {
+        // 1) Lượt đồng bộ pid đã ĐỌC nguồn (giá cũ), dừng ngay trước replaceProducts (đang giữ khoá ghi).
+        await svc.markDirty([pid]);
+        const drain = drainCatalogIndex(container);
+        await writeReached;
+        // 2) Thay đổi KHÔNG phát sự kiện (price list tới giờ, bảng màu/size, link kho↔kênh): nguồn đổi, không dấu.
+        await setSourcePrice(vid, NEW);
+        const changedAt = (await db.raw(`SELECT clock_timestamp()::text AS t`)).rows[0].t as string;
+        // 3) Rebuild định kỳ (job */30) bắt đầu SAU thay đổi.
+        const run = rebuildCatalogIndex(container);
+        const since = await sinceP;
+        expect(
+          (await db.raw(`SELECT ?::timestamptz < ?::timestamptz AS ok`, [changedAt, since])).rows[0].ok,
+        ).toBe(true);
+        // 4) Lượt đồng bộ ghi (mốc ≥ since) bằng dữ liệu đọc TRƯỚC thay đổi, rồi xoá dấu.
+        releaseWrite();
+        expect(await drain).toBe(1);
+        const result = await run;
+        expect(result.kept).toBe(1);
+        // Bản giữ lại (cũ) được đánh dấu bẩn lại cùng giao dịch replaceAll → lượt xả đọc nguồn mới nhất.
+        expect(atReplace).toEqual({ price: [before], dirty: true });
+        await settle();
+        expect(await pricesOf(vid)).toEqual([NEW]);
+      } finally {
+        releaseWrite();
+        jest.restoreAllMocks();
+        await setSourcePrice(vid, before!);
+        await syncCatalogProducts(container, [pid]);
+      }
+    });
     it("T-167: hai rebuild đồng thời chạy tuần tự (mỗi lần thay là MỘT ảnh chụp, không xen lúc đọc); ảnh chụp cũ hơn ảnh chụp đã áp bị bỏ", async () => {
       const svc = index();
       const order: string[] = [];
