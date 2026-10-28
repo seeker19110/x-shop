@@ -277,22 +277,47 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   (`medusa db:generate` không sinh gì, không module nào lỗi).
   **Bản N−1 trên schema N** (T-163, `scripts/n-minus-1.mjs`, job CI `n-minus-1`): code của ref gốc (cùng quy tắc với
   `check:migrations`: `--base` > `MIGRATIONS_BASE_REF` > `origin/master`) chạy bộ test tích hợp của CHÍNH nó trên schema do
-  migration của HEAD tạo. Không có migration thêm/đổi/xoá so với ref gốc → bỏ qua ngay, exit 0. Cách làm: `git archive` ref gốc
-  vào thư mục tạm → `pnpm install --frozen-lockfile --prefer-offline --filter @x-shop/backend...` (store pnpm dùng chung với cây
-  HEAD làm cache) → phủ file migration thêm/đổi/xoá của HEAD lên thư mục `migrations/` của các module có ở bản N−1 → hai DB
-  dùng một lần `xshop_n1_<hex>_head|_base`: `medusa db:migrate` bằng mã HEAD và bằng mã N−1 + phần phủ, schema `public` (cột,
-  kiểu, NULL, DEFAULT, ràng buộc, index) phải trùng trên mọi bảng N−1 biết (bảng chỉ có ở HEAD — module/link mới — chỉ ghi
-  log) → xoá hai DB → `pnpm run test:integration` của cây N−1. Vì sao phủ thay cho "trỏ test vào DB đã migrate":
+  migration của HEAD tạo. Chỉ xét migration của module tùy biến (`apps/backend/src/modules/*/migrations`); không có file nào
+  thêm/đổi/xoá so với ref gốc → bỏ qua ngay, exit 0. **Khoảng trống đã biết:** PR nâng `@medusajs/*` (migration lõi đổi) không
+  kích job; PR nâng Medusa kèm migration tùy biến sẽ ra mã 2 "schema lệch" vì cây N−1 chạy migration lõi cũ — tách nâng Medusa ra
+  PR riêng. Cách làm: `git archive` ref gốc vào thư mục tạm → `pnpm install --frozen-lockfile --prefer-offline --filter
+  @x-shop/backend...` (store pnpm dùng chung với cây HEAD làm cache) → phủ file migration thêm/đổi/xoá của HEAD lên thư mục
+  `migrations/` của các module có ở bản N−1 → hai DB dùng một lần `xshop_n1_<hex>_head|_base`: `medusa db:migrate` bằng mã
+  HEAD và bằng mã N−1 + phần phủ; schema `public` phải trùng trên mọi bảng/đối tượng N−1 biết — cột (kiểu, NULL, DEFAULT,
+  precision/scale, datetime precision, identity, generated), ràng buộc, index, trigger (trừ trigger nội bộ), policy + cờ RLS,
+  function (tham số định danh + md5 thân), enum (nhãn theo thứ tự); bảng/function/enum chỉ có ở HEAD (module/link mới) chỉ
+  ghi log → xoá hai DB → `pnpm run test:integration` của cây N−1. Vì sao phủ thay cho "trỏ test vào DB đã migrate":
   `medusaIntegrationTestRunner` (@medusajs/test-utils 2.22.1) tự tạo DB tên ngẫu nhiên cho mỗi suite, tự migrate bằng migration
-  của code đang nạp rồi xoá; phép so schema ở bước trước chứng minh phần phủ tái tạo đúng schema N. Suite đỏ được chạy lại riêng
-  trên schema N (xác nhận) và, sau khi gỡ phần phủ, trên schema N−1 (đối chứng). Mã thoát: 0 đạt/bỏ qua (suite chỉ chập chờn →
-  cảnh báo) · 1 suite xanh trên N−1 mà đỏ trên N = migration không tương thích ngược → tách expand/contract như trên · 2 không
-  kết luận được (ref gốc thiếu, cài/migrate lỗi, schema lệch — vd PR nâng `@medusajs/*` kèm migration, hoặc migration của
-  module mới ALTER bảng module cũ —, suite tự đỏ ngay trên schema N−1 của chính bản N−1). Dọn
-  thư mục tạm + DB của chính lần chạy ở mọi nhánh, cả SIGINT/SIGTERM (chuyển tín hiệu cho nhóm tiến trình con theo pid; DB
-  `medusa-*-integration-*` do runner tự xoá). Chạy ở máy (Postgres/Redis của `scripts/dev-services.sh`):
+  của code đang nạp rồi xoá; phép so schema ở bước trước chứng minh phần phủ tái tạo đúng schema N.
+  **Phân loại theo CA** (D-124, từ báo cáo `jest --json`): ca đỏ khớp `N1_ALLOW` được bỏ ra; suite còn ca đỏ được chạy lại 2 lần
+  trên schema N (xác nhận) rồi, sau khi gỡ phần phủ, 1 lần trên schema N−1 (đối chứng). Mỗi ca: đỏ ở đối chứng → `N−1 TỰ ĐỎ`;
+  xanh ở đối chứng, đỏ ở ít nhất một lần xác nhận → `KHÔNG TƯƠNG THÍCH`; xanh ở mọi lần chạy lại → `CHẬP CHỜN`. Mã thoát: 0 = lần
+  đầu xanh, hoặc mọi ca đỏ đều được miễn, hoặc không có migration tùy biến đổi · 1 = có ca KHÔNG TƯƠNG THÍCH · 2 = không kết luận
+  được (xem bảng dưới). Mã 1 và 2 đều làm job đỏ, có annotation `::error::` nêu nguyên nhân + hướng xử lý.
+  **Job `n-minus-1` là cổng thật cho PR có migration** (D-124): chạy song song với `gate` (không `needs`), không nằm trong
+  `quality.needs` nên không phải required check của ruleset, nhưng `xt.py merge-check` của khung xét mọi check của PR nên job đỏ
+  chặn merge do máy. Chưa chia shard (D-123); timeout 60 phút (cả bộ 26–44 phút ở máy dev + chạy lại suite đỏ).
+  **Xử lý job n-minus-1 đỏ (mã 1/2), theo dòng log/annotation:**
+  - `KHÔNG TƯƠNG THÍCH` (mã 1, `incompatible`): migration phá bản N−1 → tách expand/contract như trên. Chỉ khi ca là hàng rào so
+    bằng schema↔hằng code theo thiết kế (không phải lỗi thật) mới thêm mục `N1_ALLOW` (dưới), kèm số đo "xanh trên schema N−1, chỉ
+    ca này đỏ trên schema N".
+  - `N−1 TỰ ĐỎ` (mã 2, `base-red`): ca đỏ ngay trên schema N−1 của bản N−1 → merge master mới nhất vào nhánh (nếu ref gốc đã sửa
+    test) hoặc sửa test trên nhánh đích, rồi chạy lại.
+  - `CHẬP CHỜN` (mã 2, `flaky`): đỏ lần đầu, xanh ở mọi lần chạy lại → chạy lại job; lặp lại thì sửa test chập chờn.
+  - Schema lệch (mã 2, `schema-mismatch`): PR nâng `@medusajs/*` kèm migration → tách nâng Medusa ra PR riêng không kèm migration;
+    migration của module MỚI chạm bảng/trigger của module cũ → chuyển phần đó vào migration của module cũ.
+  - `allow-invalid` (mã 2): mục `N1_ALLOW` nêu migration không còn trong cây / thiếu trường → sửa hoặc xoá mục.
+  - `ref-missing`, `step-failed`, `report-unreadable`, `remote-db` (mã 2): clone nông (cần `fetch-depth: 0`), bước
+    cài/build/`db:migrate` lỗi (đọc đuôi log của bước), báo cáo jest không đọc được (jest bị kill/hết bộ nhớ — chạy lại), DB không
+    phải cục bộ/CI (script CREATE/DROP DB; DB khác phải thêm `--allow-remote-db`).
+  Dọn thư mục tạm + DB `xshop_n1_*` của chính lần chạy ở mọi nhánh, cả SIGINT/SIGTERM (chuyển tín hiệu cho nhóm tiến trình con
+  theo pid). DB `medusa-*-integration-*` do runner của Medusa tự xoá khi suite kết thúc hoặc khi nhận SIGINT/SIGTERM; bị SIGKILL
+  hoặc job hết giờ thì CÓ THỂ SÓT — ở máy dev xoá tay sau khi chắc không còn lần chạy test nào khác đang dùng (tên không cho biết
+  của lần chạy nào). Chạy ở máy (Postgres/Redis của `scripts/dev-services.sh`; chỉ host cục bộ, trừ khi `--allow-remote-db`) —
+  **merge master vào nhánh trước** để `--base origin/master` so đúng phần của nhánh:
 
   ```bash
+  git fetch origin master && git merge origin/master                          # trước khi chạy ở máy
   N1_WORKDIR=/tmp node scripts/n-minus-1.mjs --base origin/master            # cả bộ test tích hợp của bản N−1
   node scripts/n-minus-1.mjs --base origin/master --test-pattern checkout   # tập con (regex đường dẫn của Jest)
   node scripts/n-minus-1.mjs --detect-only --base origin/master            # chỉ báo có migration đổi không
@@ -300,22 +325,19 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 
   Số đo ở máy dev (4 CPU, 2026-10-27/28): phần trước test (archive, cài cây N−1 từ store, build domain hai cây, hai lần
   `db:migrate`, so schema) 30 s–1,5 phút; cả bộ test tích hợp của N−1 26m29s (ref gốc `bf24224~1`, 43 suite/619 ca) và 44m23s
-  (ref gốc `d63dc4e~1`, 45 suite/719 ca, máy đang tải 4–7,5 do phiên khác); chạy lại + đối chứng một suite ~2 phút mỗi lần.
-  Hai lần chạy thật đều đỏ, cả hai không phải do migration hỏng: (1) `bf24224~1` — `redact-http-db-error.spec.ts` tự đỏ ở chính
-  ref gốc (đỏ cả trên schema N−1) → nay ra mã 2 "N−1 TỰ ĐỎ"; (2) `d63dc4e~1` — `catalog-model.spec.ts` "hàng rào: CHECK
+  (ref gốc `d63dc4e~1`, 45 suite/719 ca, máy đang tải 4–7,5 do phiên khác); chạy lại một suite ~2 phút mỗi lần.
+  Hai lần chạy thật cả bộ đều đỏ, cả hai không phải do migration hỏng: (1) `bf24224~1` — `redact-http-db-error.spec.ts` tự đỏ ở
+  chính ref gốc (đỏ cả trên schema N−1) → mã 2 "N−1 TỰ ĐỎ"; (2) `d63dc4e~1` — `catalog-model.spec.ts` "hàng rào: CHECK
   ops_exception.kind trên DB thật = OPS_EXCEPTION_KINDS" đỏ vì Migration20261027160101 nới CHECK thêm `job_circuit_open`: test
   so BẰNG giữa schema và hằng của code nên luôn đỏ ở bản N−1 khi CHECK được nới, dù nới CHECK là tương thích ngược cho việc ghi.
   Sau khi có danh sách miễn (2026-10-28, cùng ref gốc, phủ thêm Migration20261027210643 của T-164): tập con catalog-model +
   checkout-submit/checkout-expiry/payment-ipn/staff-cancel (đọc/ghi `order_finance`) ra mã 0 trong 8m43s, 121 ca, chỉ ca hàng rào
-  trên được miễn. **Danh sách miễn `N1_ALLOW`** (D-123, trong `scripts/n-minus-1.mjs`): mỗi mục = suite + tên ca đầy đủ (khớp chính xác
-  `describe › … › ca`, lấy từ báo cáo `jest --json`) + file migration của HEAD gây lệch + lý do. Suite đỏ chỉ được miễn khi MỌI
-  ca đỏ của nó khớp mục mà migration của mục nằm trong phần phủ của lần chạy (dòng `MIỄN (N1_ALLOW)`); mục có hiệu lực mà
-  không khớp ca đỏ nào → dòng `NHẮC` (xoá mục khi không còn cần); mục nêu migration không còn trong cây → mã 2. Thêm mục chỉ
-  cho hàng rào so bằng theo thiết kế, kèm số đo "xanh trên schema N−1, chỉ ca này đỏ trên schema N"; không thêm để che lỗi
-  thật. Mục hiện có: ca hàng rào CHECK `ops_exception.kind` ↔ Migration20261027160101. Job `n-minus-1` chạy song song với `gate`
-  (không `needs`), không nằm trong `quality.needs` nên **không phải required check** (D-123: chưa chia shard): cả bộ test vượt
-  timeout 30 phút của runner theo số đo trên (D-119 đo bản có coverage 36m39s). Đỏ → đọc log job (dòng
-  `KHÔNG TƯƠNG THÍCH`/`N−1 TỰ ĐỎ`/`CHẬP CHỜN`), sửa migration nếu là lỗi thật (không sửa test N−1).
+  trên được miễn. **Danh sách miễn `N1_ALLOW`** (D-123, trong `scripts/n-minus-1.mjs`): mỗi mục = suite + tên ca đầy đủ (khớp
+  chính xác `describe › … › ca`, lấy từ báo cáo `jest --json`) + file migration của HEAD gây lệch + lý do. Mục chỉ đang hiệu lực
+  khi migration của nó nằm trong phần phủ của lần chạy; ca đỏ khớp mục đang hiệu lực được miễn (dòng `MIỄN (N1_ALLOW)`), ca đỏ
+  khác của cùng suite vẫn được phân loại; mục đang hiệu lực mà không khớp ca đỏ nào → dòng `NHẮC` (xoá mục khi không còn cần);
+  mục nêu migration không còn trong cây → mã 2. Thêm mục chỉ cho hàng rào so bằng theo thiết kế; không thêm để che lỗi thật. Mục
+  hiện có: ca hàng rào CHECK `ops_exception.kind` ↔ Migration20261027160101.
   **Việc cần làm (chưa có kiểm, D-123):** bản N−1 ĐỌC phải giá trị enum mới do bản N ghi khi hai bản chạy song song trên schema
   N (vd `ops_exception.kind = 'job_circuit_open'` sau Migration20261027160101): bộ test của N−1 chỉ ghi/đọc dữ liệu do chính nó
   tạo nên không phát hiện được. Cần: code đọc enum/kind (danh sách ngoại lệ Admin, zod/parse, `switch` không `default`) chịu
