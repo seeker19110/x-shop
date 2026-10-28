@@ -842,11 +842,10 @@ class CheckoutModuleService extends MedusaService({
    *    (máy trạng thái: `failed` là kết thúc). Hoàn qua cổng (`providerRequestOf` tìm attempt theo `provider_txn_no`) và
    *    đối soát VNPAY (join `provider_txn_no = payment_ledger.provider_txn_id`) cần mã này (T-168, D-122);
    *  - đã mang đúng mã này → không đổi gì (`unchanged`);
-   *  - `failed` đang mang mã KHÁC (thông báo thất bại có mã, hoặc giao dịch thành công thứ hai) → KHÔNG ghi đè, trả
-   *    `conflict` để người gọi mở ngoại lệ (mọi quyết định của đơn, không riêng `late_payment`). Attempt `captured` mang
-   *    mã khác (giao dịch thành công thứ hai) giữ hành vi cũ: không đổi, không mở `attempt_txn_conflict` — chỉ có ngoại lệ
-   *    theo quyết định (`overpayment` nếu đơn đã xác nhận — AT36; `late_payment` nếu đơn đã hủy); khoản thu đó chưa gắn
-   *    attempt nên hoàn qua cổng/đối soát chưa tìm được — xử lý ở T-169.
+   *  - attempt (`failed` hoặc `captured`) đang mang mã KHÁC (thông báo thất bại có mã, hoặc giao dịch thành công thứ
+   *    hai — AT36) → KHÔNG ghi đè, trả `conflict` để người gọi mở `payment_unknown` `attempt_txn_conflict` (mọi quyết định
+   *    của đơn; ngoại lệ theo quyết định — `overpayment`/`late_payment` — vẫn mở như thường). Khoản thu đó không gắn
+   *    attempt nên không hoàn qua cổng được (`auto` chọn `manual`, T-169) và đối soát không gắn được dòng sao kê vào nó.
    * Câu UPDATE có điều kiện `provider_txn_no IS NULL` nên hai khoản thu khác mã đua nhau chỉ một bên gắn được.
    */
   private async linkAttemptToCapture(
@@ -877,7 +876,8 @@ class CheckoutModuleService extends MedusaService({
       em,
     );
     if (!row || row.provider_txn_no === providerTxnId) return { result: "unchanged" };
-    if (row.state !== "failed" || row.provider_txn_no === null) return { result: "other" };
+    // Còn lại: `failed`/`captured` mang mã khác (T-168, T-169 — AT36). Không mã → trạng thái ngoài dự kiến, bỏ qua.
+    if (row.provider_txn_no === null) return { result: "other" };
     return {
       result: "conflict",
       txn_ref: String(row.txn_ref),
