@@ -138,5 +138,31 @@ CPU suốt lúc đo) — số đo là của máy dev quá tải, không phải p
   chứng từ song song (bấm hai lần) phải ra 201 + 200 bản đã nhập, hai batch khác nhau cùng đơn song song phải tuần tự hoá
   (`settlement.spec.ts` "đồng thời"); nâng `statement_timeout` cho giao dịch — loại vì vẫn treo và vẫn ra 500.
 
+**Khoá ghi index khi rebuild (T-167, D-076).** Trước T-167 `rebuildCatalogIndex` giữ khoá `x-shop:catalog-index` (Locking
+Module/Redis) suốt lúc đọc nguồn → mọi đồng bộ theo sự kiện chờ tới hết rebuild, trễ quá 60 s (§7.4). Từ T-167 rebuild
+đọc nguồn và dựng dòng NGOÀI khoá ghi (khoá riêng `x-shop:catalog-index:rebuild` chỉ tuần tự hoá các rebuild với nhau), chỉ
+giữ khoá ghi trong giao dịch `replaceAll`. Không mất thay đổi xen giữa: mốc `since` = đồng hồ DB lấy trước mọi lần đọc;
+`replaceProducts` ghi mốc vào `catalog_index_write_log` cùng giao dịch; `replaceAll` giữ nguyên dòng hiện tại của sản phẩm
+có mốc ≥ `since` (gồm "xoá hết dòng" — sản phẩm xoá/ẩn, không dòng ma); thay đổi chưa kịp đồng bộ còn dấu bẩn → lượt xả
+kế tiếp; ảnh chụp có `since` cũ hơn ảnh chụp đã áp (dòng `'*'` của write log) → không ghi.
+
+Đo 2026-10-27 trên DB riêng `PERF_DB_NAME=xshop_perf_t167 PERF_ORDERS=1000 node scripts/ops/perf-dataset.mjs` (10.024 sản
+phẩm / 50.105 dòng; cùng máy 4 CPU, loadavg 1 phút 4,4–5,6), script đo tạm qua `medusa exec`: bọc `acquire`/`release` của
+Locking Module để đo thời gian và số câu SQL lúc khoá ghi bị giữ; 5 s sau khi rebuild bắt đầu (lô đầu đã đọc) sửa giá một
+SKU ở nguồn rồi gọi `syncCatalogProducts` cho sản phẩm đó; DB đã xoá sau khi đo (`--drop`).
+
+| Mã | Rebuild (wall) | Khoá ghi bị rebuild giữ | Câu SQL trong khoá / cả lượt | Đồng bộ một sản phẩm lúc rebuild đang chạy | Giá trong read model sau rebuild |
+|---|---:|---:|---:|---:|---|
+| Trước T-167 | 46,8 s | **46,7 s** (cả lượt) | 2.838 / 2.916 | **41,7 s** (chờ khoá) | mới (đồng bộ chạy sau rebuild) |
+| T-167 lần 1 | 52,3 s | **2,9 s** | 111 / 2.925 | **0,39 s** | mới (giữ bản đồng bộ, `kept = 1`) |
+| T-167 lần 2 | 46,9 s | **2,4 s** | 111 / 2.925 | **0,46 s** | mới (`kept = 1`) |
+
+111 câu trong khoá = giao dịch `replaceAll` (BEGIN, 6 câu write log/chốt, DELETE, 101 INSERT theo lô 500, COMMIT) + đếm
+kiểm cuối. Cả hai lần T-167: bảng đủ 50.105 dòng = kỳ vọng, giá SKU sửa giữa chừng đúng giá mới sau rebuild — `replaceAll`
+ngoài khoá đọc không gây sai lệch, không cần đường lùi của D-076. Thời gian giữ khoá tăng theo số dòng (ghi cả bảng ~50 ms
+/ 1.000 dòng), không theo thời gian đọc nguồn. Hàng rào (không dùng đồng hồ): `catalog-index-scale.spec.ts` "T-167: khoá
+ghi chỉ giữ lúc thay bảng" đỏ nếu câu đọc nguồn chạy trong khoá, nếu số câu trong khoá vượt ⌈dòng/500⌉ + 12 hoặc tỉ lệ
+câu trong khoá ≥ 50 % (đo 5.605 dòng: 21/252 câu ≈ 8 %; trước T-167: 100 %).
+
 Đo lại: dựng DB như trên, bật `log_min_duration_statement = 0` cho riêng DB đó, chạy lệnh rồi đọc log server (dòng
 `xshop@<db>`, `duration:`); xoá DB đo: `PERF_DB_NAME=… node scripts/ops/perf-dataset.mjs --drop`.
