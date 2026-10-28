@@ -22,38 +22,68 @@ export const REQUIRED = [
   ["Điều kiện đọc lại", ["điều kiện đọc lại"]],
 ];
 
-/** Số ADR thay thế nếu Status ghi "Superseded by ADR-NNNN" (bỏ dấu `_`/`-` linh hoạt), ngược lại null. */
+/** Dòng liên kết/thay thế (được phép thêm/sửa trong khối Status của ADR đã chốt). */
+export const LINK_RE = /^\s*(?:[-*]\s*)?(?:links?|liên kết|superseded by|bị thay thế bởi|supersedes|thay)\b/i;
+const STATUS_LINE_RE = /^\s*(?:[-*]\s*)?(?:trạng thái|status)\s*:/i;
+
+/**
+ * Khối Status ĐẦU TIÊN của ADR (các khối sau là nội dung thường): front matter, mục `## Trạng thái|Status`, hoặc dòng
+ * `- Trạng thái:`/`Status:` (kèm các dòng liên kết liền sau). Trả { start, end (loại trừ), mutable: Set<chỉ số dòng> }
+ * — mutable = dòng giá trị Status + dòng liên kết; phần còn lại của khối vẫn là nội dung phải giữ nguyên. Không có → null.
+ */
+export function parseStatus(lines) {
+  if (lines[0]?.trim() === "---") {
+    const close = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+    if (close > 0) {
+      const mutable = new Set();
+      for (let i = 1; i < close; i++)
+        if (/^status\s*:/i.test(lines[i]) || LINK_RE.test(lines[i])) mutable.add(i);
+      return { start: 0, end: close + 1, mutable };
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const h = /^#{2}\s+(.+?)\s*$/.exec(lines[i]);
+    if (h && ["trạng thái", "status"].includes(norm(h[1]))) {
+      let end = lines.findIndex((l, j) => j > i && /^#{1,6}\s/.test(l));
+      if (end < 0) end = lines.length;
+      const mutable = new Set();
+      const first = lines.findIndex((l, j) => j > i && j < end && l.trim() !== "");
+      if (first >= 0) mutable.add(first);
+      for (let j = i + 1; j < end; j++) if (LINK_RE.test(lines[j])) mutable.add(j);
+      return { start: i, end, mutable };
+    }
+    if (STATUS_LINE_RE.test(lines[i])) {
+      let end = i + 1;
+      const mutable = new Set([i]);
+      while (end < lines.length && LINK_RE.test(lines[end])) mutable.add(end++);
+      return { start: i, end, mutable };
+    }
+  }
+  return null;
+}
+
+const toLines = (t) => (t ?? "").replace(/\r\n/g, "\n").split("\n");
+
+/** Văn bản các dòng có thể đổi của khối Status đầu tiên ("" nếu không có). */
+export function statusText(text) {
+  const lines = toLines(text);
+  const st = parseStatus(lines);
+  return st ? lines.filter((_, i) => st.mutable.has(i)).join("\n") : "";
+}
+
+/** Số ADR thay thế nếu Status ghi "Superseded by ADR-NNNN", ngược lại null. */
 export function supersededBy(text) {
-  const m = /superseded\s+by\s+ADR-(\d{4})/i.exec(statusBlock(text));
+  const m = /superseded\s+by\s+ADR-(\d{4})/i.exec(statusText(text));
   return m ? m[1] : null;
 }
 
-/** Chỉ số dòng thuộc Status: front matter `status:`, dòng `- Trạng thái:`/`Status:`, hoặc cả mục `## Trạng thái`. */
-export function statusLineIndexes(lines) {
-  const idx = new Set();
-  let inFront = lines[0]?.trim() === "---";
-  let inSection = false;
-  lines.forEach((l, i) => {
-    if (inFront) {
-      if (i > 0 && l.trim() === "---") inFront = false;
-      else if (/^status\s*:/i.test(l)) idx.add(i);
-      return;
-    }
-    const h = /^#{2}\s+(.+?)\s*$/.exec(l);
-    if (h) {
-      inSection = ["trạng thái", "status"].includes(norm(h[1]));
-      if (inSection) idx.add(i);
-      return;
-    }
-    if (inSection || /^\s*(?:[-*]\s*)?(?:trạng thái|status)\s*:/i.test(l)) idx.add(i);
-  });
-  return idx;
-}
-
-function statusBlock(text) {
-  const lines = (text ?? "").replace(/\r\n/g, "\n").split("\n");
-  const idx = statusLineIndexes(lines);
-  return lines.filter((_, i) => idx.has(i)).join("\n");
+/** ADR này tuyên bố thay ADR số `n` (dòng "Supersedes ADR-NNNN" / "Thay ADR-NNNN" trong khối Status)? */
+export function declaresSupersedes(text, n) {
+  const lines = toLines(text);
+  const st = parseStatus(lines);
+  if (!st) return false;
+  const re = new RegExp(`(?:supersedes|thay(?: thế)?)\\s+ADR-${String(n).padStart(4, "0")}\\b`, "i");
+  return re.test(lines.slice(st.start, st.end).join("\n"));
 }
 
 const norm = (s) => s.trim().replace(/:$/, "").trim().toLowerCase();
@@ -102,17 +132,36 @@ export function checkAdrDir(dir) {
     seen.set(n, f);
     texts.set(f, readFileSync(join(dir, f), "utf8"));
   }
-  for (const [f, text] of texts) {
+  const verdict = new Map(); // f -> true nếu đạt (đệ quy theo chuỗi thay thế; số đích > số mình nên dừng)
+  const check = (f) => {
+    if (verdict.has(f)) return verdict.get(f);
+    verdict.set(f, false); // chặn vòng
+    const text = texts.get(f);
     const by = supersededBy(text);
-    if (by !== null) {
-      const target = [...seen.entries()].find(([k]) => String(k).padStart(4, "0") === by);
+    let ok;
+    if (by === null) {
+      const errs = lintAdr(text);
+      for (const e of errs) problems.push(`${f}: ${e}`);
+      linted.push(f);
+      ok = errs.length === 0;
+    } else {
+      // Miễn lint heading CHỈ khi ADR đích có thật, số lớn hơn, tuyên bố supersedes ngược lại và tự đạt (có thể chuỗi).
+      const mine = Number(FILE_RE.exec(f)[1]);
+      const target = [...texts.keys()].find((k) => FILE_RE.exec(k)[1] === by);
       if (!target) problems.push(`${f}: "Superseded by ADR-${by}" nhưng không có ADR số ${by}`);
-      else if (target[1] === f) problems.push(`${f}: tự thay thế chính mình`);
-      continue;
+      else if (Number(by) <= mine) problems.push(`${f}: ADR thay thế (${by}) phải có số lớn hơn`);
+      else if (!declaresSupersedes(texts.get(target), mine)) {
+        problems.push(
+          `${f}: ${target} không có dòng "Supersedes ADR-${String(mine).padStart(4, "0")}" trong khối Status`,
+        );
+      } else if (!check(target)) problems.push(`${f}: ADR thay thế ${target} không đạt`);
+      ok = problems.every((p) => !p.startsWith(`${f}:`));
     }
-    linted.push(f);
-    for (const e of lintAdr(text)) problems.push(`${f}: ${e}`);
-  }
+    verdict.set(f, ok);
+    return ok;
+  };
+  for (const f of texts.keys()) check(f);
+  linted.sort();
   return { problems, linted };
 }
 

@@ -7,26 +7,39 @@
 // So HEAD (commit), không so working tree. Cần lịch sử nhánh đích (CI: fetch-depth: 0). Thoát 0 = đạt; 1 = vi phạm/lỗi.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { statusLineIndexes } from "./check-adr.mjs";
+import { parseStatus } from "./check-adr.mjs";
 
 export const DEFAULT_BASE = "origin/master";
-const FINAL_RE = /accepted|superseded|deprecated/i;
-const LINK_RE = /^\s*(?:[-*]\s*)?(?:links?|liên kết|superseded by|bị thay thế bởi|supersedes)\b/i;
+const FINAL_RE = /\b(?:accepted|superseded|deprecated)\b/i;
+const NEGATED_RE = /\b(?:not|never|chưa|không)\s+(?:yet\s+|được\s+)?(?:accepted|superseded|deprecated)\b/i;
+const MARK = "\u0000STATUS\u0000";
 
 const split = (t) => (t ?? "").replace(/\r\n/g, "\n").split("\n");
 
-/** Trạng thái đã chốt? (xét riêng các dòng Status). */
+/** Trạng thái đã chốt? Chỉ xét dòng giá trị/liên kết của khối Status ĐẦU TIÊN; "not accepted"/"chưa …" không tính. */
 export function isFinal(text) {
   const lines = split(text);
-  const idx = statusLineIndexes(lines);
-  return lines.some((l, i) => idx.has(i) && FINAL_RE.test(l));
+  const st = parseStatus(lines);
+  if (!st) return false;
+  return lines.some((l, i) => st.mutable.has(i) && FINAL_RE.test(l) && !NEGATED_RE.test(l));
 }
 
-/** Nội dung ADR sau khi bỏ phần được phép đổi (Status + dòng liên kết). */
+/**
+ * Nội dung ADR phải giữ nguyên: mọi dòng, trừ dòng giá trị Status + dòng liên kết của khối Status đầu tiên, được thay
+ * bằng một dấu tại ĐÚNG vị trí khối đó (chèn khối Status/liên kết ở chỗ khác, đổi danh sách heading → khác).
+ */
 export function immutablePart(text) {
   const lines = split(text);
-  const idx = statusLineIndexes(lines);
-  return lines.filter((l, i) => !idx.has(i) && !LINK_RE.test(l)).join("\n");
+  const st = parseStatus(lines);
+  if (!st) return lines.join("\n");
+  const out = [];
+  lines.forEach((l, i) => {
+    if (i === st.start) out.push(MARK);
+    const inBlock = i >= st.start && i < st.end;
+    if (!st.mutable.has(i) && !(inBlock && l.trim() === "")) out.push(l); // dòng trống trong khối Status không đáng kể
+  });
+  if (!out.includes(MARK)) out.unshift(MARK);
+  return out.join("\n");
 }
 
 /** So một ADR: trả mảng lỗi. `head` = null nếu file không còn ở HEAD. */

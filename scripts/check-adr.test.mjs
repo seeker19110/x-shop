@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -75,23 +75,66 @@ test("thư mục: áp mọi số kể cả 0001; bắt tên sai, số trùng, AD
   }
 });
 
-test("ADR superseded được miễn heading nhưng phải trỏ tới ADR thay thế có thật", () => {
+test("ADR superseded được miễn heading chỉ khi ADR đích thật sự thay lại và tự đạt", () => {
   const d = mkdtempSync(join(tmpdir(), "adr-"));
+  const old = "# ADR-0001\n\n- Trạng thái: Superseded by ADR-0002 (Accepted)\n";
+  const NEW = GOOD.replace("## Trạng thái\nAccepted", "## Trạng thái\nAccepted\n\nSupersedes ADR-0001");
+  const run = (files) => {
+    for (const f of readdirSync(d)) rmSync(join(d, f));
+    for (const [f, t] of Object.entries(files)) writeFileSync(join(d, f), t);
+    return checkAdrDir(d);
+  };
   try {
-    const old = "# ADR-0001\n\n- Trạng thái: Superseded by ADR-0002 (Accepted)\n";
-    writeFileSync(join(d, "0001-stack.md"), old);
-    writeFileSync(join(d, "0002-new.md"), GOOD);
-    const ok = checkAdrDir(d);
+    const ok = run({ "0001-stack.md": old, "0002-new.md": NEW });
     assert.deepEqual(ok.problems, []);
     assert.deepEqual(ok.linted, ["0002-new.md"]);
-    writeFileSync(join(d, "0001-stack.md"), old.replace("ADR-0002", "ADR-0009"));
-    assert.ok(checkAdrDir(d).problems.some((p) => p.includes("không có ADR số 0009")));
-    writeFileSync(join(d, "0001-stack.md"), old.replace("ADR-0002", "ADR-0001"));
-    assert.ok(checkAdrDir(d).problems.some((p) => p.includes("tự thay thế")));
-    // ADR thay thế thiếu heading vẫn bị bắt
-    writeFileSync(join(d, "0001-stack.md"), old);
-    writeFileSync(join(d, "0002-new.md"), "# thiếu\n");
-    assert.ok(checkAdrDir(d).problems.some((p) => p.startsWith("0002-new.md")));
+    // trỏ tới số không có
+    assert.ok(
+      run({ "0001-stack.md": old.replace("ADR-0002", "ADR-0009"), "0002-new.md": NEW }).problems.some((p) =>
+        p.includes("không có ADR số 0009"),
+      ),
+    );
+    // trỏ vào chính mình / số nhỏ hơn
+    assert.ok(
+      run({ "0001-stack.md": old.replace("ADR-0002", "ADR-0001"), "0002-new.md": NEW }).problems.some((p) =>
+        p.includes("số lớn hơn"),
+      ),
+    );
+    // đích không tuyên bố supersedes ngược lại
+    assert.ok(
+      run({ "0001-stack.md": old, "0002-new.md": GOOD }).problems.some((p) =>
+        p.includes('"Supersedes ADR-0001"'),
+      ),
+    );
+    // đích thiếu heading → cả hai đỏ
+    const bad = run({
+      "0001-stack.md": old,
+      "0002-new.md": "# thiếu\n\n## Trạng thái\nSupersedes ADR-0001\n",
+    }).problems;
+    assert.ok(bad.some((p) => p.startsWith("0002-new.md")) && bad.some((p) => p.includes("không đạt")));
+    // lối lách: ADR mới chỉ có một dòng Status superseded, không heading
+    const evade = run({
+      "0001-stack.md": "# ADR-0001\n\n- Status: Accepted\n",
+      "0005-evade.md": "# x\n\n- Status: Superseded by ADR-0002\n",
+      "0002-new.md": NEW,
+    });
+    assert.ok(evade.problems.some((p) => p.startsWith("0005-evade.md")));
+    // hai ADR trỏ superseded lẫn nhau
+    const loop = run({
+      "0001-stack.md": "# a\n\n- Status: Superseded by ADR-0002\nSupersedes ADR-0002\n",
+      "0002-new.md": "# b\n\n- Status: Superseded by ADR-0001\nSupersedes ADR-0001\n",
+    });
+    assert.ok(loop.problems.length >= 1);
+    // chuỗi 0001 -> 0002 -> 0003 hợp lệ
+    const chain = run({
+      "0001-stack.md": old,
+      "0002-new.md": GOOD.replace(
+        "## Trạng thái\nAccepted",
+        "## Trạng thái\nSuperseded by ADR-0003\n\nSupersedes ADR-0001",
+      ),
+      "0003-c.md": GOOD.replace("## Trạng thái\nAccepted", "## Trạng thái\nAccepted\n\nThay ADR-0002"),
+    });
+    assert.deepEqual(chain.problems, []);
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
@@ -102,6 +145,11 @@ test("supersededBy: chỉ đọc trong mục Status, không đọc thân bài; n
   assert.equal(supersededBy("---\nstatus: superseded by ADR-0012\n---\n# x"), "0012");
   assert.equal(
     supersededBy("## Trạng thái\nAccepted\n\n## Bối cảnh\nThay vì Superseded by ADR-0003 ..."),
+    null,
+  );
+  // chỉ khối Status ĐẦU TIÊN được tính
+  assert.equal(
+    supersededBy("## Trạng thái\nAccepted\n\n## Bối cảnh\n\n## Status\nSuperseded by ADR-0003\n"),
     null,
   );
   assert.equal(supersededBy(""), null);

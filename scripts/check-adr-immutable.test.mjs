@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { checkImmutable, immutablePart, isFinal } from "./check-adr-immutable.mjs";
+import { checkImmutable, compareAdr, immutablePart, isFinal } from "./check-adr-immutable.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "check-adr-immutable.mjs");
 
@@ -66,6 +66,7 @@ function baseRepo() {
 
 test("isFinal / immutablePart: nhận dạng Status ở ba kiểu, bỏ đúng phần được đổi", () => {
   assert.equal(isFinal(ADR("Accepted")), true);
+  assert.equal(isFinal(ADR("Accepted (2026) — bổ sung ADR-0001, không thay stack.")), true);
   assert.equal(isFinal(ADR("Proposed")), false);
   assert.equal(isFinal(BULLET("Superseded by ADR-0004")), true);
   assert.equal(isFinal("---\nstatus: accepted\n---\n# x"), true);
@@ -80,13 +81,7 @@ test("không đổi gì / chỉ đổi dòng Status và liên kết: đạt; ch�
   const r = baseRepo();
   try {
     r.write("0001-a.md", BULLET("Superseded by ADR-0004 (Accepted, 2026-10-24)"));
-    r.write(
-      "0002-b.md",
-      ADR("Superseded by ADR-0004\n\nLinks: ADR-0004").replace(
-        "## Bối cảnh",
-        "- Links: ADR-0004\n\n## Bối cảnh",
-      ),
-    );
+    r.write("0002-b.md", ADR("Superseded by ADR-0004\n\nLinks: ADR-0004"));
     r.write("0003-c.md", ADR("Proposed", "đổi tự do khi còn proposed\n"));
     r.commit("status");
     const { problems, checked } = checkImmutable({ cwd: r.d, base: "base" });
@@ -183,4 +178,84 @@ test("CLI: exit 1 khi vi phạm, 0 khi đạt; nhận --base và biến ADR_BASE
   } finally {
     r.done();
   }
+});
+
+const CASES = [
+  [
+    "chèn mục ## Status thứ hai trước Hệ quả",
+    ADR("Accepted").replace("## Quyết định", "## Status\n\nQuyết định mới\n\n## Quyết định"),
+  ],
+  [
+    "chèn dòng '- Liên kết:' ngoài khối Status",
+    ADR("Accepted").replace("## Quyết định", "- Liên kết: dùng MongoDB\n\n## Quyết định"),
+  ],
+  ["chèn 'Supersedes:' trong thân", ADR("Accepted").replace("B.", "B.\nSupersedes: Node 24")],
+  ["chèn 'Status:' trong thân", ADR("Accepted").replace("B.", "B.\nStatus: đổi hướng")],
+  ["chèn văn xuôi trong khối Status", ADR("Accepted\n\nThực ra chọn phương án C")],
+  ["đổi tên heading", ADR("Accepted").replace("## Quyết định", "## Quyết định khác")],
+  ["thêm heading", ADR("Accepted") + "\n## Phụ lục\n\nx\n"],
+];
+
+test("không cho chèn nội dung tuỳ ý qua lối Status/liên kết", () => {
+  const base = ADR("Accepted");
+  for (const [name, head] of CASES) {
+    assert.ok(compareAdr("a.md", base, head).length > 0, name);
+  }
+  const bullet = BULLET("Accepted");
+  assert.ok(
+    compareAdr("a.md", bullet, bullet.replace("A.", "A.\n- Links: x")).length > 0,
+    "link ngoài khối (bullet)",
+  );
+});
+
+test("thay đổi hợp lệ: đổi Status + thêm Superseded by/Links/Supersedes ở đúng khối đầu tiên", () => {
+  const base = ADR("Accepted");
+  assert.deepEqual(compareAdr("a.md", base, ADR("Superseded by ADR-0009")), []);
+  assert.deepEqual(compareAdr("a.md", base, ADR("Accepted\n\nSuperseded by ADR-0009\nLinks: ADR-0009")), []);
+  assert.deepEqual(compareAdr("a.md", base, ADR("Superseded by ADR-0009\nLiên kết: ADR-0009")), []);
+  const bullet = BULLET("Accepted");
+  assert.deepEqual(
+    compareAdr(
+      "a.md",
+      bullet,
+      BULLET("Superseded by ADR-0004").replace("\n- Bối cảnh", "\n- Links: ADR-0004\n- Bối cảnh"),
+    ),
+    [],
+  );
+  const fm = "---\nstatus: accepted\ndate: 2026-10-24\n---\n\n# t\n\nthân\n";
+  assert.deepEqual(
+    compareAdr("a.md", fm, fm.replace("status: accepted", "status: superseded by ADR-0003")),
+    [],
+  );
+  assert.ok(
+    compareAdr("a.md", fm, fm.replace("date: 2026-10-24", "date: 2026-11-01")).length > 0,
+    "front matter: đổi date",
+  );
+  assert.ok(compareAdr("a.md", fm, fm.replace("thân", "thân khác")).length > 0);
+});
+
+test("isFinal: ranh giới từ và phủ định; chỉ khối Status đầu tiên", () => {
+  assert.equal(isFinal(ADR("Not accepted")), false);
+  assert.equal(isFinal(ADR("Chưa accepted")), false);
+  assert.equal(isFinal(ADR("Unaccepted")), false);
+  assert.equal(isFinal(ADR("Proposed (chưa chốt)")), false);
+  assert.equal(isFinal(ADR("Accepted")), true);
+  assert.equal(isFinal(ADR("Deprecated")), true);
+  assert.equal(
+    isFinal(ADR("Proposed").replace("## Quyết định", "## Status\n\nAccepted\n\n## Quyết định")),
+    false,
+  );
+  assert.equal(isFinal("---\nstatus: accepted\n---\n"), true);
+});
+
+test("immutablePart: dòng liên kết ngoài mục Status không bị bỏ; dòng tiêu đề Trạng thái được giữ", () => {
+  assert.ok(immutablePart(ADR("Accepted")).includes("## Trạng thái"));
+  assert.notEqual(
+    immutablePart(ADR("Accepted")),
+    immutablePart(ADR("Accepted").replace("B.", "B.\nSupersedes ADR-0001")),
+  );
+  assert.notEqual(
+    immutablePart(ADR("Accepted")),
+    immutablePart(ADR("Accepted").replace("## Trạng thái", "## Status")),
+  );
 });
