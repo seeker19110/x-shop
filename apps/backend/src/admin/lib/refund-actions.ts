@@ -17,12 +17,16 @@ export interface RefundLike {
   reason: string;
   return_id: string | null;
   requested_by: string | null;
+  /** `provider` | `manual` — quyết đường đi tiếp của hoàn theo trả hàng (hoàn tay không tự vào `failed`). */
+  method?: string;
 }
 
 export interface RefundActions {
-  /** Duyệt/từ chối (chỉ `requested`). */
+  /** Duyệt/từ chối (chỉ `requested`). Hoàn theo trả hàng không có nút từ chối (server trả 409 — T-173). */
   approve: boolean;
   reject: boolean;
+  /** `requested` theo trả hàng: hướng dẫn thay cho nút từ chối (theo cách hoàn — `returnRefundHint`); còn lại null. */
+  rejectHint: string | null;
   /** Người đang đăng nhập là người tạo → không tự duyệt được (S-403). */
   selfCreated: boolean;
   /** Thực hiện / thử lại / hỏi lại cổng. */
@@ -54,11 +58,72 @@ export function isRetryExhausted(
   return !Number.isSafeInteger(r.attempts) || r.attempts >= maxAttempts;
 }
 
+/**
+ * BẢN SAO của `isReturnRefund` trong `packages/domain/src/state/return-refund.ts` (bundle Admin không nạp được
+ * `@x-shop/domain`; test khoá hai bản cho cùng kết quả). Hoàn gắn yêu cầu trả không từ chối được (T-173).
+ */
+export function isReturnRefund(r: { reason: string; return_id: string | null | undefined }): boolean {
+  return r.reason === "return" || isNonEmpty(r.return_id);
+}
+
+export type ReturnRefundStep = "approve" | "execute" | "cancel" | "recreate";
+
+/** BẢN SAO của `returnRefundNextSteps` (domain) — cùng kết quả với server `next_steps` của 409 RETURN_REFUND_NOT_REJECTABLE. */
+export function returnRefundNextSteps(
+  r: { method: string; state: string; attempts: number },
+  maxAttempts: number,
+): ReturnRefundStep[] {
+  const manual = r.method === "manual";
+  switch (r.state) {
+    case "requested":
+      return manual ? ["approve", "execute"] : ["approve", "execute", "cancel", "recreate"];
+    case "approved":
+      return manual ? ["execute"] : ["execute", "cancel", "recreate"];
+    case "failed":
+      return isRetryExhausted({ state: "failed", attempts: r.attempts }, maxAttempts)
+        ? ["cancel", "recreate"]
+        : ["execute", "cancel", "recreate"];
+    case "processing":
+    case "unknown":
+      return ["execute"];
+    default:
+      return [];
+  }
+}
+
+const RETURN_REFUND_BASE = "Hoàn theo trả hàng không từ chối được (số tiền do kiểm định chốt).";
+
+/**
+ * Câu hướng dẫn tiếng Việt từ `next_steps` (server hoặc `returnRefundNextSteps`) — dùng cho dòng thay nút "Từ chối" và
+ * thông điệp lỗi 409. Bước lạ bị bỏ qua; không có bước nào → yêu cầu đã kết thúc.
+ */
+export function returnRefundHint(steps: readonly unknown[], evidenceRequired: boolean): string {
+  const has = (s: ReturnRefundStep) => steps.includes(s);
+  const main = [
+    ...(has("approve") ? ["duyệt"] : []),
+    ...(has("execute") ? [evidenceRequired ? "thực hiện kèm mã chứng từ" : "thực hiện"] : []),
+  ].join(" rồi ");
+  const change = has("cancel") && has("recreate");
+  if (!main && !change)
+    return `${RETURN_REFUND_BASE} Yêu cầu đã kết thúc — tải lại để xem trạng thái mới nhất.`;
+  const parts: string[] = [];
+  if (main) parts.push(main.charAt(0).toUpperCase() + main.slice(1));
+  if (change) {
+    parts.push(
+      main
+        ? "cần đổi cách hoàn: khi yêu cầu ở trạng thái thất bại, hủy (ghi lý do) rồi tạo lại theo trả hàng"
+        : "Hủy (ghi lý do) rồi tạo lại theo trả hàng",
+    );
+  }
+  return `${RETURN_REFUND_BASE} ${parts.join("; ")}.`;
+}
+
 export function refundActions(r: RefundLike, ctx: RefundActionContext = {}): RefundActions {
   const requested = r.state === "requested";
+  const returnRefund = isReturnRefund(r);
+  const maxAttempts = ctx.maxAttempts ?? REFUND_MAX_ATTEMPTS;
   const exhausted =
-    r.state === "failed" &&
-    (isRetryExhausted(r, ctx.maxAttempts ?? REFUND_MAX_ATTEMPTS) || (ctx.exhaustedIds?.has(r.id) ?? false));
+    r.state === "failed" && (isRetryExhausted(r, maxAttempts) || (ctx.exhaustedIds?.has(r.id) ?? false));
   const execute = r.state === "approved" || r.state === "unknown" || (r.state === "failed" && !exhausted);
   const recreate =
     r.state === "cancelled" &&
@@ -69,7 +134,17 @@ export function refundActions(r: RefundLike, ctx: RefundActionContext = {}): Ref
     );
   return {
     approve: requested,
-    reject: requested,
+    reject: requested && !returnRefund,
+    rejectHint:
+      requested && returnRefund
+        ? returnRefundHint(
+            returnRefundNextSteps(
+              { method: r.method ?? "", state: r.state, attempts: r.attempts },
+              maxAttempts,
+            ),
+            r.method === "manual",
+          )
+        : null,
     selfCreated: requested && isNonEmpty(ctx.myId) && r.requested_by === ctx.myId,
     execute,
     executeLabel: !execute ? null : r.state === "approved" ? "Thực hiện" : "Thử lại / hỏi lại cổng",

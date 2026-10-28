@@ -2,6 +2,8 @@
  * Lỗi API Admin (`application/problem+json`, đặc tả §9.1) → thông điệp tiếng Việt cho người dùng + lỗi theo dòng/cột
  * của file CSV. Thuần (không React/fetch) để test đơn vị.
  */
+import { returnRefundHint } from "./refund-actions";
+
 export interface RowError {
   /** Dòng trong file (1 = header); `null` khi server không nêu. */
   line: number | null;
@@ -123,6 +125,11 @@ export function describeProblem(error: AdminApiError): ProblemView {
         action: "none",
         message: detail.length ? `Dữ liệu không hợp lệ: ${detail.join("; ")}` : "Dữ liệu không hợp lệ.",
       };
+    }
+    case "RETURN_REFUND_NOT_REJECTABLE": {
+      // Bước tiếp do server tính theo cách hoàn + trạng thái (T-173); thân thiếu/hỏng → coi như không có bước (tải lại).
+      const steps = Array.isArray(error.body.next_steps) ? error.body.next_steps : [];
+      return { action: "none", message: returnRefundHint(steps, error.body.evidence_required === true) };
     }
     default:
       return { action: "none", message: MESSAGES[error.code] ?? error.message };

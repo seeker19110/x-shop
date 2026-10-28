@@ -476,6 +476,11 @@ const RefundsPage = (): ReactNode => {
                             Từ chối
                           </Button>
                         )}
+                        {a.rejectHint !== null && (
+                          <Text size="xsmall" className="text-ui-fg-subtle">
+                            {a.rejectHint}
+                          </Text>
+                        )}
                         {a.execute && (
                           <Button size="small" variant="secondary" onClick={() => open("execute", r)}>
                             {a.executeLabel}

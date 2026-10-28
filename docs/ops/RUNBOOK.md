@@ -376,8 +376,24 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   quyền `refund.approve`, lý do bắt buộc) — nhả số tiền ngay, chưa có gì gửi cổng — rồi tạo `auto`/`manual` mới. Hoặc
   duyệt → `execute` (→ `failed`, `attempts = 0`) → hủy như dòng trên. Hoàn do hủy đơn bị từ chối mở lại được bằng
   `POST /admin/x/refunds` `reason: "cancellation"`. **Hoàn theo trả hàng (`reason = return`) KHÔNG từ chối** — chỉ bản
-  `cancelled` mới mở lại được theo `return_id` — nên đi đường duyệt → `execute` → hủy → mở lại
-  (`reason: "return"`, `return_id`).
+  `cancelled` mới mở lại được theo `return_id`; server trả 409 `RETURN_REFUND_NOT_REJECTABLE` (T-173), Admin ẩn nút
+  "Từ chối" và hiện hướng dẫn. Đường đi tiếp nằm ở `next_steps` của 409, tính theo cách hoàn + trạng thái:
+  - `provider`: duyệt → `execute`; cần đổi cách hoàn (cổng tắt/từ chối) → `failed` → hủy → mở lại (`reason: "return"`,
+    `return_id`). `failed` → thực hiện lại (còn lượt) hoặc hủy → mở lại; `processing`/`unknown` → chỉ `execute` (hỏi cổng).
+  - `manual` (gồm mọi đơn COD, và kiểm định lúc cổng tắt): không bao giờ tự vào `failed` → chỉ duyệt → `execute` kèm
+    `evidence_ref` (`evidence_required: true`); không có đường hủy/mở lại.
+  - Đã kết thúc (`succeeded`/`cancelled`): `next_steps` rỗng.
+- **Dữ liệu cũ — hoàn theo trả hàng đã `rejected` TRƯỚC T-173** (yêu cầu trả kẹt: mở lại → 409 `INVALID_STATE`; gọi
+  `reject` lại chỉ trả 200 nguyên bản ghi). CHỈ dùng cho bản ghi tạo trước T-173, sau khi đối chiếu chưa có tiền rời hệ
+  thống (bản `rejected` chưa từng duyệt/gửi cổng); chạy từng `id`, trong transaction, ghi vào sổ sự cố:
+
+  ```sql
+  UPDATE x_refund SET state='cancelled', cancelled_by=rejected_by, cancelled_at=rejected_at, cancel_reason=coalesce(reject_reason,'legacy reject (T-173)') WHERE id=? AND state='rejected' AND return_id IS NOT NULL
+  ```
+
+  Phải cập nhật đúng 1 dòng (0 dòng = sai id hoặc không phải bản cũ — dừng). Sau đó mở lại theo `return_id`
+  (`POST /admin/x/refunds` `reason: "return"`, `return_id`) — số tiền lấy theo kiểm định. Không dùng câu này cho bản
+  ghi mới: từ T-173 server không còn tạo `rejected` cho hoàn theo trả hàng.
 - **Không nhả tiền khi cổng CÓ THỂ đã hoàn:** yêu cầu `unknown`/`processing` (timeout, 5xx, đứt mạng — có ngoại lệ
   `refund_unknown`) hoặc `failed` đã gửi cổng (`attempts > 0`) giữ nguyên; khi cổng tắt, `execute`/`cancel` trả 409 và
   không đổi trạng thái. Thoát cần cổng trả lời (cổng bật → `execute` hỏi cùng mã rồi mới gửi lại) — chưa có đường chốt
