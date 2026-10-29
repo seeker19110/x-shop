@@ -987,3 +987,17 @@
 - Chọn: Tách hai lát: parser int8 (0b835f5, expand) vào PR #20; 3 commit migration/check-schema/ADR-0007 giữ ở nhánh riêng, mở PR sau khi PR #20 merge (N-1 với base có parser xanh)
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 1+2: giữ bất biến N-1 (code cũ chạy được trên schema mới) — chính là hàng rào T-163; không nới cổng; mỗi lát một PR (P8). Đã kiểm: n-minus-1 --base 0b835f5 xanh
 - Đường lùi: Revert 0b835f5 (parser) — không đổi schema
+
+### D-141 · 2026-10-29T22:07:57+00:00 · Hạn giữ dòng outbox_event ở trạng thái dead (T-193, BE-JOB-004)
+
+- Phương án: (1) Giữ vô thời hạn; người vận hành redrive theo RUNBOOK §12; test chặn mọi đường xoá trong src · (2) Job dọn dead sau N ngày · (3) Chuyển dead sang bảng lưu trữ rồi xoá
+- Chọn: Giữ vô thời hạn; người vận hành redrive theo RUNBOOK §12; test chặn mọi đường xoá trong src
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: dead là sự kiện chưa giao — xoá tự động làm mất thông báo/đối soát không khôi phục được; khối lượng dead nhỏ (chỉ sau hết lượt retry) nên không có áp lực dung lượng hiện tại; (2) giữ đường lùi: thêm job dọn sau này là thay đổi cộng thêm; (3) đơn giản, đã có test giữ bất biến
+- Đường lùi: Thêm job dọn có hạn (ADR mới) và nới allowlist DELETE_ALLOWLIST trong outbox-redrive.spec.ts
+
+### D-142 · 2026-10-29T22:07:57+00:00 · Thay D-008: client storefront có được import giá trị từ @x-shop/domain cho validation form (T-188, FE-FORM-001)?
+
+- Phương án: (1) Giữ bản phản chiếu schema ở storefront + test đối chiếu · (2) Client chỉ import subpath thuần @x-shop/domain/validation (zod/mini); gốc @x-shop/domain vẫn cấm phía client
+- Chọn: Client chỉ import subpath thuần @x-shop/domain/validation (zod/mini); gốc @x-shop/domain vẫn cấm phía client
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: một schema duy nhất cho client và server (FE-FORM-001), hết lệch luật; server vẫn parse lại; (3) hàng rào máy: client-bundle.test + validation.test chặn import ngoài validation/ và zod/mini (kể cả import không tên, import() động, require); chi phí ≤ 8,6 KiB gzip trong ngân sách 200 KiB (perf:budget đo lại khi có Chromium)
+- Đường lùi: Bỏ export ./validation của packages/domain và revert commit storefront của T-188 (quay lại bản phản chiếu)
