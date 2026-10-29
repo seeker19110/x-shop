@@ -15,9 +15,14 @@ export function expectLinearOrUnder(budgetMs: number, input: string, run: (s: st
   const quarterInput = input.slice(0, Math.ceil(input.length / 4));
   let full = Infinity;
   let quarter = Infinity;
-  for (let i = 0; i < 5; i++) {
-    quarter = Math.min(quarter, cpuMs(quarterInput));
-    full = Math.min(full, cpuMs(input));
+  // Tối đa 3 vòng đo: nhiễu tải (GC, tiến trình khác) thường chỉ trúng một vòng, còn backtracking thảm hoạ thì vòng nào
+  // cũng vượt (từng đỏ giả với tỉ lệ 21–24 khi cổng chạy song song, đo riêng thì tuyến tính ×2/×2).
+  for (let round = 0; round < 3; round++) {
+    for (let i = 0; i < 5; i++) {
+      quarter = Math.min(quarter, cpuMs(quarterInput));
+      full = Math.min(full, cpuMs(input));
+    }
+    if (full < budgetMs || full / Math.max(quarter, 0.5) < 8) break;
   }
   if (full >= budgetMs) expect(full / Math.max(quarter, 0.5)).toBeLessThan(8);
   expect(full).toBeLessThan(2_000);

@@ -20,9 +20,13 @@ function expectLinearOrUnder(budgetMs: number, input: string, run: (s: string) =
   const quarterInput = input.slice(0, Math.ceil(input.length / 4));
   let full = Infinity;
   let quarter = Infinity;
-  for (let i = 0; i < 5; i++) {
-    quarter = Math.min(quarter, cpuMs(quarterInput));
-    full = Math.min(full, cpuMs(input));
+  // Tối đa 3 vòng đo (cùng lý do với apps/backend/src/lib/__tests__/cpu-budget.ts): nhiễu tải chỉ trúng một vòng.
+  for (let round = 0; round < 3; round++) {
+    for (let i = 0; i < 5; i++) {
+      quarter = Math.min(quarter, cpuMs(quarterInput));
+      full = Math.min(full, cpuMs(input));
+    }
+    if (full < budgetMs || full / Math.max(quarter, 0.5) < 8) break;
   }
   if (full >= budgetMs) expect(full / Math.max(quarter, 0.5)).toBeLessThan(8);
   expect(full).toBeLessThan(2_000);
