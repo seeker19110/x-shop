@@ -9,6 +9,7 @@ import type {
 import { MedusaError } from "@medusajs/framework/utils";
 import EmailPassProvider from "@medusajs/medusa/auth-emailpass";
 import { randomBytes } from "node:crypto";
+import { MEDUSA_DEFAULT_SCRYPT, needsRehash, type ScryptHashConfig } from "../password-hash";
 
 /**
  * Provider `emailpass` của Medusa, bọc lại để thời gian phản hồi đăng nhập KHÔNG lộ tài khoản có tồn tại hay không
@@ -22,6 +23,12 @@ import { randomBytes } from "node:crypto";
  * một identity mồi mang hash của chuỗi ngẫu nhiên (cùng `hashConfig`) — cùng đường mã scrypt.verify như tài khoản thật
  * sai mật khẩu — rồi trả kết quả gốc (thông báo/thân lỗi giữ nguyên). Không đổi hành vi khi đăng nhập đúng/sai mật khẩu
  * của tài khoản có thật. `identifier` giữ "emailpass" để provider identity sẵn có và route `/auth/*\/emailpass` không đổi.
+ *
+ * Băm lại khi đăng nhập (D-137, T-181, ADR-0006): đăng nhập ĐÚNG mà chuỗi băm đang lưu có tham số dưới mức tối thiểu
+ * OWASP (vd logN 15 trước T-181) → băm lại bằng chính `hashPassword` của provider (cùng `hashConfig`) và ghi lại theo
+ * kiểu so-và-ghi: chỉ ghi khi hash trong DB vẫn là hash vừa kiểm, để đổi mật khẩu chạy song song không bị ghi đè bằng
+ * mật khẩu cũ (còn cửa sổ cỡ một truy vấn giữa lần đọc lại và lần ghi — không nguyên tử ở mức DB, ADR-0006). Lỗi khi
+ * băm lại chỉ ghi log, không đổi kết quả đăng nhập.
  */
 interface EmailPassBase {
   authenticate(data: AuthenticationInput, svc: AuthIdentityProviderService): Promise<AuthenticationResponse>;
@@ -50,9 +57,14 @@ const Base = emailPassBase();
 
 const PROVIDER = "emailpass";
 
-function hasPasswordHash(identity: AuthIdentityDTO | null | undefined): boolean {
-  const pi = identity?.provider_identities?.find((p) => p.provider === PROVIDER);
-  return typeof pi?.provider_metadata?.password === "string";
+function emailpassIdentity(identity: AuthIdentityDTO | null | undefined) {
+  return identity?.provider_identities?.find((p) => p.provider === PROVIDER);
+}
+
+/** Chuỗi băm mật khẩu emailpass đang lưu, `null` nếu không có. */
+function passwordHashOf(identity: AuthIdentityDTO | null | undefined): string | null {
+  const password = emailpassIdentity(identity)?.provider_metadata?.password;
+  return typeof password === "string" ? password : null;
 }
 
 function isNotFound(e: unknown): boolean {
@@ -66,9 +78,13 @@ export class TimingSafeEmailPassAuthService extends Base {
   static override DISPLAY_NAME = Base.DISPLAY_NAME;
 
   private decoyHash_: Promise<string> | null = null;
+  private readonly hashTarget_: ScryptHashConfig;
+  private readonly rehashLogger_: Logger;
 
   constructor(deps: { logger: Logger }, options: EmailPassAuthProviderOptions) {
     super(deps, options);
+    this.hashTarget_ = options?.hashConfig ?? MEDUSA_DEFAULT_SCRYPT;
+    this.rehashLogger_ = deps.logger;
     // Tính sẵn hash mồi (cùng hashConfig) để lần dò đầu tiên không chậm/nhanh khác thường.
     this.decoy_().catch(() => {
       this.decoyHash_ = null;
@@ -107,11 +123,15 @@ export class TimingSafeEmailPassAuthService extends Base {
     authIdentityService: AuthIdentityProviderService,
   ): Promise<AuthenticationResponse> {
     let needsBurn = false;
+    // Identity có hash đã đưa cho bản gốc kiểm (để băm lại nếu tham số cũ, D-137).
+    const seen: { verified: { entityId: string; hash: string } | null } = { verified: null };
     const probe = Object.create(authIdentityService) as AuthIdentityProviderService;
     probe.retrieve = async (selector) => {
       try {
         const identity = await authIdentityService.retrieve(selector);
-        if (!hasPasswordHash(identity)) needsBurn = true;
+        const hash = passwordHashOf(identity);
+        if (hash === null) needsBurn = true;
+        else seen.verified = { entityId: selector.entity_id, hash };
         return identity;
       } catch (e) {
         if (isNotFound(e)) needsBurn = true;
@@ -119,6 +139,16 @@ export class TimingSafeEmailPassAuthService extends Base {
       }
     };
     const result = await super.authenticate(data, probe);
+    const password = (data.body as { password?: unknown } | undefined)?.password;
+    const legacy = seen.verified;
+    if (
+      result.success &&
+      legacy &&
+      typeof password === "string" &&
+      needsRehash(legacy.hash, this.hashTarget_)
+    ) {
+      await this.rehash_(legacy.entityId, legacy.hash, password, authIdentityService);
+    }
     if (needsBurn) {
       try {
         await this.burn_(data);
@@ -127,5 +157,27 @@ export class TimingSafeEmailPassAuthService extends Base {
       }
     }
     return result;
+  }
+
+  /** Băm lại bằng tham số hiện hành, ghi khi hash trong DB vẫn là `oldHash` (so-và-ghi); lỗi chỉ ghi log. */
+  private async rehash_(
+    entityId: string,
+    oldHash: string,
+    password: string,
+    authIdentityService: AuthIdentityProviderService,
+  ): Promise<void> {
+    try {
+      const fresh = await this.hashPassword(password);
+      const current = emailpassIdentity(await authIdentityService.retrieve({ entity_id: entityId }));
+      if (current?.provider_metadata?.password !== oldHash) return;
+      await authIdentityService.update(entityId, {
+        provider_metadata: { ...current.provider_metadata, password: fresh },
+      });
+    } catch (e) {
+      // Không ghi email/thông điệp lỗi (có thể chứa dữ liệu DB) — chỉ loại lỗi.
+      this.rehashLogger_.warn(
+        `[admin-security] Băm lại mật khẩu emailpass thất bại (${e instanceof Error ? e.name : "unknown"})`,
+      );
+    }
   }
 }

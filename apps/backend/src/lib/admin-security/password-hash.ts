@@ -35,3 +35,30 @@ export function meetsOwaspScryptMinimum(c: ScryptHashConfig): boolean {
     c.logN >= OWASP_SCRYPT_MIN.logN
   );
 }
+
+/** Bố cục header của chuỗi băm scrypt-kdf 2.x (96 byte): "scrypt" · phiên bản (1) · logN (1) · r (u32 BE) · p (u32 BE) · … */
+const SCRYPT_KDF = { length: 96, magic: "scrypt", logN: 7, r: 8, p: 12 } as const;
+
+/**
+ * Tham số scrypt đọc từ header của chuỗi băm base64 mà provider lưu; `null` nếu không đúng định dạng scrypt-kdf.
+ * Chỉ phân tích định dạng (không tính toán mật mã).
+ */
+export function scryptParamsFromHash(hash: string): ScryptHashConfig | null {
+  const buf = Buffer.from(hash, "base64");
+  if (buf.length !== SCRYPT_KDF.length) return null;
+  if (buf.subarray(0, SCRYPT_KDF.magic.length).toString("latin1") !== SCRYPT_KDF.magic) return null;
+  return {
+    logN: buf.readUInt8(SCRYPT_KDF.logN),
+    r: buf.readUInt32BE(SCRYPT_KDF.r),
+    p: buf.readUInt32BE(SCRYPT_KDF.p),
+  };
+}
+
+/**
+ * Chuỗi băm đã lưu cần băm lại (D-137) khi: đọc được tham số, tham số dưới mức tối thiểu OWASP, và cấu hình hiện hành của
+ * provider đạt mức đó (không thì băm lại cũng không nâng được — vd test chạy cấu hình mặc định Medusa).
+ */
+export function needsRehash(storedHash: string, target: ScryptHashConfig): boolean {
+  const stored = scryptParamsFromHash(storedHash);
+  return stored !== null && !meetsOwaspScryptMinimum(stored) && meetsOwaspScryptMinimum(target);
+}

@@ -20,7 +20,8 @@ jest.setTimeout(300 * 1000);
  * T-181 (BE-AUTH-001, Q-01, ADR-0006) — mật khẩu admin băm bằng scrypt của `@medusajs/auth-emailpass` với tham số ≥ mức
  * tối thiểu OWASP (N = 2^17, r = 8, p = 1). Kiểm trên chuỗi băm THẬT trong DB (`provider_identity.provider_metadata`),
  * không tin cấu hình: giải header định dạng scrypt-kdf (base64 của 96 byte: "scrypt" · phiên bản · logN · r (u32 BE) ·
- * p (u32 BE) · salt 32 · checksum 16 · HMAC 32). Hash tạo bằng tham số cũ (mặc định Medusa logN 15) vẫn đăng nhập được.
+ * p (u32 BE) · salt 32 · checksum 16 · HMAC 32). Hash tạo bằng tham số cũ (mặc định Medusa logN 15) vẫn đăng nhập được
+ * và được băm lại lên logN 17 ở lần đăng nhập đúng đầu tiên (D-137).
  */
 
 const SCRYPT_KDF_LENGTH = 96;
@@ -190,26 +191,52 @@ medusaIntegrationTestRunner({
       });
     });
 
-    it("tương thích ngược: hash tạo bằng tham số cũ (logN 15) vẫn đăng nhập được; sai mật khẩu vẫn 401", async () => {
-      const admin = await createAdmin(rawApi, container, { roles: [] });
-      const legacyPassword = `SENTINEL-cu-${randomUUID()}`;
-      const legacyHash = await providerWith(MEDUSA_DEFAULT_SCRYPT).hashPassword(legacyPassword);
-      expect(params(decodeScryptHeader(legacyHash))).toEqual({ logN: 15, r: 8, p: 1 });
-
-      // Mô phỏng tài khoản tạo trước T-181: ghi đè hash trong DB bằng hash tham số cũ, giữ phần metadata khác.
+    /** Mô phỏng tài khoản tạo trước T-181: ghi đè hash trong DB bằng hash tham số cũ (logN 15), giữ metadata khác. */
+    async function withLegacyHash(email: string): Promise<{ password: string; hash: string }> {
+      const password = `SENTINEL-cu-${randomUUID()}`;
+      const hash = await providerWith(MEDUSA_DEFAULT_SCRYPT).hashPassword(password);
+      expect(params(decodeScryptHeader(hash))).toEqual({ logN: 15, r: 8, p: 1 });
       const row = await db()("provider_identity")
-        .where({ entity_id: admin.email, provider: "emailpass" })
+        .where({ entity_id: email, provider: "emailpass" })
         .first<{ id: string; provider_metadata: Record<string, unknown> }>("id", "provider_metadata");
       await db()("provider_identity")
         .where({ id: row.id })
-        .update({ provider_metadata: JSON.stringify({ ...row.provider_metadata, password: legacyHash }) });
-      expect(await storedHash(admin.email)).toBe(legacyHash);
+        .update({ provider_metadata: JSON.stringify({ ...row.provider_metadata, password: hash }) });
+      expect(await storedHash(email)).toBe(hash);
+      return { password, hash };
+    }
 
-      expect((await login(admin.email, legacyPassword)).status).toBe(200);
-      expect((await login(admin.email, admin.password)).status).toBe(401);
-      expect((await login(admin.email, "SENTINEL-sai")).status).toBe(401);
-      // Hiện provider không băm lại khi đăng nhập (hành vi của Medusa 2.22.1): hash cũ giữ nguyên tới lần đổi mật khẩu.
-      expect(await storedHash(admin.email)).toBe(legacyHash);
+    describe("hash tham số cũ (logN 15): tương thích ngược + băm lại khi đăng nhập (D-137)", () => {
+      it("sai mật khẩu → 401, hash không đổi; đúng → 200 và hash trong DB thành logN 17; đăng nhập lại 200", async () => {
+        const admin = await createAdmin(rawApi, container, { roles: [] });
+        const legacy = await withLegacyHash(admin.email);
+
+        expect((await login(admin.email, admin.password)).status).toBe(401);
+        expect((await login(admin.email, "SENTINEL-sai")).status).toBe(401);
+        expect(await storedHash(admin.email)).toBe(legacy.hash);
+
+        expect((await login(admin.email, legacy.password)).status).toBe(200);
+        const upgraded = await storedHash(admin.email);
+        expect(upgraded).not.toBe(legacy.hash);
+        expect(params(decodeScryptHeader(upgraded))).toEqual({ logN: 17, r: 8, p: 1 });
+
+        expect((await login(admin.email, legacy.password)).status).toBe(200);
+        // Đã đạt chuẩn → không băm lại nữa.
+        expect(await storedHash(admin.email)).toBe(upgraded);
+        expect((await login(admin.email, "SENTINEL-sai")).status).toBe(401);
+      });
+
+      it("đồng thời: hai đăng nhập đúng song song → cả hai 200, hash cuối logN 17 và vẫn đăng nhập được", async () => {
+        const admin = await createAdmin(rawApi, container, { roles: [] });
+        const legacy = await withLegacyHash(admin.email);
+        const both = await Promise.all([
+          login(admin.email, legacy.password),
+          login(admin.email, legacy.password),
+        ]);
+        expect(both.map((r) => r.status)).toEqual([200, 200]);
+        expect(params(decodeScryptHeader(await storedHash(admin.email)))).toEqual({ logN: 17, r: 8, p: 1 });
+        expect((await login(admin.email, legacy.password)).status).toBe(200);
+      });
     });
 
     it("đồng thời: nhiều lần đăng nhập song song với hash logN 17 đều thành công; đo thời gian băm/đăng nhập", async () => {
