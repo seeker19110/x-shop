@@ -1907,7 +1907,12 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
     Validation:
-      description: "Dữ liệu không hợp lệ (`VALIDATION`, `INVALID_QUERY`, `IMPORT_HAS_ERRORS`…); `field` hoặc `errors[]` chỉ trường lỗi."
+      description: |
+        Dữ liệu không hợp lệ (`VALIDATION`, `INVALID_QUERY`, `IMPORT_HAS_ERRORS`…); `field` hoặc `errors[]` chỉ trường lỗi.
+        Checkout (`/store/x/checkout/quote`, `/store/x/checkout/submit`; T-188, FE-FORM-001): kiểm bằng schema dùng chung với
+        form storefront (`@x-shop/domain/validation`); `field` + `detail` = lỗi ĐẦU TIÊN theo thứ tự trường (hợp đồng cũ),
+        `errors[{param, reason}]` = MỌI trường sai, mỗi trường một mục (`param` dạng `contact.phone`, `address.line`; trường
+        thừa → `reason` "Có trường không được chấp nhận trong yêu cầu"; thân không phải object → `param: body`).
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
@@ -2139,7 +2144,10 @@ components:
       properties:
         province_code: { type: string, minLength: 1, maxLength: 10 }
         ward_code: { type: string, minLength: 1, maxLength: 10 }
-        line: { type: string, maxLength: 500, description: "Số nhà, tên đường." }
+        line:
+          type: string
+          maxLength: 500
+          description: "Số nhà, tên đường. Thô ≤ 500 ký tự; sau chuẩn hoá (NFC, gọn khoảng trắng) 3–200 ký tự (code point)."
     PaymentMethod:
       type: string
       enum: [cod, vnpay]
@@ -2196,9 +2204,12 @@ components:
           additionalProperties: false
           required: [name, phone]
           properties:
-            name: { type: string, minLength: 1, maxLength: 100 }
-            phone: { type: string, maxLength: 32 }
-            email: { type: [string, "null"], maxLength: 254 }
+            name: { type: string, minLength: 1, maxLength: 100, description: "Chuẩn hoá NFC, gọn khoảng trắng; 1–100 ký tự." }
+            phone: { type: string, maxLength: 32, description: "Di động VN 0xxxxxxxxx / +84xxxxxxxxx; lưu dạng 0xxxxxxxxx." }
+            email:
+              type: [string, "null"]
+              maxLength: 254
+              description: "Không bắt buộc: vắng, `null`, `\"\"` hoặc toàn khoảng trắng = không có email (lưu `null`); có thì đúng dạng, lưu chữ thường."
         address: { $ref: "#/components/schemas/AddressInput" }
     AttemptView:
       type: object
