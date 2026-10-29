@@ -80,6 +80,14 @@ jobs:
         run: bash .xtemplates/scripts/dev-task.sh require lint test
       - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
         run: bash .xtemplates/scripts/dev-task.sh setup
+      # x-shop (T-184, Q-02, DB-SEC-002): vai trò xshop_app (chỉ DML) + xshop_migrator (owner/DDL) trên Postgres của job, TRƯỚC
+      # test tích hợp (db-roles.spec kiểm thuộc tính vai trò, quyền bảng, timeout cấp vai trò do migration đặt). Mật khẩu là
+      # giá trị GIẢ mặc định của scripts/db-roles.sh (chứa SENTINEL; Postgres dùng một lần của job). Thêm bước, không đổi
+      # lệnh cổng. psql có sẵn trên ubuntu-latest.
+      - name: Vai trò DB tách quyền — `scripts/db-roles.sh` (DB-SEC-002)
+        env:
+          XS_PG_ADMIN_URL: postgres://xshop:xshop@localhost:5432/xshop
+        run: bash scripts/db-roles.sh
       # SEC-SECRET-007 (T-183): output `gate-par` (gồm log test tích hợp Medusa chạy `--silent=false`) được tee ra file để
       # bước gitleaks bên dưới quét — bí mật lọt vào log test = đỏ. `shell: bash` = `-eo pipefail`: mã thoát của gate-par
       # vẫn quyết định bước (tee không nuốt lỗi). Thêm kiểm, không đổi lệnh cổng.
