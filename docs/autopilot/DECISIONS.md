@@ -973,3 +973,10 @@
 - Chọn: Opt-in: dev giữ xshop làm DATABASE_URL mặc định; xshop_app/xshop_migrator + MIGRATION_DATABASE_URL tạo sẵn; lệnh medusa db:* tự dùng MIGRATION_DATABASE_URL (kiểm cùng host/cổng/DB, lệch thì từ chối); migration cấp DML + default privileges cho xshop_app
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 2: giữ đường lùi, không phá luồng dev/test hiện có; production dùng hai URL tách (đã chạy thử runtime bằng xshop_app: readyz + POST carts 200); DB-SEC-002 tick [~] (dev/CI có vai trò, production chưa có hạ tầng)
 - Đường lùi: Bỏ MIGRATION_DATABASE_URL (mặc định = DATABASE_URL); migration down RESET + thu hồi quyền
+
+### D-139 · 2026-10-29T17:24:00+00:00 · T-187: 4 POST không nhận Idempotency-Key (imports/preview, checkout/quote, orders/lookup, size-charts revise) xử lý theo Q-06 thế nào?
+
+- Phương án: (1) Giữ allowlist no-business-effect (không ghi tiền/tồn/đơn), thêm T-225 làm revise idempotent tự nhiên (nội dung trùng bản hiện hành → không tạo phiên bản) · (2) Bắt buộc khoá cho cả 4 (phá storefront/Admin UI) · (3) Giữ nguyên tất cả, không task
+- Chọn: Giữ allowlist no-business-effect (không ghi tiền/tồn/đơn), thêm T-225 làm revise idempotent tự nhiên (nội dung trùng bản hiện hành → không tạo phiên bản)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1+4: không route nào ghi tiền/tồn/đơn; quote/lookup/preview là đọc/tính toán; bắt khoá làm hỏng client không đổi được an toàn; revise trùng chỉ sinh phiên bản thừa → sửa nhỏ theo phương án C. Q-07 giữ 409 IDEMPOTENCY_CONFLICT cho khác body (không đổi sang 422)
+- Đường lùi: Bỏ mục allowlist và bắt khoá
