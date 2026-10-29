@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import type { Logger, MedusaContainer } from "@medusajs/framework/types";
@@ -72,7 +74,7 @@ describe("tham số scrypt của emailpass (tĩnh)", () => {
   });
 });
 
-type Res = { status: number; data: Record<string, unknown> };
+type Res = { status: number; data: Record<string, unknown>; headers: Record<string, unknown> };
 interface Api {
   post(url: string, body?: unknown, config?: unknown): Promise<Res>;
 }
@@ -226,6 +228,38 @@ medusaIntegrationTestRunner({
         expect((await login(admin.email, "SENTINEL-sai")).status).toBe(401);
       });
 
+      it("GO-NO-GO: scripts/ops/check-scrypt-params.mjs đếm hash dưới chuẩn → exit 1; sau đăng nhập đúng (băm lại) → exit 0", async () => {
+        const { rows } = await db().raw<{ rows: { name: string }[] }>("select current_database() as name");
+        const url = new URL("postgres://localhost");
+        url.hostname = process.env.DB_HOST ?? "localhost";
+        url.port = process.env.DB_PORT ?? "5432";
+        url.username = process.env.DB_USERNAME ?? "";
+        url.password = process.env.DB_PASSWORD ?? "";
+        url.pathname = `/${rows[0]!.name}`;
+        const script = path.resolve(__dirname, "../../../../scripts/ops/check-scrypt-params.mjs");
+        const check = () =>
+          new Promise<{ code: number; out: string }>((resolve) => {
+            execFile(process.execPath, [script, url.toString()], (err, stdout) => {
+              resolve({ code: err ? Number((err as { code?: unknown }).code ?? 1) : 0, out: stdout });
+            });
+          });
+
+        const admin = await createAdmin(rawApi, container, { roles: [] });
+        const clean = await check();
+        expect(clean.code).toBe(0);
+        expect(clean.out).toMatch(/dưới chuẩn 0 · sai định dạng 0/);
+
+        const legacy = await withLegacyHash(admin.email);
+        const dirty = await check();
+        expect(dirty.code).toBe(1);
+        expect(dirty.out).toMatch(/dưới chuẩn 1 /);
+        expect(dirty.out).not.toContain(admin.email);
+        expect(dirty.out).not.toContain(legacy.hash);
+
+        expect((await login(admin.email, legacy.password)).status).toBe(200);
+        expect((await check()).code).toBe(0);
+      });
+
       it("đồng thời: hai đăng nhập đúng song song → cả hai 200, hash cuối logN 17 và vẫn đăng nhập được", async () => {
         const admin = await createAdmin(rawApi, container, { roles: [] });
         const legacy = await withLegacyHash(admin.email);
@@ -237,6 +271,38 @@ medusaIntegrationTestRunner({
         expect(params(decodeScryptHeader(await storedHash(admin.email)))).toEqual({ logN: 17, r: 8, p: 1 });
         expect((await login(admin.email, legacy.password)).status).toBe(200);
       });
+    });
+
+    it("dồn dập vượt trần scrypt → một phần 503 AUTH_BUSY + Retry-After (cùng thân cho email có/không có), không 5xx khác", async () => {
+      const admin = await createAdmin(rawApi, container, { roles: [] });
+      // Trần mặc định 3 phép chạy + 32 chờ (UV_THREADPOOL_SIZE mặc định): 60 lần cùng lúc chắc chắn vượt.
+      const burst = await Promise.all(
+        Array.from({ length: 60 }, (_, i) =>
+          api.post(
+            "/auth/user/emailpass",
+            {
+              // ≤ 4 lần sai vào tài khoản thật (dưới ngưỡng theo định danh); còn lại email không tồn tại.
+              email: i % 15 === 0 ? admin.email : `khong-${i}-${randomUUID()}@example.test`,
+              password: "SENTINEL-sai",
+            },
+            { ...noThrow, headers: { "x-forwarded-for": `203.0.113.${i + 1}` } },
+          ),
+        ),
+      );
+      const statuses = burst.map((r) => r.status);
+      expect(statuses.every((s) => s === 401 || s === 503)).toBe(true);
+      const busy = burst.filter((r) => r.status === 503);
+      expect(busy.length).toBeGreaterThan(0);
+      expect(statuses.filter((s) => s === 401).length).toBeGreaterThan(0);
+      const shapes = new Set(busy.map((r) => JSON.stringify({ ...r.data, trace_id: null })));
+      expect(shapes.size).toBe(1);
+      for (const r of busy) {
+        expect(r.data.code).toBe("AUTH_BUSY");
+        expect(String(r.headers["retry-after"])).toBe("1");
+        expect(String(r.headers["content-type"])).toContain("application/problem+json");
+      }
+      // Hết đợt: tài khoản thật vẫn đăng nhập được (5xx không bị tính là lần sai).
+      expect((await login(admin.email, admin.password)).status).toBe(200);
     });
 
     it("đồng thời: nhiều lần đăng nhập song song với hash logN 17 đều thành công; đo thời gian băm/đăng nhập", async () => {

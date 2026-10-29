@@ -49,6 +49,8 @@
     "check:sql-safety:test": "node --test scripts/check-sql-safety.test.mjs",
     "check:schema": "node scripts/ops/check-schema.mjs",
     "check:schema:test": "node --test scripts/ops/check-schema.test.mjs",
+    "check:scrypt-params": "node scripts/ops/check-scrypt-params.mjs",
+    "check:scrypt-params:test": "node --test scripts/ops/check-scrypt-params.test.mjs",
     "check:migrations": "node scripts/check-migrations.mjs",
     "check:migrations:test": "node --test scripts/check-migrations.test.mjs",
     "check:migrations:drift": "node scripts/check-migrations.mjs --drift",

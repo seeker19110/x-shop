@@ -22,11 +22,11 @@ Phần máy — `python3 .xtemplates/scripts/xt.py release-check` @ `b17ec8221cb
 
 Máy: "Chờ người: prod_switch, attack, perf — máy không thay được chữ ký".
 
-Đếm theo danh mục mục 2 (BLOCKER 1–13 và 18; SHOULD 14–17; NICE 19; `PASS` chỉ khi có bằng chứng chạy thật):
+Đếm theo danh mục mục 2 (BLOCKER 1–13, 18 và 20; SHOULD 14–17; NICE 19; `PASS` chỉ khi có bằng chứng chạy thật):
 
 | Mức | PASS | FAIL | N/A |
 |---|---|---|---|
-| BLOCKER | 0 | 14 | 0 |
+| BLOCKER | 0 | 15 | 0 |
 | SHOULD | 0 | 4 | 0 |
 | NICE | 0 | 1 | 0 |
 
@@ -54,6 +54,7 @@ Máy: "Chờ người: prod_switch, attack, perf — máy không thay được c
 | 17 | SHOULD | Tài liệu khớp code | FAIL | asserted-not-measured | tài liệu T-038 (THREAT-MODEL, DPIA, openapi) mới cập nhật theo mã ngày 2026-10-26; chưa rà README (chưa có `README.md`) | |
 | 18 | BLOCKER | Mọi đề xuất "Khi chạy thật" đã được chủ dự án quyết | FAIL (chờ người) | real-path | `grep -n "Khi chạy thật" docs/autopilot/DECISIONS.md` → 4 mục, chưa có quyết định (xem 3.2) | |
 | 19 | NICE | Tối ưu mã nguồn: dead code/dependency thừa đã rà | FAIL | asserted-not-measured | chưa chạy knip/depcheck | |
+| 20 | BLOCKER | Mật khẩu admin: mọi hash emailpass trên DB production đạt scrypt tối thiểu OWASP (logN ≥ 17, r ≥ 8, p ≥ 1) — tài khoản còn hash cũ phải đặt lại mật khẩu (ADR-0006, D-137) | FAIL (chưa chạy trên DB production) | faithful-fixture | `DATABASE_URL=<production, chỉ đọc> pnpm check:scrypt-params` → phải exit 0 (`dưới chuẩn 0 · sai định dạng 0`); script được chạy trong `apps/backend/integration-tests/http/password-hash.spec.ts` (hash logN 15 → exit 1, sau đăng nhập đúng → exit 0) | |
 
 Mục đặc thù hồ sơ/ngành (ecommerce, PCI SAQ A, đối soát) nằm trong BLUEPRINT.md (IND-ECOM-*) — chưa tính ở bảng trên.
 
