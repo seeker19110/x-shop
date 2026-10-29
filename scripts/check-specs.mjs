@@ -136,7 +136,12 @@ const FEAT = /^feat(\([^)]*\))?!?:/i;
 export function checkPrSpec({ title = "", commits = [], body = "" }, dir = join(root, SPECS_DIR)) {
   if (![title, ...commits].some((s) => FEAT.test(s.trim()))) return [];
   const errors = [];
-  const text = body.replace(/<!--[\s\S]*?-->/g, "");
+  // Bỏ chú thích HTML lặp tới khi ổn định (chú thích lồng/ghép như `<!<!---->--` không còn sót `<!--`).
+  let text = body;
+  for (let prev = ""; prev !== text;) {
+    prev = text;
+    text = text.replace(/<!--[\s\S]*?-->/g, "");
+  }
   const names = new Set([...text.matchAll(/\bSPEC-[A-Za-z0-9_-]+/g)].map((m) => m[0].replace(/[-_]+$/, "")));
   if (names.size === 0) {
     errors.push("PR feat phải link một SPEC Approved trong mô tả (vd docs/specs/SPEC-checkout.md)");

@@ -275,13 +275,18 @@ function sqlExprs(expr) {
 
 const BARE_IDENT = /^[A-Za-z_$][\w$]*$/;
 
+/** Thoát mọi ký tự đặc biệt của RegExp (kể cả `\\`) — tên định danh JS chỉ có thể chứa `$` nhưng không tin đầu vào. */
+function escapeRegExp(v) {
+  return v.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
 /**
  * Fail-closed (regex, không phải AST): tên chỉ có MỘT khai báo `const` trong tệp, không được gán lại (`=`, `+=`, `||=`…), không
  * trùng tham số hàm (có kiểu, hàm thường, mũi tên, destructuring) và không phải `let`/`var`. Sai một điều kiện → trả `false` để
  * buộc chính tên biến phải nằm trong `idents`. Nghi ngờ thì coi là không an toàn (có thể báo thừa, không báo thiếu).
  */
 function isSingleConstBinding(src, name) {
-  const n = name.replace(/\$/g, "\\$");
+  const n = escapeRegExp(name);
   const decls = [...src.matchAll(new RegExp(`\\b(const|let|var)\\s+${n}(?![\\w$])`, "g"))];
   if (decls.length !== 1 || decls[0][1] !== "const") return false;
   const assign = new RegExp(
@@ -309,9 +314,7 @@ function argExprs(src, mask, open, arg) {
   const decl = [
     ...src
       .slice(0, open)
-      .matchAll(
-        new RegExp(`\\b(?:const|let|var)\\s+${name.replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=(?!=)`, "g"),
-      ),
+      .matchAll(new RegExp(`\\b(?:const|let|var)\\s+${escapeRegExp(name)}\\s*(?::[^=]+)?=(?!=)`, "g")),
   ].pop();
   if (!decl || !isSingleConstBinding(src, name)) return [name];
   const start = decl.index + decl[0].length;
