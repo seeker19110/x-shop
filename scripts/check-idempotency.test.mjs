@@ -5,11 +5,21 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { checkIdempotency, handlersOfSource, keyModeOf, routePathOf } from "./check-idempotency.mjs";
+import {
+  analyzeRoute,
+  checkIdempotency,
+  KEYED_SPEC_PATH,
+  keyedScenariosOf,
+  keyModeOf,
+  lastStaticSegment,
+  routePathOf,
+  testsOfSource,
+} from "./check-idempotency.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TEST_FILE = "apps/backend/integration-tests/http/x.spec.ts";
 const PARALLEL = "duyệt ×2 song song → một lần duyệt";
+const PARALLEL_BODY = "const r = await Promise.all([1, 2].map(() => post(`/admin/x/things/${id}/approve`)));";
 
 const KEYED_SRC = `import { idempotencyKeyOf } from "../http";
 export const POST = async (req, res) => { const key = idempotencyKeyOf(req); res.json({ key }); };
@@ -40,28 +50,32 @@ const GOOD_SPEC = {
   "/store/x/things": { mode: "key", keyParam: true, conflict: "KeyedConflict", validation: true },
   "/admin/x/things/{id}/approve": { mode: "state" },
 };
+const keyedSpec = (routes) =>
+  `const KEYED: Record<string, () => Promise<unknown>> = {\n${routes.map((r) => `  "${r}": async () => ({}),`).join("\n")}\n};\n`;
+const ENTRY = {
+  route: "POST /admin/x/things/{id}/approve",
+  kind: "state",
+  reason: "Máy trạng thái: đã duyệt → changed=false, không làm lần hai.",
+  tests: [{ file: TEST_FILE, name: PARALLEL }],
+};
 
 /**
- * Cây giả: một route nhận khoá (store/x/things) + một route theo trạng thái (admin/x/things/[id]/approve) trong allowlist
- * kèm file test có ca song song.
+ * Cây giả: một route nhận khoá (store/x/things, có kịch bản KEYED) + một route theo trạng thái
+ * (admin/x/things/[id]/approve) trong allowlist kèm test song song thật. `routes`: thư mục → nguồn route.ts, hoặc
+ * { file, src } cho đuôi khác.
  */
 function fixture({
   routes = { "store/x/things": KEYED_SRC, "admin/x/things/[id]/approve": PLAIN_SRC },
-  allow = [
-    {
-      route: "POST /admin/x/things/{id}/approve",
-      kind: "state",
-      reason: "Máy trạng thái: đã duyệt → changed=false, không làm lần hai.",
-      tests: [{ file: TEST_FILE, name: PARALLEL }],
-    },
-  ],
+  allow = [ENTRY],
   spec = specOf(GOOD_SPEC),
-  testSource = `it("${PARALLEL}", async () => {});\n`,
+  testSource = `it("${PARALLEL}", async () => { ${PARALLEL_BODY} });\n`,
+  keyed = keyedSpec(["POST /store/x/things"]),
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "idem-"));
-  for (const [dir, src] of Object.entries(routes)) {
+  for (const [dir, r] of Object.entries(routes)) {
+    const { file, src } = typeof r === "string" ? { file: "route.ts", src: r } : r;
     mkdirSync(join(root, "apps/backend/src/api", dir), { recursive: true });
-    writeFileSync(join(root, "apps/backend/src/api", dir, "route.ts"), src);
+    writeFileSync(join(root, "apps/backend/src/api", dir, file), src);
   }
   mkdirSync(join(root, "scripts"), { recursive: true });
   writeFileSync(join(root, "scripts/idempotency-allowlist.json"), JSON.stringify({ routes: allow }));
@@ -69,6 +83,7 @@ function fixture({
   writeFileSync(join(root, "docs/design/openapi.yaml"), spec);
   mkdirSync(join(root, dirname(TEST_FILE)), { recursive: true });
   writeFileSync(join(root, TEST_FILE), testSource);
+  writeFileSync(join(root, KEYED_SPEC_PATH), keyed);
   return root;
 }
 
@@ -88,36 +103,80 @@ test("routePathOf: [param] → {param}, giữ cả route ngoài store/x|admin/x 
     routePathOf("/a/api", "/a/api/admin/x/returns/[id]/approve/route.ts"),
     "/admin/x/returns/{id}/approve",
   );
-  assert.equal(routePathOf("/a/api", "/a/api/auth/session/route.ts"), "/auth/session");
+  assert.equal(routePathOf("/a/api", "/a/api/auth/session/route.js"), "/auth/session");
+  assert.equal(lastStaticSegment("POST /store/x/orders/{display_ref}/cancel"), "cancel");
+  assert.equal(lastStaticSegment("DELETE /admin/x/users/{id}/roles"), "roles");
 });
 
-test("handlersOfSource: chỉ handler ghi; nhiều handler → đoạn mã riêng từng handler", () => {
-  const src = `const helper = () => idempotencyKeyOf(req);
-export const GET = async () => {};
-export async function POST(req) { idempotencyKeyOf(req); }
-export const DELETE = async (req) => {};
+test("analyzeRoute: thân từng handler tách riêng — GET gọi idempotencyKeyOf không làm POST thành 'key'", () => {
+  const src = `export const GET = async (req) => { idempotencyKeyOf(req); };
+export async function POST(req) { return 1; }
+export const DELETE = async (req) => { idempotencyKeyOf(req); };
 `;
-  const hs = handlersOfSource(src);
+  const { handlers, problems } = analyzeRoute(src);
+  assert.deepEqual(problems, []);
   assert.deepEqual(
-    hs.map((h) => h.method),
-    ["POST", "DELETE"],
+    handlers.map((h) => h.method),
+    ["GET", "POST", "DELETE"],
   );
-  assert.equal(keyModeOf(hs[0].body), "key");
-  assert.equal(keyModeOf(hs[1].body), null);
-  // Một handler ghi duy nhất: hàm phụ khai trước export vẫn được tính.
-  const one = handlersOfSource(
-    "function k(req) { return idempotencyKeyOf(req); }\nexport const POST = (req) => k(req);\n",
+  assert.equal(keyModeOf("export async function POST(req) { return 1; }"), null);
+  assert.equal(keyModeOf("export const DELETE = (req) => idempotencyKeyOf(req);"), "key");
+  // Hàm phụ ngoài handler: không tính (fail-closed — gọi trong chính handler).
+  assert.equal(
+    keyModeOf("function k(req) { return idempotencyKeyOf(req); }\nexport const POST = (req) => k(req);\n"),
+    null,
   );
-  assert.equal(keyModeOf(one[0].body), "key");
 });
 
-test("keyModeOf: req.get('Idempotency-Key') phải kèm isValidIdempotencyKey; không phân biệt hoa thường tên header", () => {
+test("keyModeOf: bỏ chú thích; req.get('Idempotency-Key') phải kèm isValidIdempotencyKey; tên header không phân biệt hoa thường", () => {
   assert.equal(
-    keyModeOf('const k = req.get("Idempotency-Key"); if (!isValidIdempotencyKey(k)) throw 1;'),
+    keyModeOf("export const POST = (req) => { // TODO idempotencyKeyOf(req)\n return 1; };"),
+    null,
+  );
+  assert.equal(keyModeOf("export const POST = (req) => { /* idempotencyKeyOf(req) */ return 1; };"), null);
+  assert.equal(keyModeOf('export const POST = (req) => { const s = "idempotencyKeyOf(req)"; };'), null);
+  assert.equal(
+    keyModeOf(
+      'export const POST = (req) => { const k = req.get("Idempotency-Key"); if (!isValidIdempotencyKey(k)) throw 1; };',
+    ),
     "key",
   );
-  assert.equal(keyModeOf("const k = req.get('idempotency-key');"), "unvalidated");
-  assert.equal(keyModeOf("res.json({})"), null);
+  assert.equal(keyModeOf("export const POST = (req) => req.get('idempotency-key');"), "unvalidated");
+  assert.equal(keyModeOf("export const POST = (req, res) => res.json({});"), null);
+});
+
+test("fail-closed: export { … }, export * from, export let/var, export phân rã → lỗi", () => {
+  for (const src of [
+    'export { POST } from "./impl";\n',
+    "const handler = () => {};\nexport { handler as PATCH };\n",
+    'export * from "./impl";\n',
+    "export let PUT = () => {};\n",
+    "export var helper = 1;\n",
+    "export const { POST } = impl;\n",
+  ]) {
+    const errors = errorsOf({
+      routes: { "store/x/things": KEYED_SRC, "admin/x/things/[id]/approve": PLAIN_SRC, "admin/x/evil": src },
+    });
+    assert.ok(
+      errors.some((e) => e.startsWith("apps/backend/src/api/admin/x/evil/route.ts: ")),
+      `${src}: ${JSON.stringify(errors)}`,
+    );
+  }
+});
+
+test("quét cả route.js/.mjs (Medusa nạp .js) — route ghi .js thiếu khoá → lỗi", () => {
+  const errors = errorsOf({
+    routes: {
+      "store/x/things": KEYED_SRC,
+      "admin/x/things/[id]/approve": PLAIN_SRC,
+      "admin/x/burn": { file: "route.js", src: "export const POST = async (req, res) => res.json({});\n" },
+      "admin/x/melt": { file: "route.mjs", src: "export async function DELETE(req, res) {}\n" },
+    },
+  });
+  assert.deepEqual(
+    errors.map((e) => e.split(" (")[0]),
+    ["DELETE /admin/x/melt", "POST /admin/x/burn"],
+  );
 });
 
 test("cây hợp lệ → 0 lỗi, đếm đúng route nhận khoá/allowlist", () => {
@@ -161,6 +220,19 @@ test("PUT/PATCH/DELETE cũng bị kiểm (không chỉ POST)", () => {
   );
 });
 
+test("route nhận khoá phải có kịch bản trong KEYED của idempotency.spec; KEYED thừa → lỗi", () => {
+  const missing = errorsOf({ keyed: keyedSpec([]) });
+  assert.equal(missing.length, 1);
+  assert.match(
+    missing[0],
+    /^POST \/store\/x\/things: route nhận Idempotency-Key nhưng thiếu kịch bản trong KEYED/,
+  );
+  const extra = errorsOf({ keyed: keyedSpec(["POST /store/x/things", "POST /store/x/ghost"]) });
+  assert.equal(extra.length, 1);
+  assert.match(extra[0], /^KEYED "POST \/store\/x\/ghost"/);
+  assert.deepEqual([...keyedScenariosOf(keyedSpec(["POST /a", "DELETE /b"]))], ["POST /a", "DELETE /b"]);
+});
+
 test("mục allowlist không còn route trong mã → lỗi (bỏ mục)", () => {
   const errors = errorsOf({ routes: { "store/x/things": KEYED_SRC } });
   assert.deepEqual(errors, [
@@ -180,6 +252,7 @@ test("route đã nhận khoá mà vẫn nằm trong allowlist → lỗi", () => 
         validation: true,
       },
     }),
+    keyed: keyedSpec(["POST /store/x/things", "POST /admin/x/things/{id}/approve"]),
   });
   assert.deepEqual(errors, ["POST /admin/x/things/{id}/approve: đã nhận Idempotency-Key — bỏ mục allowlist"]);
 });
@@ -191,31 +264,23 @@ test("đọc Idempotency-Key mà không kiểm bắt buộc → lỗi", () => {
       "admin/x/things/[id]/approve": PLAIN_SRC,
     },
     spec: specOf({ ...GOOD_SPEC, "/store/x/things": {} }),
+    keyed: keyedSpec([]),
   });
   assert.equal(errors.length, 1);
   assert.match(errors[0], /đọc Idempotency-Key nhưng không kiểm bắt buộc/);
 });
 
-test("allowlist: kind lạ, lý do ngắn, thiếu test, test không có, trùng mục → lỗi từng điều", () => {
-  const base = {
-    route: "POST /admin/x/things/{id}/approve",
-    kind: "state",
-    reason: "Máy trạng thái: đã duyệt → changed=false, không làm lần hai.",
-    tests: [{ file: TEST_FILE, name: PARALLEL }],
-  };
+test("allowlist: kind lạ, lý do ngắn, thiếu test, file test không có, trùng mục, route sai dạng → lỗi từng điều", () => {
   const cases = [
-    [{ ...base, kind: "trust-me" }, /`kind` phải là một trong state\|natural-key\|no-business-effect/],
-    [{ ...base, reason: "ổn" }, /`reason` thiếu hoặc quá ngắn/],
-    [{ ...base, tests: [] }, /thiếu `tests`/],
+    [{ ...ENTRY, kind: "trust-me" }, /`kind` phải là một trong state\|natural-key\|no-business-effect/],
+    [{ ...ENTRY, reason: "ổn" }, /`reason` thiếu hoặc quá ngắn/],
+    [{ ...ENTRY, tests: [] }, /thiếu `tests`/],
     [
-      { ...base, tests: [{ file: "apps/backend/integration-tests/http/khong-co.spec.ts", name: PARALLEL }] },
+      { ...ENTRY, tests: [{ file: "apps/backend/integration-tests/http/khong-co.spec.ts", name: PARALLEL }] },
       /không có file test/,
     ],
-    [
-      { ...base, tests: [{ file: TEST_FILE, name: "duyệt ×2 song song → tên không có trong file" }] },
-      /không có test "/,
-    ],
-    [{ ...base, route: "GET /admin/x/things" }, /`route` phải dạng "METHOD \/path"/],
+    [{ ...ENTRY, route: "GET /admin/x/things" }, /`route` phải dạng "METHOD \/path"/],
+    [{ ...ENTRY, calls: "(" }, /`calls` không phải regex hợp lệ/],
   ];
   for (const [entry, re] of cases) {
     const errors = errorsOf({ allow: [entry] });
@@ -224,28 +289,57 @@ test("allowlist: kind lạ, lý do ngắn, thiếu test, test không có, trùng
       `${re}: ${JSON.stringify(errors)}`,
     );
   }
-  const dup = errorsOf({ allow: [base, base] });
+  const dup = errorsOf({ allow: [ENTRY, ENTRY] });
   assert.ok(
     dup.some((e) => /trùng mục/.test(e)),
     JSON.stringify(dup),
   );
 });
 
-test("allowlist: test được dẫn phải là ca song song (tên có song song/đồng thời/∥/×N)", () => {
-  const name = "duyệt hai lần tuần tự → changed=false";
-  const errors = errorsOf({
-    allow: [
-      {
-        route: "POST /admin/x/things/{id}/approve",
-        kind: "state",
-        reason: "Máy trạng thái: đã duyệt → changed=false, không làm lần hai.",
-        tests: [{ file: TEST_FILE, name }],
-      },
-    ],
-    testSource: `it("${name}", async () => {});\n`,
+test("allowlist: tên chỉ nằm trong chú thích/chuỗi khác, it.skip/xit/it.todo/describe.skip → không chứng minh", () => {
+  const body = `async () => { ${PARALLEL_BODY} }`;
+  const cases = [
+    [`// "${PARALLEL}"\nit("ca khác hẳn", ${body});\n`, /không có lời gọi it\(\/test\( tên/],
+    [`const s = "${PARALLEL}";\n`, /không có lời gọi it\(\/test\( tên/],
+    [`it.skip("${PARALLEL}", ${body});\n`, /bị skip\/todo/],
+    [`xit("${PARALLEL}", ${body});\n`, /bị skip\/todo/],
+    [`it.todo("${PARALLEL}");\n`, /bị skip\/todo/],
+    [`describe.skip("nhóm", () => { test("${PARALLEL}", ${body}); });\n`, /bị skip\/todo/],
+  ];
+  for (const [testSource, re] of cases) {
+    const errors = errorsOf({ testSource });
+    assert.ok(
+      errors.some((e) => re.test(e)),
+      `${testSource}: ${JSON.stringify(errors)}`,
+    );
+  }
+  // Đối chứng: describe thường + test(…) → đạt.
+  assert.deepEqual(
+    errorsOf({ testSource: `describe("nhóm", () => { test("${PARALLEL}", ${body}); });\n` }),
+    [],
+  );
+});
+
+test("allowlist: test được dẫn phải gọi route song song (Promise.all + đoạn đường dẫn cuối, hoặc regex `calls`)", () => {
+  const noParallel = errorsOf({
+    testSource: `it("${PARALLEL}", async () => { await post(\`/admin/x/things/\${id}/approve\`); });\n`,
   });
-  assert.equal(errors.length, 1);
-  assert.match(errors[0], /không test nào là ca song song/);
+  assert.equal(noParallel.length, 1);
+  assert.match(noParallel[0], /không test nào gọi route song song .*"approve"/);
+  const otherRoute = errorsOf({
+    testSource: `it("${PARALLEL}", async () => { await Promise.all([post("/admin/x/things/1/reject")]); });\n`,
+  });
+  assert.match(otherRoute[0] ?? "", /không test nào gọi route song song/);
+  // Test gọi qua hàm phụ: mục khai `calls`.
+  const viaHelper = `it("${PARALLEL}", async () => { await Promise.all([doIt(1), doIt(1)]); });\n`;
+  assert.equal(errorsOf({ testSource: viaHelper }).length, 1);
+  assert.deepEqual(errorsOf({ testSource: viaHelper, allow: [{ ...ENTRY, calls: "doIt\\(" }] }), []);
+  assert.deepEqual(
+    testsOfSource(`test("a b c d e f", async () => { x(); });\nit(\`tpl \${v}\`, () => {});\n`).map(
+      (t) => t.name,
+    ),
+    ["a b c d e f"],
+  );
 });
 
 test("OpenAPI: route nhận khoá thiếu tham số/409 KeyedConflict/422/x-idempotency → lỗi; allowlist khai sai kind → lỗi", () => {

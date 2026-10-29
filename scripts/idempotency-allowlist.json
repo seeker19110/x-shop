@@ -1,5 +1,5 @@
 {
-  "$comment": "T-187 (Q-06, ARC-INT-001): route ghi KHÔNG nhận Idempotency-Key — idempotent theo trạng thái (state), theo khoá tự nhiên UNIQUE (natural-key) hoặc không có tác dụng nghiệp vụ trùng lặp (no-business-effect). Mỗi mục: lý do + test song song chứng minh (scripts/check-idempotency.mjs kiểm file/tên test có thật). Route mới thiếu khoá mà không có ở đây → check đỏ; mục không còn route → check đỏ.",
+  "$comment": "T-187 (Q-06, ARC-INT-001): route ghi KHÔNG nhận Idempotency-Key — idempotent theo trạng thái (state), theo khoá tự nhiên UNIQUE (natural-key) hoặc không có tác dụng nghiệp vụ trùng lặp (no-business-effect). Mỗi mục: lý do + test song song chứng minh (scripts/check-idempotency.mjs kiểm lời gọi it/test đúng tên, không skip, thân có Promise.all và đoạn đường dẫn cuối của route — hoặc regex `calls` khi test gọi route qua hàm phụ). Route mới thiếu khoá mà không có ở đây → check đỏ; mục không còn route → check đỏ.",
   "routes": [
     {
       "route": "DELETE /admin/x/users/{id}/roles",
@@ -34,7 +34,7 @@
     {
       "route": "POST /admin/x/imports/preview",
       "kind": "no-business-effect",
-      "reason": "Chỉ kiểm CSV và lưu bản nháp import_job — không ghi catalog/giá/tồn. Mỗi lần gửi là một bản nháp riêng; tác dụng nghiệp vụ chỉ ở commit (idempotent theo import id). Câu hỏi mở T-187: có đòi Idempotency-Key cho POST tạo này không (Q-06).",
+      "reason": "Chỉ kiểm CSV và lưu bản nháp import_job — không ghi catalog/giá/tồn. Mỗi lần gửi là một bản nháp riêng; tác dụng nghiệp vụ chỉ ở commit (idempotent theo import id). D-139: giữ không khoá (Q-06).",
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
@@ -188,7 +188,8 @@
           "file": "apps/backend/integration-tests/http/settlement.spec.ts",
           "name": "5 lần nhập cùng batch song song → 1 batch (201 + 200×4); hai batch khác nhau cùng đơn song song → một khớp, một thu dư"
         }
-      ]
+      ],
+      "calls": "importCsv\\("
     },
     {
       "route": "POST /admin/x/settlements/discrepancies/{id}/resolve",
@@ -215,7 +216,7 @@
     {
       "route": "POST /admin/x/size-charts/{code}/revise",
       "kind": "no-business-effect",
-      "reason": "Tạo phiên bản bảng size mới (bất biến theo phiên bản, ADM03) dưới khoá theo mã; không ghi tiền/tồn/đơn. Hai lần gửi cùng nội dung → hai phiên bản cùng nội dung nhưng đúng một bản hiện hành, sản phẩm trỏ bản hiện hành. Câu hỏi mở T-187 (Q-06).",
+      "reason": "Tạo phiên bản bảng size mới (bất biến theo phiên bản, ADM03) dưới khoá theo mã; không ghi tiền/tồn/đơn. Hai lần gửi cùng nội dung → hai phiên bản cùng nội dung nhưng đúng một bản hiện hành, sản phẩm trỏ bản hiện hành. D-139: giữ không khoá; T-225 làm revise idempotent tự nhiên (nội dung trùng bản hiện hành → không tạo phiên bản).",
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/catalog-model.spec.ts",
@@ -259,7 +260,7 @@
     {
       "route": "POST /store/x/checkout/quote",
       "kind": "no-business-effect",
-      "reason": "Báo giá do server tính, lưu ảnh chụp quote hạn 10 phút; không giữ hàng, không ghi tiền/đơn/lượt mã giảm giá. Mỗi lần là một quote riêng; tác dụng chỉ qua submit (bắt buộc Idempotency-Key). Câu hỏi mở T-187 (Q-06).",
+      "reason": "Báo giá do server tính, lưu ảnh chụp quote hạn 10 phút; không giữ hàng, không ghi tiền/đơn/lượt mã giảm giá. Mỗi lần là một quote riêng; tác dụng chỉ qua submit (bắt buộc Idempotency-Key). D-139: giữ không khoá (Q-06).",
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
@@ -292,7 +293,7 @@
     {
       "route": "POST /store/x/orders/lookup",
       "kind": "no-business-effect",
-      "reason": "Luôn 202 cùng thông điệp; khớp → ghi outbox gửi liên kết tra cứu dùng một lần (15 phút). Không ghi tiền/tồn/đơn; mỗi lần khớp là một liên kết riêng, có trần 5/giờ/SĐT, 10/giờ/mã đơn, 20/giờ/IP; mỗi sự kiện gửi đúng một lần. Câu hỏi mở T-187 (Q-06).",
+      "reason": "Luôn 202 cùng thông điệp; khớp → ghi outbox gửi liên kết tra cứu dùng một lần (15 phút). Không ghi tiền/tồn/đơn; mỗi lần khớp là một liên kết riêng, có trần 5/giờ/SĐT, 10/giờ/mã đơn, 20/giờ/IP; mỗi sự kiện gửi đúng một lần. D-139: giữ không khoá (Q-06).",
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/order-lookup.spec.ts",
