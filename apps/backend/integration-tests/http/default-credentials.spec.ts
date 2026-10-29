@@ -29,12 +29,9 @@ const COMMON_PASSWORDS = [
   "12345678",
   "Password1",
 ];
-const COMMON_EMAILS = [
-  "admin@medusa-test.com",
-  "admin@example.test",
-  "admin@x-shop.test",
-  "root@example.test",
-];
+// Email admin mặc định của tài liệu Medusa (miền thật medusa-test.com) không đưa vào fixture (check-fixtures):
+// ca "sau seed không có auth identity" đã phủ mọi email, kể cả email đó.
+const COMMON_EMAILS = ["admin@example.test", "admin@x-shop.test", "root@example.test"];
 
 /** Endpoint GET nhạy cảm phổ biến — không được trả 200 kèm dữ liệu khi không token. */
 const SENSITIVE_PATHS = [
