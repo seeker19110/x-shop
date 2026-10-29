@@ -6,3 +6,7 @@ a128d4900e4744fe98cee5ab163fdaa5aa7aa0d3:apps/backend/integration-tests/http/not
 a128d4900e4744fe98cee5ab163fdaa5aa7aa0d3:apps/backend/src/lib/outbox/__tests__/outbox-payload.unit.spec.ts:generic-api-key:52
 # ghn-retry.unit.spec.ts:26 — token GHN giả "tok-12345678" cho mock sandbox.
 fe20c3df28226349b377f7124bfea4b7a59f6e67:apps/backend/src/lib/shipping/__tests__/ghn-retry.unit.spec.ts:generic-api-key:26
+# scripts/fixtures/pii-samples.json — mẫu token giả cho test che PII (T-136): JWT {"sub":"123456"} chữ ký "signature12345";
+# khoá dạng Stripe "sk_live_abcdefghij1234567890" (chuỗi bảng chữ cái + số liên tiếp).
+a53b585313629aabf1eead4a2f13ef943bffd14e:scripts/fixtures/pii-samples.json:jwt:240
+a53b585313629aabf1eead4a2f13ef943bffd14e:scripts/fixtures/pii-samples.json:stripe-access-token:261
