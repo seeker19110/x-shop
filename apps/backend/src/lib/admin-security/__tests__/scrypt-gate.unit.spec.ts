@@ -212,7 +212,8 @@ const Safe = TimingSafeEmailPassAuthService as unknown as new (
 const logger = { warn() {}, info() {}, error() {}, debug() {} } as unknown as Logger;
 const body = (email: string, password: string) => ({ body: { email, password } }) as AuthenticationInput;
 
-function store(hashes: Record<string, string>) {
+/** `null` = identity emailpass có thật nhưng không có hash mật khẩu. */
+function store(hashes: Record<string, string | null>) {
   return {
     retrieve: async ({ entity_id }: { entity_id: string }) => {
       const h = hashes[entity_id];
@@ -220,7 +221,12 @@ function store(hashes: Record<string, string>) {
       return {
         id: `ai_${entity_id}`,
         provider_identities: [
-          { id: `pi_${entity_id}`, provider: "emailpass", entity_id, provider_metadata: { password: h } },
+          {
+            id: `pi_${entity_id}`,
+            provider: "emailpass",
+            entity_id,
+            provider_metadata: h === null ? {} : { password: h },
+          },
         ],
       } as unknown as AuthIdentityDTO;
     },
@@ -320,5 +326,54 @@ describe("provider emailpass dùng semaphore chung (logN 17)", () => {
     expect(gate.waiting).toBe(0);
     // Hết bận → đăng nhập đúng hoạt động lại.
     expect((await provider.authenticate(body(EXISTING, "SENTINEL-dung"), svc)).success).toBe(true);
+  });
+});
+
+describe("hash mồi và số lần qua cổng (review T-181 vòng 3)", () => {
+  it("cổng đầy lúc khởi tạo: email lạ nhận bận + cờ bận; hết tải → tính lại hash mồi, 401 bình thường", async () => {
+    const gate = scryptGate();
+    const hold = deferred();
+    const blockers = Array.from({ length: gate.options.max + gate.options.queueMax }, () =>
+      gate.run(() => hold.promise),
+    );
+    await tick();
+    // Hash mồi lúc khởi tạo bị từ chối (queue_full) — không được nhớ lỗi này.
+    const p = new Safe({ logger }, { hashConfig: { ...EMAILPASS_HASH_CONFIG } });
+    await tick();
+    const svc = store({});
+    const during = await withAuthBusyContext(async () => {
+      try {
+        await p.authenticate(body("la-1@example.test", "SENTINEL-sai"), svc);
+        return { error: null as unknown, busy: isAuthBusy() };
+      } catch (e) {
+        return { error: e, busy: isAuthBusy() };
+      }
+    });
+    expect(during.error).toBeInstanceOf(ScryptBusyError);
+    expect(during.busy).toBe(true);
+    hold.resolve();
+    await Promise.all(blockers);
+    expect(await p.authenticate(body("la-2@example.test", "SENTINEL-sai"), svc)).toEqual({
+      success: false,
+      error: "Invalid email or password",
+    });
+    expect(gate.active).toBe(0);
+  });
+
+  it("identity không có hash: chỉ qua cổng MỘT lần (phép mồi), như email không tồn tại", async () => {
+    const p = new Safe({ logger }, { hashConfig: { ...EMAILPASS_HASH_CONFIG } });
+    const svc = store({ "khong-hash@example.test": null });
+    await p.authenticate(body("khoi-dong-2@example.test", "SENTINEL-sai"), svc); // hash mồi sẵn
+    const run = jest.spyOn(scryptGate(), "run");
+    try {
+      const noHash = await p.authenticate(body("khong-hash@example.test", "SENTINEL-sai"), svc);
+      expect(noHash).toEqual({ success: false, error: "Invalid email or password" });
+      expect(run).toHaveBeenCalledTimes(1);
+      run.mockClear();
+      await p.authenticate(body("khong-ton-tai@example.test", "SENTINEL-sai"), svc);
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      run.mockRestore();
+    }
   });
 });

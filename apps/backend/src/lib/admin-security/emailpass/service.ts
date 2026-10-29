@@ -94,9 +94,8 @@ export class TimingSafeEmailPassAuthService extends Base {
     this.hashTarget_ = options?.hashConfig ?? MEDUSA_DEFAULT_SCRYPT;
     this.rehashLogger_ = deps.logger;
     // Tính sẵn hash mồi (cùng hashConfig) để lần dò đầu tiên không chậm/nhanh khác thường.
-    this.decoy_().catch(() => {
-      this.decoyHash_ = null;
-    });
+    // Lỗi (vd cổng scrypt đầy lúc khởi tạo) đã được decoy_ xoá memo — lần dò sau tính lại.
+    this.decoy_().catch(() => undefined);
   }
 
   /** Chạy một phép scrypt qua semaphore chung; bận → đánh dấu request (503) rồi ném `ScryptBusyError`. */
@@ -114,11 +113,25 @@ export class TimingSafeEmailPassAuthService extends Base {
   }
 
   override async isPasswordMatch_(password: string, authIdentity: AuthIdentityDTO): Promise<boolean> {
+    // Không có hash → bản gốc trả false, không chạy scrypt → không chiếm slot (nhánh mồi sẽ qua cổng một lần).
+    if (passwordHashOf(authIdentity) === null) return super.isPasswordMatch_(password, authIdentity);
     return this.gated_(() => super.isPasswordMatch_(password, authIdentity));
   }
 
+  /**
+   * Hash mồi, memo khi thành công. Thất bại (vd `ScryptBusyError` khi cổng đầy) → xoá memo để lần sau tính lại; không
+   * thì mọi lần dò email lạ về sau nhận lại lỗi cũ ngay (nhanh, không đánh dấu bận) → khác nhánh tài khoản thật.
+   */
   private decoy_(): Promise<string> {
-    this.decoyHash_ ??= this.hashPassword(randomBytes(32).toString("hex"));
+    if (this.decoyHash_ === null) {
+      const pending: Promise<string> = this.hashPassword(randomBytes(32).toString("hex")).catch(
+        (e: unknown) => {
+          if (this.decoyHash_ === pending) this.decoyHash_ = null;
+          throw e;
+        },
+      );
+      this.decoyHash_ = pending;
+    }
     return this.decoyHash_;
   }
 
@@ -180,7 +193,10 @@ export class TimingSafeEmailPassAuthService extends Base {
         await this.burn_(data);
       } catch (e) {
         // Bận phải lộ ra như nhánh tài khoản có thật (503), không thì email không tồn tại trả 401 nhanh khi quá tải.
-        if (e instanceof ScryptBusyError) throw e;
+        if (e instanceof ScryptBusyError) {
+          markAuthBusy();
+          throw e;
+        }
         // Lỗi khác của lớp cân thời gian không được đổi kết quả đăng nhập (vẫn là thất bại như bản gốc).
       }
     }
