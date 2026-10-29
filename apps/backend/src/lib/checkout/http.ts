@@ -1,7 +1,11 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
-import { normalizeVnPhone, validateAddress, type AddressSnapshot, isNonEmpty } from "@x-shop/domain";
-import { z } from "zod";
-import { PAYMENT_METHODS } from "../../modules/checkout/models/constants";
+import { validateAddress, type AddressSnapshot } from "@x-shop/domain";
+import {
+  parseCheckoutRequest,
+  type CheckoutQuoteRequest,
+  type CheckoutSubmitRequest,
+} from "@x-shop/domain/validation";
+import type { z } from "zod";
 import type { CartAccessContext } from "./cart";
 import { clientIpOf } from "../security/config";
 import { logServerError } from "../errors/error-handler";
@@ -12,53 +16,11 @@ import { CheckoutError, readCheckoutError, sendProblem } from "./errors";
  * định, thông báo tiếng Việt và trường gây lỗi"), ngữ cảnh quyền, ánh xạ lỗi → problem+json.
  */
 
-const id = z.string().trim().min(1).max(100);
-const addressSchema = z.strictObject({
-  province_code: z.string().trim().min(1).max(10),
-  ward_code: z.string().trim().min(1).max(10),
-  line: z.string().max(500),
-});
+type CheckoutSchema = Parameters<typeof parseCheckoutRequest>[0];
+type CheckoutOutput<S extends CheckoutSchema> = z.output<S>;
+export type { CheckoutQuoteRequest, CheckoutSubmitRequest };
 
-export const quoteBodySchema = z.strictObject({
-  cart_id: id,
-  payment_method: z.enum(PAYMENT_METHODS),
-  address: addressSchema,
-  discount_code: z.string().max(64).nullish(),
-});
-
-export const submitBodySchema = z.strictObject({
-  cart_id: id,
-  cart_version: z.number().int().min(1).max(1_000_000),
-  quote_id: id,
-  payment_method: z.enum(PAYMENT_METHODS),
-  contact: z.strictObject({
-    name: z.string().trim().min(1).max(100),
-    phone: z.string().max(32),
-    email: z
-      .string()
-      .trim()
-      .max(254)
-      .regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)
-      .nullish(),
-  }),
-  address: addressSchema,
-});
-
-const FIELD_MESSAGES: Record<string, string> = {
-  cart_id: "Thiếu mã giỏ hàng",
-  cart_version: "Phiên bản giỏ không hợp lệ",
-  quote_id: "Thiếu mã báo giá",
-  payment_method: "Phương thức thanh toán không hợp lệ",
-  discount_code: "Mã giảm giá không hợp lệ",
-  "contact.name": "Vui lòng nhập họ tên",
-  "contact.phone": "Số điện thoại không hợp lệ",
-  "contact.email": "Email không hợp lệ",
-  "address.province_code": "Vui lòng chọn tỉnh/thành phố",
-  "address.ward_code": "Vui lòng chọn phường/xã",
-  "address.line": "Vui lòng nhập số nhà, tên đường",
-};
-
-/** Parse body bằng schema; lỗi → 422 VALIDATION với `field` của lỗi đầu tiên. */
+/** Parse body bằng schema zod (route ngoài checkout); lỗi → 422 VALIDATION với `field` của lỗi đầu tiên. */
 export function parseBody<T extends z.ZodType>(schema: T, body: unknown): z.output<T> {
   const result = schema.safeParse(body ?? {});
   if (result.success) return result.data;
@@ -69,11 +31,25 @@ export function parseBody<T extends z.ZodType>(schema: T, body: unknown): z.outp
     throw new CheckoutError("VALIDATION", "Có trường không được chấp nhận trong yêu cầu", { field });
   }
   const field = (issue?.path ?? []).map(String).join(".") || "body";
-  throw new CheckoutError("VALIDATION", FIELD_MESSAGES[field] ?? "Dữ liệu chưa hợp lệ", { field });
+  throw new CheckoutError("VALIDATION", "Dữ liệu chưa hợp lệ", { field });
+}
+
+/**
+ * Parse thân request checkout bằng schema DÙNG CHUNG với form storefront (`@x-shop/domain/validation`, FE-FORM-001).
+ * Lỗi → 422 VALIDATION: `field`/`detail` của lỗi đầu tiên (hợp đồng cũ) + `errors[{param, reason}]` cho MỌI trường sai.
+ */
+export function parseCheckoutBody<S extends CheckoutSchema>(schema: S, body: unknown): CheckoutOutput<S> {
+  const r = parseCheckoutRequest(schema, body);
+  if (r.ok) return r.data;
+  const [first] = r.issues;
+  throw new CheckoutError("VALIDATION", first.message, {
+    field: first.field,
+    detail: { errors: r.issues.map((i) => ({ param: i.field, reason: i.message })) },
+  });
 }
 
 /** Địa chỉ 2 cấp theo danh mục hiện hành (CHK03) → snapshot; lỗi gắn trường `address.*`. */
-export function toAddressSnapshot(address: z.output<typeof addressSchema>): AddressSnapshot {
+export function toAddressSnapshot(address: CheckoutQuoteRequest["address"]): AddressSnapshot {
   const r = validateAddress({
     provinceCode: address.province_code,
     wardCode: address.ward_code,
@@ -84,17 +60,6 @@ export function toAddressSnapshot(address: z.output<typeof addressSchema>): Addr
     throw new CheckoutError("VALIDATION", r.message, { field });
   }
   return r.value;
-}
-
-export function normalizeContact(contact: z.output<typeof submitBodySchema>["contact"]) {
-  const phone = normalizeVnPhone(contact.phone);
-  if (!phone.ok) throw new CheckoutError("VALIDATION", phone.message, { field: "contact.phone" });
-  return {
-    name: contact.name.normalize("NFC").replace(/\s+/g, " "),
-    phone: phone.value,
-    // Email rỗng = không cung cấp (null), giữ hành vi cũ.
-    email: isNonEmpty(contact.email) ? contact.email.toLowerCase() : null,
-  };
 }
 
 /** Ngữ cảnh quyền: kênh bán của publishable key + customer đã xác thực (không bao giờ lấy từ body). */

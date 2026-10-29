@@ -1,5 +1,6 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
 import { isValidIdempotencyKey, isNonEmpty } from "@x-shop/domain";
+import { checkoutSubmitRequestSchema } from "@x-shop/domain/validation";
 import { assertCartAccess, loadCheckoutCart } from "../../../../../lib/checkout/cart";
 import { getVnpayConfig } from "../../../../../lib/checkout/config";
 import { CheckoutError, sendProblem } from "../../../../../lib/checkout/errors";
@@ -7,9 +8,7 @@ import {
   accessContext,
   clientIp,
   handleRouteError,
-  normalizeContact,
-  parseBody,
-  submitBodySchema,
+  parseCheckoutBody,
   toAddressSnapshot,
 } from "../../../../../lib/checkout/http";
 import { submitCheckout } from "../../../../../lib/checkout/submit";
@@ -19,7 +18,7 @@ import { orderAccessFor } from "../../../../../lib/orders/http";
  * POST /store/x/checkout/submit — header `Idempotency-Key` (16–128 ký tự [A-Za-z0-9_-]); body: cart_id, cart_version,
  * quote_id, payment_method (cod|vnpay), contact {name, phone, email?}, address {province_code, ward_code, line}.
  * 200 = đơn đã tạo (COD `placed` / VNPAY `awaiting_payment` + payment_url); 202 = đang xử lý (xem Location);
- * lỗi = application/problem+json với `code` ổn định (đặc tả §9.1). 200 kèm `order_access` + `order_access_expires_at`
+ * lỗi = application/problem+json với `code` ổn định (đặc tả §9.1); dữ liệu sai → 422 VALIDATION có `field` + `errors[]`. 200 kèm `order_access` + `order_access_expires_at`
  * (token phiên đơn, T-021) để storefront đặt cookie HttpOnly xem `/don-hang/:ref`.
  */
 export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promise<void> => {
@@ -28,8 +27,9 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
     if (!isValidIdempotencyKey(key)) {
       throw new CheckoutError("VALIDATION", "Thiếu hoặc sai Idempotency-Key", { field: "Idempotency-Key" });
     }
-    const body = parseBody(submitBodySchema, req.body);
-    const contact = normalizeContact(body.contact);
+    // Cùng schema với form storefront (FE-FORM-001): tên/SĐT/email/địa chỉ đã chuẩn hoá khi parse xong.
+    const body = parseCheckoutBody(checkoutSubmitRequestSchema, req.body);
+    const contact = body.contact;
     const address = toAddressSnapshot(body.address);
     const access = accessContext(req);
     const cart = await loadCheckoutCart(req.scope, body.cart_id);

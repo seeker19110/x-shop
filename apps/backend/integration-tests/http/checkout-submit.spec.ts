@@ -4,6 +4,7 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { createCustomerAccountWorkflow, createPromotionsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { listWards, vnpay } from "@x-shop/domain";
+import { CHECKOUT_MESSAGES } from "@x-shop/domain/validation";
 import Redis from "ioredis";
 import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
 import { VNPAY_DEV_DEFAULTS } from "../../src/lib/env";
@@ -60,6 +61,7 @@ interface Body {
   payment_url: string;
   code: string;
   field: string;
+  errors: Array<{ param: string; reason: string }>;
   action: string;
   detail: string;
   status: number;
@@ -247,6 +249,124 @@ medusaIntegrationTestRunner({
         const code = await quote(cartId, { discount_code: "KHONGCO" });
         expect(code.status).toBe(422);
         expect(code.data).toMatchObject({ code: "DISCOUNT_NOT_APPLICABLE", field: "discount_code" });
+      });
+    });
+
+    /**
+     * FE-FORM-001: route kiểm lại bằng CÙNG schema với form storefront (`@x-shop/domain/validation`). Gửi thẳng (bỏ qua
+     * client, như curl) dữ liệu sai → 422 problem+json, `field` = lỗi đầu tiên (hợp đồng cũ), `errors[]` = mọi trường sai
+     * với thông điệp của schema dùng chung; không tạo quote/attempt/đơn.
+     */
+    describe("FE-FORM-001 — dữ liệu sai gửi thẳng tới route → 422 theo từng field", () => {
+      const M = CHECKOUT_MESSAGES;
+
+      it("quote: nhiều trường sai → errors[] đủ từng trường, thông điệp của schema dùng chung", async () => {
+        const cartId = await createCart([["Đen/S", 1]]);
+        const res = await api.post(
+          "/store/x/checkout/quote",
+          {
+            cart_id: cartId,
+            payment_method: "tien-mat",
+            address: { province_code: "", ward_code: 5, line: "a" },
+            discount_code: 7,
+          },
+          cfg(),
+        );
+        expect(res.status).toBe(422);
+        expect(res.headers["content-type"]).toMatch(/^application\/problem\+json/);
+        expect(res.data).toMatchObject({ code: "VALIDATION", field: "payment_method", detail: M.payment });
+        expect(res.data.errors).toEqual([
+          { param: "payment_method", reason: M.payment },
+          { param: "address.province_code", reason: M.province },
+          { param: "address.ward_code", reason: M.ward },
+          { param: "address.line", reason: M.line },
+          { param: "discount_code", reason: M.discount },
+        ]);
+        expect(await service().listCheckoutQuotes({ cart_id: cartId })).toEqual([]);
+      });
+
+      it("submit: liên hệ sai, thiếu địa chỉ, trường thừa → errors[] theo field; không attempt, không đơn", async () => {
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const { address: _omit, ...noAddress } = submitBody(q);
+        const res = await submit({
+          ...noAddress,
+          contact: { name: "  ", phone: "0212345678", email: "khong-phai-email" },
+          ghi_chu: "x",
+        });
+        expect(res.status).toBe(422);
+        expect(res.headers["content-type"]).toMatch(/^application\/problem\+json/);
+        expect(res.data).toMatchObject({ code: "VALIDATION", field: "contact.name", detail: M.name });
+        expect(res.data.errors).toEqual([
+          { param: "contact.name", reason: M.name },
+          { param: "contact.phone", reason: M.phone },
+          { param: "contact.email", reason: M.email },
+          { param: "address", reason: M.address },
+          { param: "ghi_chu", reason: M.unknownKey },
+        ]);
+        expect(await service().listCheckoutAttempts({ cart_id: cartId })).toEqual([]);
+        expect(await countOrders(container)).toBe(0);
+      });
+
+      it("sai hình dạng: thân null/chuỗi → 400, mảng/contact mảng/cart_version chuỗi → 422 có field; không 500", async () => {
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const json = (body: string) =>
+          api.post("/store/x/checkout/submit", body, {
+            ...cfg({ "Idempotency-Key": newKey(), "content-type": "application/json" }),
+            transformRequest: [(d: unknown) => d],
+          });
+        // JSON gốc không phải object/mảng bị bộ parse JSON (strict) của framework chặn trước route: 400 INVALID_DATA.
+        const cases: Array<[string, Promise<Res>, number, string, string | undefined]> = [
+          ["null", json("null"), 400, "INVALID_DATA", undefined],
+          ["chuỗi", json('"abc"'), 400, "INVALID_DATA", undefined],
+          ["mảng", json("[]"), 422, "VALIDATION", "body"],
+          ["contact mảng", submit({ ...submitBody(q), contact: [CONTACT] }), 422, "VALIDATION", "contact"],
+          [
+            "cart_version chuỗi",
+            submit({ ...submitBody(q), cart_version: "1" }),
+            422,
+            "VALIDATION",
+            "cart_version",
+          ],
+        ];
+        for (const [name, pending, status, code, field] of cases) {
+          const res = await pending;
+          expect({ name, status: res.status, code: res.data.code, field: res.data.field }).toEqual({
+            name,
+            status,
+            code,
+            field,
+          });
+          if (status === 422)
+            expect({ name, errors: res.data.errors.length > 0 }).toEqual({ name, errors: true });
+        }
+        expect(await service().listCheckoutAttempts({ cart_id: cartId })).toEqual([]);
+      });
+
+      it("đồng thời: 8 submit sai + 1 submit đúng cùng giỏ → 8 × 422, đúng 1 đơn", async () => {
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const bad = Array.from({ length: 8 }, (_, i) =>
+          submit({ ...submitBody(q), contact: { ...CONTACT, phone: `0${i}` } }),
+        );
+        const [good, ...rest] = await Promise.all([submit(submitBody(q)), ...bad]);
+        expect(rest.map((r) => [r.status, r.data.field])).toEqual(
+          Array.from({ length: 8 }, () => [422, "contact.phone"]),
+        );
+        expect(good!.status).toBe(200);
+        expect(await countOrders(container)).toBe(1);
+      });
+
+      it("được phép (đối chứng): SĐT +84 có khoảng trắng, email rỗng → server chuẩn hoá, đặt được", async () => {
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const res = await submit(
+          submitBody(q, { contact: { name: "  Trần   Thị  Bình ", phone: "+84 912 345 678", email: "" } }),
+        );
+        expect(res.status).toBe(200);
+        const [fin] = await service().listOrderFinances({ order_id: res.data.order.id });
+        expect(fin!.contact).toEqual({ name: "Trần Thị Bình", phone: "0912345678", email: null });
       });
     });
 
