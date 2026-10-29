@@ -945,3 +945,10 @@
 - Chọn: Kiểm thêm stocked >= tổng reservation_item còn sống theo item+kho, trigger cả trên reservation_item
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: bắt được oversell khi khoá Redis hỏng/đường ghi không qua khoá (đúng tinh thần RK-001); migration T-185 chưa áp ở đâu nên sửa trong cùng nhánh; tiêu chí 3: test được bằng hai phiên DB
 - Đường lùi: Migration mới bỏ phần tổng reservation khỏi hàm trigger
+
+### D-135 · 2026-10-29T10:17:26+00:00 · gitleaks quét cửa sổ 30 commit trượt dần, gặp lần lượt giá trị giả trong test (SENTINEL-…, …0123456789abcdef): xử lý thế nào?
+
+- Phương án: (1) Thêm .gitleaks.toml mở rộng cấu hình mặc định (useDefault) với allowlist regex trên giá trị bí mật: chứa SENTINEL hoặc chuỗi 0123456789 · (2) Thêm từng fingerprint vào .gitleaksignore mỗi lần CI báo · (3) Allowlist theo đường dẫn test
+- Chọn: Thêm .gitleaks.toml mở rộng cấu hình mặc định (useDefault) với allowlist regex trên giá trị bí mật: chứa SENTINEL hoặc chuỗi 0123456789
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: vẫn quét mọi file kể cả test bằng luật mặc định; chỉ bỏ giá trị mang dấu hiệu giả không thể là bí mật thật; phương án 3 nới quá rộng (bí mật thật lọt vào test vẫn phải bị bắt); phương án 2 làm CI đỏ lặp lại mỗi lần đẩy
+- Đường lùi: Xoá .gitleaks.toml
