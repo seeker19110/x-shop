@@ -1,15 +1,19 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { isNonEmpty } from "@x-shop/domain";
+import { z } from "zod";
 import { cleanupUnlinkedIdentityForInvite } from "../lib/admin-security/invite-guard";
 
 /**
  * Xoá / gửi lại lời mời admin → dọn auth identity emailpass chưa gắn actor của đúng email đó (T-138, D-075;
  * lib/admin-security/invite-guard.ts). Lỗi chỉ ghi log — không chặn thao tác lời mời.
  */
+/** Payload `invite.deleted|resent`: `{ id }` — id lạ (thiếu, rỗng, kiểu sai, quá dài) → bỏ qua. */
+const EventPayload = z.object({ id: z.string().min(1).max(128) });
+
 export default async function inviteIdentityCleanup({ event, container }: SubscriberArgs<{ id?: unknown }>) {
-  const id = event.data?.id;
-  if (typeof id !== "string" || !isNonEmpty(id)) return;
+  const data = EventPayload.safeParse(event.data);
+  if (!data.success) return;
+  const { id } = data.data;
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
   try {
     const n = await cleanupUnlinkedIdentityForInvite(container, id);
