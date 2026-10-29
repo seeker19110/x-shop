@@ -195,10 +195,9 @@ describe("bảng route audit (matchAuditRoute)", () => {
   });
 
   it("bodyFieldNames: chỉ TÊN trường hợp lệ, sắp xếp, ≤ 30; không phải object → null", () => {
-    expect(bodyFieldNames({ name: "Shop", email: "a@b.vn", "x y": 1, __proto__x: 1, "1a": 2 })).toEqual([
-      "email",
-      "name",
-    ]);
+    expect(
+      bodyFieldNames({ name: "Shop", email: "a@example.test", "x y": 1, __proto__x: 1, "1a": 2 }),
+    ).toEqual(["email", "name"]);
     for (const v of [null, undefined, "chuoi", 5, ["a"], Buffer.from("{}")])
       expect(bodyFieldNames(v)).toBeNull();
     expect(bodyFieldNames({})).toEqual([]);
@@ -281,7 +280,7 @@ describe("bảng route audit (matchAuditRoute)", () => {
     expect(resourceTypeOf("currencies")).toBe("currency");
     expect(resourceTypeOf("rbac")).toBe("rbac");
     expect(resourceTypeOf("Khong-Hop-Le")).toBe("unknown");
-    expect(resourceTypeOf("a@b.vn")).toBe("unknown");
+    expect(resourceTypeOf("a@example.test")).toBe("unknown");
     expect(resourceTypeOf(undefined)).toBe("unknown");
     expect(nativeOperationOf("POST", "/admin/regions")).toBe("create");
     expect(nativeOperationOf("POST", "/admin/regions/:id")).toBe("update");

@@ -74,8 +74,11 @@ describe("inputResourceOf", () => {
   });
 
   it("không có mẫu → pathname đã che email/SĐT, cắt ≤ 200; giải mã hỏng → nhãn cố định", () => {
-    const r = inputResourceOf(req({ method: "GET", originalUrl: "/store/x/a@b.vn/0912345678?q=1" }), null);
-    expect(r).not.toContain("a@b.vn");
+    const r = inputResourceOf(
+      req({ method: "GET", originalUrl: "/store/x/a@example.test/0912345678?q=1" }),
+      null,
+    );
+    expect(r).not.toContain("a@example.test");
     expect(r).not.toContain("0912345678");
     expect(r.startsWith("GET /store/x/")).toBe(true);
     expect(

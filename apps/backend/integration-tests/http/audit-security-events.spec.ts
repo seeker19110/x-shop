@@ -1145,7 +1145,7 @@ medusaIntegrationTestRunner({
             "POST",
             "/auth/%E0%A4%A/emailpass",
             { "x-request-id": rid },
-            { email: "a@b.vn" },
+            { email: "a@example.test" },
           );
           expect(bad.status).toBe(400);
           const uri = await waitRows(
@@ -1175,7 +1175,7 @@ medusaIntegrationTestRunner({
           expect(rows[0]).toMatchObject({
             changes: { status: 400, cause: "problem_code", error_code: "INVALID_CHARACTERS" },
           });
-          expectWellFormed([...uri, ...rows], ["nul\u0000@", "a@b.vn"]);
+          expectWellFormed([...uri, ...rows], ["nul\u0000@", "a@example.test"]);
         });
 
         it("422 VALIDATION của route dự án → input.validation_failed có tên tham số (không giá trị); request hợp lệ → không ghi", async () => {
