@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
 import seedXShop from "../../src/scripts/seed";
 import { createAdmin, noThrow } from "../helpers/auth";
 
@@ -53,7 +55,12 @@ const SENSITIVE_PATHS = [
   "/graphql",
   "/swagger.json",
   "/openapi.json",
+  "/admin/__debug",
+  "/server-status",
 ];
+// Ghi chú phạm vi: `/app` (dashboard admin) phụ thuộc DISABLE_MEDUSA_ADMIN ở production — thuộc kiểm cấu hình triển khai của chủ
+// dự án; `/_next/*` thuộc storefront, ngoài backend. Admin E2E (E2E_ADMIN) chỉ là tài khoản dùng cho test, không có ở seed/production.
+// Probe công khai có chủ đích (/x/health, /x/readyz) được kiểm riêng bên dưới: không lộ chi tiết.
 
 const SEED_SOURCES = [
   "apps/backend/src/scripts/seed.ts",
@@ -66,6 +73,7 @@ const SEED_SOURCES = [
 describe("T-182 không tài khoản mặc định (tĩnh)", () => {
   it.each(SEED_SOURCES)("%s không có admin/mật khẩu cố định", (rel) => {
     const src = readFileSync(path.join(REPO_ROOT, rel), "utf8");
+    // Chỉ là lưới thô (regex tĩnh); hàng rào thật là các ca runtime (không user, không auth identity, đăng nhập bị từ chối).
     // Không tạo user/auth identity với mật khẩu (emailpass) và không gán cứng mật khẩu mặc định phổ biến.
     expect(src).not.toMatch(/createUser|createAuthIdentit|emailpass|registerProvider/i);
     expect(src).not.toMatch(
@@ -96,32 +104,36 @@ medusaIntegrationTestRunner({
       expect(users).toHaveLength(0);
     });
 
+    it("sau seed không có auth identity/provider identity nào", async () => {
+      const auth = getContainer().resolve(Modules.AUTH);
+      expect(await auth.listAuthIdentities({})).toHaveLength(0);
+      expect(await auth.listProviderIdentities({})).toHaveLength(0);
+    });
+
     it("sau seed, không cặp mặc định phổ biến nào đăng nhập được", async () => {
-      // Ngưỡng đăng nhập là 5 lần/email/IP (AUTH_RATE_LIMITS) nên mỗi email thử 4 mật khẩu, xoay vòng để phủ cả danh sách.
-      const attempts = COMMON_EMAILS.flatMap((email, i) =>
-        Array.from(
-          { length: 4 },
-          (_, k) => [email, COMMON_PASSWORDS[(i * 4 + k) % COMMON_PASSWORDS.length]!] as const,
-        ),
-      );
-      expect(new Set(attempts.map(([, pw]) => pw)).size).toBe(COMMON_PASSWORDS.length);
-      {
-        for (const [email, pw] of attempts) {
-          const res = await login(email, pw);
+      // Phủ MỌI cặp (email × mật khẩu); mỗi định danh chỉ nhận ≤ ngưỡng perIdentityIp-1 lần thử (tránh 429 che kết quả) —
+      // vượt thì dùng alias +n của cùng email (vẫn là cặp phổ biến).
+      const per = AUTH_RATE_LIMITS.login.perIdentityIp - 1;
+      let total = 0;
+      for (const email of COMMON_EMAILS) {
+        for (const [i, pw] of COMMON_PASSWORDS.entries()) {
+          const n = Math.floor(i / per);
+          const addr = n === 0 ? email : email.replace("@", `+${n}@`);
+          const res = await login(addr, pw);
           expect(res.status).toBe(401);
           expect(res.data.token).toBeUndefined();
+          total++;
         }
       }
+      expect(total).toBe(COMMON_EMAILS.length * COMMON_PASSWORDS.length);
     });
 
     it("admin thật: mật khẩu mặc định bị từ chối, phản hồi y hệt email không tồn tại (không lộ user)", async () => {
       const admin = await createAdmin(api, getContainer());
       const unknown = await login("khong-ton-tai@example.test", "SENTINEL-sai");
       expect(unknown.status).toBe(401);
-      for (const pw of COMMON_PASSWORDS.slice(
-        0,
-        3,
-      ) /* ≤ 5 lần/email/IP, còn chừa 1 lần cho mật khẩu đúng */) {
+      // Chừa 1 lần cho mật khẩu đúng trong ngưỡng perIdentityIp.
+      for (const pw of COMMON_PASSWORDS.slice(0, AUTH_RATE_LIMITS.login.perIdentityIp - 2)) {
         const res = await login(admin.email, pw);
         expect(res.status).toBe(401);
         expect(res.data.token).toBeUndefined();
@@ -132,16 +144,31 @@ medusaIntegrationTestRunner({
       expect((await login(admin.email, admin.password)).status).toBe(200);
     });
 
-    it("mật khẩu rỗng/thiếu bị từ chối", async () => {
-      const empty = await login("admin@example.test", "");
-      expect(empty.status).toBeGreaterThanOrEqual(400);
+    it("mật khẩu rỗng/thiếu bị từ chối bằng 400/401 (không do rate limit)", async () => {
+      const empty = await login(`${randomUUID()}@example.test`, "");
+      expect(empty.status).not.toBe(429);
+      expect([400, 401]).toContain(empty.status);
       expect(empty.data.token).toBeUndefined();
-      const missing = (await api.post("/auth/user/emailpass", { email: "admin@example.test" }, noThrow)) as {
-        status: number;
-      };
-      expect(missing.status).toBeGreaterThanOrEqual(400);
-      expect(missing.status).toBeLessThan(500);
+      const missing = (await api.post(
+        "/auth/user/emailpass",
+        { email: `${randomUUID()}@example.test` },
+        noThrow,
+      )) as { status: number; data: Record<string, unknown> };
+      expect(missing.status).not.toBe(429);
+      expect([400, 401]).toContain(missing.status);
+      expect(missing.data.token).toBeUndefined();
     });
+
+    it.each(["/x/health", "/x/readyz"])(
+      "probe công khai %s không lộ version/chi tiết phụ thuộc",
+      async (p) => {
+        const res = (await api.get(p, noThrow)) as { data: unknown };
+        const body = JSON.stringify(res.data ?? "");
+        expect(body).not.toMatch(
+          /ECONN|5432|6379|select|postgres|redis|knex|version|medusa|\bat .*\.(js|ts)/i,
+        );
+      },
+    );
 
     it.each(SENSITIVE_PATHS)("GET %s không token: không 200 có dữ liệu", async (p) => {
       const res = (await api.get(p, noThrow)) as { status: number };
