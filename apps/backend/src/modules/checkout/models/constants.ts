@@ -3,8 +3,10 @@
  * Trạng thái đơn/thanh toán lấy nguyên từ `@x-shop/domain` (máy trạng thái là nguồn chuẩn, đặc tả §6.1).
  */
 import { ORDER_STATES, PAYMENT_STATES } from "@x-shop/domain";
+import { CHECKOUT_PAYMENT_METHODS } from "@x-shop/domain/validation";
 
-export const PAYMENT_METHODS = ["cod", "vnpay"] as const;
+/** Một nguồn với schema form checkout dùng chung client/server (`@x-shop/domain/validation`, T-188). */
+export const PAYMENT_METHODS = CHECKOUT_PAYMENT_METHODS;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 export const ATTEMPT_STATES = ["preparing", "ready", "failed", "compensated"] as const;
