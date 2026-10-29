@@ -13,6 +13,11 @@ import { audit, openCancellationRefund, type AuditCtx } from "../../workflows/re
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { CheckoutError, readCheckoutError } from "../checkout/errors";
+import {
+  inventoryItemsOfOrder,
+  reservationsOfOrder,
+  withInventoryItemLocks,
+} from "../checkout/inventory-locks";
 import { cancelNativeOrder } from "../checkout/jobs";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
 import { queryAndProcess } from "../checkout/recheck";
@@ -34,23 +39,23 @@ interface CoreResult extends CancelResult {
   refund_id: string | null;
 }
 
-/** Nhả reservation theo line item của đơn mà KHÔNG hủy đơn native (đơn đã thu tiền — xem `cancelLocked`). */
+/**
+ * Nhả reservation theo line item của đơn mà KHÔNG hủy đơn native (đơn đã thu tiền — xem `cancelLocked`). Chạy dưới khóa
+ * `inventory_item:*` (T-224; caller giữ `order:` — thứ tự ở lib/checkout/inventory-locks.ts); danh sách reservation đọc lại
+ * dưới khóa. Khóa tồn bận quá hạn → BUSY_RETRY, chưa nhả gì.
+ */
 export async function releaseReservations(container: MedusaContainer, orderId: string): Promise<void> {
-  const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
-    entity: "order",
-    fields: ["id", "items.id"],
-    filters: { id: orderId },
-  });
-  const lineIds = (data as Array<{ items?: Array<{ id: string } | null> }>).flatMap((o) =>
-    (o.items ?? []).flatMap((i) => (i ? [i.id] : [])),
+  await withInventoryItemLocks(
+    container,
+    () => inventoryItemsOfOrder(container, orderId),
+    async () => {
+      const reservations = await reservationsOfOrder(container, orderId);
+      if (reservations.length > 0) {
+        await deleteReservationsWorkflow(container).run({ input: { ids: reservations.map((r) => r.id) } });
+      }
+    },
+    { label: "release-reservations" },
   );
-  if (lineIds.length === 0) return;
-  const reservations = await container
-    .resolve(Modules.INVENTORY)
-    .listReservationItems({ line_item_id: lineIds });
-  if (reservations.length > 0) {
-    await deleteReservationsWorkflow(container).run({ input: { ids: reservations.map((r) => r.id) } });
-  }
 }
 
 /**

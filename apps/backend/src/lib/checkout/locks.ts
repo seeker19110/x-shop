@@ -10,8 +10,9 @@ import { isDraining } from "../lifecycle/shutdown";
  * Vì sao không dùng thẳng `acquireLockStep`/`locking.execute(keys[])`: provider locking-redis 2.22.1 lấy NHIỀU khóa
  * SONG SONG (`Promise.all` từng key trong `acquire_`) nên thứ tự tăng dần không được bảo đảm (hai checkout giữ chéo
  * nhau → chờ tới timeout), và khi một key thất bại các key đã lấy không được trả lại (rò khóa tới hết hạn). Ở đây:
- *  - lấy TUẦN TỰ theo thứ tự tăng dần (thứ tự toàn cục: `cart:` < `inventory_item:` < `promotion:` do caller gọi theo
- *    lớp, trong mỗi lớp sắp tăng dần) → không deadlock;
+ *  - lấy TUẦN TỰ theo thứ tự tăng dần (thứ tự toàn cục: `cart:` < `order:` < `inventory_item:` < `promotion:` do caller
+ *    gọi theo lớp — mỗi lớp một lời gọi, KHÔNG trộn lớp vì sắp theo mã ký tự đặt `inventory_item:` trước `order:` — trong
+ *    mỗi lớp sắp tăng dần; khóa id thô của Medusa luôn trong cùng; T-224, lib/checkout/inventory-locks.ts) → không deadlock;
  *  - quá hạn chờ (khóa đang bị giữ) → trả lại mọi khóa đã lấy rồi báo `BUSY_RETRY` (409);
  *  - hạ tầng khóa hỏng (Redis mất kết nối/không trả lời — mọi lỗi KHÁC "khóa đang bận", hoặc một lời gọi quá
  *    `callTimeoutMs`) → trả lại khóa đã lấy rồi báo `LOCK_UNAVAILABLE` (503, đặc tả §13.2). KHÔNG có đường lùi khóa

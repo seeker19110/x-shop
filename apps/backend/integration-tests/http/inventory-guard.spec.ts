@@ -4,6 +4,7 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { updateProductVariantsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { expireHolds } from "../../src/lib/checkout/jobs";
+import { acquireOrdered, lockKeys, releaseOwned } from "../../src/lib/checkout/locks";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { INVENTORY_GUARD_CONSTRAINT, inventoryGuardKind } from "../../src/lib/inventory/guard";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
@@ -642,6 +643,137 @@ medusaIntegrationTestRunner({
         const r = await expireHolds(container, { now: new Date(Date.now() + 16 * MIN) });
         expect(r.cancelled).toContain(o.orderId);
         expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 10, reserved: 0 });
+      });
+    });
+
+    /* ------------------------------------------------------------------ T-224: nhả giữ dưới khóa tồn */
+
+    describe("T-224: đường nhả giữ lấy khóa inventory_item:* (không đua drift với đường giữ/ghi tồn cùng SKU)", () => {
+      /**
+       * Một đường ghi tồn CHỈ giữ khóa tiền tố `inventory_item:<id>` của dự án (như xuất kho trả lại reservation bằng
+       * `restoreReservationItems` gọi thẳng module — không có khóa id thô của Medusa): đọc reserved, dừng tới khi `until`
+       * xong (tối đa `holdMs`), rồi thêm một reservation và ghi reserved TUYỆT ĐỐI (`đọc + 1`) như module Medusa 2.22.1.
+       */
+      const prefixedWriter = async (
+        variantKey: string,
+        tag: string,
+        read: { open: () => void },
+        until: Promise<unknown>,
+        holdMs: number,
+      ) => {
+        const locking = container.resolve(Modules.LOCKING);
+        const owner = `t224:${tag}`;
+        await acquireOrdered(locking, [lockKeys.inventoryItem(fx.variants[variantKey]!.inventoryItemId)], {
+          ownerId: owner,
+          waitMs: 5_000,
+          ttlSeconds: 30,
+          scope: "inventory",
+        });
+        try {
+          const v = await verdict(
+            pg().transaction(async (trx) => {
+              const lv = await trx("inventory_level")
+                .where(pairOf(variantKey))
+                .whereNull("deleted_at")
+                .first<{ id: string; reserved_quantity: string }>();
+              read.open();
+              await Promise.race([until, sleep(holdMs)]);
+              await trx("reservation_item").insert(rawReservation(variantKey, 1, tag));
+              await trx("inventory_level")
+                .where({ id: lv!.id })
+                .update({ reserved_quantity: Number(lv!.reserved_quantity) + 1 });
+            }),
+          );
+          return { verdict: v, committedAt: Date.now() };
+        } finally {
+          await releaseOwned(locking, owner, null);
+        }
+      };
+      /**
+       * Chạy `release` (đường nhả giữ thật) chen vào giữa lúc `prefixedWriter` đã đọc và chưa ghi. Thiếu khóa tồn ở đường
+       * nhả → nhả xong trước, phiên ghi ghi đè số giữ → `drift`. Có khóa → nhả chờ phiên ghi commit rồi mới chạy.
+       */
+      const raceRelease = async <T>(variantKey: string, tag: string, release: () => Promise<T>) => {
+        const read = latch();
+        const released = latch();
+        let releasedAt = 0;
+        const writer = prefixedWriter(variantKey, tag, read, released.p, 3_000);
+        await Promise.race([read.p, writer]);
+        const result = release().finally(() => {
+          releasedAt = Date.now();
+          released.open();
+        });
+        const [w, r] = await Promise.all([writer, result]);
+        return { writer: w.verdict, result: r, releasedAfterWriter: releasedAt >= w.committedAt };
+      };
+      const staffCancel = (orderId: string) =>
+        flow.admin(
+          `/admin/x/orders/${orderId}/cancel`,
+          A("order_staff"),
+          { reason: "Khách gọi hotline xin hủy" },
+          { "Idempotency-Key": key() },
+        );
+
+      it("hết hạn giữ (expire-holds → cancelNativeOrder) ∥ đường ghi giữ khóa tồn: nhả chờ khóa, không ai nhận drift, reserved = tổng giữ", async () => {
+        const o = await flow.client.placeOrder([["Đen/M", 2]], "vnpay"); // 10 / 2
+        const r = await raceRelease("Đen/M", "exp", () =>
+          expireHolds(container, { now: new Date(Date.now() + 16 * MIN) }),
+        );
+        expect(r.writer).toBe("ok");
+        expect(r.result.cancelled).toEqual([o.orderId]);
+        expect(r.releasedAfterWriter).toBe(true);
+        expect(await levelRow("Đen/M")).toMatchObject({ stocked: 10, reserved: 1 });
+        expect(await liveReservations("Đen/M")).toBe(1);
+      });
+
+      it("nhân viên hủy đơn COD chưa thu (staff-cancel → cancelNativeOrder) ∥ đường ghi giữ khóa tồn: 200, không drift", async () => {
+        const o = await flow.client.placeOrder([["Đen/M", 2]], "cod");
+        const r = await raceRelease("Đen/M", "staff", () => staffCancel(o.orderId));
+        expect(r.writer).toBe("ok");
+        expect(r.result.status).toBe(200);
+        expect(r.result.data.cancel).toMatchObject({ outcome: "cancelled", refund_requested: false });
+        expect(r.releasedAfterWriter).toBe(true);
+        expect(await levelRow("Đen/M")).toMatchObject({ stocked: 10, reserved: 1 });
+        expect(await liveReservations("Đen/M")).toBe(1);
+      });
+
+      it("nhân viên hủy đơn VNPAY đã thu (releaseReservations, không hủy native) ∥ đường ghi giữ khóa tồn: 200, không drift", async () => {
+        const o = await flow.place([["Đen/M", 2]], "vnpay");
+        expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 10, reserved: 2 });
+        const r = await raceRelease("Đen/M", "paid", () => staffCancel(o.orderId));
+        expect(r.writer).toBe("ok");
+        expect(r.result.status).toBe(200);
+        expect(r.result.data.cancel).toMatchObject({ outcome: "cancelled", refund_requested: true });
+        expect(r.releasedAfterWriter).toBe(true);
+        expect(await levelRow("Đen/M")).toMatchObject({ stocked: 10, reserved: 1 });
+        expect(await liveReservations("Đen/M")).toBe(1);
+      });
+
+      it("tải thật ×3 vòng: hết hạn giữ + nhân viên hủy + checkout mới cùng SKU đồng thời → không 409 thử lại/drift, không treo, reserved = tổng giữ", async () => {
+        for (let round = 0; round < 3; round++) {
+          const expiring = await Promise.all(
+            [0, 1].map(() => flow.client.placeOrder([["Trắng/M", 1]], "vnpay")),
+          );
+          const cod = await flow.client.placeOrder([["Trắng/M", 1]], "cod");
+          ip = newIp();
+          const carts = await Promise.all([0, 1].map(() => flow.client.createCart([["Trắng/M", 1]])));
+          const quotes = await Promise.all(carts.map((c) => flow.client.quote(c)));
+          const [exp, cancel, ...submits] = await Promise.all([
+            expireHolds(container, { now: new Date(Date.now() + 16 * MIN) }),
+            staffCancel(cod.orderId),
+            ...quotes.map((q) => flow.client.submit(q)),
+          ]);
+          // Lượt hết hạn (now + 16 phút) gặp cả đơn checkout của vòng trước/vòng này → chỉ đòi có đủ đơn VNPAY cũ của vòng.
+          expect(exp.cancelled).toEqual(expect.arrayContaining(expiring.map((o) => o.orderId)));
+          expect(cancel.status).toBe(200);
+          expect(submits.map((s) => s.status)).toEqual([200, 200]);
+          const lv = await levelRow("Trắng/M");
+          expect(lv.reserved).toBe(
+            (await reservationsOf(container, fx, "Trắng/M")).reduce((n, r) => n + Number(r.quantity), 0),
+          );
+          expect(lv.reserved).toBeLessThanOrEqual(lv.stocked);
+          ip = newIp();
+        }
       });
     });
 

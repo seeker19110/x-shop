@@ -10,6 +10,11 @@ import { CHECKOUT_CONFIG } from "./config";
 import { HOLD_RECHECK_POLICY, holdRecheckAt, holdRecheckDelayMs } from "./hold-recheck";
 import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
+import {
+  inventoryItemsOfOrder,
+  inventoryItemsOfReservations,
+  withInventoryItemLocks,
+} from "./inventory-locks";
 import { isNotificationEvent, notificationHandler, NOTIFICATION_EVENT_TYPES } from "../notify/notify";
 import { syncNativePayment } from "./payment";
 import { CATALOG_REVALIDATE_EVENT, catalogRevalidateHandler } from "../catalog/revalidate";
@@ -74,11 +79,28 @@ async function withLock<T>(
   }
 }
 
-/** Hủy đơn native (idempotent): đã canceled → bỏ qua. cancelOrderWorkflow xoá reservation theo line item của đơn. */
-export async function cancelNativeOrder(container: MedusaContainer, orderId: string): Promise<void> {
-  const order = await container.resolve(Modules.ORDER).retrieveOrder(orderId);
-  if (order.status === "canceled") return;
-  await cancelOrderWorkflow(container).run({ input: { order_id: orderId, canceled_by: "x-shop:job" } });
+/**
+ * Hủy đơn native (idempotent): đã canceled → bỏ qua. cancelOrderWorkflow xoá reservation theo line item của đơn — chạy
+ * dưới khóa `inventory_item:*` của các reservation đó (T-224, thứ tự khóa ở lib/checkout/inventory-locks.ts): caller có
+ * thể giữ `order:`/`cart:`, KHÔNG được giữ `inventory_item:`. Khóa tồn bận quá hạn → BUSY_RETRY (đơn chưa hủy).
+ */
+export async function cancelNativeOrder(
+  container: MedusaContainer,
+  orderId: string,
+  opts: { abortWhenDraining?: boolean } = {},
+): Promise<void> {
+  const orders = container.resolve(Modules.ORDER);
+  if ((await orders.retrieveOrder(orderId)).status === "canceled") return;
+  await withInventoryItemLocks(
+    container,
+    () => inventoryItemsOfOrder(container, orderId),
+    async () => {
+      // Đọc lại dưới khóa tồn: lời gọi khác (không giữ khóa đơn, vd. bù trừ attempt) có thể vừa hủy xong.
+      if ((await orders.retrieveOrder(orderId)).status === "canceled") return;
+      await cancelOrderWorkflow(container).run({ input: { order_id: orderId, canceled_by: "x-shop:job" } });
+    },
+    { abortWhenDraining: opts.abortWhenDraining, label: "cancel-native" },
+  );
 }
 
 /* ---------------------------------------------------------------- expire-holds */
@@ -340,7 +362,13 @@ async function expireOne(
   }
   // not_paid | failed | skipped (không còn attempt mở) → hủy. Native trước (idempotent), rồi chốt trạng thái module:
   // chết giữa chừng thì lần chạy sau thấy đơn vẫn awaiting_payment và làm lại an toàn.
-  await cancelNativeOrder(container, orderId);
+  // Khóa tồn bận quá hạn/đang tắt (T-224) → chưa hủy gì: để lượt sau (đơn vẫn quá hạn, chưa có kết cục), không backoff.
+  try {
+    await cancelNativeOrder(container, orderId, { abortWhenDraining: true });
+  } catch (e) {
+    if (readCheckoutError(e)?.code === "BUSY_RETRY") return "skipped";
+    throw e;
+  }
   try {
     return (await s.cancelExpiredOrder(orderId, "HOLD_EXPIRED")) ? "cancelled" : "skipped";
   } catch (e) {
@@ -434,10 +462,16 @@ export async function reconcileAttempts(
         async () => {
           if (!(await s.claimStaleAttempt(a.id, now))) return "skipped" as const;
           const { orderIds, reservationIds } = await leftoversOfAttempt(container, a.id);
+          // Thứ tự khóa (T-224): đang giữ `cart:` → lấy `inventory_item:*` (lib/checkout/inventory-locks.ts).
           if (reservationIds.length > 0) {
-            await deleteReservationsWorkflow(container).run({ input: { ids: reservationIds } });
+            await withInventoryItemLocks(
+              container,
+              () => inventoryItemsOfReservations(container, reservationIds),
+              () => deleteReservationsWorkflow(container).run({ input: { ids: reservationIds } }),
+              { abortWhenDraining: true, label: "reconcile-attempts" },
+            );
           }
-          for (const id of orderIds) await cancelNativeOrder(container, id);
+          for (const id of orderIds) await cancelNativeOrder(container, id, { abortWhenDraining: true });
           await s.compensateAttemptRecords(a.id, orderIds);
           return "compensated" as const;
         },
@@ -445,6 +479,12 @@ export async function reconcileAttempts(
     } catch (e) {
       // Hạ tầng khóa mất (Redis) là lỗi của cả lượt, không của attempt: giữ hành vi cũ (lượt dừng, phút sau chạy lại).
       if (readCheckoutError(e)?.code === "LOCK_UNAVAILABLE") throw e;
+      // Khóa tồn bận quá hạn/đang tắt (T-224): không phải lỗi của attempt — đã nhận (COMPENSATING, lease cũ) nên lượt sau
+      // liệt kê lại và làm tiếp; không hẹn 5 phút, không log lỗi.
+      if (readCheckoutError(e)?.code === "BUSY_RETRY") {
+        summary.skipped.push(a.id);
+        continue;
+      }
       // Lỗi của MỘT attempt (vd hàng rào tồn T-185 từ chối nhả giữ) không được dừng cả lượt: ghi log, hẹn lại sau để
       // attempt khác trong hàng đợi (ORDER BY lease_until) vẫn được bù trừ (review T-185).
       outcome = "failed";
