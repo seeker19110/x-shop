@@ -2,6 +2,7 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import { getHttpResponseFromError } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { zodErrors, type ProblemError } from "../http/problem";
+import { AUTH_BUSY_RETRY_AFTER_SECONDS, isAuthBusy } from "../admin-security/scrypt-gate";
 import { INVENTORY_CONFLICT_RETRY, inventoryGuardKind } from "../inventory/guard";
 import { redactLog } from "../log/redact";
 import { traceIdOf } from "./trace";
@@ -422,6 +423,29 @@ export function toHttpProblem(err: unknown, traceId: string): HttpProblem {
   };
 }
 
+/** Mã lỗi khi provider emailpass vượt trần scrypt đồng thời (T-181, lib/admin-security/scrypt-gate.ts). */
+export const AUTH_BUSY = "AUTH_BUSY";
+
+/**
+ * 503 `AUTH_BUSY`: thông điệp chung, không phụ thuộc email có tồn tại (mọi nhánh của provider bận như nhau). 503 (không
+ * 429): quá tải máy chủ, không phải lỗi người gửi; rate limit đăng nhập hoàn lại lượt cho 5xx.
+ */
+export function authBusyProblem(traceId: string): HttpProblem {
+  const detail = TITLES[503]!;
+  return {
+    status: 503,
+    body: {
+      type: "about:blank",
+      title: detail,
+      status: 503,
+      code: AUTH_BUSY,
+      detail,
+      message: detail,
+      trace_id: traceId,
+    },
+  };
+}
+
 function describeError(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
   try {
@@ -471,8 +495,13 @@ export function xErrorHandler(
     next(err);
     return;
   }
-  const problem = toHttpProblem(err, traceId);
-  if (problem.status >= 500) logServerError(req, "http", err);
+  // Provider emailpass từ chối vì scrypt bận (cờ theo request) → 503 + Retry-After thay cho 401 mà route native ném.
+  const busy = isAuthBusy();
+  const problem = busy ? authBusyProblem(traceId) : toHttpProblem(err, traceId);
+  if (busy) {
+    res.setHeader("Retry-After", String(AUTH_BUSY_RETRY_AFTER_SECONDS));
+    loggerOf(req).info(`[http] 503 ${AUTH_BUSY} ${req.method} ${req.path} trace_id=${traceId}`);
+  } else if (problem.status >= 500) logServerError(req, "http", err);
   else
     loggerOf(req).info(
       `[http] ${problem.status} ${problem.body.code} ${req.method} ${req.path} trace_id=${traceId}`,

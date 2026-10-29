@@ -10,6 +10,7 @@ import { MedusaError } from "@medusajs/framework/utils";
 import EmailPassProvider from "@medusajs/medusa/auth-emailpass";
 import { randomBytes } from "node:crypto";
 import { MEDUSA_DEFAULT_SCRYPT, needsRehash, type ScryptHashConfig } from "../password-hash";
+import { markAuthBusy, ScryptBusyError, scryptGate } from "../scrypt-gate";
 
 /**
  * Provider `emailpass` của Medusa, bọc lại để thời gian phản hồi đăng nhập KHÔNG lộ tài khoản có tồn tại hay không
@@ -29,10 +30,17 @@ import { MEDUSA_DEFAULT_SCRYPT, needsRehash, type ScryptHashConfig } from "../pa
  * kiểu so-và-ghi: chỉ ghi khi hash trong DB vẫn là hash vừa kiểm, để đổi mật khẩu chạy song song không bị ghi đè bằng
  * mật khẩu cũ (còn cửa sổ cỡ một truy vấn giữa lần đọc lại và lần ghi — không nguyên tử ở mức DB, ADR-0006). Lỗi khi
  * băm lại chỉ ghi log, không đổi kết quả đăng nhập.
+ *
+ * Trần scrypt đồng thời (review T-181, `../scrypt-gate.ts`): MỌI phép scrypt (`hashPassword` — đăng ký, đổi mật khẩu,
+ * hash mồi, băm lại — và `isPasswordMatch_` — kiểm mật khẩu thật lẫn mồi) đi qua một semaphore chung của tiến trình, nên
+ * cân thời gian giữ nguyên (mỗi nhánh vẫn đúng một phép, cùng hàng chờ). Semaphore đầy/quá hạn → `ScryptBusyError` ở mọi
+ * nhánh như nhau (kể cả nhánh mồi của email không tồn tại) → HTTP 503 `AUTH_BUSY`; riêng băm lại thì bỏ qua (đăng nhập đã
+ * đúng).
  */
 interface EmailPassBase {
   authenticate(data: AuthenticationInput, svc: AuthIdentityProviderService): Promise<AuthenticationResponse>;
   hashPassword(password: string): Promise<string>;
+  isPasswordMatch_(password: string, authIdentity: AuthIdentityDTO): Promise<boolean>;
 }
 type EmailPassCtor = (new (
   deps: { logger: Logger },
@@ -89,6 +97,24 @@ export class TimingSafeEmailPassAuthService extends Base {
     this.decoy_().catch(() => {
       this.decoyHash_ = null;
     });
+  }
+
+  /** Chạy một phép scrypt qua semaphore chung; bận → đánh dấu request (503) rồi ném `ScryptBusyError`. */
+  private async gated_<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await scryptGate().run(fn);
+    } catch (e) {
+      if (e instanceof ScryptBusyError) markAuthBusy();
+      throw e;
+    }
+  }
+
+  override async hashPassword(password: string): Promise<string> {
+    return this.gated_(() => super.hashPassword(password));
+  }
+
+  override async isPasswordMatch_(password: string, authIdentity: AuthIdentityDTO): Promise<boolean> {
+    return this.gated_(() => super.isPasswordMatch_(password, authIdentity));
   }
 
   private decoy_(): Promise<string> {
@@ -152,8 +178,10 @@ export class TimingSafeEmailPassAuthService extends Base {
     if (needsBurn) {
       try {
         await this.burn_(data);
-      } catch {
-        // Lớp cân thời gian lỗi không được đổi kết quả đăng nhập (vẫn là thất bại như bản gốc).
+      } catch (e) {
+        // Bận phải lộ ra như nhánh tài khoản có thật (503), không thì email không tồn tại trả 401 nhanh khi quá tải.
+        if (e instanceof ScryptBusyError) throw e;
+        // Lỗi khác của lớp cân thời gian không được đổi kết quả đăng nhập (vẫn là thất bại như bản gốc).
       }
     }
     return result;
@@ -167,9 +195,10 @@ export class TimingSafeEmailPassAuthService extends Base {
     authIdentityService: AuthIdentityProviderService,
   ): Promise<void> {
     try {
-      const fresh = await this.hashPassword(password);
+      // Không đánh dấu bận cho request: đăng nhập đã đúng, bỏ lần băm lại này (lần đăng nhập sau thử lại).
+      const fresh = await scryptGate().run(() => super.hashPassword(password));
       const current = emailpassIdentity(await authIdentityService.retrieve({ entity_id: entityId }));
-      if (current?.provider_metadata?.password !== oldHash) return;
+      if (current?.entity_id !== entityId || current.provider_metadata?.password !== oldHash) return;
       await authIdentityService.update(entityId, {
         provider_metadata: { ...current.provider_metadata, password: fresh },
       });

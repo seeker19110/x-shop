@@ -19,6 +19,7 @@ import { inviteAcceptGuard } from "../lib/admin-security/invite-guard";
 import { registerGate } from "../lib/admin-security/register-gate";
 import { reservationLocationGuard } from "../lib/admin-security/reservation-guard";
 import { resetPasswordGuard } from "../lib/admin-security/reset-password";
+import { authBusyContext } from "../lib/admin-security/scrypt-gate";
 import { securityAuditTrail } from "../lib/audit/http";
 import { inputAuditTrail, withInputAudit } from "../lib/audit/input";
 import { xErrorHandler } from "../lib/errors/error-handler";
@@ -62,6 +63,9 @@ export default defineMiddlewares({
     { matcher: "/", middlewares: [requestLogContext, inputAuditTrail] },
     // Audit sự kiện xác thực + xuất/truy cập dữ liệu nhạy cảm theo bảng route (T-091, lib/audit/http.ts): ghi SAU khi
     // phản hồi xong, kể cả thất bại/429. Toàn cục → gắn trước rate limit/CSRF nên thấy cả request bị chặn sớm.
+    // Ngữ cảnh cờ "scrypt bận" cho /auth (T-181, lib/admin-security/scrypt-gate.ts): provider emailpass vượt trần scrypt
+    // đồng thời → handler lỗi toàn cục trả 503 AUTH_BUSY + Retry-After thay vì 401 (Auth Module nuốt lỗi provider).
+    { matcher: "/auth", middlewares: [authBusyContext] },
     { matcher: "/auth", middlewares: [securityAuditTrail] },
     { matcher: "/admin", middlewares: [securityAuditTrail] },
     // Header bảo mật + CSRF cho thao tác ghi dùng cookie (SEC01, SEC05, T-034). Middleware toàn cục (không `methods`)
