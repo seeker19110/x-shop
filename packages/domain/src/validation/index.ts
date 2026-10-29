@@ -4,5 +4,6 @@
  * storefront `client-bundle.test.ts`.
  */
 export * from "./checkout.js";
+export * from "./payment-methods.js";
 export * from "./phone.js";
 export * from "./text.js";

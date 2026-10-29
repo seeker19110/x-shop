@@ -1,8 +1,8 @@
 /**
  * Schema sự kiện telemetry (đặc tả §13.1, S-508). Chỉ kiểu + hằng + bộ quét PII thuần TypeScript — import được từ
- * client mà không kéo thư viện nào (zod chỉ ở `validate.ts`, phía server; `PAYMENT_TYPES` lấy hằng từ subpath thuần
- * `@x-shop/domain/validation`). Không PII: chỉ `item_id` (handle sản phẩm),
- * `sku`, mã đơn hiển thị, tiền số nguyên VND.
+ * client mà không kéo thư viện nào (zod chỉ ở `validate.ts`, phía server). `PAYMENT_TYPES` lấy hằng từ
+ * `validation/payment-methods.ts` của domain — file không import gì (không zod, không schema), nên chỉ hằng vào bundle.
+ * Không PII: chỉ `item_id` (handle sản phẩm), `sku`, mã đơn hiển thị, tiền số nguyên VND.
  */
 import { CHECKOUT_PAYMENT_METHODS } from "@x-shop/domain/validation";
 

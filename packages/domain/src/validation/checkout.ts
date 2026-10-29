@@ -1,11 +1,12 @@
 import * as z from "zod/mini";
+import { CHECKOUT_PAYMENT_METHODS } from "./payment-methods.js";
 import { normalizePhone } from "./phone.js";
 import { charLength, normalizeText } from "./text.js";
 
 /**
  * Schema form checkout — MỘT nguồn cho form ở trình duyệt (CheckoutForm), Server Action của storefront và route
  * `/store/x/checkout/{quote,submit}` của backend (FE-FORM-001, Q-03). Dùng `zod/mini` (tree-shake được) và chỉ import
- * `./phone`, `./text`: subpath `@x-shop/domain/validation` không kéo tiền/sổ cái/máy trạng thái/provider vào bundle
+ * `./payment-methods`, `./phone`, `./text`: subpath `@x-shop/domain/validation` không kéo tiền/sổ cái/máy trạng thái/provider vào bundle
  * client (test: storefront `client-bundle.test.ts`).
  *
  * Hai hình dạng cùng ghép từ MỘT bộ schema trường:
@@ -14,9 +15,6 @@ import { charLength, normalizeText } from "./text.js";
  *    `checkoutSubmitInputSchema`.
  * Kiểm mã tỉnh/xã có trong danh mục (đọc file dữ liệu) vẫn là việc của server (`validateAddress`).
  */
-
-export const CHECKOUT_PAYMENT_METHODS = ["cod", "vnpay"] as const;
-export type CheckoutPaymentMethod = (typeof CHECKOUT_PAYMENT_METHODS)[number];
 
 export const CHECKOUT_LIMITS = {
   nameMax: 100,

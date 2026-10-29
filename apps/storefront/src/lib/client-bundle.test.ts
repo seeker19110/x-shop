@@ -39,18 +39,32 @@ function resolveImport(from: string, spec: string): string | null {
  * `import "…"` không tên, `import()` động, `require()`; chuỗi nháy đơn/kép/backtick. `import type`/`export type` được phép.
  */
 const VALUE_IMPORT_FROM_DOMAIN =
-  /(?:\b(?:import|export)\s+(?!type\s)[^;]*?from\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`]@x-shop\/domain(?!\/validation["'`])[^"'`]*["'`]/;
+  /(?:\b(?:import|export)\s+(?!type\s)[^;]*?from\s*|\bimport\s*(?:\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)?|\brequire\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)["'`]@x-shop\/domain(?!\/validation["'`])[^"'`]*["'`]/;
 const DOMAIN_VALIDATION = resolve(SRC, "../../../packages/domain/src/validation");
 /**
  * Mọi chỗ nạp module: `… from "x"` (import/export, kể cả `import type`), `import "x"` (không tên), `import("x")` động,
- * `require("x")`; nháy đơn/kép/backtick (`import(\`…\`)`). Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
+ * `require("x")`; nháy đơn/kép/backtick (`import(\`…\`)`); chú thích khối sau `import(`/`require(` (vd
+ * `import(/* webpackChunkName: "a" *\/ "./a")`). Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
  */
-const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`]([^"'`]+)["'`]/g;
+const SPEC_RE =
+  /(?:\bfrom\s*|\bimport\s*(?:\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)?|\brequire\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)["'`]([^"'`]+)["'`]/g;
 const importSpecs = (src: string): string[] => [...src.matchAll(SPEC_RE)].map((m) => m[1]!);
 
-function clientGraph(): Set<string> {
+/**
+ * Spec nội bộ của storefront → đường dẫn để resolve: tương đối (`./`, `../`) hoặc alias `@/…` (tsconfig `paths`:
+ * `@/*` → `./src/*`). Spec gói ngoài → null (không thuộc đồ thị mã nguồn).
+ */
+function localSpec(from: string, spec: string): string | null {
+  if (spec.startsWith("@/")) return resolve(SRC, spec.slice(2));
+  if (spec.startsWith(".")) return resolve(dirname(from), spec);
+  return null;
+}
+
+/** Đồ thị client + danh sách spec nội bộ KHÔNG resolve được (phải rỗng — không bỏ sót im lặng). */
+function clientGraphWithMisses(): { graph: Set<string>; unresolved: string[] } {
   const roots = walk(SRC).filter((f) => /^\s*["']use client["']/.test(readFileSync(f, "utf8")));
   const seen = new Set<string>();
+  const unresolved: string[] = [];
   const stack = [...roots];
   while (stack.length) {
     const file = stack.pop()!;
@@ -59,14 +73,21 @@ function clientGraph(): Set<string> {
     const src = readFileSync(file, "utf8");
     // Server Actions ("use server") là ranh giới: client chỉ nhận stub RPC, không nhận mã bên trong (Next thay thế).
     if (/^\s*["']use server["']/.test(src)) continue;
-    // Cùng bộ trích với đồ thị validation: cả `export … from`, `import "./x"`, `import()` động, `require()`.
+    // Cùng bộ trích với đồ thị validation: `export … from`, `import "./x"`, `import()` động (kể cả có chú thích), `require()`.
     for (const spec of importSpecs(src)) {
-      if (!spec.startsWith(".")) continue;
-      const dep = resolveImport(file, spec.replace(/\.js$/, ""));
-      if (dep !== null) stack.push(dep);
+      const target = localSpec(file, spec);
+      if (target === null) continue;
+      const dep = resolveImport(file, target.replace(/\.js$/, ""));
+      if (dep === null) unresolved.push(`${file.replace(SRC, "src")} → ${spec}`);
+      // Chỉ mã TS đi tiếp; CSS module/JSON… là lá (resolve được là đủ).
+      else if (/\.tsx?$/.test(dep)) stack.push(dep);
     }
   }
-  return seen;
+  return { graph: seen, unresolved };
+}
+
+function clientGraph(): Set<string> {
+  return clientGraphWithMisses().graph;
 }
 
 describe("client bundle không kéo @x-shop/domain (catalog)", () => {
@@ -74,6 +95,10 @@ describe("client bundle không kéo @x-shop/domain (catalog)", () => {
 
   it("quét được các client component (không rỗng)", () => {
     expect(graph.size).toBeGreaterThan(10);
+  });
+
+  it("mọi spec nội bộ (tương đối, alias `@/`) trong đồ thị client đều resolve được — không bỏ sót im lặng", () => {
+    expect(clientGraphWithMisses().unresolved).toEqual([]);
   });
 
   it("không file nào trong đồ thị client import giá trị từ @x-shop/domain", () => {
@@ -99,6 +124,9 @@ describe("client bundle không kéo @x-shop/domain (catalog)", () => {
     expect(VALUE_IMPORT_FROM_DOMAIN.test('import "@x-shop/domain";')).toBe(true);
     expect(VALUE_IMPORT_FROM_DOMAIN.test('export type { B } from "@x-shop/domain";')).toBe(false);
     expect(VALUE_IMPORT_FROM_DOMAIN.test('const v = await import("@x-shop/domain/validation");')).toBe(false);
+    expect(
+      VALUE_IMPORT_FROM_DOMAIN.test('const d = import(/* webpackChunkName: "d" */ "@x-shop/domain");'),
+    ).toBe(true);
   });
 });
 
@@ -121,9 +149,21 @@ describe("client bundle chỉ kéo @x-shop/domain/validation (FE-FORM-001, Q-03)
       importSpecs(
         'import "../money/index.js";\nconst a = await import("node:fs");\nconst b = require(\'../ledger\');\n' +
           'export * from "./x.js";\nimport type { T } from "y";\nimport * as z from "zod/mini";\n' +
-          "const c = import(`../state/index.js`);",
+          "const c = import(`../state/index.js`);\n" +
+          'const d = import(/* webpackChunkName: "p" */ "../pricing/index.js");\n' +
+          'const e = require(/* a */ /* b */ "@/lib/x");',
       ),
-    ).toEqual(["../money/index.js", "node:fs", "../ledger", "./x.js", "y", "zod/mini", "../state/index.js"]);
+    ).toEqual([
+      "../money/index.js",
+      "node:fs",
+      "../ledger",
+      "./x.js",
+      "y",
+      "zod/mini",
+      "../state/index.js",
+      "../pricing/index.js",
+      "@/lib/x",
+    ]);
   });
 
   it("đồ thị import của subpath validation: chỉ file trong validation/ và `zod/mini` (không tiền/sổ cái/trạng thái/node:*)", () => {
@@ -148,6 +188,8 @@ describe("client bundle chỉ kéo @x-shop/domain/validation (FE-FORM-001, Q-03)
     expect(unresolved).toEqual([]);
     expect([...seen].filter((f) => dirname(f) !== DOMAIN_VALIDATION)).toEqual([]);
     expect([...bare]).toEqual(["zod/mini"]);
+    // Hằng phương thức thanh toán (entry client telemetry dùng riêng) không kéo zod/schema.
+    expect(importSpecs(readFileSync(resolve(DOMAIN_VALIDATION, "payment-methods.ts"), "utf8"))).toEqual([]);
     expect(seen.size).toBeGreaterThanOrEqual(3);
   });
 
