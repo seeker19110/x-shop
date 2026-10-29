@@ -1,4 +1,5 @@
 /** Kiểu dữ liệu đơn sau mua phía storefront (an toàn cho client). Tiền: số nguyên VND. Thời gian: ISO 8601 UTC. */
+import type { CheckoutPaymentMethod } from "@x-shop/domain/validation";
 
 export type OrderState = "placed" | "awaiting_payment" | "confirmed" | "cancelled" | "completed";
 
@@ -28,7 +29,7 @@ export interface OrderLine {
 export interface OrderDetails {
   ref: string;
   state: OrderState;
-  paymentMethod: "cod" | "vnpay";
+  paymentMethod: CheckoutPaymentMethod;
   paymentState: PaymentState;
   shipmentState: ShipmentState;
   createdAt: string;

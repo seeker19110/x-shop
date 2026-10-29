@@ -47,7 +47,7 @@ const FORM_CONTACT = { name: "An", phone: "0912345678", email: "" };
  * Mọi chỗ nạp module trong mã nguồn: `… from "x"` (import/export, kể cả `import type`), `import "x"` (không tên),
  * `import("x")` động, `require("x")`. Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
  */
-const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']([^"']+)["']/g;
+const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`]([^"'`]+)["'`]/g;
 const importSpecs = (src: string): string[] => [...src.matchAll(SPEC_RE)].map((m) => m[1]!);
 
 describe("validation: subpath thuần (không kéo phần khác của domain vào bundle client)", () => {
@@ -55,9 +55,10 @@ describe("validation: subpath thuần (không kéo phần khác của domain và
     expect(
       importSpecs(
         'import "../money/index.js";\nconst a = await import("node:fs");\nconst b = require(\'../ledger\');\n' +
-          'export * from "./x.js";\nimport type { T } from "y";\nimport * as z from "zod/mini";',
+          'export * from "./x.js";\nimport type { T } from "y";\nimport * as z from "zod/mini";\n' +
+          "const c = import(`../state/index.js`);",
       ),
-    ).toEqual(["../money/index.js", "node:fs", "../ledger", "./x.js", "y", "zod/mini"]);
+    ).toEqual(["../money/index.js", "node:fs", "../ledger", "./x.js", "y", "zod/mini", "../state/index.js"]);
   });
 
   it("mọi file nguồn chỉ import trong thư mục validation/ và `zod/mini`", () => {

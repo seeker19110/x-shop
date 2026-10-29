@@ -34,14 +34,18 @@ function resolveImport(from: string, spec: string): string | null {
   return null;
 }
 
+/**
+ * Nạp GIÁ TRỊ từ `@x-shop/domain` (trừ đúng subpath `validation`): `import {…} from`, `export {…} from` / `export * from`,
+ * `import "…"` không tên, `import()` động, `require()`; chuỗi nháy đơn/kép/backtick. `import type`/`export type` được phép.
+ */
 const VALUE_IMPORT_FROM_DOMAIN =
-  /import\s+(?!type\s)[^;]*?from\s+["']@x-shop\/domain(?!\/validation["'])[^"']*["']/;
+  /(?:\b(?:import|export)\s+(?!type\s)[^;]*?from\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`]@x-shop\/domain(?!\/validation["'`])[^"'`]*["'`]/;
 const DOMAIN_VALIDATION = resolve(SRC, "../../../packages/domain/src/validation");
 /**
  * Mọi chỗ nạp module: `… from "x"` (import/export, kể cả `import type`), `import "x"` (không tên), `import("x")` động,
- * `require("x")`. Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
+ * `require("x")`; nháy đơn/kép/backtick (`import(\`…\`)`). Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
  */
-const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']([^"']+)["']/g;
+const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`]([^"'`]+)["'`]/g;
 const importSpecs = (src: string): string[] => [...src.matchAll(SPEC_RE)].map((m) => m[1]!);
 
 function clientGraph(): Set<string> {
@@ -55,8 +59,10 @@ function clientGraph(): Set<string> {
     const src = readFileSync(file, "utf8");
     // Server Actions ("use server") là ranh giới: client chỉ nhận stub RPC, không nhận mã bên trong (Next thay thế).
     if (/^\s*["']use server["']/.test(src)) continue;
-    for (const m of src.matchAll(/(?:import|export)\s[^;]*?from\s+["'](\.[^"']*)["']/g)) {
-      const dep = resolveImport(file, m[1]!);
+    // Cùng bộ trích với đồ thị validation: cả `export … from`, `import "./x"`, `import()` động, `require()`.
+    for (const spec of importSpecs(src)) {
+      if (!spec.startsWith(".")) continue;
+      const dep = resolveImport(file, spec.replace(/\.js$/, ""));
       if (dep !== null) stack.push(dep);
     }
   }
@@ -84,6 +90,15 @@ describe("client bundle không kéo @x-shop/domain (catalog)", () => {
     expect(VALUE_IMPORT_FROM_DOMAIN.test('import { a } from "@x-shop/domain/ledger";')).toBe(true);
     expect(VALUE_IMPORT_FROM_DOMAIN.test('import { a } from "@x-shop/domain/validation2";')).toBe(true);
     expect(VALUE_IMPORT_FROM_DOMAIN.test('import { a } from "@x-shop/domain/validation/x";')).toBe(true);
+    // Dạng nạp khác import có tên.
+    expect(VALUE_IMPORT_FROM_DOMAIN.test('export { formatVnd } from "@x-shop/domain";')).toBe(true);
+    expect(VALUE_IMPORT_FROM_DOMAIN.test('export * from "@x-shop/domain";')).toBe(true);
+    expect(VALUE_IMPORT_FROM_DOMAIN.test('const d = await import("@x-shop/domain");')).toBe(true);
+    expect(VALUE_IMPORT_FROM_DOMAIN.test("const d = import(`@x-shop/domain/ledger`);")).toBe(true);
+    expect(VALUE_IMPORT_FROM_DOMAIN.test('const d = require("@x-shop/domain");')).toBe(true);
+    expect(VALUE_IMPORT_FROM_DOMAIN.test('import "@x-shop/domain";')).toBe(true);
+    expect(VALUE_IMPORT_FROM_DOMAIN.test('export type { B } from "@x-shop/domain";')).toBe(false);
+    expect(VALUE_IMPORT_FROM_DOMAIN.test('const v = await import("@x-shop/domain/validation");')).toBe(false);
   });
 });
 
@@ -105,9 +120,10 @@ describe("client bundle chỉ kéo @x-shop/domain/validation (FE-FORM-001, Q-03)
     expect(
       importSpecs(
         'import "../money/index.js";\nconst a = await import("node:fs");\nconst b = require(\'../ledger\');\n' +
-          'export * from "./x.js";\nimport type { T } from "y";\nimport * as z from "zod/mini";',
+          'export * from "./x.js";\nimport type { T } from "y";\nimport * as z from "zod/mini";\n' +
+          "const c = import(`../state/index.js`);",
       ),
-    ).toEqual(["../money/index.js", "node:fs", "../ledger", "./x.js", "y", "zod/mini"]);
+    ).toEqual(["../money/index.js", "node:fs", "../ledger", "./x.js", "y", "zod/mini", "../state/index.js"]);
   });
 
   it("đồ thị import của subpath validation: chỉ file trong validation/ và `zod/mini` (không tiền/sổ cái/trạng thái/node:*)", () => {

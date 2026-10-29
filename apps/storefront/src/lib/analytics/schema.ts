@@ -1,8 +1,10 @@
 /**
  * Schema sự kiện telemetry (đặc tả §13.1, S-508). Chỉ kiểu + hằng + bộ quét PII thuần TypeScript — import được từ
- * client mà không kéo thư viện nào (zod chỉ ở `validate.ts`, phía server). Không PII: chỉ `item_id` (handle sản phẩm),
+ * client mà không kéo thư viện nào (zod chỉ ở `validate.ts`, phía server; `PAYMENT_TYPES` lấy hằng từ subpath thuần
+ * `@x-shop/domain/validation`). Không PII: chỉ `item_id` (handle sản phẩm),
  * `sku`, mã đơn hiển thị, tiền số nguyên VND.
  */
+import { CHECKOUT_PAYMENT_METHODS } from "@x-shop/domain/validation";
 
 export const SCHEMA_VERSION = 1 as const;
 
@@ -27,7 +29,8 @@ export type AnalyticsEventName = (typeof EVENT_NAMES)[number];
 export const ORDER_EVENTS: readonly AnalyticsEventName[] = ["order_placed", "purchase", "refund"];
 
 export const MAX_ITEMS = 50;
-export const PAYMENT_TYPES = ["cod", "vnpay"] as const;
+/** Một nguồn với phương thức thanh toán của schema checkout chung (T-188). */
+export const PAYMENT_TYPES = CHECKOUT_PAYMENT_METHODS;
 
 /** Định danh: chữ/số/`_.:-`, 1–64 ký tự, không khoảng trắng — không chỗ cho email, địa chỉ, họ tên. */
 export const ID_RE = /^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,63}$/u;

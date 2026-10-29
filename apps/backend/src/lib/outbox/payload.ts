@@ -1,3 +1,4 @@
+import { CHECKOUT_PAYMENT_METHODS } from "@x-shop/domain/validation";
 import { z } from "zod";
 
 /**
@@ -65,7 +66,7 @@ const BY_TYPE: Record<string, z.ZodType> = {
   "order.placed_pending": z.looseObject({
     order_id: orderId,
     display_ref: id.optional(),
-    payment_method: z.enum(["cod", "vnpay"]).optional(),
+    payment_method: z.enum(CHECKOUT_PAYMENT_METHODS).optional(),
   }),
   "order.confirmed": z.looseObject({ order_id: orderId, display_ref: id.optional() }),
   // T-149 (D-089): chỉ ID — bộ xử lý (lib/notify) phát hành token một lần LÚC GỬI và dựng liên kết từ STOREFRONT_URL.
