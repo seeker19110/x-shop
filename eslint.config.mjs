@@ -47,8 +47,36 @@ function typedNullishRules(scopes) {
   }));
 }
 
+/**
+ * SEC-SECRET-007 / CMP-PRIV-008 (T-183): không truyền NGUYÊN object người dùng/đơn/giỏ vào logger hay `track()` —
+ * object đó mang PII/bí mật mà bộ che theo tên trường không bắt hết. Cho phép thuộc tính đã chọn (`order.id`) hoặc
+ * giá trị đã che (`redact(x)`). Bắt: đối số trực tiếp, hoặc giá trị thuộc tính của object literal (`{ order }`).
+ * Logger = `logger|log|console` (cả `ctx.logger.x`); analytics = `track()`.
+ */
+const LOG_SINKS =
+  "CallExpression:matches([callee.object.name=/^(logger|log|console)$/], [callee.object.property.name=/^(logger|log|console)$/], [callee.name='track'])";
+const RAW_OBJECTS = "/^(req|request|body|customer|order|address|cart|payload)$/";
+const RAW_OBJECT_MESSAGE =
+  "Không log/track nguyên object req/body/customer/order/address/cart/payload (SEC-SECRET-007, CMP-PRIV-008): chọn thuộc tính cần (order.id) hoặc che bằng redact().";
+const LOG_RAW_OBJECT_SYNTAX = [
+  { selector: `${LOG_SINKS} > Identifier.arguments[name=${RAW_OBJECTS}]`, message: RAW_OBJECT_MESSAGE },
+  {
+    selector: `${LOG_SINKS} > MemberExpression.arguments[object.name=/^(req|request)$/][property.name=/^(body|headers|query|params)$/]`,
+    message: RAW_OBJECT_MESSAGE,
+  },
+  {
+    selector: `${LOG_SINKS} > ObjectExpression.arguments > Property > Identifier.value[name=${RAW_OBJECTS}]`,
+    message: RAW_OBJECT_MESSAGE,
+  },
+  {
+    selector: `${LOG_SINKS} > SpreadElement.arguments > Identifier[name=${RAW_OBJECTS}]`,
+    message: RAW_OBJECT_MESSAGE,
+  },
+];
+
 /** Luật `no-restricted-syntax` chung cho mọi file (mã sản phẩm thêm UNITS_RESTRICTED_SYNTAX). */
 const BASE_RESTRICTED_SYNTAX = [
+  ...LOG_RAW_OBJECT_SYNTAX,
   {
     selector:
       "CallExpression[callee.property.name='catch'][arguments.0.type=/^(Arrow)?FunctionExpression$/][arguments.0.body.type='BlockStatement'][arguments.0.body.body.length=0]",
