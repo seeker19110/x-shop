@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv } from "@medusajs/framework/utils";
+import { EMAILPASS_HASH_CONFIG } from "./src/lib/admin-security/password-hash";
 import { sessionCookieConfig } from "./src/lib/admin-security/session-cookie";
 import { isMigrationCommand, loadEnvOrExit } from "./src/lib/env";
 import { databaseConfig, redisQueueOptions, redisRequestOptions } from "./src/lib/infra/timeouts";
@@ -95,10 +96,18 @@ module.exports = defineConfig({
     ...redisModules,
     // Auth Module: provider `emailpass` cân thời gian phản hồi — email không tồn tại cũng tốn một scrypt.verify như sai
     // mật khẩu (BE-AUTH-003, T-099). Tuỳ chọn MFA (AUTH_MFA_ENCRYPTION_KEY) vẫn do defineConfig gộp vào như mặc định.
+    // hashConfig: scrypt N=2^17, r=8, p=1 — mức tối thiểu OWASP (mặc định Medusa logN 15 thấp hơn); hash cũ vẫn kiểm
+    // được vì tham số nằm trong chuỗi băm (BE-AUTH-001, T-181, ADR-0006).
     {
       resolve: "@medusajs/medusa/auth",
       options: {
-        providers: [{ resolve: "./src/lib/admin-security/emailpass", id: "emailpass" }],
+        providers: [
+          {
+            resolve: "./src/lib/admin-security/emailpass",
+            id: "emailpass",
+            options: { hashConfig: { ...EMAILPASS_HASH_CONFIG } },
+          },
+        ],
       },
     },
     // File Module (thay mặc định `@medusajs/medusa/file-local` của defineConfig): tên lưu do server sinh, không dùng tên

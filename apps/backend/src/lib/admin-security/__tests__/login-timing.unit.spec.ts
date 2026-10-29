@@ -115,7 +115,8 @@ describe("đăng nhập emailpass: thời gian phản hồi không phân biệt 
 
   beforeAll(async () => {
     store = memoryIdentities();
-    // Cấu hình hash mặc định của Medusa (logN 15) — đúng như production (medusa-config không đặt hashConfig).
+    // Cấu hình hash mặc định của Medusa (logN 15) cho cả hai provider — rẻ hơn production (logN 17, ADR-0006); test so
+    // tỷ lệ thời gian giữa hai nhánh cùng tham số nên không phụ thuộc logN.
     safe = new (TimingSafeEmailPassAuthService as unknown as ProviderCtor)({ logger }, {});
     original = new OriginalEmailPass({ logger }, {});
     expect((await safe.register(body(EMAIL, PASSWORD), store.svc)).success).toBe(true);
