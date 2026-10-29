@@ -966,3 +966,10 @@
 - Chọn: Băm lại bằng tham số mới khi đăng nhập thành công (trong bản bọc TimingSafe, qua update của provider)
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: nâng dần mọi hash lên mức OWASP và bỏ rò rỉ thời gian (hash cũ verify nhanh hơn hash mồi logN 17); không làm phiền người dùng như phương án 2; không viết mật mã tự chế — chỉ gọi lại provider
 - Đường lùi: Bỏ nhánh băm lại trong bản bọc TimingSafe
+
+### D-138 · 2026-10-29T14:14:15+00:00 · T-184 vai trò DB: dev/CI chuyển hẳn sang xshop_app/xshop_migrator hay opt-in? Chọn URL migration thế nào?
+
+- Phương án: (1) Opt-in: dev giữ xshop làm DATABASE_URL mặc định; xshop_app/xshop_migrator + MIGRATION_DATABASE_URL tạo sẵn; lệnh medusa db:* tự dùng MIGRATION_DATABASE_URL (kiểm cùng host/cổng/DB, lệch thì từ chối); migration cấp DML + default privileges cho xshop_app · (2) Chuyển hẳn: owner DB dev sang migrator, runtime dev bằng xshop_app · (3) Script pnpm db:migrate tường minh thay vì chọn theo argv
+- Chọn: Opt-in: dev giữ xshop làm DATABASE_URL mặc định; xshop_app/xshop_migrator + MIGRATION_DATABASE_URL tạo sẵn; lệnh medusa db:* tự dùng MIGRATION_DATABASE_URL (kiểm cùng host/cổng/DB, lệch thì từ chối); migration cấp DML + default privileges cho xshop_app
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 2: giữ đường lùi, không phá luồng dev/test hiện có; production dùng hai URL tách (đã chạy thử runtime bằng xshop_app: readyz + POST carts 200); DB-SEC-002 tick [~] (dev/CI có vai trò, production chưa có hạ tầng)
+- Đường lùi: Bỏ MIGRATION_DATABASE_URL (mặc định = DATABASE_URL); migration down RESET + thu hồi quyền
