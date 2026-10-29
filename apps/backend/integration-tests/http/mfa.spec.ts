@@ -202,7 +202,7 @@ medusaIntegrationTestRunner({
         const admin = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
         expect((await call("GET", "/admin/x/size-charts", admin.headers)).status).toBe(200);
         const ctx = jwtPayload(admin.headers.authorization.slice(7));
-        const key = KEY_PREFIX + sessionKey(ctx, sessionAnchorMs(ctx) as number);
+        const key = KEY_PREFIX + sessionKey(ctx.auth_identity_id as string, sessionAnchorMs(ctx) as number);
         expect(await redis.get(key)).not.toBeNull();
         await redis.set(key, String(Date.now() - 31 * MIN), "EX", 3600);
 

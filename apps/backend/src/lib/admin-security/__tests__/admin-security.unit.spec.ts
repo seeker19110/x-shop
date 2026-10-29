@@ -124,8 +124,8 @@ describe("chính sách phiên", () => {
     expect(sessionAnchorMs({ mfa_challenge_completed_at: "rác" })).toBeNull();
     expect(sessionAnchorMs({})).toBeNull();
     // Khóa phiên giống nhau qua refresh (cùng identity + mốc), khác giữa hai lần đăng nhập.
-    expect(sessionKey({ auth_identity_id: "a" }, T0)).toBe(sessionKey({ auth_identity_id: "a" }, T0));
-    expect(sessionKey({ auth_identity_id: "a" }, T0)).not.toBe(sessionKey({ auth_identity_id: "a" }, T0 + 1));
+    expect(sessionKey("a", T0)).toBe(sessionKey("a", T0));
+    expect(sessionKey("a", T0)).not.toBe(sessionKey("a", T0 + 1));
   });
 
   it("checkAndTouchSession: hoạt động gia hạn nhàn rỗi; phiên đã nhàn rỗi không được đánh thức lại", async () => {

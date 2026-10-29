@@ -37,7 +37,10 @@ function probe(port) {
 
 /** Log injection: bỏ xuống dòng/ký tự điều khiển khỏi giá trị do client/upstream điều khiển. */
 const oneLine = (v) =>
-  [...String(v).replace(/[\r\n]/g, " ")].map((c) => (c.charCodeAt(0) < 0x20 ? " " : c)).join("");
+  [...String(v)]
+    .map((c) => (c.charCodeAt(0) < 0x20 ? " " : c))
+    .join("")
+    .replace(/\n|\r/g, " ");
 
 function json(res, status, body) {
   res

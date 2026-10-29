@@ -70,9 +70,9 @@ const SESSION_KEY_LABEL = "x-shop/admin-session-key/v1";
  * Khóa phiên ổn định qua refresh: HMAC-SHA256 (auth identity, mốc xác thực) — không lưu token/định danh thô.
  * Đổi từ SHA-256 trần sang HMAC làm khóa phiên đang có (Redis/DB) mất khớp một lần: phiên phải đăng nhập lại.
  */
-export function sessionKey(ctx: AdminAuthContext, anchorMs: number): string {
+export function sessionKey(authIdentityId: string | null | undefined, anchorMs: number): string {
   const h = createHmac("sha256", SESSION_KEY_LABEL)
-    .update(`${ctx.auth_identity_id ?? ""}|${anchorMs}`)
+    .update(`${authIdentityId ?? ""}|${anchorMs}`)
     .digest("hex");
   return `sess:${h.slice(0, 40)}`;
 }
@@ -86,7 +86,7 @@ export async function checkAndTouchSession(
 ): Promise<{ ok: true } | { ok: false; code: SessionCode }> {
   const anchorMs = sessionAnchorMs(ctx);
   if (anchorMs === null) return { ok: false, code: "SESSION_EXPIRED" };
-  const key = sessionKey(ctx, anchorMs);
+  const key = sessionKey(ctx.auth_identity_id, anchorMs);
   const raw = await store.get(key);
   const lastSeenMs = raw === null ? null : Number(raw);
   const verdict = evaluateSession({
