@@ -317,13 +317,17 @@ medusaIntegrationTestRunner({
       expect(early.status).toBe(202);
       expect(await reservationsOf(container, fx, "Trắng/M")).toHaveLength(1);
 
-      // Khóa giỏ của attempt không nhả được lúc Redis mất: nó KHÔNG còn được gia hạn, chỉ sống tới hết TTL. Mô phỏng
-      // Redis về sau quá TTL (không chờ thời gian thật): rút TTL còn lại rồi đợi hết hạn.
+      // Khóa giỏ và khóa tồn của attempt không nhả được lúc Redis mất: chúng KHÔNG còn được gia hạn, chỉ sống tới hết TTL.
+      // Mô phỏng Redis về sau quá TTL (không chờ thời gian thật): rút TTL còn lại rồi đợi hết hạn. Khóa tồn phải hết hạn
+      // cùng lúc: job đối chiếu nhả reservation dưới khóa `inventory_item:` (T-224).
       const cartLock = `medusa_lock:${lockKeys.cart(cartId)}`;
-      const ttl = await redis.ttl(cartLock);
-      expect(ttl).toBeGreaterThan(0);
-      expect(ttl).toBeLessThanOrEqual(CHECKOUT_CONFIG.lockTtlSeconds);
-      await redis.pexpire(cartLock, 1);
+      const inventoryLock = `medusa_lock:${lockKeys.inventoryItem(fx.variants["Trắng/M"]!.inventoryItemId)}`;
+      for (const lock of [cartLock, inventoryLock]) {
+        const ttl = await redis.ttl(lock);
+        expect(ttl).toBeGreaterThan(0);
+        expect(ttl).toBeLessThanOrEqual(CHECKOUT_CONFIG.lockTtlSeconds);
+        await redis.pexpire(lock, 1);
+      }
       await new Promise((r) => setTimeout(r, 20));
       const leaseEnd = new Date(attempt!.lease_until as unknown as string).getTime();
       const summary = await reconcileAttempts(container, { now: new Date(leaseEnd + 60_000) });
