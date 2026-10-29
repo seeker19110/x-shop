@@ -49,10 +49,12 @@ function walkSrc(dir: string, out: string[] = []): string[] {
   }
   return out;
 }
+/** Route API: thêm lời gọi hàm outbox của service (vd `markOutboxSent(`) — mọi đường chạm outbox đều bị chặn. */
+const ROUTE_OUTBOX = /outbox_event|OutboxEvent|Outbox\w*\s*\(/;
 const MENTIONS_OUTBOX = /outbox_event|OutboxEvent/;
 // `DELETE FROM` chỉ tính khi bảng là outbox_event hoặc không lộ tên (biến/hằng/tham số) — các bảng khác xoá hợp lệ.
 const DELETES =
-  /DELETE\s+FROM\s+(?:"?outbox_event|\$\{|\?|"?[A-Za-z_]*(?:TABLE|table)\b)|\.del\s*\(|\.delete\s*\(|softDelete|(?:delete|restore)OutboxEvent|SET[^;`]*deleted_at\s*=|deleted_at\s*[:=]\s*(?!null)/i;
+  /TRUNCATE|nativeDelete|DELETE\s+FROM\s+(?:ONLY\s+)?(?:(?:\w+|"\w+")\.)?(?:"?outbox_event|\$\{|\?|"?[A-Za-z_]*(?:TABLE|table)\b)|\.del\s*\(|\.delete\s*\(|softDelete|(?:delete|restore)OutboxEvent|SET[^;`]*deleted_at\s*=|deleted_at\s*[:=]\s*(?!null)/i;
 
 const failing503: OutboxHandler = async () => {
   throw Object.assign(new Error("ESP 503"), { status: 503 });
@@ -224,6 +226,7 @@ medusaIntegrationTestRunner({
         .filter(({ src }) => MENTIONS_OUTBOX.test(src) && DELETES.test(src))
         .map(({ f }) => f)
         .filter((f) => !(f in DELETE_ALLOWLIST));
+      // Phạm vi: chốt này chỉ phủ XOÁ (và xoá mềm). Một job UPDATE dead→sent/đổi trạng thái không bị bắt ở đây.
       expect(offenders).toEqual([]);
       seq += 1;
       const type = "test.redrive.keep";
@@ -240,10 +243,10 @@ medusaIntegrationTestRunner({
       expect(before.state).toBe("dead");
     });
 
-    it("không có đường HTTP để redrive: không route nào chạm outbox_event; admin thật gọi → 404; dead không đổi", async () => {
+    it("không có đường HTTP để redrive: không route nào chạm outbox_event; admin thật gọi → 403/404 (RBAC đóng mặc định); dead không đổi", async () => {
       // Quét tĩnh: không route API nào nhắc outbox_event/OutboxEvent (redrive chỉ qua SQL vận hành).
       const routes = walkSrc(join(SRC, "api"))
-        .filter((f) => MENTIONS_OUTBOX.test(readFileSync(f, "utf8")))
+        .filter((f) => ROUTE_OUTBOX.test(readFileSync(f, "utf8")))
         .map((f) => relative(SRC, f));
       expect(routes).toEqual([]);
 
