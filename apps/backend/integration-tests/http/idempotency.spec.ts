@@ -22,7 +22,13 @@ import { MockVnpayRefundGateway, setRefundGatewayForTest } from "../../src/workf
 import { createMfaAdmin, loginWithMfa, totp, type HttpClient, type MfaAdmin } from "../helpers/auth";
 import { TEST_CHART } from "../helpers/catalog";
 import { CONTACT, DEV_VNPAY, type Api, type Res } from "../helpers/checkout-api";
-import { countOrders, inventoryLevel, seedCatalog, type CatalogFixture } from "../helpers/checkout-fixtures";
+import {
+  countOrders,
+  HANOI_ADDRESS,
+  inventoryLevel,
+  seedCatalog,
+  type CatalogFixture,
+} from "../helpers/checkout-fixtures";
 import { key, newIp, returnsFlow, type J, type PlacedOrder } from "../helpers/returns-flow";
 
 jest.setTimeout(600 * 1000);
@@ -373,16 +379,55 @@ medusaIntegrationTestRunner({
       /** Chỗ xoá bảng giữ khoá trong một đoạn mã — theo tên bảng viết thẳng lẫn hằng tên bảng (vd `ORDER_CANCEL_TABLE`). */
       const deleteSites = (text: string, idents: string[]) => {
         const tables = KEY_TABLES.join("|");
-        const names = [...KEY_TABLES.map((t) => `["'\`]${t}["'\`]`), ...idents].join("|");
+        // Bảng có thể kèm schema (`public.x_return`, `"public"."x_return"`).
+        const table = `(?:"?public"?\\.)?"?(?:${tables})\\b`;
+        const ident = idents.length ? `\\$\\{\\s*(?:${idents.join("|")})\\s*\\}` : null;
+        const target = ident ? `(?:${table}|${ident})` : table;
+        const names = [
+          ...KEY_TABLES.map((t) => `["'\`](?:public\\.)?${t}["'\`]`),
+          ...idents.map((i) => `${i}\\b`),
+        ].join("|");
         const res = [
-          new RegExp(`DELETE\\s+FROM\\s+"?(${tables})\\b`, "i"),
-          ...(idents.length
-            ? [new RegExp(`DELETE\\s+FROM\\s+"?\\$\\{\\s*(${idents.join("|")})\\s*\\}`, "i")]
-            : []),
-          new RegExp(`\\(\\s*(${names})\\s*\\)[\\s\\S]{0,200}?\\.(del|delete|truncate)\\(`),
+          new RegExp(`DELETE\\s+FROM\\s+(?:ONLY\\s+)?${target}`, "i"),
+          // TRUNCATE [TABLE] [ONLY] a, b, <bảng giữ khoá>
+          new RegExp(`TRUNCATE\\s+(?:TABLE\\s+)?(?:ONLY\\s+)?(?:[^;\`'"]*?,\\s*)?${target}`, "i"),
+          new RegExp(`\\(\\s*(?:${names})\\s*\\)[\\s\\S]{0,200}?\\.(?:del|delete|truncate)\\(`),
           /\b(soft)?[dD]elete(CheckoutAttempts|InventoryAdjustments|Returns|Refunds|OrderCancels)\b/,
         ];
         return res.filter((re) => re.test(text)).map((re) => re.source);
+      };
+
+      /**
+       * Định danh mang tên bảng giữ khoá: hằng (`ORDER_CANCEL_TABLE = "x_order_cancel"`) + bí danh của nó, lặp tới điểm
+       * cố định — `import { ORDER_CANCEL_TABLE as T }`, `export { X as Y }`, `const T = ORDER_CANCEL_TABLE`.
+       */
+      const tableIdents = (texts: string[]) => {
+        const found = new Set<string>();
+        for (const text of texts) {
+          for (const m of text.matchAll(
+            new RegExp(
+              `\\b([A-Za-z_$][\\w$]*)\\s*=\\s*["'\`](?:public\\.)?(${KEY_TABLES.join("|")})["'\`]`,
+              "g",
+            ),
+          ))
+            found.add(m[1]!);
+        }
+        for (let size = -1; size !== found.size;) {
+          size = found.size;
+          const alt = [...found].join("|");
+          for (const text of texts) {
+            for (const m of text.matchAll(new RegExp(`\\b(?:${alt})\\s+as\\s+([A-Za-z_$][\\w$]*)`, "g")))
+              found.add(m[1]!);
+            for (const m of text.matchAll(
+              new RegExp(
+                `\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*(?::[^=]+)?=\\s*(?:${alt})\\b\\s*[;,\\n)]`,
+                "g",
+              ),
+            ))
+              found.add(m[1]!);
+          }
+        }
+        return [...found];
       };
 
       it("TTL ≥ 24 giờ: bảng giữ khoá không có cột hết hạn; mã không xoá (kể cả qua hằng tên bảng) ngoài chỗ đã duyệt; inventory_adjustment chặn xoá ở DB", async () => {
@@ -412,28 +457,38 @@ medusaIntegrationTestRunner({
         };
         walk(src);
         const texts = files.map((f) => ({ f: relative(src, f), text: readFileSync(f, "utf8") }));
-        // Hằng mang tên bảng giữ khoá (RETURN_TABLE, REFUND_TABLE, ORDER_CANCEL_TABLE, ADJUSTMENT_TABLE…).
-        const idents = [
-          ...new Set(
-            texts.flatMap(({ text }) =>
-              [
-                ...text.matchAll(
-                  new RegExp(`\\b([A-Za-z_$][\\w$]*)\\s*=\\s*["'\`](${KEY_TABLES.join("|")})["'\`]`, "g"),
-                ),
-              ].map((m) => m[1]!),
-            ),
-          ),
-        ];
+        // Hằng mang tên bảng giữ khoá (RETURN_TABLE, REFUND_TABLE, ORDER_CANCEL_TABLE, ADJUSTMENT_TABLE…) + bí danh.
+        const idents = tableIdents(texts.map((t) => t.text));
         expect(idents).toEqual(
-          expect.arrayContaining(["ORDER_CANCEL_TABLE", "REFUND_TABLE", "RETURN_TABLE"]),
+          expect.arrayContaining(["ORDER_CANCEL_TABLE", "REFUND_TABLE", "RETURN_TABLE", "ADJUSTMENT_TABLE"]),
         );
-        // Bộ quét bắt được cả dạng qua hằng (hồi quy review T-187 🟠3).
-        expect(deleteSites("await db(ORDER_CANCEL_TABLE).where({ id }).del();", idents)).not.toEqual([]);
-        expect(
-          deleteSites("await this.exec(`DELETE FROM ${REFUND_TABLE} WHERE id = ?`)", idents),
-        ).not.toEqual([]);
-        expect(deleteSites('await db("x_return").where({ id }).delete();', idents)).not.toEqual([]);
-        expect(deleteSites("await db(ORDER_CANCEL_TABLE).where({ id }).first();", idents)).toEqual([]);
+        // Tự kiểm bộ quét (hồi quy review T-187 🟠3 + rà lại 🟢2): hằng, bí danh import/const, TRUNCATE, schema public.
+        const aliased = tableIdents([
+          ...texts.map((t) => t.text),
+          'import { ORDER_CANCEL_TABLE as T } from "../modules/returns/service";\nconst U = REFUND_TABLE;\n',
+        ]);
+        expect(aliased).toEqual(expect.arrayContaining(["T", "U"]));
+        const caught = [
+          "await db(ORDER_CANCEL_TABLE).where({ id }).del();",
+          "await this.exec(`DELETE FROM ${REFUND_TABLE} WHERE id = ?`)",
+          'await db("x_return").where({ id }).delete();',
+          "await db(T).where({ id }).del();",
+          "await this.exec(`DELETE FROM ${U} WHERE id = ?`)",
+          "await this.exec(`TRUNCATE x_order_cancel`)",
+          "await this.exec(`TRUNCATE TABLE ONLY rate_limit_counter, x_refund RESTART IDENTITY`)",
+          "await this.exec(`TRUNCATE ${T}`)",
+          "await this.exec(`DELETE FROM public.x_return WHERE created_at < now()`)",
+          'await this.exec(`DELETE FROM "public"."checkout_attempt"`)',
+          'await db("public.x_refund").truncate();',
+        ];
+        for (const code of caught)
+          expect({ code, hit: deleteSites(code, aliased).length > 0 }).toEqual({ code, hit: true });
+        for (const code of [
+          "await db(ORDER_CANCEL_TABLE).where({ id }).first();",
+          "await this.exec(`DELETE FROM rate_limit_counter WHERE window_start < ?`)",
+          "await this.exec(`TRUNCATE rate_limit_counter`)",
+        ])
+          expect({ code, hit: deleteSites(code, aliased).length > 0 }).toEqual({ code, hit: false });
 
         const hits = texts
           .filter(({ f }) => !REVIEWED_DELETE_SITES.includes(f))
@@ -726,7 +781,17 @@ medusaIntegrationTestRunner({
 
       it("báo giá ×2 song song → hai báo giá cùng tổng và cart_version, không giữ hàng (không tác dụng nghiệp vụ)", async () => {
         const cartId = await flow.client.createCart([["Đen/M", 2]]);
-        const both = await Promise.all([1, 2].map(() => flow.client.quote(cartId)));
+        const res = (await Promise.all(
+          [1, 2].map(() =>
+            api.post(
+              "/store/x/checkout/quote",
+              { cart_id: cartId, payment_method: "cod", address: HANOI_ADDRESS },
+              storeCfg({}),
+            ),
+          ),
+        )) as Array<Res<J>>;
+        expect(res.map((r) => r.status)).toEqual([200, 200]);
+        const both = res.map((r) => r.data.quote as J);
         expect(both[0]!.id).not.toBe(both[1]!.id);
         expect(both[0]!.total).toBe(both[1]!.total);
         expect(both[0]!.cart_version).toBe(both[1]!.cart_version);
