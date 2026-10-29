@@ -29,7 +29,9 @@ info:
         ghi tiền/tồn/đơn, mỗi lần gọi là một bản ghi tạm riêng (báo giá, bản nháp nhập, liên kết tra cứu). Danh sách + lý
         do + test song song: `scripts/idempotency-allowlist.json`, kiểm bằng `pnpm check:idempotency`.
       - Ngoại lệ có chủ đích so với mẫu khung (Q-07, giữ hợp đồng đang chạy): thiếu/sai khóa → 422 `VALIDATION` (mẫu 400);
-        cùng khóa khác nội dung → 409 `IDEMPOTENCY_CONFLICT` (mẫu 422).
+        cùng khóa khác nội dung → 409 `IDEMPOTENCY_CONFLICT` (mẫu 422); cùng khóa đang xử lý (mẫu 409 ngay) → bên sau CHỜ
+        lần đang chạy rồi trả cùng kết quả — checkout còn chạy → 202 + `status_url`/`Retry-After`, chờ quá hạn → 409
+        `BUSY_RETRY` + `Retry-After` (gửi lại CÙNG khóa).
   license:
     name: Chưa chọn (chờ chủ dự án)
     identifier: NOASSERTION
