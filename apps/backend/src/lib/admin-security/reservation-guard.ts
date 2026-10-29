@@ -1,6 +1,7 @@
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { Modules } from "@medusajs/framework/utils";
 import { sendProblem } from "../http/problem";
+import { IdParams, readParams } from "../http/request-input";
 
 /**
  * Chặn đổi kho của reservation qua route native `POST /admin/reservations/:id` (T-224, hậu kiểm T-185).
@@ -37,8 +38,10 @@ export async function reservationLocationGuard(
   next: MedusaNextFunction,
 ): Promise<void> {
   const body: unknown = req.body;
-  const id = (req.params as { id?: unknown } | undefined)?.id;
-  if (typeof id !== "string" || id.length === 0) return next();
+  // Id sai dạng: để route native của Medusa tự trả lỗi gốc (không đổi hành vi).
+  const params = readParams(req, IdParams);
+  if (!params.ok) return next();
+  const id = params.data.id;
   if (
     typeof body !== "object" ||
     body === null ||
