@@ -573,7 +573,7 @@ staging, script ẩn danh hoá hay quét PII mẫu.
 
 ## 12. Outbox: sự kiện `dead` — kiểm tra và redrive
 
-last_drilled: chưa diễn tập (lệnh SQL chưa chạy trên DB thật).
+last_drilled: chưa diễn tập trên DB vận hành (câu bước 3 chạy trong test tích hợp `outbox-redrive`, đọc thẳng từ mục này; chưa có hạn giữ/dọn riêng cho `dead` — không job nào xoá `outbox_event`).
 
 Mô hình thật (`apps/backend/src/lib/checkout/jobs.ts` `dispatchOutbox`, `apps/backend/src/lib/outbox/policy.ts` `OUTBOX_POLICY`): job
 `x-outbox-dispatch` (10 s) xử lý `outbox_event` `pending`/`failed`; lỗi tạm → `failed` + `next_attempt_at` lùi lũy thừa có equal jitter
