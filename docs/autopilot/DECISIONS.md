@@ -1001,3 +1001,10 @@
 - Chọn: Client chỉ import subpath thuần @x-shop/domain/validation (zod/mini); gốc @x-shop/domain vẫn cấm phía client
 - Lý do (tiêu chí chất lượng cuối): (1) đúng: một schema duy nhất cho client và server (FE-FORM-001), hết lệch luật; server vẫn parse lại; (3) hàng rào máy: client-bundle.test + validation.test chặn import ngoài validation/ và zod/mini (kể cả import không tên, import() động, require); chi phí ≤ 8,6 KiB gzip trong ngân sách 200 KiB (perf:budget đo lại khi có Chromium)
 - Đường lùi: Bỏ export ./validation của packages/domain và revert commit storefront của T-188 (quay lại bản phản chiếu)
+
+### D-143 · 2026-10-29T23:39:21+00:00 · T-207 phạm vi: Admin chưa có nút hủy đơn chưa xác minh / từ chối đổi trả (chỉ có API)
+
+- Phương án: (1) Chỉ nối dialog vào hành động đã có UI (thực thi hoàn tiền, từ chối hoàn tiền); spec+test sẵn cho hai loại còn lại · (2) Thêm nút UI mới cho hủy chưa xác minh và từ chối đổi trả trong T-207
+- Chọn: Chỉ nối dialog vào hành động đã có UI (thực thi hoàn tiền, từ chối hoàn tiền); spec+test sẵn cho hai loại còn lại
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: UX-STATE-008 áp cho hành động có trên giao diện — hành động chỉ có qua API không có điểm bấm cần xác nhận; (2) đường lùi: thêm nút sau dùng ngay confirmSpec đã test; (3) không phình phạm vi task
+- Đường lùi: Lát mới thêm nút ở trang đơn/exceptions, nối ConfirmDialog với spec order-cancel-unverified/return-reject
