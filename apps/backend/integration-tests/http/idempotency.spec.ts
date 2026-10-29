@@ -547,10 +547,9 @@ medusaIntegrationTestRunner({
         for (const job of Object.values(JOBS)) await job(container);
 
         for (const [i, { route, table, s, k, first }] of made.entries()) {
-          expect({ route, kept: await pg()(table).whereLike("idempotency_key", `%${k}`).count() }).toEqual({
-            route,
-            kept: [{ count: "1" }],
-          });
+          // count(*) là int8: có parser int8 (lib/db/int8.ts) ra number, không có ra chuỗi — so theo giá trị.
+          const [kept] = await pg()(table).whereLike("idempotency_key", `%${k}`).count();
+          expect({ route, kept: Number(kept?.count) }).toEqual({ route, kept: 1 });
           const replay = await s.send(k, "a");
           expect({ route, status: replay.status }).toEqual({ route, status: 200 });
           expect(s.idOf(replay)).toBe(s.idOf(first));
