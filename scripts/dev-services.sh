@@ -11,6 +11,11 @@ if command -v pg_ctlcluster >/dev/null 2>&1; then
     || su postgres -c "psql -c \"CREATE ROLE $PGUSER_ LOGIN SUPERUSER PASSWORD '$PGPASS_'\""
   su postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='$PGDB_'\"" | grep -q 1 \
     || su postgres -c "createdb -O $PGUSER_ $PGDB_"
+  # T-184 (Q-02, DB-SEC-002): vai trò tách quyền xshop_app (chỉ DML) + xshop_migrator (owner/DDL), lũy đẳng. Vai trò
+  # $PGUSER_ (superuser) GIỮ NGUYÊN và vẫn là DATABASE_URL mặc định in ra dưới đây: test tích hợp/script tạo DB tạm cần
+  # quyền tạo DB, và DB dev cũ do $PGUSER_ sở hữu (migrator không ALTER được bảng của nó). Chạy ứng dụng bằng xshop_app:
+  # docs/ops/ENV.md mục "Vai trò DB".
+  XS_PG_USER="$PGUSER_" XS_PG_DB="$PGDB_" bash "$(dirname "${BASH_SOURCE[0]}")/db-roles.sh"
 else
   echo "Không thấy PostgreSQL cục bộ — dùng: docker compose up -d (docker-compose.yml)" >&2
   exit 1
