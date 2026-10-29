@@ -952,3 +952,17 @@
 - Chọn: Thêm .gitleaks.toml mở rộng cấu hình mặc định (useDefault) với allowlist regex trên giá trị bí mật: chứa SENTINEL hoặc chuỗi 0123456789
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: vẫn quét mọi file kể cả test bằng luật mặc định; chỉ bỏ giá trị mang dấu hiệu giả không thể là bí mật thật; phương án 3 nới quá rộng (bí mật thật lọt vào test vẫn phải bị bắt); phương án 2 làm CI đỏ lặp lại mỗi lần đẩy
 - Đường lùi: Xoá .gitleaks.toml
+
+### D-136 · 2026-10-29T13:58:44+00:00 · T-181: có hạ tham số scrypt khi NODE_ENV=test để CI nhanh hơn không?
+
+- Phương án: (1) Giữ N=2^17 ở mọi môi trường (CI chậm ~4-5 phút ở suite auth) · (2) Thêm XS_TEST_SCRYPT_LOGN chỉ nhận khi NODE_ENV=test
+- Chọn: Giữ N=2^17 ở mọi môi trường (CI chậm ~4-5 phút ở suite auth)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1+3: test chạy đúng cấu hình production, không thêm cờ có thể cấu hình sai; trần gate CI đã 60 phút (lần xanh 49 phút) còn chỗ; xem lại khi chia shard (T-128)
+- Đường lùi: Thêm env test-only như phương án 2
+
+### D-137 · 2026-10-29T13:58:44+00:00 · T-181: hash scrypt cũ (logN 15) xử lý thế nào?
+
+- Phương án: (1) Băm lại bằng tham số mới khi đăng nhập thành công (trong bản bọc TimingSafe, qua update của provider) · (2) Buộc đặt lại mật khẩu · (3) Bỏ qua vì chưa có tài khoản production
+- Chọn: Băm lại bằng tham số mới khi đăng nhập thành công (trong bản bọc TimingSafe, qua update của provider)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: nâng dần mọi hash lên mức OWASP và bỏ rò rỉ thời gian (hash cũ verify nhanh hơn hash mồi logN 17); không làm phiền người dùng như phương án 2; không viết mật mã tự chế — chỉ gọi lại provider
+- Đường lùi: Bỏ nhánh băm lại trong bản bọc TimingSafe
