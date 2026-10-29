@@ -980,3 +980,10 @@
 - Chọn: Giữ allowlist no-business-effect (không ghi tiền/tồn/đơn), thêm T-225 làm revise idempotent tự nhiên (nội dung trùng bản hiện hành → không tạo phiên bản)
 - Lý do (tiêu chí chất lượng cuối): Tiêu chí 1+4: không route nào ghi tiền/tồn/đơn; quote/lookup/preview là đọc/tính toán; bắt khoá làm hỏng client không đổi được an toàn; revise trùng chỉ sinh phiên bản thừa → sửa nhỏ theo phương án C. Q-07 giữ 409 IDEMPOTENCY_CONFLICT cho khác body (không đổi sang 422)
 - Đường lùi: Bỏ mục allowlist và bắt khoá
+
+### D-140 · 2026-10-29T20:10:18+00:00 · T-186: migration int4→bigint làm vỡ N-1 (code master đọc int8 thành chuỗi) nếu đi cùng PR #20 với parser; phát hành thế nào?
+
+- Phương án: (1) Tách hai lát: parser int8 (0b835f5, expand) vào PR #20; 3 commit migration/check-schema/ADR-0007 giữ ở nhánh riêng, mở PR sau khi PR #20 merge (N-1 với base có parser xanh) · (2) Gộp cả vào PR #20, chấp nhận n-minus-1 đỏ (chưa có dữ liệu thật) · (3) Bỏ bigint, giữ int4 với Miễn
+- Chọn: Tách hai lát: parser int8 (0b835f5, expand) vào PR #20; 3 commit migration/check-schema/ADR-0007 giữ ở nhánh riêng, mở PR sau khi PR #20 merge (N-1 với base có parser xanh)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1+2: giữ bất biến N-1 (code cũ chạy được trên schema mới) — chính là hàng rào T-163; không nới cổng; mỗi lát một PR (P8). Đã kiểm: n-minus-1 --base 0b835f5 xanh
+- Đường lùi: Revert 0b835f5 (parser) — không đổi schema
