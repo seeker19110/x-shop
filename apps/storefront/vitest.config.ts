@@ -6,9 +6,17 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     // Test chạy thẳng từ nguồn domain, không cần build trước.
-    alias: {
-      "@x-shop/domain": fileURLToPath(new URL("../../packages/domain/src/index.ts", import.meta.url)),
-    },
+    // Khớp chính xác từng điểm xuất (chuỗi khoá sẽ khớp cả tiền tố `@x-shop/domain/…`).
+    alias: [
+      {
+        find: /^@x-shop\/domain\/validation$/,
+        replacement: fileURLToPath(new URL("../../packages/domain/src/validation/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@x-shop\/domain$/,
+        replacement: fileURLToPath(new URL("../../packages/domain/src/index.ts", import.meta.url)),
+      },
+    ],
   },
   test: {
     environment: "jsdom",

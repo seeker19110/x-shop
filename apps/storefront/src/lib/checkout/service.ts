@@ -1,3 +1,9 @@
+import {
+  checkoutQuoteInputSchema,
+  checkoutSubmitInputSchema,
+  parseCheckoutForm,
+  type CheckoutFormParseResult,
+} from "@x-shop/domain/validation";
 import { readCartId } from "../cart/cookie";
 import { StoreApiError, storeApi } from "../cart/medusa";
 import { cartEnabled } from "../cart/service";
@@ -16,6 +22,9 @@ import { isNonEmpty } from "../presence";
 /**
  * Gọi `/store/x/checkout/*` từ server. Id giỏ LUÔN lấy từ cookie HttpOnly (không bao giờ từ client) nên khách A không
  * thể dùng giỏ của B; publishable key chỉ ở server. Mọi kết quả được chuẩn hóa — hàm không ném lỗi nghiệp vụ.
+ * Đầu vào Server Action đến từ client nên là `unknown` thật sự: kiểm bằng schema chung (`@x-shop/domain/validation`,
+ * FE-FORM-001) TRƯỚC khi đọc cookie/gọi backend — sai hình dạng (thiếu address/contact, null, mảng, mã giảm không phải
+ * chuỗi) trả VALIDATION có `field`, không ném TypeError.
  */
 
 const KEY_RE = /^[A-Za-z0-9_-]{16,128}$/;
@@ -32,6 +41,15 @@ const toBackendAddress = (a: AddressInput) => ({
   ward_code: a.wardCode,
   line: a.line,
 });
+
+/** Lỗi kiểm đầu vào → `{ code: "VALIDATION", message, field? }` (field = ô của form, để client gắn lỗi + focus). */
+function validationOf(r: Extract<CheckoutFormParseResult<unknown>, { ok: false }>) {
+  return {
+    code: "VALIDATION" as const,
+    message: r.message,
+    ...(r.field !== undefined && { field: r.field }),
+  };
+}
 
 /** Chạy một lời gọi Store API, trả (status, body, retry-after) kể cả khi lỗi nghiệp vụ. */
 async function call(
@@ -52,37 +70,33 @@ export async function requestQuote(input: {
   address: AddressInput;
   discountCode: string | null;
 }): Promise<QuoteResult> {
+  const parsed = parseCheckoutForm(checkoutQuoteInputSchema, input);
+  if (!parsed.ok) return { ok: false, ...validationOf(parsed) };
+  const { paymentMethod, address, discountCode } = parsed.data;
   if (!cartEnabled()) return NO_CART;
   const cartId = await readCartId();
   if (!isNonEmpty(cartId)) return NO_CART;
-  if (input?.paymentMethod !== "cod" && input?.paymentMethod !== "vnpay") {
-    return {
-      ok: false,
-      code: "VALIDATION",
-      message: "Phương thức thanh toán không hợp lệ",
-      field: "payment",
-    };
-  }
-  const code = input.discountCode?.trim() ?? "";
   const r = await call("/store/x/checkout/quote", {
     method: "POST",
     body: {
       cart_id: cartId,
-      payment_method: input.paymentMethod,
-      address: toBackendAddress(input.address),
-      ...(code !== "" ? { discount_code: code } : {}),
+      payment_method: paymentMethod,
+      address: toBackendAddress(address),
+      ...(discountCode !== null ? { discount_code: discountCode } : {}),
     },
   });
   return mapQuoteResponse(r.status, r.body);
 }
 
 export async function requestSubmit(input: SubmitInput): Promise<SubmitResult> {
-  if (!cartEnabled())
-    return { kind: "error", code: "NOT_FOUND", message: NO_CART.ok ? "" : NO_CART.message, newKey: false };
-  const cartId = await readCartId();
-  if (!isNonEmpty(cartId))
-    return { kind: "error", code: "NOT_FOUND", message: NO_CART.ok ? "" : NO_CART.message, newKey: false };
-  if (!KEY_RE.test(input?.idempotencyKey ?? "") || !ID_RE.test(input?.quoteId ?? "")) {
+  const raw: Partial<Record<keyof SubmitInput, unknown>> =
+    typeof input === "object" && input !== null && !Array.isArray(input) ? input : {};
+  if (
+    typeof raw.idempotencyKey !== "string" ||
+    !KEY_RE.test(raw.idempotencyKey) ||
+    typeof raw.quoteId !== "string" ||
+    !ID_RE.test(raw.quoteId)
+  ) {
     return {
       kind: "error",
       code: "VALIDATION",
@@ -90,28 +104,36 @@ export async function requestSubmit(input: SubmitInput): Promise<SubmitResult> {
       newKey: false,
     };
   }
-  const email = input.contact.email.trim();
+  const { idempotencyKey, quoteId } = raw;
+  const parsed = parseCheckoutForm(checkoutSubmitInputSchema, input);
+  if (!parsed.ok) return { kind: "error", ...validationOf(parsed), newKey: false };
+  const { cartVersion, paymentMethod, contact, address, discountCode } = parsed.data;
+  if (!cartEnabled())
+    return { kind: "error", code: "NOT_FOUND", message: NO_CART.ok ? "" : NO_CART.message, newKey: false };
+  const cartId = await readCartId();
+  if (!isNonEmpty(cartId))
+    return { kind: "error", code: "NOT_FOUND", message: NO_CART.ok ? "" : NO_CART.message, newKey: false };
   const call1 = await call("/store/x/checkout/submit", {
     method: "POST",
-    headers: { "Idempotency-Key": input.idempotencyKey },
+    headers: { "Idempotency-Key": idempotencyKey },
     body: {
       cart_id: cartId,
-      cart_version: input.cartVersion,
-      quote_id: input.quoteId,
-      payment_method: input.paymentMethod,
-      contact: { name: input.contact.name, phone: input.contact.phone, ...(email !== "" ? { email } : {}) },
-      address: toBackendAddress(input.address),
+      cart_version: cartVersion,
+      quote_id: quoteId,
+      payment_method: paymentMethod,
+      contact: {
+        name: contact.name,
+        phone: contact.phone,
+        ...(contact.email !== null ? { email: contact.email } : {}),
+      },
+      address: toBackendAddress(address),
     },
   });
   const result = mapSubmitResponse(call1.status, call1.body, call1.retryAfter);
   if (result.kind === "placed") await rememberOrderAccess(result.ref, call1.body);
   // Giỏ đổi/báo giá hết hạn không kèm báo giá mới: lấy báo giá mới để khách xác nhận lại (không thu ngầm, CHK04).
   if (result.kind === "changed" && result.quote === null) {
-    const fresh = await requestQuote({
-      paymentMethod: input.paymentMethod,
-      address: input.address,
-      discountCode: input.discountCode,
-    });
+    const fresh = await requestQuote({ paymentMethod, address, discountCode });
     return { ...result, quote: fresh.ok ? fresh.quote : null };
   }
   return result;
