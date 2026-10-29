@@ -8,9 +8,16 @@ Cập nhật: 2026-10-29 (T-183).
 | --- | --- | --- |
 | Bộ che ở logger backend | che theo tên trường + regex khoá/PII VN | test đơn vị `apps/backend/src/lib/log/__tests__/` |
 | Luật ESLint (`no-restricted-syntax`, `LOG_RAW_OBJECT_SYNTAX` trong `eslint.config.mjs`) | cấm truyền nguyên `req`, `req.body/headers/query/params`, `body`, `customer`, `order`, `address`, `cart`, `payload` làm đối số `logger.*`/`log.*`/`console.*` và `track()` (cả khi nằm trong object literal `{ order }`) | `pnpm lint` |
-| gitleaks trên log test (job `gate` của `ci.yml`) | output `gate-par` (có log test tích hợp) tee ra file, `gitleaks dir` (không đọc lịch sử git) với `.gitleaks.toml` (D-135) | CI: bước "gitleaks --no-git trên log test" |
+| gitleaks trên log test (job `gate` của `ci.yml`) | output `gate-par` (có log test tích hợp) tee ra file, `gitleaks dir` (không đọc lịch sử git) với `.gitleaks-logs.toml` (kế thừa `.gitleaks.toml` D-135, thêm ngoại lệ UUID chuẩn vì `trace_id` trong log HTTP bị generic-api-key bắt nhầm) | CI: bước "gitleaks --no-git trên log test" |
 
 Cách viết đúng: log thuộc tính đã chọn (`order.id`) hoặc giá trị đã che (`redact(x)`), không log cả object.
+
+Phạm vi luật ESLint: sink `logger|logger_|log|console` và `track()`. Bắt vật cấm khi là đối số trực tiếp, giá trị thuộc
+tính (kể cả lồng), phần tử mảng, spread, biểu thức template, hoặc đối số `JSON.stringify`/`String`.
+
+Giới hạn đã biết (luật cú pháp, không phân tích luồng dữ liệu): bí danh `const o = order; logger.info(o)`, hàm bọc tự viết
+(`dump(order)` rồi log kết quả), tên biến khác danh sách (`const c = customer`). Lớp đỡ là bộ che ở logger + gitleaks trên
+log test + review.
 
 ## Trace — không áp dụng tới khi có OTel
 
