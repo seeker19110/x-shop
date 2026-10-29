@@ -484,7 +484,8 @@ const schema = baseSchema
       ctx.addIssue({
         code: "custom",
         path: ["MIGRATION_DATABASE_URL"],
-        message: "phải trỏ cùng máy chủ, cổng và database với DATABASE_URL (chỉ khác vai trò)",
+        message:
+          "phải trỏ cùng máy chủ, cổng và database với DATABASE_URL (chỉ khác vai trò; không dùng hostaddr/service/dbname trong query)",
       });
     }
     if (env.SHUTDOWN_DRAIN_DELAY_MS !== undefined && env.SHUTDOWN_DRAIN_DELAY_MS >= env.SHUTDOWN_TIMEOUT_MS) {

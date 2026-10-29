@@ -25,13 +25,28 @@ export function isMigrationCommand(argv: readonly string[]): boolean {
   return command !== undefined && command.startsWith(MIGRATION_COMMAND_PREFIX);
 }
 
-/** Đích kết nối của URL Postgres: máy chủ (chữ thường), cổng (mặc định 5432), tên database. URL hỏng → null. */
+/**
+ * Tham số query mà node-postgres/libpq hiểu là đích kết nối nhưng không quy về được một (máy chủ, cổng, database) duy nhất
+ * một cách chắc chắn → không so được → coi là KHÁC đích.
+ */
+const AMBIGUOUS_TARGET_PARAMS = ["hostaddr", "service", "dbname", "database"] as const;
+
+/**
+ * Đích kết nối THỰC của URL Postgres theo cách pg-connection-string (thứ node-postgres/Medusa dùng) đọc: `?host=` (vd
+ * socket Cloud SQL `?host=/cloudsql/…`) và `?port=` không rỗng ĐÈ host/cổng trong phần authority. Host chữ thường (trừ
+ * đường dẫn socket), bỏ `[ ]` của IPv6; cổng mặc định 5432; tên database lấy từ đường dẫn. URL hỏng, hoặc có tham số
+ * `hostaddr`/`service`/`dbname`/`database` → null.
+ */
 export function databaseTarget(raw: string): { host: string; port: string; database: string } | null {
   try {
     const u = new URL(raw);
+    if (AMBIGUOUS_TARGET_PARAMS.some((p) => u.searchParams.has(p))) return null;
+    const queryHost = u.searchParams.get("host") ?? "";
+    const queryPort = u.searchParams.get("port") ?? "";
+    const host = (queryHost !== "" ? queryHost : u.hostname).replace(/^\[(.+)\]$/, "$1");
     return {
-      host: u.hostname.toLowerCase(),
-      port: u.port === "" ? DEFAULT_PG_PORT : u.port,
+      host: host.startsWith("/") ? host : host.toLowerCase(),
+      port: queryPort !== "" ? queryPort : u.port === "" ? DEFAULT_PG_PORT : u.port,
       database: decodeURIComponent(u.pathname.replace(/^\//, "")),
     };
   } catch {

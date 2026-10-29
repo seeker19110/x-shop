@@ -57,12 +57,35 @@ describe("MIGRATION_DATABASE_URL — schema env", () => {
     ["máy chủ khác", "postgres://xshop_migrator:m-SENTINEL@db2.example.test:5432/xshop"],
     ["cổng khác", "postgres://xshop_migrator:m-SENTINEL@db.example.test:6432/xshop"],
     ["không tên database", "postgres://xshop_migrator:m-SENTINEL@db.example.test:5432"],
+    // node-postgres để ?host=/?port= đè authority (review T-184): cùng authority nhưng đích thật khác.
+    [
+      "?host= trỏ máy khác",
+      "postgres://xshop_migrator:m-SENTINEL@db.example.test:5432/xshop?host=db2.example.test",
+    ],
+    [
+      "?host= socket khác",
+      "postgres://xshop_migrator:m-SENTINEL@db.example.test:5432/xshop?host=/cloudsql/other",
+    ],
+    ["?port= cổng khác", "postgres://xshop_migrator:m-SENTINEL@db.example.test:5432/xshop?port=6432"],
+    [
+      "?hostaddr= (không quy được)",
+      "postgres://xshop_migrator:m-SENTINEL@db.example.test:5432/xshop?hostaddr=10.0.0.9",
+    ],
+    [
+      "?service= (không quy được)",
+      "postgres://xshop_migrator:m-SENTINEL@db.example.test:5432/xshop?service=prod",
+    ],
+    [
+      "?dbname= (không quy được)",
+      "postgres://xshop_migrator:m-SENTINEL@db.example.test:5432/xshop?dbname=other",
+    ],
   ])("%s → lỗi nêu tên biến, không lộ mật khẩu", (_label, url) => {
     const p = problems({ DATABASE_URL: APP_URL, MIGRATION_DATABASE_URL: url });
     expect(p).toEqual([
       {
         variable: "MIGRATION_DATABASE_URL",
-        reason: "phải trỏ cùng máy chủ, cổng và database với DATABASE_URL (chỉ khác vai trò)",
+        reason:
+          "phải trỏ cùng máy chủ, cổng và database với DATABASE_URL (chỉ khác vai trò; không dùng hostaddr/service/dbname trong query)",
       },
     ]);
     expect(JSON.stringify(p)).not.toContain("SENTINEL");
@@ -137,6 +160,37 @@ describe("databaseTarget / sameDatabaseTarget", () => {
 
   it("chỉ khác vai trò/mật khẩu/query → cùng đích", () => {
     expect(sameDatabaseTarget(APP_URL, `${MIGRATOR_URL}?sslmode=verify-full`)).toBe(true);
+  });
+
+  it("?host=/?port= không rỗng đè authority như pg-connection-string; rỗng thì bỏ qua", () => {
+    expect(databaseTarget("postgres://u:p@localhost/xshop?host=/cloudsql/Proj:Region:Db")).toEqual({
+      host: "/cloudsql/Proj:Region:Db",
+      port: "5432",
+      database: "xshop",
+    });
+    expect(databaseTarget("postgres://u:p@db.example.test:5432/xshop?host=&port=")).toEqual({
+      host: "db.example.test",
+      port: "5432",
+      database: "xshop",
+    });
+    expect(databaseTarget("postgres://u:p@[::1]:6432/xshop")).toEqual({
+      host: "::1",
+      port: "6432",
+      database: "xshop",
+    });
+    // Cùng socket Cloud SQL, authority khác nhau → vẫn cùng đích (đích thật là socket).
+    expect(
+      sameDatabaseTarget(
+        "postgres://xshop_app:a@localhost/xshop?host=/cloudsql/p:r:db",
+        "postgres://xshop_migrator:m@127.0.0.1/xshop?host=/cloudsql/p:r:db",
+      ),
+    ).toBe(true);
+    expect(
+      sameDatabaseTarget(
+        "postgres://xshop_app:a@db.example.test/xshop",
+        "postgres://xshop_migrator:m@other.example.test/xshop?host=db.example.test&port=5432",
+      ),
+    ).toBe(true);
   });
 });
 
