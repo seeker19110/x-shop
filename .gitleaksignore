@@ -10,3 +10,6 @@ fe20c3df28226349b377f7124bfea4b7a59f6e67:apps/backend/src/lib/shipping/__tests__
 # khoá dạng Stripe "sk_live_abcdefghij1234567890" (chuỗi bảng chữ cái + số liên tiếp).
 a53b585313629aabf1eead4a2f13ef943bffd14e:scripts/fixtures/pii-samples.json:jwt:240
 a53b585313629aabf1eead4a2f13ef943bffd14e:scripts/fixtures/pii-samples.json:stripe-access-token:261
+# redact.unit.spec.ts — mẫu JWT {"sub":"1"} chữ ký "signature" và khoá giả sk_live_51HxYzAbCdEfGh123456 cho test bộ che log.
+a66705e77a7346dbc2a9fc781df88566f5766532:apps/backend/src/lib/log/__tests__/redact.unit.spec.ts:jwt:152
+d117390fc40c953acaf34e2982facf5a5985cf9e:apps/backend/src/lib/log/__tests__/redact.unit.spec.ts:stripe-access-token:73
