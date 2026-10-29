@@ -756,6 +756,19 @@ medusaIntegrationTestRunner({
         expect(await rowsOf("size_chart", { code })).toBe(1);
       });
 
+      it("revise bảng size cùng nội dung ×2 song song → đúng một phiên bản mới, lần kia trả bản hiện hành 200", async () => {
+        const code = `idem-${Math.random().toString(36).slice(2, 8)}`;
+        await flow.admin("/admin/x/size-charts", A("owner"), { code, ...TEST_CHART });
+        const body = { ...TEST_CHART, name: "Revise idem" };
+        const both = await Promise.all(
+          [1, 2].map(() => flow.admin(`/admin/x/size-charts/${code}/revise`, A("owner"), body)),
+        );
+        const ok = both.filter((r) => r.status < 300);
+        expect(ok.map((r) => r.status).sort()).toEqual(expect.arrayContaining([201]));
+        expect(ok.every((r) => r.status === 200 || r.status === 201)).toBe(true);
+        expect(await rowsOf("size_chart", { code })).toBe(2);
+      });
+
       it("preview CSV ×2 song song → hai bản nháp riêng, catalog không đổi (không tác dụng nghiệp vụ)", async () => {
         const products = async () =>
           (await container.resolve(Modules.PRODUCT).listAndCountProducts({}, { take: 1 }))[1];

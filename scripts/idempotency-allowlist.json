@@ -213,12 +213,16 @@
     },
     {
       "route": "POST /admin/x/size-charts/{code}/revise",
-      "kind": "no-business-effect",
-      "reason": "Tạo phiên bản bảng size mới (bất biến theo phiên bản, ADM03) dưới khoá theo mã; không ghi tiền/tồn/đơn. Hai lần gửi cùng nội dung → hai phiên bản cùng nội dung nhưng đúng một bản hiện hành, sản phẩm trỏ bản hiện hành. D-139: giữ không khoá; T-225 làm revise idempotent tự nhiên (nội dung trùng bản hiện hành → không tạo phiên bản).",
+      "kind": "natural-key",
+      "reason": "Khoá tự nhiên = (mã, nội dung đã chuẩn hoá): nội dung trùng bản hiện hành → 200 trả bản hiện hành, không tạo phiên bản (D-139); khác nội dung → 201 phiên bản mới. Tuần tự hoá theo khoá mã + UNIQUE(code, version): hai request đồng thời cùng nội dung → đúng một phiên bản.",
       "tests": [
         {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "revise bảng size cùng nội dung ×2 song song → đúng một phiên bản mới, lần kia trả bản hiện hành 200"
+        },
+        {
           "file": "apps/backend/integration-tests/http/catalog-model.spec.ts",
-          "name": "hai lần revise đồng thời → phiên bản không trùng, đúng một bản hiện hành, sản phẩm trỏ bản hiện hành"
+          "name": "revise cùng nội dung đồng thời ×4 → đúng một phiên bản mới"
         }
       ]
     },

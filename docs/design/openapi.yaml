@@ -587,8 +587,9 @@ paths:
     post:
       tags: [Admin catalog]
       operationId: adminReviseSizeChart
-      x-idempotency: no-business-effect
+      x-idempotency: natural-key
       summary: "Tạo phiên bản mới của bảng size và chuyển sản phẩm sang bản mới"
+      description: "201 = tạo phiên bản mới · 200 = nội dung (đã chuẩn hoá) trùng bản hiện hành: trả bản hiện hành, `superseded: null`, `product_ids: []`, `Idempotent-Replayed: true`, không tạo phiên bản."
       security:
         - adminSession: []
         - adminBearer: []
@@ -601,6 +602,16 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/SizeChartContent" }
       responses:
+        "200":
+          description: "Nội dung trùng bản hiện hành — trả bản hiện hành, không tạo phiên bản."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  size_chart: { $ref: "#/components/schemas/SizeChart" }
+                  superseded: { type: [object, "null"], additionalProperties: true }
+                  product_ids: { type: array, items: { type: string } }
         "201":
           description: "Bản mới, bản bị thay và sản phẩm đã chuyển."
           content:

@@ -9,7 +9,7 @@ import { pathId, readParams, sendParamNotFound } from "../../../../../../lib/htt
 
 /**
  * POST /admin/x/size-charts/:code/revise — tạo phiên bản mới (bản cũ giữ nguyên cho đơn cũ), chuyển sản phẩm sang
- * bản mới. Trả bản mới, bản bị thay và danh sách sản phẩm đã chuyển. Hạ tầng khóa (Redis) lỗi/không trả lời → 503
+ * bản mới. Nội dung trùng bản hiện hành → 200, trả bản hiện hành, không tạo phiên bản (D-139). Trả bản mới, bản bị thay và danh sách sản phẩm đã chuyển. Hạ tầng khóa (Redis) lỗi/không trả lời → 503
  * LOCK_UNAVAILABLE + Retry-After; khóa bận → 409 BUSY_RETRY (problem+json như route checkout).
  */
 const CodeParams = z.object({ code: pathId(60) });
@@ -36,7 +36,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
   const { result } = run;
   res.setHeader("Cache-Control", "no-store");
-  res.status(201).json({
+  // Trùng nội dung bản hiện hành → 200 + bản hiện hành (không tạo phiên bản); khác → 201 (cùng quy ước "200 = đã có").
+  if (result.unchanged) res.setHeader("Idempotent-Replayed", "true");
+  res.status(result.unchanged ? 200 : 201).json({
     size_chart: result.chart,
     superseded: result.previous,
     product_ids: result.product_ids,
