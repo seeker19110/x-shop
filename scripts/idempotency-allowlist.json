@@ -221,7 +221,7 @@
           "name": "revise bảng size cùng nội dung ×2 song song → đúng một phiên bản mới, lần kia trả bản hiện hành 200"
         },
         {
-          "file": "apps/backend/integration-tests/http/catalog-model.spec.ts",
+          "file": "apps/backend/integration-tests/http/size-chart-revise.spec.ts",
           "name": "revise cùng nội dung đồng thời ×4 → đúng một phiên bản mới"
         }
       ]
