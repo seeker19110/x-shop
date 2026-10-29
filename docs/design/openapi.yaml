@@ -18,8 +18,18 @@ info:
       (`type` = `https://x-shop.vn/problems/<code>`, có `detail`, `field?`, `action?`) và dạng chung (`type: about:blank`,
       có `errors[{param, reason}]`). `detail`/`title` tiếng Việt.
     - Route riêng tư trả `Cache-Control: private, no-store`; catalog công khai `public, s-maxage=60, stale-while-revalidate=300`.
-    - Idempotency: header `Idempotency-Key` (16–128 ký tự `[A-Za-z0-9_-]`) ở các POST có thể bị gửi lại; hợp đồng mã lỗi hiện
-      tại (422 thiếu/sai khóa, 409 `IDEMPOTENCY_CONFLICT` khi khác nội dung) là ngoại lệ có chủ đích so với mẫu 400/422 của khung.
+    - Idempotency (ARC-INT-001, BE-API-008; T-187): mỗi thao tác ghi khai `x-idempotency`:
+      - `key` — header `Idempotency-Key` (16–128 ký tự `[A-Za-z0-9_-]`) BẮT BUỘC (tham số `IdempotencyKey`, 409
+        `KeyedConflict`). Cùng khóa + cùng nội dung → trả lại kết quả cũ, không xử lý lần hai; khác nội dung → 409
+        `IDEMPOTENCY_CONFLICT`; cùng khóa đang xử lý → bên sau chờ rồi nhận cùng kết quả (checkout: 202 + `status_url`),
+        chờ quá hạn → 409 `BUSY_RETRY` + `Retry-After`. Khóa nằm trên chính bản ghi nghiệp vụ (UNIQUE: lần đặt, yêu cầu
+        đổi/trả, hoàn tiền, lệnh hủy, điều chỉnh tồn), không có hạn và không bị job nào xoá → cửa sổ lưu ≥ 24 giờ.
+      - `state` — idempotent theo máy trạng thái (gọi lại → `changed: false`/kết quả hiện tại); `natural-key` — theo khóa
+        tự nhiên UNIQUE (mã vận đơn, băm chứng từ, token dùng một lần, sự kiện của hãng…); `no-business-effect` — không
+        ghi tiền/tồn/đơn, mỗi lần gọi là một bản ghi tạm riêng (báo giá, bản nháp nhập, liên kết tra cứu). Danh sách + lý
+        do + test song song: `scripts/idempotency-allowlist.json`, kiểm bằng `pnpm check:idempotency`.
+      - Ngoại lệ có chủ đích so với mẫu khung (Q-07, giữ hợp đồng đang chạy): thiếu/sai khóa → 422 `VALIDATION` (mẫu 400);
+        cùng khóa khác nội dung → 409 `IDEMPOTENCY_CONFLICT` (mẫu 422).
   license:
     name: Chưa chọn (chờ chủ dự án)
     identifier: NOASSERTION
@@ -210,6 +220,7 @@ paths:
     post:
       tags: [Checkout]
       operationId: storeCheckoutQuote
+      x-idempotency: no-business-effect
       summary: "Báo giá do server tính (không nhận giá/tổng từ client)"
       description: "Quote hết hạn sau 10 phút; kèm `cart_version`. Quyền với giỏ kiểm ở server (khách đăng nhập hoặc vãng lai sở hữu giỏ)."
       requestBody:
@@ -236,6 +247,7 @@ paths:
     post:
       tags: [Checkout]
       operationId: storeCheckoutSubmit
+      x-idempotency: key
       summary: "Đặt hàng idempotent (giữ hàng dưới khóa)"
       description: |
         200 = đơn đã tạo (COD `placed`; VNPAY `awaiting_payment` kèm `payment_url`) và token phiên đơn;
@@ -264,7 +276,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AttemptView" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { $ref: "#/components/responses/KeyedConflict" }
         "422": { $ref: "#/components/responses/Validation" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Unavailable" }
@@ -289,6 +301,7 @@ paths:
     post:
       tags: [Checkout]
       operationId: storeRecheckCheckoutAttempt
+      x-idempotency: state
       summary: "Kiểm tra lại thanh toán sau khi quay về từ VNPAY"
       description: |
         Server hỏi cổng (querydr) và xử lý như IPN; KHÔNG đổi trạng thái theo tham số trình duyệt. Tối đa 1 lần/10 giây mỗi
@@ -316,6 +329,7 @@ paths:
     post:
       tags: [Orders]
       operationId: storeOrderLookup
+      x-idempotency: no-business-effect
       summary: "Yêu cầu liên kết xem đơn (mã đơn + SĐT)"
       description: |
         Luôn 202 cùng thông điệp dù khớp hay không (chống dò tồn tại); khớp → liên kết một lần 15 phút gửi qua SĐT/email đã dùng.
@@ -349,6 +363,7 @@ paths:
     post:
       tags: [Orders]
       operationId: storeOrderSession
+      x-idempotency: natural-key
       summary: "Đổi liên kết tra cứu thành phiên đơn"
       description: "Token hết hạn/giả/đã dùng → 404 như nhau; hai request đồng thời chỉ một bên thắng."
       requestBody:
@@ -401,6 +416,7 @@ paths:
     post:
       tags: [Orders]
       operationId: storeCancelOrder
+      x-idempotency: state
       summary: "Khách hủy đơn (idempotent)"
       description: "Đơn đã thu tiền → mở yêu cầu hoàn (`cancel.refund_requested`). 409 `NOT_CANCELLABLE` / `PAYMENT_PENDING`."
       security:
@@ -431,6 +447,7 @@ paths:
     post:
       tags: [Orders]
       operationId: storeRecheckOrder
+      x-idempotency: state
       summary: "Kiểm tra lại thanh toán của đơn (querydr cùng giao dịch)"
       description: "Dùng chung khóa tần suất với recheck attempt (1 lần/10 giây mỗi lần đặt)."
       security:
@@ -482,6 +499,7 @@ paths:
     post:
       tags: [Orders]
       operationId: storeCreateOrderReturn
+      x-idempotency: key
       summary: "Khách tạo yêu cầu đổi/trả theo dòng"
       description: "Gửi lại cùng `Idempotency-Key` → 200 yêu cầu cũ (`Idempotent-Replayed: true`)."
       security:
@@ -499,7 +517,7 @@ paths:
         "200": { $ref: "#/components/responses/ReturnReplayed" }
         "201": { $ref: "#/components/responses/ReturnCreated" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { $ref: "#/components/responses/KeyedConflict" }
         "422": { $ref: "#/components/responses/Validation" }
         "429": { $ref: "#/components/responses/RateLimited" }
   # ---------------------------------------------------------------- admin: catalog
@@ -534,6 +552,7 @@ paths:
     post:
       tags: [Admin catalog]
       operationId: adminCreateSizeChart
+      x-idempotency: natural-key
       summary: "Tạo bảng size phiên bản 1"
       security:
         - adminSession: []
@@ -566,6 +585,7 @@ paths:
     post:
       tags: [Admin catalog]
       operationId: adminReviseSizeChart
+      x-idempotency: no-business-effect
       summary: "Tạo phiên bản mới của bảng size và chuyển sản phẩm sang bản mới"
       security:
         - adminSession: []
@@ -598,6 +618,7 @@ paths:
     post:
       tags: [Admin catalog]
       operationId: adminSetProductFashion
+      x-idempotency: state
       summary: "Đặt thuộc tính thời trang, bảng size, số đo người mẫu"
       description: "Sản phẩm đang published mà thay đổi làm mất điều kiện xuất bản → bị từ chối và hoàn tác."
       security:
@@ -656,6 +677,7 @@ paths:
     post:
       tags: [Admin catalog]
       operationId: adminPreviewImport
+      x-idempotency: no-business-effect
       summary: "Xem trước file CSV nhập catalog (không ghi catalog)"
       description: "Nhận `text/csv` hoặc multipart trường `file`, tối đa 2 MB; kiểm từng dòng, lưu import job."
       security:
@@ -707,6 +729,7 @@ paths:
     post:
       tags: [Admin catalog]
       operationId: adminCommitImport
+      x-idempotency: natural-key
       summary: "Ghi kế hoạch đã preview (idempotent theo import id)"
       description: "Cần đủ `catalog.import`, `price.write`, `inventory.adjust`. Còn lỗi → 422 `IMPORT_HAS_ERRORS`; khóa lỗi → 503/409."
       security:
@@ -796,6 +819,7 @@ paths:
     post:
       tags: [Admin orders]
       operationId: adminConfirmCod
+      x-idempotency: state
       summary: "Xác nhận đơn COD (`placed` → `confirmed`)"
       description: "Gọi lại khi đã xác nhận → 200 `changed: false`."
       security:
@@ -818,6 +842,7 @@ paths:
     post:
       tags: [Admin orders]
       operationId: adminCreateShipment
+      x-idempotency: natural-key
       summary: "Tạo vận đơn GHN cho đơn đã xác nhận (idempotent)"
       description: "201 = vừa tạo · 200 = đã có · 202 = chưa rõ kết quả ở hãng (gọi lại sau, `Retry-After: 10`). 409 `FULFILLMENT_BLOCKED` khi chưa ghi nhận xuất kho."
       security:
@@ -839,6 +864,7 @@ paths:
     post:
       tags: [Admin orders]
       operationId: adminCancelOrder
+      x-idempotency: key
       summary: "Nhân viên hủy đơn (lý do và Idempotency-Key bắt buộc)"
       description: "Đơn chưa thu → hủy + nhả hàng; đơn đã thu → mở yêu cầu hoàn toàn bộ chờ người thứ hai duyệt."
       security:
@@ -872,12 +898,13 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { $ref: "#/components/responses/KeyedConflict" }
         "422": { $ref: "#/components/responses/Validation" }
   /admin/x/orders/{id}/cancel-unverified:
     post:
       tags: [Admin orders]
       operationId: adminCancelUnverifiedOrder
+      x-idempotency: key
       summary: "Hủy đơn có thanh toán chưa xác minh sau khi đối chiếu tay với cổng merchant (chỉ owner)"
       description: >-
         T-165, D-118. Quyền `payment.override` (chỉ owner, MFA) + xác thực lại ≤ 5 phút (D-122; quá hạn → 403 `REAUTH_REQUIRED`). Chỉ đơn `awaiting_payment` có attempt `unknown` hoặc
@@ -919,12 +946,13 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { $ref: "#/components/responses/KeyedConflict" }
         "422": { $ref: "#/components/responses/Validation" }
   /admin/x/inventory/adjustments:
     post:
       tags: [Admin orders]
       operationId: adminAdjustInventory
+      x-idempotency: key
       summary: "Điều chỉnh tồn (lý do + Idempotency-Key bắt buộc)"
       description: "Gửi lại cùng khóa + nội dung → 200 (`Idempotent-Replayed`); khác nội dung → 409; giảm dưới số đang giữ → 409 `BELOW_RESERVED`; số giữ bị ghi đè đồng thời (hàng rào tồn T-185) → 409 `INVENTORY_CONFLICT_RETRY` (gửi lại)."
       security:
@@ -943,7 +971,7 @@ paths:
         "201": { $ref: "#/components/responses/AdjustmentCreated" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { $ref: "#/components/responses/KeyedConflict" }
         "422": { $ref: "#/components/responses/Validation" }
   # ---------------------------------------------------------------- admin: returns
   /admin/x/returns:
@@ -974,6 +1002,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminCreateReturn
+      x-idempotency: key
       summary: "CSKH tạo yêu cầu đổi/trả hộ khách"
       security:
         - adminSession: []
@@ -998,7 +1027,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { $ref: "#/components/responses/KeyedConflict" }
         "422": { $ref: "#/components/responses/Validation" }
   /admin/x/returns/{id}:
     get:
@@ -1027,6 +1056,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminApproveReturn
+      x-idempotency: state
       summary: "Duyệt yêu cầu đổi/trả"
       description: "Đổi size tạo đơn thay thế và giữ hàng (409 `INSUFFICIENT_STOCK` khi hết). Gọi lại → `changed: false`."
       security:
@@ -1050,6 +1080,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminRejectReturn
+      x-idempotency: state
       summary: "Từ chối yêu cầu đổi/trả"
       security:
         - adminSession: []
@@ -1073,6 +1104,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminReceiveReturn
+      x-idempotency: state
       summary: "Kho nhận hàng trả"
       security:
         - adminSession: []
@@ -1109,6 +1141,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminInspectReturn
+      x-idempotency: state
       summary: "Kết quả kiểm định từng dòng (nhập lại tồn một lần)"
       description: "Trả hàng → mở yêu cầu hoàn theo giá thực trả; đổi size → xác nhận/hủy đơn thay thế."
       security:
@@ -1188,6 +1221,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminCreateRefund
+      x-idempotency: key
       summary: "Tạo yêu cầu hoàn tiền"
       description: |
         Σ hoàn ≤ Σ đã thu kể cả khoản đang giữ (422 `REFUND_EXCEEDS_CAPTURED`). Vượt ngưỡng 1.000.000 đ (hoặc hoàn toàn bộ khi hủy đơn)
@@ -1210,12 +1244,13 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { $ref: "#/components/responses/KeyedConflict" }
         "422": { $ref: "#/components/responses/Validation" }
   /admin/x/refunds/{id}/approve:
     post:
       tags: [Admin returns and refunds]
       operationId: adminApproveRefund
+      x-idempotency: state
       summary: "Người thứ hai duyệt hoàn tiền"
       description: "Khác người tạo (403 `SELF_APPROVAL`). Yêu cầu vượt ngưỡng → xác thực lại MFA ≤ 5 phút."
       security:
@@ -1240,6 +1275,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminRejectRefund
+      x-idempotency: state
       summary: "Từ chối yêu cầu hoàn chưa duyệt (nhả số đang giữ)"
       description: "Hoàn theo trả hàng (`reason = return` / có `return_id`) không từ chối được → 409 `RETURN_REFUND_NOT_REJECTABLE` kèm `refund_id`, `return_id`, `state`, `method`, `next_steps`, `evidence_required`. `next_steps` theo cách hoàn + trạng thái: provider `requested` → approve, execute, cancel, recreate; manual (gồm COD) `requested` → approve, execute (kèm `evidence_ref`); `failed` → execute (còn lượt), cancel, recreate; `processing`/`unknown` → execute; đã kết thúc → []. Bản đã `rejected` (dữ liệu trước T-173) → 200 trả nguyên (idempotent)."
       security:
@@ -1264,6 +1300,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminExecuteRefund
+      x-idempotency: state
       summary: "Thực hiện hoàn đã duyệt"
       description: "Retry/timeout dùng CÙNG mã yêu cầu, hỏi lại cổng trước khi gửi lại. 200 succeeded · 202 unknown (`Retry-After: 30`) · 502 failed. Hoàn ngoài hệ thống cần `evidence_ref`."
       security:
@@ -1293,6 +1330,7 @@ paths:
     post:
       tags: [Admin returns and refunds]
       operationId: adminCancelRefund
+      x-idempotency: state
       summary: "Hủy yêu cầu hoàn đã thất bại (nhả số đang giữ)"
       description: "409 `INVALID_STATE` khi không ở `failed` hoặc cổng báo đã hoàn; 409 `REFUND_PROVIDER_UNCONFIRMED`."
       security:
@@ -1345,6 +1383,7 @@ paths:
     post:
       tags: [Admin settlement]
       operationId: adminImportSettlementBatch
+      x-idempotency: natural-key
       summary: "Nhập chứng từ đối soát (CSV)"
       description: |
         Thân `text/csv` hoặc multipart trường `file`; một dòng sai → 422 cả file. Cùng chứng từ nhập lại → 200 +
@@ -1451,6 +1490,7 @@ paths:
     post:
       tags: [Admin settlement]
       operationId: adminResolveDiscrepancy
+      x-idempotency: state
       summary: "Đóng chênh lệch có lý do (open → resolved một lần)"
       description: "Cần `exception.resolve` và `settlement.read`. Không động tới tiền. Lần sau → 409 `INVALID_STATE`."
       security:
@@ -1583,6 +1623,7 @@ paths:
     post:
       tags: [Admin security]
       operationId: adminGrantUserRole
+      x-idempotency: state
       summary: "Cấp vai trò (idempotent; cần xác thực lại MFA)"
       description: "201 khi mới cấp; 200 khi đã có. Ghi audit trước/sau và lý do."
       security:
@@ -1607,6 +1648,7 @@ paths:
     delete:
       tags: [Admin security]
       operationId: adminRevokeUserRole
+      x-idempotency: state
       summary: "Thu hồi vai trò (cần xác thực lại MFA)"
       description: "Thân JSON hoặc query `role`/`reason`. Không thu hồi owner cuối cùng (409 `LAST_OWNER`)."
       security:
@@ -1682,6 +1724,7 @@ paths:
     post:
       tags: [Webhooks]
       operationId: ghnCallback
+      x-idempotency: natural-key
       summary: "GHN gọi khi vận đơn đổi trạng thái hoặc COD"
       description: |
         Không có chữ ký đáng tin (chưa xác minh tài liệu GHN) nên KHÔNG tin nội dung: lưu sự kiện đã lọc PII rồi tra lại vận đơn
@@ -1797,7 +1840,11 @@ components:
       in: header
       required: true
       schema: { type: string, minLength: 16, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$" }
-      description: "Thiếu/sai → 422 `VALIDATION`. Cùng khóa + cùng nội dung → trả kết quả cũ; khác nội dung → 409 `IDEMPOTENCY_CONFLICT`."
+      description: >-
+        Bắt buộc. Thiếu/sai → 422 `VALIDATION` (`field: Idempotency-Key`). Cùng khóa + cùng nội dung → trả lại kết quả cũ
+        (200, `Idempotent-Replayed: true` ở route tạo), không xử lý lần hai; khác nội dung → 409 `IDEMPOTENCY_CONFLICT`;
+        cùng khóa đang xử lý → chờ lần đang chạy rồi trả cùng kết quả (checkout: 202 + `status_url`), quá hạn chờ → 409
+        `BUSY_RETRY`. Khóa lưu vĩnh viễn cùng bản ghi nghiệp vụ (≥ 24 giờ).
     PathId:
       name: id
       in: path
@@ -1841,6 +1888,19 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
     Conflict:
       description: "Xung đột trạng thái/idempotency/khóa (`INSUFFICIENT_STOCK`, `IDEMPOTENCY_CONFLICT`, `BUSY_RETRY`, `INVALID_STATE`, `IMPORT_IN_PROGRESS`…)."
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    KeyedConflict:
+      description: |
+        Xung đột của route nhận `Idempotency-Key` (hợp đồng BE-API-008, ngoại lệ Q-07 ghi ở `info.description`):
+        - `IDEMPOTENCY_CONFLICT` — khóa đã dùng cho một yêu cầu có nội dung KHÁC (mẫu khung là 422; dự án giữ 409). Không
+          xử lý gì; tạo khóa mới cho yêu cầu mới.
+        - `BUSY_RETRY` — một yêu cầu cùng khóa (hoặc cùng khóa nghiệp vụ: đơn, giỏ, tồn) đang được xử lý quá thời gian chờ;
+          chưa ghi gì — gửi lại CÙNG khóa sau `Retry-After` để nhận kết quả của lần đang chạy.
+        - Mã xung đột nghiệp vụ riêng của route (`INSUFFICIENT_STOCK`, `NOT_CANCELLABLE`, `BELOW_RESERVED`…).
+      headers:
+        Retry-After: { schema: { type: integer }, description: "Kèm `BUSY_RETRY`." }
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
