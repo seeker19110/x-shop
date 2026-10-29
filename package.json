@@ -25,6 +25,8 @@
     "lint:openapi": "spectral lint docs/design/openapi.yaml --ruleset .spectral.yaml --fail-severity=warn",
     "check:openapi": "node scripts/check-openapi.mjs && pnpm lint:openapi",
     "check:openapi:test": "node --test scripts/check-openapi.test.mjs",
+    "check:idempotency": "node scripts/check-idempotency.mjs",
+    "check:idempotency:test": "node --test scripts/check-idempotency.test.mjs",
     "check:authz": "node scripts/check-authz-tests.mjs",
     "check:authz:test": "node --test scripts/check-authz-tests.test.mjs",
     "check:data-map": "node scripts/check-data-map.mjs",
