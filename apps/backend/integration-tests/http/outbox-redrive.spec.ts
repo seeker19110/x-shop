@@ -1,10 +1,11 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { dispatchOutbox, OUTBOX_POLICY, type OutboxHandler } from "../../src/lib/checkout/jobs";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
+import { createAdmin, noThrow, type HttpClient } from "../helpers/auth";
 import type { Api, Res } from "../helpers/checkout-api";
 
 jest.setTimeout(180 * 1000);
@@ -20,10 +21,38 @@ function runbookRedriveSql(): string {
   const md = readFileSync(RUNBOOK, "utf8");
   const section = md.slice(md.indexOf("## 12. Outbox"), md.indexOf("## 13."));
   const blocks = [...section.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]!);
-  const sql = blocks.find((b) => /^\s*UPDATE outbox_event/m.test(b));
-  if (!sql) throw new Error("RUNBOOK §12 không còn câu UPDATE redrive");
-  return sql.trim().replace(/;\s*$/, "").replace(/\s+/g, " ");
+  // Chọn theo dấu mốc riêng của bước 3 (không lấy UPDATE đầu tiên).
+  const block = blocks.find((b) => b.includes("-- redrive-one"));
+  if (!block) throw new Error("RUNBOOK §12 không còn khối redrive (dấu `-- redrive-one`)");
+  // Bỏ meta-lệnh psql (`\set k '…'`) và dòng chú thích; `:'k'` (psql tự quote) → tham số bind `?`.
+  const sql = block
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("\\") && !l.trimStart().startsWith("--"))
+    .join(" ")
+    .trim()
+    .replace(/;\s*$/, "")
+    .replace(/\s+/g, " ");
+  if (!/^UPDATE outbox_event /.test(sql) || !sql.includes(":'k'"))
+    throw new Error("RUNBOOK §12: câu redrive lạ");
+  return sql.replace(":'k'", "?");
 }
+
+/** Quét tĩnh src/** (trừ __tests__, migrations): tệp nhắc outbox_event/OutboxEvent mà có thao tác xoá → fail, trừ allowlist. */
+const SRC = join(__dirname, "../../src");
+const DELETE_ALLOWLIST: Record<string, string> = {};
+function walkSrc(dir: string, out: string[] = []): string[] {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) {
+      if (e.name !== "__tests__" && e.name !== "migrations") walkSrc(p, out);
+    } else if (e.name.endsWith(".ts")) out.push(p);
+  }
+  return out;
+}
+const MENTIONS_OUTBOX = /outbox_event|OutboxEvent/;
+// `DELETE FROM` chỉ tính khi bảng là outbox_event hoặc không lộ tên (biến/hằng/tham số) — các bảng khác xoá hợp lệ.
+const DELETES =
+  /DELETE\s+FROM\s+(?:"?outbox_event|\$\{|\?|"?[A-Za-z_]*(?:TABLE|table)\b)|\.del\s*\(|\.delete\s*\(|softDelete|(?:delete|restore)OutboxEvent|SET[^;`]*deleted_at\s*=|deleted_at\s*[:=]\s*(?!null)/i;
 
 const failing503: OutboxHandler = async () => {
   throw Object.assign(new Error("ESP 503"), { status: 503 });
@@ -53,11 +82,28 @@ medusaIntegrationTestRunner({
         next_attempt_at: Date;
       };
 
-    /** Chạy câu redrive của RUNBOOK cho một event_key; trả số dòng bị đổi. */
+    /**
+     * Chạy câu redrive của RUNBOOK cho một event_key, trong transaction: kiểm dòng bị đổi rồi dời next_attempt_at về
+     * `base` TRƯỚC khi commit — dispatcher nền (giờ thật, 10 s) không thể nhận dòng `pending` vừa redrive.
+     */
     const redrive = async (eventKey: string) => {
-      const sql = runbookRedriveSql().replace("'<event_key>'", "?");
+      const sql = runbookRedriveSql();
       expect(sql).toContain("?");
-      return (await pg().raw(sql, [eventKey])).rowCount as number;
+      return pg().transaction(async (trx: ReturnType<typeof pg>) => {
+        const res = await trx.raw(sql, [eventKey]);
+        const n = res.rowCount as number;
+        if (n > 0) {
+          const r = (
+            await trx.raw(
+              `SELECT state, attempts, next_attempt_at <= now() AS due FROM outbox_event WHERE event_key = ?`,
+              [eventKey],
+            )
+          ).rows[0];
+          expect(r).toMatchObject({ state: "pending", attempts: 0, due: true });
+          await trx.raw(`UPDATE outbox_event SET next_attempt_at = ? WHERE event_key = ?`, [base, eventKey]);
+        }
+        return n;
+      });
     };
 
     /** Tạo sự kiện (type riêng) rồi cho hỏng tạm đến hết lượt → dead. */
@@ -119,7 +165,7 @@ medusaIntegrationTestRunner({
         payload: { n: seq },
       });
       const r = await dispatchOutbox(getContainer(), {
-        now: new Date(Date.now() + 60_000),
+        now: base,
         handlers: { [type]: handler },
       });
       expect(r.sent).toEqual([key]);
@@ -129,7 +175,7 @@ medusaIntegrationTestRunner({
       // Redrive lần 2: dòng không còn dead → 0 dòng đổi, không gửi trùng.
       expect(await redrive(key)).toBe(0);
       const again = await dispatchOutbox(getContainer(), {
-        now: new Date(Date.now() + 120_000),
+        now: base,
         handlers: { [type]: handler },
       });
       expect(again.sent).toEqual([]);
@@ -165,6 +211,7 @@ medusaIntegrationTestRunner({
       expect(await row(sent)).toEqual(beforeSent);
       // Khoá chứa ký tự LIKE/SQL không mở rộng thành nhiều dòng.
       expect(await redrive(`${type}:%`)).toBe(0);
+      // Khoá chỉ so bằng `=` (bind): chuỗi trông như SQL cũng chỉ là một khoá không tồn tại.
       expect(await redrive(`' OR state = 'dead' --`)).toBe(0);
       expect((await row(b)).state).toBe("dead");
     });
@@ -172,11 +219,12 @@ medusaIntegrationTestRunner({
     it("dead được giữ: không job nào xoá outbox_event; dead còn nguyên sau lượt dispatch rất xa tương lai", async () => {
       // Hiện CHƯA có hạn giữ/dọn riêng cho outbox_event (không có job purge) → dead giữ vô thời hạn, lâu hơn mọi hàng
       // đợi gốc. Khi thêm job dọn outbox thì phải đặt hạn giữ dead > hạn giữ sent và sửa test này.
-      const jobsDir = join(__dirname, "../../src/jobs");
-      for (const f of readdirSync(jobsDir).filter((n) => n.endsWith(".ts"))) {
-        const deletes = /DELETE\s+FROM\s+"?outbox_event/i.test(readFileSync(join(jobsDir, f), "utf8"));
-        expect({ f, deletes }).toEqual({ f, deletes: false });
-      }
+      const offenders = walkSrc(SRC)
+        .map((f) => ({ f: relative(SRC, f), src: readFileSync(f, "utf8") }))
+        .filter(({ src }) => MENTIONS_OUTBOX.test(src) && DELETES.test(src))
+        .map(({ f }) => f)
+        .filter((f) => !(f in DELETE_ALLOWLIST));
+      expect(offenders).toEqual([]);
       seq += 1;
       const type = "test.redrive.keep";
       const key = `${type}:${seq}`;
@@ -192,22 +240,31 @@ medusaIntegrationTestRunner({
       expect(before.state).toBe("dead");
     });
 
-    it("không có đường HTTP để redrive: store/admin trả 400/401/404, dead không đổi", async () => {
+    it("không có đường HTTP để redrive: không route nào chạm outbox_event; admin thật gọi → 404; dead không đổi", async () => {
+      // Quét tĩnh: không route API nào nhắc outbox_event/OutboxEvent (redrive chỉ qua SQL vận hành).
+      const routes = walkSrc(join(SRC, "api"))
+        .filter((f) => MENTIONS_OUTBOX.test(readFileSync(f, "utf8")))
+        .map((f) => relative(SRC, f));
+      expect(routes).toEqual([]);
+
       seq += 1;
       const type = "test.redrive.http";
       const key = `${type}:${seq}`;
       await makeDead(type, key, failing503);
-      const attempt = (m: "get" | "post", path: string) =>
-        (m === "get" ? api.get(path) : api.post(path, { event_key: key })).then(
-          (r) => r.status,
-          (e: { response: Res }) => e.response.status,
-        );
-      for (const path of ["/store/x/outbox/redrive", "/x/outbox/redrive", "/outbox/redrive"]) {
-        expect([400, 401, 404]).toContain(await attempt("post", path));
+      const admin = await createAdmin(rawApi as unknown as HttpClient, getContainer());
+      const status = async (m: "get" | "post", path: string, headers?: object) => {
+        const cfg = { ...noThrow, ...(headers ? { headers } : {}) };
+        const r = (await (m === "get" ? api.get(path, cfg) : api.post(path, { event_key: key }, cfg))) as Res;
+        return r.status;
+      };
+      for (const path of ["/admin/x/outbox/redrive", "/admin/outbox/redrive", "/admin/x/outbox"]) {
+        // owner thật cũng không có đường: RBAC đóng mặc định cho đường lạ (403) hoặc không có route (404). Không bao giờ 2xx.
+        // Quét tĩnh ở trên mới là chốt chặn route mới (RBAC cũng 403 cho route chưa khai quyền).
+        expect([403, 404]).toContain(await status("post", path, admin.headers));
+        expect([403, 404]).toContain(await status("get", path, admin.headers));
       }
-      for (const path of ["/admin/x/outbox/redrive", "/admin/outbox/redrive"]) {
-        expect([401, 404]).toContain(await attempt("post", path));
-        expect([401, 404]).toContain(await attempt("get", path));
+      for (const path of ["/store/x/outbox/redrive", "/x/outbox/redrive", "/outbox/redrive"]) {
+        expect([400, 401, 404]).toContain(await status("post", path));
       }
       expect((await row(key)).state).toBe("dead");
     });

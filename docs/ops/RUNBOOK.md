@@ -5,12 +5,13 @@
 > vẫn cho xem catalog.
 
 ## 0. Liên lạc, nơi giữ bí mật, trạng thái diễn tập
-| Vai trò | Ai | Kênh |
-|---|---|---|
-| Trực kỹ thuật | [chủ dự án điền — chưa có dữ liệu] | [chủ dự án điền] |
-| Kế toán (tiền, hoàn) | [chủ dự án điền — chưa có dữ liệu] | [chủ dự án điền] |
-| Quyết định rollback / dừng checkout | [chủ dự án điền] | [chủ dự án điền] |
-| Liên hệ VNPAY / GHN | theo hợp đồng merchant | cổng hỗ trợ trong hợp đồng (chưa có hợp đồng — chủ dự án) |
+
+| Vai trò                             | Ai                                 | Kênh                                                      |
+| ----------------------------------- | ---------------------------------- | --------------------------------------------------------- |
+| Trực kỹ thuật                       | [chủ dự án điền — chưa có dữ liệu] | [chủ dự án điền]                                          |
+| Kế toán (tiền, hoàn)                | [chủ dự án điền — chưa có dữ liệu] | [chủ dự án điền]                                          |
+| Quyết định rollback / dừng checkout | [chủ dự án điền]                   | [chủ dự án điền]                                          |
+| Liên hệ VNPAY / GHN                 | theo hợp đồng merchant             | cổng hỗ trợ trong hợp đồng (chưa có hợp đồng — chủ dự án) |
 
 **Bí mật nằm ở đâu (không ghi giá trị):** biến môi trường của tiến trình server + worker backend và storefront; danh sách và ý nghĩa ở
 `docs/ops/ENV.md`. Production lấy từ kho bí mật của nền tảng triển khai (chưa chọn — chủ dự án chọn, xem §8.1). Không có bí mật trong
@@ -31,17 +32,18 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
 
 **Trạng thái diễn tập** (`last_drilled` = ngày diễn tập thật gần nhất; hạn ≤ 6 tháng, quá hạn = diễn tập lại):
 
-| Mục | last_drilled | Ghi chú |
-|---|---|---|
-| Khôi phục backup (§4) | 2026-10-25 | `bash scripts/ops/restore-drill.sh`, DB cỡ nhỏ, máy dev |
-| Mất Redis (§3) | 2026-10-25 | cùng script, bước 5 |
-| Deploy (§8) | chưa diễn tập | chưa có cơ chế deploy/hạ tầng |
+| Mục                    | last_drilled  | Ghi chú                                                              |
+| ---------------------- | ------------- | -------------------------------------------------------------------- |
+| Khôi phục backup (§4)  | 2026-10-25    | `bash scripts/ops/restore-drill.sh`, DB cỡ nhỏ, máy dev              |
+| Mất Redis (§3)         | 2026-10-25    | cùng script, bước 5                                                  |
+| Deploy (§8)            | chưa diễn tập | chưa có cơ chế deploy/hạ tầng                                        |
 | Rollback ứng dụng (§5) | chưa diễn tập | cần cơ chế deploy; cần trước khi lên production lần đầu (WF-REL-004) |
-| Xoay secret (§9) | chưa diễn tập | cần môi trường staging |
-| Lộ bí mật (§10) | chưa diễn tập | tập bàn giấy khi có staging |
-| Redrive outbox (§12) | chưa diễn tập | lệnh SQL chưa chạy trên DB thật |
+| Xoay secret (§9)       | chưa diễn tập | cần môi trường staging                                               |
+| Lộ bí mật (§10)        | chưa diễn tập | tập bàn giấy khi có staging                                          |
+| Redrive outbox (§12)   | chưa diễn tập | lệnh SQL chưa chạy trên DB thật                                      |
 
 ## 1. Cổng thanh toán lỗi (VNPAY không phản hồi, IPN không về)
+
 - Dấu hiệu: `payment_attempt` ở `pending`/`unknown` tăng; cảnh báo "đã nhận dấu hiệu thanh toán nhưng chưa xử lý > 5 phút".
 - Kiểm tra: log `webhook_inbox` (verified, result); job `expire-holds` có chạy; gọi `querydr` thủ công cho vài `txn_ref`.
 - Breaker `vnpay.querydr` (T-161, §14): VNPAY lỗi tạm liên tiếp → job `expire-holds` ngừng gọi querydr, mở ngoại lệ `job_circuit_open`
@@ -66,18 +68,21 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
   hàng loạt (khoá/cấu hình VNPAY), breaker mở kéo dài hoặc VNPAY đang tắt → kiểm `detail->>'reason'` của `payment_unknown` (§14
   bước 5) và đối chiếu với VNPAY trước khi làm gì khác. Chỉ đặt NULL (không sửa `state`/`hold_check_attempts`). Đơn chưa rõ quá vài giờ (`hold_check_attempts` ≥ 8): đối chiếu trên
   cổng merchant VNPAY theo `txn_ref`, rồi đi §1.1 — không sửa `state` bằng SQL.
+
 - `VNPAY_ENABLED=false` (T-166) chỉ chặn TẠO thanh toán VNPAY mới (quote/submit trả lỗi phương thức chưa bật). Đơn VNPAY đang
   chờ: `x-expire-holds` không querydr, không hủy — giữ hàng như breaker mở (`payment_unknown` lý do `vnpay_disabled`, hẹn lại 1
   phút, không tăng backoff); hủy thường (`/cancel`) trả 409 PAYMENT_PENDING — dùng §1.1; đơn đã có IPN thất bại (không còn attempt mở) vẫn hủy bình thường.
   IPN vẫn xác minh bằng `VNPAY_TMN_CODE`/`VNPAY_HASH_SECRET` (+ `_PREVIOUS`) — phải giữ các biến này khi tắt; production tắt mà
   thiếu khoá (hoặc dùng khoá giả dev) → IPN trả 99 để VNPAY gửi lại, không ghi inbox/tiền, log WARN `[payment] IPN VNPAY tới khi
-  không có khoá xác minh`. Bật lại → lượt kế tiếp hỏi lại từng đơn.
+không có khoá xác minh`. Bật lại → lượt kế tiếp hỏi lại từng đơn.
 - Xử lý: KHÔNG hủy hàng loạt đơn `unknown`. Tạm ẩn phương thức VNPAY (`VNPAY_ENABLED=false`, giữ khoá) để khách chọn COD; giữ endpoint IPN chạy để nhận thông báo đến muộn; đối chiếu `querydr` theo lô khi cổng hồi phục.
 - Xác nhận: không còn attempt `unknown` quá hạn chưa có owner trong `ops_exception`.
 
 ### 1.1 Hủy từng đơn có thanh toán chưa xác minh (T-165, D-118)
+
 Dùng khi một đơn `awaiting_payment` có attempt `unknown` (hoặc `pending` đã quá hạn giữ hàng) mà cổng vẫn không trả lời rõ,
 và đã đối chiếu tay trên cổng merchant VNPAY theo `txn_ref` rằng KHÔNG có giao dịch thành công. Từng đơn, không hàng loạt.
+
 1. Người làm: **owner** (quyền `payment.override`, phiên đã qua MFA và xác thực lại — đăng nhập + TOTP — trong 5 phút gần nhất, D-122; quá hạn → 403 `REAUTH_REQUIRED`: đăng nhập lại rồi gửi lại cùng khóa). Vai trò khác — kể cả kế toán — nhận 403; muốn cấp thêm
    là đổi ma trận vai trò (`packages/domain/src/access/rbac.ts`) có quyết định.
 2. Lấy `order_id` + `txn_ref` (truy vấn `order_finance` ở trên, hoặc `payment_unknown` → `detail.txn_ref`); tra `txn_ref` trên
@@ -101,6 +106,7 @@ và đã đối chiếu tay trên cổng merchant VNPAY theo `txn_ref` rằng KH
 5. Nếu tiền vẫn về sau đó (IPN/querydr thành công): đơn KHÔNG phục hồi; hệ thống ghi khoản thu + `late_payment` → §7.
 
 ### 1.2 WARN `thiếu vnp_create_date` — querydr/hoàn tiền của attempt tạo trước T-170
+
 querydr và refund gửi `vnp_TransactionDate` = `payment_attempt.vnp_create_date` — đúng chuỗi `vnp_CreateDate` của URL
 thanh toán gốc (`yyyyMMddHHmmss` giờ VN). Theo nguồn thứ cấp VNPAY so khớp hai giá trị này (chưa xác minh với tài liệu
 merchant, RK-006). Attempt tạo trước T-170, hoặc do bản N−1 tạo trong lúc deploy cuốn, có cột NULL → hệ thống dùng
@@ -125,9 +131,11 @@ merchant, RK-006). Attempt tạo trước T-170, hoặc do bản N−1 tạo tro
   Dòng không có `payment_url` (attempt chưa từng gửi khách — `created`/`failed` do bù trừ) không có giao dịch ở VNPAY: để
   NULL. Sau khi điền: đơn đang backoff → đặt `next_check_at = NULL` (§1) để lượt kế tiếp hỏi lại; hoàn `failed` đã gửi
   cổng → `execute` lại (cùng `vnp_RequestId`).
+
 - Không sửa `created_at` để "khớp" — cột đó là mốc DB, không phải mốc gửi VNPAY.
 
 ## 2. Hãng vận chuyển lỗi (GHN)
+
 - Tạo vận đơn timeout → hệ thống tra theo `client_order_code` trước khi tạo lại (không tạo tay vận đơn mới khi chưa tra).
 - Callback ngừng: chạy job đồng bộ trạng thái bằng API; không tự đánh dấu "đã giao".
 
@@ -138,15 +146,17 @@ Nguồn sự thật là Postgres: `checkout_attempt` (lease), `outbox_event` (`p
 `order_finance`, `ops_exception`, `outbound_message` (UNIQUE `message_key`).
 
 ### 3.1 Dấu hiệu
+
 - Log Medusa `ECONNREFUSED`/`MaxRetriesPerRequestError` tới Redis; submit checkout lỗi khi lấy khóa; job định kỳ ngừng chạy;
   `outbox_event` `pending` quá hạn tăng; cảnh báo "task quan trọng chờ > 60 giây".
 
 ### 3.2 Trong lúc Redis mất
+
 1. **Checkout tự dừng, catalog vẫn chạy** (T-042, đặc tả §13.2) — không cần thao tác tay:
    - `POST /store/x/checkout/submit` khi Locking Module không dùng được (ioredis từ chối lệnh — `Connection is closed.`,
      `MaxRetriesPerRequestError`… — hoặc một lệnh khóa không trả lời trong 3 giây, `LOCK_CALL_TIMEOUT_MS`) → **503**
      `application/problem+json` `code: LOCK_UNAVAILABLE`, `detail: "Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít
-     phút"`, `action: retry_same_key`, header `Retry-After: 60`. Không lời gọi nào treo theo hàng đợi ioredis (~10 s).
+phút"`, `action: retry_same_key`, header `Retry-After: 60`. Không lời gọi nào treo theo hàng đợi ioredis (~10 s).
    - Dừng TRƯỚC khi đọc tồn/giữ hàng: không tạo đơn, không reservation, không bán bằng tồn đọc ngoài khóa; không có khóa
      in-memory thay thế. Khóa đang bận khi Redis khỏe vẫn là **409** `BUSY_RETRY` (`Retry-After: 1`) — 503 chỉ cho hạ tầng khóa.
    - Attempt kết thúc rõ ràng `failed/LOCK_UNAVAILABLE` (lỗi tạm): khách gửi lại **cùng Idempotency-Key** sau khi Redis về →
@@ -157,14 +167,15 @@ Nguồn sự thật là Postgres: `checkout_attempt` (lease), `outbox_event` (`p
      `ATTEMPT_ABORTED`, đặt bằng key mới). Khóa không nhả được không còn được gia hạn — tự hết hạn sau `lockTtlSeconds` (30 s).
    - Log server: `[checkout] hạ tầng khóa không dùng được (<scope>)…` (error) kèm nguyên nhân gốc; khách không thấy chi tiết hạ tầng.
    - Catalog (`/store/x/products`, `/store/products/:id`) vẫn 200.
-   KHÔNG bật lại checkout bằng khóa in-memory (bỏ `REDIS_URL`) khi chạy > 1 instance: hai tiến trình giữ "cùng một khóa" → bán
-   vượt tồn. Kiểm: `pnpm --filter @x-shop/backend test:integration -- checkout-lock-outage`.
+     KHÔNG bật lại checkout bằng khóa in-memory (bỏ `REDIS_URL`) khi chạy > 1 instance: hai tiến trình giữ "cùng một khóa" → bán
+     vượt tồn. Kiểm: `pnpm --filter @x-shop/backend test:integration -- checkout-lock-outage`.
 2. Giữ endpoint IPN VNPAY/callback GHN chạy: chúng ghi `webhook_inbox`/`shipment_event` vào Postgres trước khi xử lý; phần nào
    không xử lý xong do thiếu khóa sẽ được provider gửi lại hoặc job query bù.
 3. Khôi phục Redis (managed: failover/instance mới; tự host: khởi động lại). Redis **trống** là chấp nhận được — không cần khôi phục
    dữ liệu Redis.
 
 ### 3.3 Sau khi Redis trở lại — tạo lại công việc
+
 1. Khởi động lại server + worker (`MEDUSA_WORKER_MODE=worker`) để kết nối lại event bus/workflow engine/locking.
 2. Job định kỳ tự nhặt việc từ Postgres trong ≤ 1 phút — không cần thao tác tay:
    - `x-reconcile-attempts` (mỗi phút): attempt `preparing` quá `lease_until` → nhận quyền bù trừ dưới khóa giỏ → nhả reservation,
@@ -187,10 +198,12 @@ Nguồn sự thật là Postgres: `checkout_attempt` (lease), `outbox_event` (`p
    `notification_failed`) — giao owner theo §0.
 
 ### 3.4 Xác nhận đã ổn
+
 Truy vấn ở 3.3.3 trả rỗng (hoặc chỉ còn việc chưa đến hạn); submit checkout thử thành công; không có `outbound_message` trùng
 `message_key` (UNIQUE bảo đảm); `ops_exception` mới đều có owner.
 
 ### 3.5 Diễn tập (T-037) — kết quả và giới hạn
+
 - `bash scripts/ops/restore-drill.sh` bước 5: trên DB vừa khôi phục, đặt khóa/công việc giả + hàng đợi Medusa thật vào Redis DB index
   riêng (`XS_DRILL_REDIS_DB`, mặc định 15), **xoá toàn bộ DB index đó**, rồi `medusa exec integration-tests/ops/redis-loss-drill.ts`
   gọi đúng hàm của job `reconcileAttempts` + `dispatchOutbox` — **hai worker đồng thời**, rồi chạy lại lần nữa.
@@ -198,7 +211,7 @@ Truy vấn ở 3.3.3 trả rỗng (hoặc chỉ còn việc chưa đến hạn);
   (`compensated/LEASE_EXPIRED`, mã `released`); mỗi sự kiện outbox xử lý đúng 1 lần; sự kiện có thông báo **đã gửi trước sự cố**
   không gửi lại (0 lần), sự kiện chưa gửi gửi đúng 1 lần; lượt chạy lại rỗng; phần cần người được liệt kê (`payment_unknown`).
 - Kiểm đột biến: đổi thông báo đã gửi thành `failed` → bước 5 FAIL (gửi lặp bị phát hiện).
-- **Giới hạn**: không mô phỏng Redis chết *giữa* một workflow Medusa đang chạy (dừng tiến trình giữa bước) mà mô phỏng trạng thái
+- **Giới hạn**: không mô phỏng Redis chết _giữa_ một workflow Medusa đang chạy (dừng tiến trình giữa bước) mà mô phỏng trạng thái
   bền vững để lại sau đó (attempt `preparing` quá lease, outbox chưa đánh dấu dù đã gửi); không chạy cron thật (gọi thẳng hàm job);
   không có đơn native/reservation thật trong dữ liệu mẫu (nhánh nhả reservation có test tích hợp `checkout-expiry.spec.ts`);
   phản hồi của submit khi Redis đang mất được kiểm riêng ở `checkout-lock-outage.spec.ts` (3.2.1; giả lập trên client ioredis
@@ -207,6 +220,7 @@ Truy vấn ở 3.3.3 trả rỗng (hoặc chỉ còn việc chưa đến hạn);
 ## 4. Database outage / khôi phục
 
 ### 4.1 Sao lưu
+
 - **Production (chờ chủ dự án chọn hạ tầng — xem 4.5):** PITR bằng WAL archiving cho RPO ≤ 15 phút + base backup hằng ngày,
   mã hoá, lưu ngoài máy chủ DB, retention đề xuất 7–30 ngày PITR + 12 bản tháng.
 - **Logic (bổ sung, trước migration lớn, và cho diễn tập):** `scripts/ops/backup.sh <đường-dẫn.dump>` — `pg_dump -Fc`, ghi
@@ -215,6 +229,7 @@ Truy vấn ở 3.3.3 trả rỗng (hoặc chỉ còn việc chưa đến hạn);
   hoặc `XS_BACKUP_PASSPHRASE_FILE=<file 600>` (AES256). Không ghi đè file có sẵn; không in URL/mật khẩu.
 
 ### 4.2 Khôi phục (từng bước, có lệnh)
+
 1. Quyết định khôi phục (người trực + chủ dự án). **Dừng checkout** (như 3.2.1); giữ catalog đọc được nếu DB cũ còn đọc được.
 2. Dựng DB MỚI, không ghi đè DB cũ (giữ làm bằng chứng/đường lùi):
    - PITR: instance mới với `recovery_target_time = <thời điểm trước sự cố>` → mốc = thời điểm đó.
@@ -239,41 +254,47 @@ Truy vấn ở 3.3.3 trả rỗng (hoặc chỉ còn việc chưa đến hạn);
 6. Kiểm như 3.4, mở lại checkout, ghi biên bản (mốc, RTO thực, số mục đối chiếu, số ngoại lệ).
 
 ### 4.3 Xác nhận đã ổn
+
 `post-restore-reconcile.sh` chạy lại chỉ còn mục đã có `ops_exception` có owner; không còn `payment_attempt` `created/pending/unknown`
 quá hạn không có ngoại lệ; tổng ledger khớp báo cáo cổng cho cửa sổ đối chiếu; checkout thử thành công.
 
 ### 4.4 Diễn tập khôi phục (T-037) — kết quả
+
 `bash scripts/ops/restore-drill.sh` (máy dev, PostgreSQL 16.15 cục bộ, 2026-10-25; CI có Postgres/Redis chạy cùng lệnh). Dữ liệu tổng
 hợp ở `scripts/ops/drill/seed-*.sql` (không dữ liệu thật). Hai lần liên tiếp PASS:
 
-| Bước | Kết quả |
-|---|---|
-| 1 DB nguồn | migration Medusa đủ (197 module + 22 link + 6 script); attempt `preparing` quá lease, payment `pending`/`unknown`, outbox `pending`, ledger |
-| 2 Sao lưu | `pg_dump -Fc` mã hoá gpg AES256 (passphrase file tạm), ≈ 78 KB; sau mốc ghi: IPN muộn cho `PA_DRILL_PENDING`, 2 đơn VNPAY mới, 1 vận đơn mới |
-| 3 Khôi phục | **RTO đo được 14 s và 16 s** (restore + kiểm toàn vẹn + migrate; ngưỡng 7200 s); 175/175 bảng trùng số dòng + md5 nội dung lúc snapshot; migrate lại không đổi bảng migration |
+| Bước        | Kết quả                                                                                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 DB nguồn  | migration Medusa đủ (197 module + 22 link + 6 script); attempt `preparing` quá lease, payment `pending`/`unknown`, outbox `pending`, ledger                                     |
+| 2 Sao lưu   | `pg_dump -Fc` mã hoá gpg AES256 (passphrase file tạm), ≈ 78 KB; sau mốc ghi: IPN muộn cho `PA_DRILL_PENDING`, 2 đơn VNPAY mới, 1 vận đơn mới                                    |
+| 3 Khôi phục | **RTO đo được 14 s và 16 s** (restore + kiểm toàn vẹn + migrate; ngưỡng 7200 s); 175/175 bảng trùng số dòng + md5 nội dung lúc snapshot; migrate lại không đổi bảng migration   |
 | 4 Đối chiếu | đúng 4 `txn_ref` cần querydr (2 `missing_in_db`, 1 `provider_activity_after_mark`, 1 `open_in_db`) + 2 vận đơn; khớp kỳ vọng VÀ khớp diff dòng nguồn↔đích (độc lập với mốc giờ) |
-| 5 Mất Redis | xem 3.5 |
-| 6 RPO | **CHỜ NGƯỜI** — xem 4.5 |
-| 7 Dọn dẹp | DB `xs_drill_*_<pid>` đã xoá, Redis DB index diễn tập rỗng |
+| 5 Mất Redis | xem 3.5                                                                                                                                                                         |
+| 6 RPO       | **CHỜ NGƯỜI** — xem 4.5                                                                                                                                                         |
+| 7 Dọn dẹp   | DB `xs_drill_*_<pid>` đã xoá, Redis DB index diễn tập rỗng                                                                                                                      |
 
 Kiểm đột biến: `XS_RTO_MAX_SECONDS=1` → bước 3 FAIL; biên cửa sổ quá rộng (`XS_RECONCILE_MARGIN_SECONDS=99999`) → bước 4 FAIL (thừa
 mục); Redis DB index không rỗng → từ chối chạy, không xoá khoá của người khác. `restore.sh`: sai passphrase, file bị sửa (sha256),
 file hỏng → dừng, không để lại DB dở.
 
 **Giới hạn — không suy ra RTO production từ số này:** DB diễn tập ≈ 78 KB; thời gian `pg_restore` tăng gần tuyến tính theo dung lượng
-+ index. Trước ra mắt đo lại với bộ dữ liệu cỡ thật (T-036: 10.000 sản phẩm / 50.000 SKU + lịch sử đơn ước tính) trên cấu hình máy
-production, và tính cả thời gian dựng instance PITR của nhà cung cấp. Đối chiếu dùng "xuất từ provider" mô phỏng bằng DB nguồn — định
-dạng file xuất thật của VNPAY/GHN cần chuyển về một mã mỗi dòng (cột đầu CSV được chấp nhận).
+
+- index. Trước ra mắt đo lại với bộ dữ liệu cỡ thật (T-036: 10.000 sản phẩm / 50.000 SKU + lịch sử đơn ước tính) trên cấu hình máy
+  production, và tính cả thời gian dựng instance PITR của nhà cung cấp. Đối chiếu dùng "xuất từ provider" mô phỏng bằng DB nguồn — định
+  dạng file xuất thật của VNPAY/GHN cần chuyển về một mã mỗi dòng (cột đầu CSV được chấp nhận).
 
 ### 4.5 RPO ≤ 15 phút — việc chờ người (chủ dự án)
+
 Diễn tập cục bộ chứng minh **quy trình restore + đối chiếu**, KHÔNG chứng minh PITR production. `pg_dump` hằng ngày chỉ cho RPO ≈ 24 giờ.
 Chủ dự án chọn một (cần tài khoản/hạ tầng thật):
+
 - (a) Postgres managed có PITR (retention ≥ 7 ngày) — ít vận hành nhất; RPO thường vài phút theo nhà cung cấp (chưa xác minh từng dịch vụ).
 - (b) Tự host: `archive_mode = on`, `archive_command`/pgBackRest/WAL-G đẩy WAL lên kho object mã hoá ngoài máy, `archive_timeout ≤ 300 s`,
   base backup hằng ngày, theo dõi tuổi WAL lưu trữ (cảnh báo > 10 phút).
-Sau khi chọn: diễn tập PITR thật trên staging (khôi phục tới `recovery_target_time`, rồi 4.2 bước 3–6), ghi RPO/RTO đo được vào bảng 4.4.
+  Sau khi chọn: diễn tập PITR thật trên staging (khôi phục tới `recovery_target_time`, rồi 4.2 bước 3–6), ghi RPO/RTO đo được vào bảng 4.4.
 
 ## 5. Triển khai lỗi / rollback
+
 last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 
 - Nguyên tắc: rollback ứng dụng không rollback database phá hủy (migration expand/contract). Giữ endpoint IPN/callback chạy ở bản
@@ -308,7 +329,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   thêm/đổi/xoá so với ref gốc → bỏ qua ngay, exit 0. **Khoảng trống đã biết:** PR nâng `@medusajs/*` (migration lõi đổi) không
   kích job; PR nâng Medusa kèm migration tùy biến sẽ ra mã 2 "schema lệch" vì cây N−1 chạy migration lõi cũ — tách nâng Medusa ra
   PR riêng. Cách làm: `git archive` ref gốc vào thư mục tạm → `pnpm install --frozen-lockfile --prefer-offline --filter
-  @x-shop/backend...` (store pnpm dùng chung với cây HEAD làm cache) → phủ file migration thêm/đổi/xoá của HEAD lên thư mục
+@x-shop/backend...` (store pnpm dùng chung với cây HEAD làm cache) → phủ file migration thêm/đổi/xoá của HEAD lên thư mục
   `migrations/` của các module có ở bản N−1 → hai DB dùng một lần `xshop_n1_<hex>_head|_base`: `medusa db:migrate` bằng mã
   HEAD và bằng mã N−1 + phần phủ; schema `public` phải trùng trên mọi bảng/đối tượng N−1 biết — cột (kiểu, NULL, DEFAULT,
   precision/scale, datetime precision, identity, generated), ràng buộc, index, trigger (trừ trigger nội bộ), policy + cờ RLS,
@@ -337,11 +358,11 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   - `ref-missing`, `step-failed`, `report-unreadable`, `remote-db` (mã 2): clone nông (cần `fetch-depth: 0`), bước
     cài/build/`db:migrate` lỗi (đọc đuôi log của bước), báo cáo jest không đọc được (jest bị kill/hết bộ nhớ — chạy lại), DB không
     phải cục bộ/CI (script CREATE/DROP DB; DB khác phải thêm `--allow-remote-db`).
-  Dọn thư mục tạm + DB `xshop_n1_*` của chính lần chạy ở mọi nhánh, cả SIGINT/SIGTERM (chuyển tín hiệu cho nhóm tiến trình con
-  theo pid). DB `medusa-*-integration-*` do runner của Medusa tự xoá khi suite kết thúc hoặc khi nhận SIGINT/SIGTERM; bị SIGKILL
-  hoặc job hết giờ thì CÓ THỂ SÓT — ở máy dev xoá tay sau khi chắc không còn lần chạy test nào khác đang dùng (tên không cho biết
-  của lần chạy nào). Chạy ở máy (Postgres/Redis của `scripts/dev-services.sh`; chỉ host cục bộ, trừ khi `--allow-remote-db`) —
-  **merge master vào nhánh trước** để `--base origin/master` so đúng phần của nhánh:
+    Dọn thư mục tạm + DB `xshop_n1_*` của chính lần chạy ở mọi nhánh, cả SIGINT/SIGTERM (chuyển tín hiệu cho nhóm tiến trình con
+    theo pid). DB `medusa-*-integration-*` do runner của Medusa tự xoá khi suite kết thúc hoặc khi nhận SIGINT/SIGTERM; bị SIGKILL
+    hoặc job hết giờ thì CÓ THỂ SÓT — ở máy dev xoá tay sau khi chắc không còn lần chạy test nào khác đang dùng (tên không cho biết
+    của lần chạy nào). Chạy ở máy (Postgres/Redis của `scripts/dev-services.sh`; chỉ host cục bộ, trừ khi `--allow-remote-db`) —
+    **merge master vào nhánh trước** để `--base origin/master` so đúng phần của nhánh:
 
   ```bash
   git fetch origin master && git merge origin/master                          # trước khi chạy ở máy
@@ -370,6 +391,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   tạo nên không phát hiện được. Cần: code đọc enum/kind (danh sách ngoại lệ Admin, zod/parse, `switch` không `default`) chịu
   được giá trị lạ (bỏ qua/hiển thị thô, không 500), và test seed dòng có kind lạ rồi gọi route đọc. Đến lúc đó, migration nới
   CHECK/enum phải kèm rà tay các đường đọc của bản N−1.
+
 - **Ngưỡng quyết định lùi (đề xuất, chủ dự án duyệt — chưa có hạ tầng đo tự động):** trong 30 phút sau deploy, lùi nếu một trong:
   smoke §8.3 đỏ · tỷ lệ 5xx của `/store/x/*` > 2% trong 5 phút liên tiếp · p95 `POST /store/x/checkout/submit` vượt 2× số đo ở
   `docs/ops/perf/` trong 10 phút · có đơn đã đặt nhưng thiếu `order_finance`/`payment_attempt` (đối chiếu truy vấn §3.3.3). Người quyết
@@ -377,6 +399,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 - Sau rollback: đối chiếu như §4.3 và kiểm `outbox_event` theo §12.
 
 ## 6. Ảnh lỗi / CDN
+
 - Ảnh hỏng: storefront vẫn hiển thị alt + khung tỷ lệ cố định (không CLS); thay ảnh tạo URL mới (hash), không ghi đè URL cũ.
 - Header file tĩnh (D-024): Medusa phục vụ `/static` bằng `express.static` trước middleware dự án nên backend không gắn
   được `X-Content-Type-Options: nosniff` cho đường này. Checklist triển khai: reverse proxy/CDN đặt `nosniff` cho
@@ -386,6 +409,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   `X-Content-Type-Options: nosniff` và `Content-Type` đúng ở kho/CDN đó; `static/` của backend không còn nhận file mới.
 
 ## 7. Tiền đến sau khi hủy / thu dư
+
 - `ops_exception late_payment|overpayment`: kế toán xác minh trên cổng → tạo refund (một refund, retry cùng id) → ghi chú khách. Không phục hồi đơn, không giao thay thế khi chưa có xác nhận mới của khách.
 - Gồm cả đơn đã hủy chưa xác minh (§1.1) và đơn hết hạn mà tiền về sau. Khoản thu đến sau được gắn vào attempt (attempt
   vẫn `failed`, mang `provider_txn_no` của khoản thu — T-168) nên đối soát VNPAY tìm được giao dịch gốc, và ở `mock`
@@ -421,6 +445,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   Phải cập nhật đúng 1 dòng (0 dòng = sai id hoặc không phải bản cũ — dừng). Sau đó mở lại theo `return_id`
   (`POST /admin/x/refunds` `reason: "return"`, `return_id`) — số tiền lấy theo kiểm định. Không dùng câu này cho bản
   ghi mới: từ T-173 server không còn tạo `rejected` cho hoàn theo trả hàng.
+
 - **Không nhả tiền khi cổng CÓ THỂ đã hoàn:** yêu cầu `unknown`/`processing` (timeout, 5xx, đứt mạng — có ngoại lệ
   `refund_unknown`) hoặc `failed` đã gửi cổng (`attempts > 0`) giữ nguyên; khi cổng tắt, `execute`/`cancel` trả 409 và
   không đổi trạng thái. Thoát cần cổng trả lời (cổng bật → `execute` hỏi cùng mã rồi mới gửi lại) — chưa có đường chốt
@@ -432,7 +457,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 - Attempt (`failed` hoặc `captured`) nhận khoản thu với mã giao dịch KHÁC mã nó đang mang (thông báo thất bại có mã rồi
   tiền về với mã khác; hai giao dịch thành công sau khi đơn đã hủy; hay AT36 — giao dịch thành công thứ hai khi đơn đã
   thu/đã xác nhận; với mọi kết cục của đơn): hệ thống KHÔNG ghi đè mã cũ, mở `payment_unknown` (`detail.reason =
-  attempt_txn_conflict`, `provider_txn_id` = khoản thu mới, `attempt_provider_txn_no` = mã đang gắn, `attempt_state`,
+attempt_txn_conflict`, `provider_txn_id` = khoản thu mới, `attempt_provider_txn_no` = mã đang gắn, `attempt_state`,
   `order_state`), bên cạnh ngoại lệ theo trạng thái đơn (`overpayment` nếu đã xác nhận, `late_payment` nếu đã hủy).
   Khoản thu mới không gắn attempt: không hoàn qua cổng được và đối soát không gắn được dòng sao kê vào chính nó (dòng
   cùng `txn_ref` dồn vào khoản thu đầu) → đối chiếu trên cổng merchant theo `txn_ref` + `provider_txn_id` rồi hoàn
@@ -480,6 +505,7 @@ Provider local của Medusa ghi file lên đĩa của từng máy: ảnh upload 
 qua server. Production vì vậy BẮT BUỘC `FILE_STORAGE=s3` (kiểm lúc khởi động: vắng hoặc `local` → thoát mã 1). Biến: `docs/ops/ENV.md`.
 
 Ràng buộc triển khai (chủ dự án làm trước lần deploy đầu có T-154):
+
 1. **Chọn và dựng kho S3-compatible** (cần máy/tài khoản thật — việc của người). Mặc định tự host: **Garage** (AGPL-3.0, Rust, một binary)
    hoặc **SeaweedFS** (Apache-2.0); chạy như dịch vụ riêng, không sửa mã của chúng (AGPL chỉ ràng buộc khi sửa/phân phối lại bản sửa).
    **Không dùng MinIO bản cộng đồng**: repo `minio/minio` ghi "THIS REPOSITORY IS NO LONGER MAINTAINED", bản cộng đồng chỉ còn mã nguồn,
@@ -512,6 +538,7 @@ không kiểm chữ ký SigV4, không policy/ACL thật). Chưa đủ để coi 
 ### 8.2a Reverse proxy cho luồng mời admin qua dashboard (T-138, D-075)
 
 Link mời admin mở dashboard ở `/app` với `invite_token` trong query; trang đăng ký của dashboard gọi API cùng origin. Reverse proxy phải:
+
 - giữ nguyên header `Host` (không viết lại) — kiểm tra origin/URL mời dựa vào đó;
 - phục vụ dashboard (`/app`) CÙNG origin với backend (cùng scheme + host + cổng);
 - không đặt `Referrer-Policy` làm mất query cho đường `/app` (`no-referrer`, `origin` bị cấm; giữ mặc định trình duyệt hoặc `same-origin`/`strict-origin-when-cross-origin`);
@@ -530,17 +557,17 @@ last_drilled: chưa diễn tập. Nguyên tắc: tạo giá trị mới ngẫu n
 worker (và storefront nếu biến của nó đổi), kiểm hiệu ứng, rồi thu hồi giá trị cũ. Không dán giá trị vào lệnh/log/ticket. Nhịp định kỳ đề
 xuất: 12 tháng cho khoá ký, và NGAY khi nghi lộ (§10). Hiệu ứng khi đổi (theo mã):
 
-| Biến | Hiệu ứng khi đổi | Thủ tục |
-|---|---|---|
-| `JWT_SECRET`, `COOKIE_SECRET` | phiên admin hiện có hết hiệu lực — đăng nhập lại | đổi → restart server+worker; hai biến phải khác nhau |
-| `ORDER_LOOKUP_SECRET` | mọi liên kết tra cứu và phiên xem đơn của khách đang có mất hiệu lực (khách tra cứu lại) | đổi → restart; không ảnh hưởng đơn/dữ liệu |
-| `AUTH_MFA_ENCRYPTION_KEY` | TOTP đã đăng ký không giải mã được — mọi admin đăng ký lại TOTP (`docs/ops/ENV.md`). Lệnh re-encrypt giữ nguyên TOTP: không có trong repo (Medusa có hay không: chưa xác minh) | đặt khoá mới → từng admin đăng ký lại TOTP; trong lúc đó quyền nhạy cảm (hoàn tiền, quản lý user…) không dùng được |
-| `VNPAY_HASH_SECRET` | chữ ký IPN/return/querydr đổi theo khoá cổng; IPN ký bằng khoá mới tới TRƯỚC khi env đổi bị từ chối chữ ký | **Thứ tự không hở** (backend ký bằng `VNPAY_HASH_SECRET` = current, xác minh cả current lẫn `VNPAY_HASH_SECRET_PREVIOUS`, T-099): (1) `VNPAY_HASH_SECRET`=khoá cũ, `VNPAY_HASH_SECRET_PREVIOUS`=khoá MỚI → restart (đã nhận được chữ ký khoá mới, vẫn ký bằng khoá cũ); (2) đổi khoá ở cổng merchant VNPAY; (3) `VNPAY_HASH_SECRET`=khoá mới, `VNPAY_HASH_SECRET_PREVIOUS`=khoá cũ → restart (ký bằng khoá mới, IPN/querydr còn ký khoá cũ vẫn qua); (4) theo dõi log `vnpay_secret_previous_used` (cảnh báo mỗi lần xác minh bằng khoá trước, không chứa khoá/chữ ký; T-139) về 0 liên tục ≥ 24 giờ (chính sách gửi lại IPN của VNPAY: chưa xác minh) rồi bỏ `VNPAY_HASH_SECRET_PREVIOUS`, restart. Lưu ý: ở bước 1 log này xuất hiện khi VNPAY đã ký khoá mới; chỉ dùng làm tín hiệu thu hồi sau bước 3. Hiện log chỉ ghi ở IPN (return/querydr chưa có). Querydr bù cho `payment_attempt` mở, xem `ops_exception` `webhook_rejected` (§1). VNPAY có cho hai khoá song song phía cổng không: (chưa xác minh) |
-| `GHN_TOKEN` (+ `GHN_SHOP_ID` nếu đổi shop) | gọi GHN thất bại tới khi khớp | tạo token mới ở GHN → đổi env → restart worker+server; vận đơn timeout xử lý như §2; callback GHN không chữ ký nên không bị ảnh hưởng |
-| `CATALOG_REVALIDATE_SECRET` (backend + storefront, T-142) | webhook vô hiệu hoá cache catalog bị 401 trong lúc hai phía lệch khoá → outbox `dead` + MỘT ngoại lệ `outbox_dead` đang mở (ưu tiên thường); giá/tồn trên storefront tươi lại theo TTL 60 giây | đặt khoá mới ở storefront → restart storefront → đặt ở backend → restart server+worker; ngoại lệ `outbox_dead` loại `catalog.revalidate` trong khoảng lệch: đóng, không redrive (dữ liệu đã tươi theo TTL; lần gửi thành công đầu tiên sau lỗi tạm tự gửi bù tag `catalog`). Production: `CATALOG_REVALIDATE_URLS` chỉ nhận https (D-117) — URL nội bộ từng bản storefront cần TLS |
-| Mật khẩu trong `DATABASE_URL`, `REDIS_URL` | kết nối mới thất bại tới khi restart | tạo vai trò/mật khẩu mới → cập nhật env → restart → thu hồi cái cũ |
-| `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` (T-154) | upload/xuất/tải file private lỗi tới khi khớp; ảnh công khai vẫn đọc được (nặc danh) | tạo khoá mới cùng quyền trên hai bucket ở kho → đổi env mọi tiến trình → restart server+worker → kiểm upload ảnh + tải một file xuất → thu hồi khoá cũ |
-| Khoá email/SMS provider | thông báo không gửi (rơi vào `outbox_event` `failed`, thử lại — §12) | thủ tục theo nhà cung cấp thật (xem `docs/privacy/processors.md`) |
+| Biến                                                      | Hiệu ứng khi đổi                                                                                                                                                                               | Thủ tục                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JWT_SECRET`, `COOKIE_SECRET`                             | phiên admin hiện có hết hiệu lực — đăng nhập lại                                                                                                                                               | đổi → restart server+worker; hai biến phải khác nhau                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `ORDER_LOOKUP_SECRET`                                     | mọi liên kết tra cứu và phiên xem đơn của khách đang có mất hiệu lực (khách tra cứu lại)                                                                                                       | đổi → restart; không ảnh hưởng đơn/dữ liệu                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `AUTH_MFA_ENCRYPTION_KEY`                                 | TOTP đã đăng ký không giải mã được — mọi admin đăng ký lại TOTP (`docs/ops/ENV.md`). Lệnh re-encrypt giữ nguyên TOTP: không có trong repo (Medusa có hay không: chưa xác minh)                 | đặt khoá mới → từng admin đăng ký lại TOTP; trong lúc đó quyền nhạy cảm (hoàn tiền, quản lý user…) không dùng được                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `VNPAY_HASH_SECRET`                                       | chữ ký IPN/return/querydr đổi theo khoá cổng; IPN ký bằng khoá mới tới TRƯỚC khi env đổi bị từ chối chữ ký                                                                                     | **Thứ tự không hở** (backend ký bằng `VNPAY_HASH_SECRET` = current, xác minh cả current lẫn `VNPAY_HASH_SECRET_PREVIOUS`, T-099): (1) `VNPAY_HASH_SECRET`=khoá cũ, `VNPAY_HASH_SECRET_PREVIOUS`=khoá MỚI → restart (đã nhận được chữ ký khoá mới, vẫn ký bằng khoá cũ); (2) đổi khoá ở cổng merchant VNPAY; (3) `VNPAY_HASH_SECRET`=khoá mới, `VNPAY_HASH_SECRET_PREVIOUS`=khoá cũ → restart (ký bằng khoá mới, IPN/querydr còn ký khoá cũ vẫn qua); (4) theo dõi log `vnpay_secret_previous_used` (cảnh báo mỗi lần xác minh bằng khoá trước, không chứa khoá/chữ ký; T-139) về 0 liên tục ≥ 24 giờ (chính sách gửi lại IPN của VNPAY: chưa xác minh) rồi bỏ `VNPAY_HASH_SECRET_PREVIOUS`, restart. Lưu ý: ở bước 1 log này xuất hiện khi VNPAY đã ký khoá mới; chỉ dùng làm tín hiệu thu hồi sau bước 3. Hiện log chỉ ghi ở IPN (return/querydr chưa có). Querydr bù cho `payment_attempt` mở, xem `ops_exception` `webhook_rejected` (§1). VNPAY có cho hai khoá song song phía cổng không: (chưa xác minh) |
+| `GHN_TOKEN` (+ `GHN_SHOP_ID` nếu đổi shop)                | gọi GHN thất bại tới khi khớp                                                                                                                                                                  | tạo token mới ở GHN → đổi env → restart worker+server; vận đơn timeout xử lý như §2; callback GHN không chữ ký nên không bị ảnh hưởng                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `CATALOG_REVALIDATE_SECRET` (backend + storefront, T-142) | webhook vô hiệu hoá cache catalog bị 401 trong lúc hai phía lệch khoá → outbox `dead` + MỘT ngoại lệ `outbox_dead` đang mở (ưu tiên thường); giá/tồn trên storefront tươi lại theo TTL 60 giây | đặt khoá mới ở storefront → restart storefront → đặt ở backend → restart server+worker; ngoại lệ `outbox_dead` loại `catalog.revalidate` trong khoảng lệch: đóng, không redrive (dữ liệu đã tươi theo TTL; lần gửi thành công đầu tiên sau lỗi tạm tự gửi bù tag `catalog`). Production: `CATALOG_REVALIDATE_URLS` chỉ nhận https (D-117) — URL nội bộ từng bản storefront cần TLS                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Mật khẩu trong `DATABASE_URL`, `REDIS_URL`                | kết nối mới thất bại tới khi restart                                                                                                                                                           | tạo vai trò/mật khẩu mới → cập nhật env → restart → thu hồi cái cũ                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` (T-154)       | upload/xuất/tải file private lỗi tới khi khớp; ảnh công khai vẫn đọc được (nặc danh)                                                                                                           | tạo khoá mới cùng quyền trên hai bucket ở kho → đổi env mọi tiến trình → restart server+worker → kiểm upload ảnh + tải một file xuất → thu hồi khoá cũ                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Khoá email/SMS provider                                   | thông báo không gửi (rơi vào `outbox_event` `failed`, thử lại — §12)                                                                                                                           | thủ tục theo nhà cung cấp thật (xem `docs/privacy/processors.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ## 10. Lộ bí mật
 
@@ -548,17 +575,17 @@ last_drilled: chưa diễn tập. Sự cố bảo mật = SEV1: bảo toàn bằ
 rà log trong khoảng lộ, ghi sự cố, đánh giá nghĩa vụ thông báo (Luật 91/2025/QH15 — chưa xác minh văn bản gốc; quy trình đầy đủ ở
 `docs/ops/runbooks/data-breach.md`). Xoá commit KHÔNG đủ: coi mọi khoá từng nằm trong lịch sử git là đã lộ.
 
-| Khoá | Thu hồi / xoay ngay | Rà log trong khoảng lộ |
-|---|---|---|
-| `VNPAY_HASH_SECRET` | đổi ở cổng merchant VNPAY (liên hệ VNPAY nếu nghi bị dùng), đặt khoá mới vào env, restart (§9). Kẻ có khoá giả được IPN "đã thanh toán" | `webhook_inbox` (`verified`, `result`) và `payment_ledger` trong khoảng lộ: mọi `capture` không có giao dịch ở cổng merchant → mở `ops_exception`, giữ đơn, chạy querydr; hoàn tiền nếu đã giao nhầm |
-| `GHN_TOKEN` | vô hiệu hoá token ở GHN, tạo token mới, đổi env, restart | vận đơn lạ ở cổng GHN so với `shipment`; `shipment_event` bất thường |
-| `JWT_SECRET`, `COOKIE_SECRET` | đổi cả hai, restart: toàn bộ phiên admin bị huỷ | `audit_log` (bất biến — trigger chặn sửa/xoá) lọc theo `actor_id`/`action` trong khoảng lộ; kiểm tài khoản admin mới và thay đổi quyền |
-| `AUTH_MFA_ENCRYPTION_KEY` | đổi khoá (mọi TOTP đăng ký lại, §9); coi bí mật TOTP đã lộ nếu lộ cả DB | `audit_log` đăng nhập/MFA bất thường |
-| `ORDER_LOOKUP_SECRET` | đổi, restart: mọi liên kết/phiên xem đơn mất hiệu lực | log truy cập `/store/x/orders/*` trong khoảng lộ |
-| `CATALOG_REVALIDATE_SECRET` | xoay như §9. Kẻ có khoá chỉ ép storefront nạp lại cache catalog (tải thêm lên backend, không đổi dữ liệu) | log truy cập `POST /api/revalidate` của storefront (tần suất bất thường) |
-| `DATABASE_URL` / `REDIS_URL` | đổi mật khẩu, đóng cổng ra ngoài, restart | log truy cập DB của nhà cung cấp hạ tầng; `audit_log` |
-| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (T-154) | thu hồi khoá ở kho S3, tạo khoá mới cùng quyền trên hai bucket, đổi env, restart server+worker (§9) | log truy cập của kho trong khoảng lộ: `GetObject` trên bucket private (file xuất có PII — đánh giá nghĩa vụ thông báo theo `docs/ops/runbooks/data-breach.md`), `PutObject`/`DeleteObject` lạ trên cả hai bucket (ảnh bị thay/xoá) |
-| Khoá email/SMS provider | thu hồi ở nhà cung cấp, tạo khoá mới | lịch sử gửi ở nhà cung cấp so với `outbound_message` |
+| Khoá                                                | Thu hồi / xoay ngay                                                                                                                     | Rà log trong khoảng lộ                                                                                                                                                                                                             |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VNPAY_HASH_SECRET`                                 | đổi ở cổng merchant VNPAY (liên hệ VNPAY nếu nghi bị dùng), đặt khoá mới vào env, restart (§9). Kẻ có khoá giả được IPN "đã thanh toán" | `webhook_inbox` (`verified`, `result`) và `payment_ledger` trong khoảng lộ: mọi `capture` không có giao dịch ở cổng merchant → mở `ops_exception`, giữ đơn, chạy querydr; hoàn tiền nếu đã giao nhầm                               |
+| `GHN_TOKEN`                                         | vô hiệu hoá token ở GHN, tạo token mới, đổi env, restart                                                                                | vận đơn lạ ở cổng GHN so với `shipment`; `shipment_event` bất thường                                                                                                                                                               |
+| `JWT_SECRET`, `COOKIE_SECRET`                       | đổi cả hai, restart: toàn bộ phiên admin bị huỷ                                                                                         | `audit_log` (bất biến — trigger chặn sửa/xoá) lọc theo `actor_id`/`action` trong khoảng lộ; kiểm tài khoản admin mới và thay đổi quyền                                                                                             |
+| `AUTH_MFA_ENCRYPTION_KEY`                           | đổi khoá (mọi TOTP đăng ký lại, §9); coi bí mật TOTP đã lộ nếu lộ cả DB                                                                 | `audit_log` đăng nhập/MFA bất thường                                                                                                                                                                                               |
+| `ORDER_LOOKUP_SECRET`                               | đổi, restart: mọi liên kết/phiên xem đơn mất hiệu lực                                                                                   | log truy cập `/store/x/orders/*` trong khoảng lộ                                                                                                                                                                                   |
+| `CATALOG_REVALIDATE_SECRET`                         | xoay như §9. Kẻ có khoá chỉ ép storefront nạp lại cache catalog (tải thêm lên backend, không đổi dữ liệu)                               | log truy cập `POST /api/revalidate` của storefront (tần suất bất thường)                                                                                                                                                           |
+| `DATABASE_URL` / `REDIS_URL`                        | đổi mật khẩu, đóng cổng ra ngoài, restart                                                                                               | log truy cập DB của nhà cung cấp hạ tầng; `audit_log`                                                                                                                                                                              |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (T-154) | thu hồi khoá ở kho S3, tạo khoá mới cùng quyền trên hai bucket, đổi env, restart server+worker (§9)                                     | log truy cập của kho trong khoảng lộ: `GetObject` trên bucket private (file xuất có PII — đánh giá nghĩa vụ thông báo theo `docs/ops/runbooks/data-breach.md`), `PutObject`/`DeleteObject` lạ trên cả hai bucket (ảnh bị thay/xoá) |
+| Khoá email/SMS provider                             | thu hồi ở nhà cung cấp, tạo khoá mới                                                                                                    | lịch sử gửi ở nhà cung cấp so với `outbound_message`                                                                                                                                                                               |
 
 Sau xử lý: ghi post-mortem vào `docs/ops/incidents/` (sổ sự cố; quy trình ở `docs/ops/INCIDENT-RESPONSE.md`) — nguyên nhân gốc, khoảng lộ, khoá đã xoay, dữ liệu bị chạm, hàng rào mới
 (vd quét bí mật bổ sung). Đầu mối pháp lý: [chủ dự án điền].
@@ -596,11 +623,14 @@ redrive mà không sửa nguyên nhân sẽ lại `dead` ngay.
    đồng bộ thanh toán idempotent; xem §3.3.4):
 
    ```sql
+   \set k '<event_key>'
+   -- redrive-one
    UPDATE outbox_event SET state = 'pending', attempts = 0, next_attempt_at = now(), last_error = NULL, updated_at = now()
-    WHERE event_key = '<event_key>' AND state = 'dead' AND deleted_at IS NULL;
+    WHERE event_key = :'k' AND state = 'dead' AND deleted_at IS NULL;
    ```
 
    Không redrive hàng loạt `WHERE state='dead'` khi chưa xem từng `type`. Không đổi `payload`, không xoá dòng.
+
 4. Xác nhận: sau ≤ 1 phút dòng thành `sent` (truy vấn bước 1 không còn nó); rồi đóng `ops_exception` tương ứng trong Admin với ghi chú nguyên
    nhân + việc đã làm. Dòng quay lại `dead` → leo thang cho kỹ thuật (§0), không lặp redrive.
 
@@ -631,6 +661,7 @@ code=55P03`; bản trùng đóng theo bước 5. `detail` chỉ có id + mã l�
    `step`: `attributes` (thuộc tính), `size_chart` (gắn lại bảng size — `from`/`to` là id bảng size), `measurements` (số đo người mẫu).
    `error` chỉ gồm tên lỗi + mã Postgres/constraint (vd. `code=23514 constraint=…`, `code=57014` hết giờ) — đủ để biết lỗi tạm hay lỗi
    dữ liệu. Không thấy log/ngoại lệ mở được (`Không mở được ngoại lệ catalog_compensation_failed`) → tìm theo log.
+
 2. Sửa nguyên nhân trước nếu là lỗi dữ liệu/ràng buộc (constraint mới, DB hết chỗ…); lỗi tạm (mất kết nối, hết giờ) thì bỏ qua bước này.
 3. Đưa sản phẩm về đúng: người quản lý catalog mở sản phẩm trong Admin, kiểm thuộc tính thời trang, bảng size, số đo người mẫu so với dữ
    liệu đúng (ảnh/phiếu người mẫu gốc) và **gửi lại toàn bộ** dữ liệu thời trang (lưu lại form = `POST /admin/x/products/:id/fashion`
@@ -692,6 +723,7 @@ trước.
    ```
 
    Log: `[breaker] <breaker>: … — dừng gọi tới <giờ>`; cảnh báo ngân sách `[breaker] <breaker>: đã dùng N/M lượt ngân sách`.
+
 2. `consecutive_failures`: kiểm nhà cung cấp (trang trạng thái, khoá API, hạn mức) và `last_error` của sự kiện gần nhất
    (`SELECT event_key, attempts, last_error FROM outbox_event WHERE state = 'failed' ORDER BY updated_at DESC LIMIT 20;`). Không cần
    làm gì để mở lại — breaker tự thử khi hết nguội; lỗi kéo dài thì breaker cứ mở lại từng kỳ, sự kiện không vào `dead` vì bị hoãn.
@@ -713,6 +745,7 @@ trước.
    ```
 
    (với `budget_exhausted` thì bộ đếm ngày vẫn còn — lượt gọi kế tiếp sẽ mở lại; chỉ làm khi đã nâng ngân sách).
+
 5. Riêng `detail.breaker = 'vnpay.querydr'` (job `x-expire-holds`): đơn bị hoãn có ngoại lệ `payment_unknown` lý do `breaker_*`;
    đơn lỗi thật có lý do `timeout`/`network`/`http_5xx`/`adapter_error:…` —
 
@@ -726,6 +759,7 @@ trước.
    (≤ 1 phút) hỏi lại và xác nhận/hủy đúng từng đơn — đơn bị hoãn chỉ lùi 1 phút (không tăng backoff); đơn từng nhận lỗi tạm
    (`timeout`/`network`/…) đang backoff theo đơn (T-164, §1) được hỏi khi tới `next_check_at` (≤ 60 phút) — cần ngay thì đặt
    `next_check_at = NULL` như §1. Sau đó đóng các `payment_unknown` lý do `breaker_*` của đơn đã có kết cục.
+
 6. Đóng ngoại lệ kèm ghi chú nguyên nhân (Admin chưa có nút đóng):
 
    ```sql
