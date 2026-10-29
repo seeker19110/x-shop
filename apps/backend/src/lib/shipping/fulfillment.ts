@@ -27,7 +27,8 @@ import type { ShipmentRow } from "../../modules/shipping/service";
 import { toSafeInteger } from "../checkout/cart";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
-import { isInventoryGuardViolation } from "../inventory/guard";
+import { CheckoutError } from "../checkout/errors";
+import { inventoryGuardKind } from "../inventory/guard";
 
 /**
  * Fulfillment NATIVE của Medusa cho vận đơn GHN (T-043, S-303 "1 shipment / 1 fulfillment").
@@ -383,11 +384,21 @@ export const markGhnFulfillmentShippedWorkflow = createWorkflow(
 const stockKey = (fulfillmentId: string, e: Pick<StockEntry, "inventory_item_id" | "location_id">) =>
   `xful-${fulfillmentId}-${e.inventory_item_id}-${e.location_id}`;
 
+/** Đủ để hoàn tác `consumeReservations`: id đã xoá mềm + số lượng gốc của reservation đã giảm. */
+interface ConsumedReservations {
+  deleted: string[];
+  reduced: Array<{ id: string; quantity: number }>;
+}
+
 /** Nhả reservation của các dòng đã xuất (trừ đúng phần đã giao; phần dư nếu có giữ nguyên). */
-async function consumeReservations(container: MedusaContainer, entries: StockEntry[]): Promise<void> {
+async function consumeReservations(
+  container: MedusaContainer,
+  entries: StockEntry[],
+): Promise<ConsumedReservations> {
   const inventory = container.resolve(Modules.INVENTORY);
   const toDelete: string[] = [];
   const toUpdate: Array<{ id: string; quantity: number }> = [];
+  const original: Array<{ id: string; quantity: number }> = [];
   for (const e of entries) {
     const rs = await inventory.listReservationItems(
       { line_item_id: e.line_item_id, inventory_item_id: e.inventory_item_id, location_id: e.location_id },
@@ -402,12 +413,34 @@ async function consumeReservations(container: MedusaContainer, entries: StockEnt
         left -= q;
       } else {
         toUpdate.push({ id: r.id, quantity: q - left });
+        original.push({ id: r.id, quantity: q });
         left = 0;
       }
     }
   }
   if (toUpdate.length > 0) await updateReservationsWorkflow(container).run({ input: { updates: toUpdate } });
   if (toDelete.length > 0) await deleteReservationsWorkflow(container).run({ input: { ids: toDelete } });
+  return { deleted: toDelete, reduced: original };
+}
+
+/**
+ * Hoàn tác `consumeReservations` khi bước trừ tồn bị hàng rào DB từ chối (review T-185): khôi phục reservation đã xoá mềm
+ * (module cộng lại reserved_quantity trong cùng transaction) và trả số lượng gốc cho reservation đã giảm — không để đơn
+ * đã có vận đơn mất giữ hàng trong khi stocked chưa trừ. Chạy dưới khóa `inventory_item:*` của applyStock.
+ */
+async function restoreReservations(
+  container: MedusaContainer,
+  consumed: ConsumedReservations,
+): Promise<void> {
+  if (consumed.deleted.length > 0) {
+    // `restoreReservationItems` do MedusaService sinh (bù trừ của deleteReservationsStep cũng gọi nó), chưa có trong kiểu.
+    const inventory = container.resolve(Modules.INVENTORY) as unknown as {
+      restoreReservationItems(ids: string[]): Promise<unknown>;
+    };
+    await inventory.restoreReservationItems(consumed.deleted);
+  }
+  if (consumed.reduced.length > 0)
+    await updateReservationsWorkflow(container).run({ input: { updates: consumed.reduced } });
 }
 
 async function setStocked(container: MedusaContainer, e: StockEntry, stocked: number): Promise<void> {
@@ -498,13 +531,26 @@ export async function applyStock(
           quantity: g.quantity,
         });
       }
-      await consumeReservations(container, g.lines);
+      const consumed = await consumeReservations(container, g.lines);
       try {
         await setStocked(container, g, after);
       } catch (e) {
-        // Hàng rào DB (T-185): đường ghi khác (không qua khóa) đã giữ thêm giữa lúc kiểm và lúc trừ → dữ liệu lệch, cần
-        // người xem — cùng nhánh STOCK_INCONSISTENT ở trên (stocked không đổi vì ghi bị từ chối).
-        if (!isInventoryGuardViolation(e)) throw e;
+        // Hàng rào DB (T-185) từ chối trừ tồn (stocked không đổi): trả lại reservation vừa nhả rồi mới báo lỗi — không để
+        // trạng thái dở "đã nhả giữ, chưa trừ tồn" (hàng thành khả dụng cho đơn khác dù đã có vận đơn).
+        const guard = inventoryGuardKind(e);
+        if (guard === null) throw e;
+        try {
+          await restoreReservations(container, consumed);
+        } catch (restoreError) {
+          container
+            .resolve(ContainerRegistrationKeys.LOGGER)
+            .error(
+              `[fulfillment] Không khôi phục được reservation sau khi trừ tồn bị chặn (fulfillment ${fulfillment.id}, item ${g.inventory_item_id}) — cần người xem`,
+              restoreError instanceof Error ? restoreError : undefined,
+            );
+        }
+        // Ghi đồng thời đè số giữ → tạm, gọi lại được; vượt tồn → dữ liệu lệch, cần người xem.
+        if (guard === "drift") throw new CheckoutError("BUSY_RETRY");
         throw new FulfillmentSyncError("STOCK_INCONSISTENT", "Tồn không đủ để ghi nhận xuất kho", {
           inventory_item_id: g.inventory_item_id,
           location_id: g.location_id,

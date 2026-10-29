@@ -926,7 +926,7 @@ paths:
       tags: [Admin orders]
       operationId: adminAdjustInventory
       summary: "Điều chỉnh tồn (lý do + Idempotency-Key bắt buộc)"
-      description: "Gửi lại cùng khóa + nội dung → 200 (`Idempotent-Replayed`); khác nội dung → 409; giảm dưới số đang giữ → 409 `BELOW_RESERVED`."
+      description: "Gửi lại cùng khóa + nội dung → 200 (`Idempotent-Replayed`); khác nội dung → 409; giảm dưới số đang giữ → 409 `BELOW_RESERVED`; số giữ bị ghi đè đồng thời (hàng rào tồn T-185) → 409 `INVENTORY_CONFLICT_RETRY` (gửi lại)."
       security:
         - adminSession: []
         - adminBearer: []

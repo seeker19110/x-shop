@@ -1068,14 +1068,18 @@ class CheckoutModuleService extends MedusaService({
     });
   }
 
-  /** Attempt `preparing` quá lease, hoặc đã nhận bù trừ nhưng chưa xong (`COMPENSATING`) — để job đối chiếu (AT10). */
+  /**
+   * Attempt `preparing` quá lease, hoặc đã nhận bù trừ nhưng chưa xong (`COMPENSATING`) — để job đối chiếu (AT10).
+   * `COMPENSATING` cũng đòi `lease_until < now`: lúc nhận bù trừ lease đã quá hạn (claimStaleAttempt) nên hành vi cũ giữ
+   * nguyên; attempt bù trừ lỗi được `deferStaleAttempt` đẩy lease về sau → không đứng đầu hàng đợi mãi (review T-185).
+   */
   async listStaleAttempts(now: Date, limit: number): Promise<Array<{ id: string; cart_id: string }>> {
     const rows = await this.exec(
       `SELECT id, cart_id FROM checkout_attempt
-       WHERE ((state = 'preparing' AND lease_until < ?) OR (state = 'compensated' AND error_code = 'COMPENSATING'))
+       WHERE ((state = 'preparing' AND lease_until < ?) OR (state = 'compensated' AND error_code = 'COMPENSATING' AND lease_until < ?))
          AND deleted_at IS NULL
        ORDER BY lease_until LIMIT ?`,
-      [now, limit],
+      [now, now, limit],
     );
     return rows.map((r) => ({ id: String(r.id), cart_id: String(r.cart_id) }));
   }
@@ -1090,6 +1094,20 @@ class CheckoutModuleService extends MedusaService({
        WHERE id = ? AND ((state = 'preparing' AND lease_until < ?) OR (state = 'compensated' AND error_code = 'COMPENSATING'))
        RETURNING id`,
       [attemptId, now],
+    );
+    return rows.length === 1;
+  }
+
+  /**
+   * Bù trừ của attempt đã nhận (`COMPENSATING`) lỗi → hẹn lượt sau (`lease_until = until`), để attempt khác trong hàng đợi
+   * được xử lý. Attempt còn `preparing` không đụng (lease là của tiến trình submit). Trả true nếu đã hẹn.
+   */
+  async deferStaleAttempt(attemptId: string, until: Date): Promise<boolean> {
+    const rows = await this.exec(
+      `UPDATE checkout_attempt SET lease_until = ?, updated_at = now()
+       WHERE id = ? AND state = 'compensated' AND error_code = 'COMPENSATING'
+       RETURNING id`,
+      [until, attemptId],
     );
     return rows.length === 1;
   }

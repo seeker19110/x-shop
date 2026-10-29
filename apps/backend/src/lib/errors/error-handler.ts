@@ -2,7 +2,7 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import { getHttpResponseFromError } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { zodErrors, type ProblemError } from "../http/problem";
-import { isInventoryGuardViolation } from "../inventory/guard";
+import { INVENTORY_CONFLICT_RETRY, inventoryGuardKind } from "../inventory/guard";
 import { redactLog } from "../log/redact";
 import { traceIdOf } from "./trace";
 
@@ -14,7 +14,8 @@ import { traceIdOf } from "./trace";
  * - Mã HTTP theo ánh xạ của Medusa (`getHttpResponseFromError`: 400/401/403/404/409/422/500) — không đổi hành vi client
  *   native; thêm: lỗi zod thô → 400 `VALIDATION` có `errors[]` (Medusa trả 500), lỗi multer → 400/413, tham số đường
  *   dẫn mã hoá hỏng (URIError của Express) → 400 `INVALID_PATH` (Medusa trả 500), vi phạm hàng rào tồn kho phía DB
- *   (`x_inventory_level_stock_guard`, T-185) → 409 `INSUFFICIENT_STOCK` (Medusa trả 500).
+ *   (T-185): vượt tồn (`x_inventory_level_stock_guard`) → 409 `INSUFFICIENT_STOCK`, số giữ bị ghi đè đồng thời
+ *   (`x_inventory_reserved_drift`) → 409 `INVENTORY_CONFLICT_RETRY` kèm `Retry-After` (Medusa trả 500 cho cả hai).
  * - Thân `application/problem+json` (RFC 9457) có `code` + `trace_id`; giữ `message` (= `detail`) vì client Medusa
  *   (js-sdk, Admin) đọc khoá này.
  * - 5xx: thông điệp chung, không stack/đường dẫn/SQL/tên bảng/phiên bản; đầy đủ (stack) chỉ ở log server kèm `trace_id`.
@@ -359,12 +360,17 @@ export function toHttpProblem(err: unknown, traceId: string): HttpProblem {
     detail = TITLES[422];
   } else if (typeof err === "object" && err !== null && (err as { name?: unknown }).name === "MulterError") {
     status = (err as { code?: unknown }).code === "LIMIT_FILE_SIZE" ? 413 : 400;
-  } else if (isInventoryGuardViolation(err)) {
+  } else if (inventoryGuardKind(err) === "stock") {
     // Hàng rào tồn kho phía DB (T-185) từ chối lúc commit (vd route native giảm tồn dưới số đang giữ, giữ hàng vượt tồn)
     // — xung đột dữ liệu có nghĩa nghiệp vụ, không phải lỗi máy chủ. Không chép thông điệp Postgres (id, số lượng).
     status = 409;
     code = "INSUFFICIENT_STOCK";
     detail = "Tồn kho không đủ cho số đang giữ cho đơn — tải lại số tồn rồi thử lại";
+  } else if (inventoryGuardKind(err) === "drift") {
+    // Số giữ bị một ghi đồng thời ghi đè (T-185) — ghi đã bị hủy, gửi lại sẽ đọc số mới.
+    status = 409;
+    code = INVENTORY_CONFLICT_RETRY;
+    detail = "Tồn kho vừa được cập nhật đồng thời — vui lòng thử lại";
   } else if (httpStatus !== null) {
     status = httpStatus;
     const t = (err as HttpLikeError).type;
@@ -475,6 +481,8 @@ export function xErrorHandler(
   // giá trị riêng → mặc định thận trọng.
   if (problem.status === 429 && res.getHeader("Retry-After") === undefined)
     res.setHeader("Retry-After", String(DEFAULT_RETRY_AFTER_SECONDS));
+  if (problem.body.code === INVENTORY_CONFLICT_RETRY && res.getHeader("Retry-After") === undefined)
+    res.setHeader("Retry-After", "1");
   res
     .status(problem.status)
     .setHeader("Content-Type", "application/problem+json; charset=utf-8")

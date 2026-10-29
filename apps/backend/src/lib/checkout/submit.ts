@@ -6,7 +6,7 @@ import type { PaymentMethod } from "../../modules/checkout/models/constants";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { submitCheckoutWorkflow } from "../../workflows/checkout/submit-checkout";
 import type { CheckoutContact } from "../../workflows/checkout/steps";
-import { isInventoryGuardViolation } from "../inventory/guard";
+import { inventoryGuardKind } from "../inventory/guard";
 import { CHECKOUT_CONFIG } from "./config";
 import { leftoversOfAttempt } from "./jobs";
 import { releaseOwnedQuietly } from "./locks";
@@ -159,8 +159,11 @@ export function classify(error: unknown): CheckoutError {
   if (/Not enough stock available|is not stocked at location/.test(message)) {
     return new CheckoutError("INSUFFICIENT_STOCK");
   }
-  // Hàng rào DB (T-185): giữ hàng làm reserved > stocked bị từ chối lúc commit — cùng nghĩa hết hàng, không phải 500.
-  if (isInventoryGuardViolation(error)) return new CheckoutError("INSUFFICIENT_STOCK");
+  // Hàng rào DB (T-185) từ chối lúc commit: vượt tồn → hết hàng; số giữ bị ghi đè đồng thời (drift) → bận, thử lại cùng
+  // khóa (attempt mở lại, đọc số mới). Không phải 500.
+  const guard = inventoryGuardKind(error);
+  if (guard === "stock") return new CheckoutError("INSUFFICIENT_STOCK");
+  if (guard === "drift") return new CheckoutError("BUSY_RETRY");
   if (/Failed to acquire lock|Timed-out acquiring lock/.test(message)) return new CheckoutError("BUSY_RETRY");
   const name = typeof error === "object" && error !== null ? String((error as { name?: unknown }).name) : "";
   if (REDIS_CONNECTION_ERROR.test(message) || REDIS_CONNECTION_ERROR.test(name)) {

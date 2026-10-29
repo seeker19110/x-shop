@@ -5,7 +5,7 @@ import { updateProductVariantsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { expireHolds } from "../../src/lib/checkout/jobs";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
-import { INVENTORY_GUARD_CONSTRAINT } from "../../src/lib/inventory/guard";
+import { INVENTORY_GUARD_CONSTRAINT, inventoryGuardKind } from "../../src/lib/inventory/guard";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import { Migration20261028150000 } from "../../src/modules/checkout/migrations/Migration20261028150000";
@@ -27,10 +27,11 @@ import { key, newIp, returnsFlow, type J, type PlacedOrder } from "../helpers/re
 jest.setTimeout(300 * 1000);
 
 const GUARD = INVENTORY_GUARD_CONSTRAINT;
-/** Bốn constraint trigger (D-134): inventory_level + reservation_item, INSERT/UPDATE tách để WHEN dùng được OLD. */
+/** Năm constraint trigger: inventory_level + reservation_item, mỗi sự kiện một trigger để WHEN dùng được OLD/NEW. */
 const TRIGGERS = [
   { table: "inventory_level", tgname: `${GUARD}_ins` },
   { table: "inventory_level", tgname: `${GUARD}_upd` },
+  { table: "reservation_item", tgname: "x_reservation_item_stock_guard_del" },
   { table: "reservation_item", tgname: "x_reservation_item_stock_guard_ins" },
   { table: "reservation_item", tgname: "x_reservation_item_stock_guard_upd" },
 ];
@@ -39,9 +40,10 @@ const MIN = 60_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * T-185 (Q-13, RK-001, IND-ECOM-001) — hàng rào DB cho tồn kho: constraint trigger `DEFERRABLE INITIALLY DEFERRED` trên
- * `inventory_level` (migration checkout Migration20261028150000) từ chối LÚC COMMIT mọi dòng còn sống không giữ
- * `0 <= reserved_quantity <= stocked_quantity`. Ghi trực tiếp vi phạm bị từ chối; trạng thái trung gian trong cùng
+ * T-185 (Q-13, RK-001, IND-ECOM-001; D-133, D-134, review T-185) — hàng rào DB cho tồn kho: constraint trigger
+ * `DEFERRABLE INITIALLY DEFERRED` trên `inventory_level` và `reservation_item` (migration checkout Migration20261028150000)
+ * từ chối LÚC COMMIT mọi dòng level còn sống không giữ `0 <= reserved_quantity = Σ reservation_item còn sống <= stocked`
+ * (vế `stock` → 409 hết hàng; vế `drift` — số giữ bị ghi đè đồng thời → 409 thử lại). Ghi trực tiếp vi phạm bị từ chối; trạng thái trung gian trong cùng
  * transaction được phép; mọi luồng ghi thật (checkout, hết hạn giữ, xuất kho, điều chỉnh, đổi trả, GHN hủy/hoàn) vẫn
  * chạy; vi phạm tới tay client là 409 hết hàng, không 500; hai checkout tranh dòng cuối → một thắng, không bán âm.
  */
@@ -66,12 +68,6 @@ medusaIntegrationTestRunner({
     const checkout = () => container.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
     const returns = () => container.resolve<ReturnsModuleService>(RETURNS_MODULE);
 
-    /** SQLSTATE của lỗi (hoặc "ok"). */
-    const outcome = (p: Promise<unknown>): Promise<string> =>
-      p.then(
-        () => "ok",
-        (e: unknown) => (e as { code?: string }).code ?? `no-code: ${String(e)}`,
-      );
     const levelRow = async (variantKey: string, locationId = fx.sellableLocationId) => {
       const row = await pg()("inventory_level")
         .where({ inventory_item_id: fx.variants[variantKey]!.inventoryItemId, location_id: locationId })
@@ -105,7 +101,12 @@ medusaIntegrationTestRunner({
         tginitdeferred: boolean;
         is_constraint: boolean;
       }>;
-      const fns = (await pg().raw(`select proname from pg_proc where proname = ?`, [GUARD])).rows.length;
+      const fns = (
+        await pg().raw(`select proname from pg_proc where proname in (?, ?)`, [
+          GUARD,
+          "x_inventory_stock_check",
+        ])
+      ).rows.length;
       return { triggers, fns };
     };
     const runMigration = async (direction: "up" | "down") => {
@@ -114,6 +115,26 @@ medusaIntegrationTestRunner({
       await m[direction]();
       for (const q of m.getQueries()) await pg().raw(String(q));
     };
+    /** Vế hàng rào mà lời ghi vi phạm ("stock" | "drift"), "ok", hoặc mã lỗi khác. */
+    const verdict = (p: Promise<unknown>): Promise<string> =>
+      p.then(
+        () => "ok",
+        (e: unknown) => inventoryGuardKind(e) ?? `other:${(e as { code?: string }).code ?? String(e)}`,
+      );
+    const pairOf = (variantKey: string) => ({
+      inventory_item_id: fx.variants[variantKey]!.inventoryItemId,
+      location_id: fx.sellableLocationId,
+    });
+    /** Giữ hàng ghi thẳng NHẤT QUÁN như Medusa: thêm reservation_item + cộng reserved_quantity trong cùng transaction. */
+    const reserveIn = async (trx: Knex.Transaction, variantKey: string, quantity: number, tag: string) => {
+      await trx("reservation_item").insert(rawReservation(variantKey, quantity, tag));
+      await trx("inventory_level")
+        .where(pairOf(variantKey))
+        .whereNull("deleted_at")
+        .increment("reserved_quantity", quantity);
+    };
+    const reserve = (variantKey: string, quantity: number, tag: string) =>
+      verdict(pg().transaction((trx) => reserveIn(trx, variantKey, quantity, tag)));
     /** Một dòng reservation_item ghi thẳng (không qua Medusa, không cập nhật reserved_quantity của level). */
     const rawReservation = (variantKey: string, quantity: number, tag: string) => ({
       id: `resitem_t185_${tag}`,
@@ -195,7 +216,7 @@ medusaIntegrationTestRunner({
     /* ------------------------------------------------------------------ ràng buộc trong DB */
 
     describe("ràng buộc trong DB", () => {
-      it("constraint trigger DEFERRABLE INITIALLY DEFERRED tồn tại trên inventory_level và reservation_item, kèm function", async () => {
+      it("năm constraint trigger DEFERRABLE INITIALLY DEFERRED trên inventory_level và reservation_item, kèm hai function", async () => {
         expect(await guardObjects()).toEqual({
           triggers: TRIGGERS.map((t) => ({
             ...t,
@@ -203,11 +224,11 @@ medusaIntegrationTestRunner({
             tginitdeferred: true,
             is_constraint: true,
           })),
-          fns: 1,
+          fns: 2,
         });
       });
 
-      it("ghi trực tiếp reserved > stocked: câu lệnh chạy được, bị từ chối LÚC COMMIT (23514, tên ràng buộc), dữ liệu không đổi", async () => {
+      it("ghi trực tiếp reserved > stocked: câu lệnh chạy được, bị từ chối LÚC COMMIT (23514, vế stock), dữ liệu không đổi", async () => {
         const before = await levelRow("Đen/M");
         let statementOk = false;
         const err = await pg()
@@ -229,35 +250,43 @@ medusaIntegrationTestRunner({
         expect(await levelRow("Đen/M")).toEqual(before);
       });
 
-      it("autocommit: stocked < reserved, reserved âm, stocked âm, INSERT vi phạm → 23514; đúng biên stocked = reserved → được", async () => {
-        const { id } = await levelRow("Đen/M");
-        const upd = (v: Record<string, number>) => outcome(pg()("inventory_level").where({ id }).update(v));
-        expect(await upd({ stocked_quantity: 10, reserved_quantity: 11 })).toBe(CHECK_VIOLATION);
-        expect(await upd({ reserved_quantity: -1 })).toBe(CHECK_VIOLATION);
-        expect(await upd({ stocked_quantity: -1, reserved_quantity: 0 })).toBe(CHECK_VIOLATION);
-        expect(await upd({ stocked_quantity: 0, reserved_quantity: 0 })).toBe("ok");
-        expect(await upd({ stocked_quantity: 10, reserved_quantity: 10 })).toBe("ok");
-        expect(await upd({ stocked_quantity: 10, reserved_quantity: 0 })).toBe("ok");
+      it("autocommit: stocked < reserved, số âm, INSERT vượt → stock; reserved ≠ tổng reservation → drift; đúng biên (giữ = tồn) → được", async () => {
+        const { id } = await levelRow("Đen/M"); // 10 / 0, không reservation
+        const upd = (v: Record<string, number>) => verdict(pg()("inventory_level").where({ id }).update(v));
+        expect(await upd({ stocked_quantity: 10, reserved_quantity: 11 })).toBe("stock");
+        expect(await upd({ reserved_quantity: -1 })).toBe("stock");
+        expect(await upd({ stocked_quantity: -1, reserved_quantity: 0 })).toBe("stock");
+        expect(await upd({ reserved_quantity: 1 })).toBe("drift"); // cột đếm lệch sổ reservation
+        expect(await upd({ stocked_quantity: 0 })).toBe("ok");
+        expect(await upd({ stocked_quantity: 10 })).toBe("ok");
+        expect(await reserve("Đen/M", 10, "full")).toBe("ok"); // 10 / 10 — đúng biên
+        expect(await reserve("Đen/M", 1, "over")).toBe("stock");
+        expect(await levelRow("Đen/M")).toMatchObject({
+          stocked: 10,
+          reserved: 10,
+        });
         const loc = (
           await container.resolve(Modules.STOCK_LOCATION).createStockLocations([{ name: "Kho T-185" }])
         )[0]!;
-        const ins = await outcome(
-          pg()("inventory_level").insert({
-            id: "ilev_t185_bad",
-            inventory_item_id: fx.variants["Đen/M"]!.inventoryItemId,
-            location_id: loc.id,
-            stocked_quantity: 0,
-            reserved_quantity: 1,
-          }),
-        );
-        expect(ins).toBe(CHECK_VIOLATION);
-        expect(await pg()("inventory_level").where({ id: "ilev_t185_bad" }).first()).toBeUndefined();
+        const newLevel = (tag: string, stocked: number, reserved: number) =>
+          verdict(
+            pg()("inventory_level").insert({
+              id: `ilev_t185_${tag}`,
+              inventory_item_id: fx.variants["Đen/M"]!.inventoryItemId,
+              location_id: loc.id,
+              stocked_quantity: stocked,
+              reserved_quantity: reserved,
+            }),
+          );
+        expect(await newLevel("bad", 0, 1)).toBe("stock");
+        expect(await newLevel("drift", 5, 1)).toBe("drift");
+        expect(await pg()("inventory_level").whereIn("id", ["ilev_t185_bad", "ilev_t185_drift"])).toEqual([]);
       });
 
-      it("trạng thái trung gian trong cùng transaction (giữ trước, nhập sau; trừ rồi cộng lại) → commit được", async () => {
+      it("trạng thái trung gian trong cùng transaction (thêm reservation trước, cộng reserved sau, nhập sau; trừ rồi cộng lại) → commit được", async () => {
         const { id } = await levelRow("Đen/S"); // 1 / 0
         await pg().transaction(async (trx) => {
-          await trx("inventory_level").where({ id }).update({ reserved_quantity: 3 }); // 1 < 3 (tạm)
+          await reserveIn(trx, "Đen/S", 3, "mid"); // 1 < 3 (tạm)
           await trx("inventory_level").where({ id }).update({ stocked_quantity: 3 }); // 3 = 3
         });
         expect(await levelRow("Đen/S")).toMatchObject({ stocked: 3, reserved: 3 });
@@ -271,33 +300,28 @@ medusaIntegrationTestRunner({
       it("dòng đã xoá mềm không bị kiểm; khôi phục dòng đang lệch → 23514", async () => {
         const { id } = await levelRow("Trắng/M");
         await pg()("inventory_level").where({ id }).update({ deleted_at: new Date() });
-        expect(await outcome(pg()("inventory_level").where({ id }).update({ reserved_quantity: 99 }))).toBe(
+        expect(await verdict(pg()("inventory_level").where({ id }).update({ reserved_quantity: 99 }))).toBe(
           "ok",
         );
-        expect(await outcome(pg()("inventory_level").where({ id }).update({ deleted_at: null }))).toBe(
-          CHECK_VIOLATION,
+        expect(await verdict(pg()("inventory_level").where({ id }).update({ deleted_at: null }))).toBe(
+          "stock",
         );
       });
 
       it("đồng thời: phiên A giữ +1 (chưa commit), phiên B hạ stocked về 0 (chờ khóa dòng) → A commit được, B bị từ chối lúc commit", async () => {
         const { id } = await levelRow("Đen/S"); // 1 / 0
-        let releaseA!: () => void;
-        const gate = new Promise<void>((r) => (releaseA = r));
-        let aUpdated!: () => void;
-        const updated = new Promise<void>((r) => (aUpdated = r));
-        const a = outcome(
+        const releaseA = latch();
+        const aReserved = latch();
+        const a = verdict(
           pg().transaction(async (trx) => {
-            await trx.raw(
-              `update inventory_level set reserved_quantity = reserved_quantity + 1 where id = ?`,
-              [id],
-            );
-            aUpdated();
-            await gate;
+            await reserveIn(trx, "Đen/S", 1, "a");
+            aReserved.open();
+            await releaseA.p;
           }),
         );
-        await updated;
+        await aReserved.p;
         let bDone = false;
-        const b = outcome(
+        const b = verdict(
           pg().transaction(async (trx) => {
             // Như ghi tuyệt đối của Medusa (`stocked = đọc + Δ` với số đọc cũ): chỉ đặt cột stocked.
             await trx("inventory_level").where({ id }).update({ stocked_quantity: 0 });
@@ -305,156 +329,260 @@ medusaIntegrationTestRunner({
         ).finally(() => (bDone = true));
         await sleep(300);
         expect(bDone).toBe(false); // B đang chờ khóa dòng của A
-        releaseA();
+        releaseA.open();
         expect(await a).toBe("ok");
-        expect(await b).toBe(CHECK_VIOLATION);
+        expect(await b).toBe("stock");
         expect(await levelRow("Đen/S")).toMatchObject({ stocked: 1, reserved: 1 });
       });
 
-      it("down gỡ sạch trigger + function (ghi vi phạm lọt); up khi còn dòng lệch → dừng kèm số dòng, KHÔNG sửa dữ liệu; sửa rồi up lại được, chạy lặp không lỗi", async () => {
-        const { id } = await levelRow("Trắng/S");
+      it("down gỡ sạch trigger + function (ghi vi phạm lọt); up khi còn dòng lệch (vượt tồn, tổng giữ vượt, drift) → dừng kèm số dòng, KHÔNG sửa dữ liệu; sửa rồi up lại được, chạy lặp không lỗi", async () => {
+        const { id } = await levelRow("Trắng/S"); // 10 / 0
+        const tryUp = () =>
+          runMigration("up").then(
+            () => null,
+            (e: { code?: string; message?: string }) => e,
+          );
         try {
           await runMigration("down");
           expect(await guardObjects()).toEqual({ triggers: [], fns: 0 });
-          expect(await outcome(pg()("inventory_level").where({ id }).update({ reserved_quantity: 12 }))).toBe(
+          // (a) reserved > stocked
+          expect(await verdict(pg()("inventory_level").where({ id }).update({ reserved_quantity: 12 }))).toBe(
             "ok",
           );
-          const up = await runMigration("up").then(
-            () => null,
-            (e: { code?: string; message?: string }) => e,
-          );
+          const up = await tryUp();
           expect(up?.code).toBe(CHECK_VIOLATION);
           expect(up?.message).toContain("T-185: 1 dòng inventory_level vi phạm");
           expect(await guardObjects()).toEqual({ triggers: [], fns: 0 });
-          expect(await levelRow("Trắng/S")).toMatchObject({ stocked: 10, reserved: 12 }); // không tự sửa
-          await pg()("inventory_level").where({ id }).update({ reserved_quantity: 0 });
-          // D-134: tổng reservation_item còn sống vượt stocked (cột reserved vẫn khớp stocked) → up cũng dừng.
+          expect(await levelRow("Trắng/S")).toMatchObject({
+            stocked: 10,
+            reserved: 12,
+          }); // không tự sửa
+          // (b) tổng reservation_item vượt stocked (cột reserved khớp sổ, reserved ≤ stocked nhờ nâng stocked tạm)
           await pg()("reservation_item").insert(rawReservation("Trắng/S", 11, "down"));
-          const up2 = await runMigration("up").then(
-            () => null,
-            (e: { code?: string; message?: string }) => e,
-          );
-          expect(up2?.message).toContain("T-185: 1 dòng inventory_level vi phạm");
-          expect(await guardObjects()).toEqual({ triggers: [], fns: 0 });
+          await pg()("inventory_level").where({ id }).update({ reserved_quantity: 11, stocked_quantity: 11 });
+          expect(await tryUp()).toBeNull(); // 11 / 11 / Σ 11 — hợp lệ
+          await runMigration("down");
+          await pg()("inventory_level").where({ id }).update({ reserved_quantity: 10, stocked_quantity: 10 });
+          expect((await tryUp())?.message).toContain("T-185: 1 dòng inventory_level vi phạm"); // Σ 11 > 10
           await pg()("reservation_item").where({ id: "resitem_t185_down" }).delete();
+          // (c) drift: reserved 1 nhưng không có reservation nào
+          await pg()("inventory_level").where({ id }).update({ reserved_quantity: 1 });
+          expect((await tryUp())?.message).toContain("T-185: 1 dòng inventory_level vi phạm");
+          expect(await guardObjects()).toEqual({ triggers: [], fns: 0 });
+          await pg()("inventory_level").where({ id }).update({ reserved_quantity: 0 });
         } finally {
           await runMigration("up");
         }
         expect((await guardObjects()).triggers.map((t) => t.tgname)).toEqual(TRIGGERS.map((t) => t.tgname));
-        expect(await outcome(pg()("inventory_level").where({ id }).update({ reserved_quantity: 12 }))).toBe(
-          CHECK_VIOLATION,
+        expect(await verdict(pg()("inventory_level").where({ id }).update({ reserved_quantity: 12 }))).toBe(
+          "stock",
         );
         await runMigration("up");
-        expect(await guardObjects()).toMatchObject({ fns: 1 });
+        expect(await guardObjects()).toMatchObject({ fns: 2 });
       });
     });
 
-    /* ------------------------------------------------------------------ D-134: tổng reservation_item */
+    /* ------------------------------------------------------------------ D-134 + review T-185: sổ reservation */
 
-    describe("D-134: stocked ≥ tổng reservation_item còn sống", () => {
-      it("lost-update kiểu Medusa: hai phiên cùng đọc reserved = 0, mỗi phiên thêm reservation_item và ghi reserved = 0 + 1 (không khóa Redis) → phiên sau bị từ chối lúc commit; không bán âm", async () => {
-        const { id } = await levelRow("Đen/S"); // 1 / 0
+    describe("D-134: stocked ≥ tổng reservation_item còn sống; reserved = tổng đó (review T-185)", () => {
+      /** Hai phiên đọc reserved cũ rồi ghi tuyệt đối (như inventory module của Medusa), không khóa Redis. */
+      const lostUpdate = async (variantKey: string) => {
+        const { id } = await levelRow(variantKey);
         const read = [latch(), latch()];
         const bothRead = Promise.all(read.map((l) => l.p));
         const session = (n: number) =>
-          outcome(
+          verdict(
             pg().transaction(async (trx) => {
               const row = await trx("inventory_level").where({ id }).first<{ reserved_quantity: string }>();
               read[n]!.open();
               await bothRead; // cả hai đã đọc số cũ
-              await trx("reservation_item").insert(rawReservation("Đen/S", 1, `lu${n}`));
-              // Ghi tuyệt đối từ số đã đọc (như inventory module của Medusa) — phiên sau chờ khóa dòng rồi GHI ĐÈ.
+              await trx("reservation_item").insert(rawReservation(variantKey, 1, `lu${n}`));
+              // Phiên sau chờ khóa dòng rồi GHI ĐÈ bằng số đã đọc.
               await trx("inventory_level")
                 .where({ id })
                 .update({ reserved_quantity: Number(row!.reserved_quantity) + 1 });
             }),
           );
-        const results = await Promise.all([session(0), session(1)]);
-        expect(results.sort()).toEqual([CHECK_VIOLATION, "ok"]);
+        return (await Promise.all([session(0), session(1)])).sort();
+      };
+
+      it("lost-update khi hết hàng (tồn 1): phiên ghi đè bị từ chối lúc commit (stock); không bán âm", async () => {
+        expect(await lostUpdate("Đen/S")).toEqual(["ok", "stock"]);
         expect(await levelRow("Đen/S")).toMatchObject({ stocked: 1, reserved: 1 });
         expect(await liveReservations("Đen/S")).toBe(1);
       });
 
-      it("hai phiên chỉ chèn reservation_item (không chạm inventory_level), commit cùng lúc → đúng một phiên lọt (khóa dòng level trong hàm trigger tuần tự hoá)", async () => {
-        const inserted = [latch(), latch()];
-        const go = latch();
-        const session = (n: number) =>
-          outcome(
+      it("RV-1 lost-update khi CÒN hàng (tồn 10): phiên ghi đè bị từ chối (drift); nhả mọi giữ hàng sau đó vẫn chạy, reserved về 0", async () => {
+        expect(await lostUpdate("Trắng/S")).toEqual(["drift", "ok"]);
+        expect(await levelRow("Trắng/S")).toMatchObject({
+          stocked: 10,
+          reserved: 1,
+        });
+        expect(await liveReservations("Trắng/S")).toBe(1);
+        const ids = (await reservationsOf(container, fx, "Trắng/S")).map((r) => r.id);
+        await container.resolve(Modules.INVENTORY).deleteReservationItems(ids);
+        expect(await levelRow("Trắng/S")).toMatchObject({
+          stocked: 10,
+          reserved: 0,
+        });
+      });
+
+      it("RV-5 hai createReservationItems đồng thời qua module service (không khóa), ×8: chỉ ok/drift, reserved luôn = tổng giữ, nhả được hết", async () => {
+        const inventory = container.resolve(Modules.INVENTORY);
+        const seen = new Set<string>();
+        for (let i = 0; i < 8; i++) {
+          const res = await Promise.all([
+            verdict(
+              inventory.createReservationItems({
+                ...pairOf("Trắng/M"),
+                quantity: 1,
+              }),
+            ),
+            verdict(
+              inventory.createReservationItems({
+                ...pairOf("Trắng/M"),
+                quantity: 1,
+              }),
+            ),
+          ]);
+          for (const r of res) seen.add(r);
+          expect(res.every((r) => r === "ok" || r === "drift")).toBe(true);
+          expect((await levelRow("Trắng/M")).reserved).toBe(await liveReservations("Trắng/M"));
+          const ids = (await reservationsOf(container, fx, "Trắng/M")).map((r) => r.id);
+          await inventory.deleteReservationItems(ids);
+          expect(await levelRow("Trắng/M")).toMatchObject({
+            stocked: 10,
+            reserved: 0,
+          });
+        }
+        expect(seen.has("ok")).toBe(true);
+      });
+
+      it("khóa dòng level trong hàm kiểm (FOR UPDATE): phiên B đổi sổ reservation không chạm level phải CHỜ phiên A (đã kiểm, chưa commit) rồi kiểm trên số của A", async () => {
+        await setStock(container, fx, "Đen/M", 2);
+        expect(await reserve("Đen/M", 1, "r0")).toBe("ok"); // 2 / 1
+        const aChecked = latch();
+        const releaseA = latch();
+        const a = verdict(
+          pg().transaction(async (trx) => {
+            await reserveIn(trx, "Đen/M", 1, "a"); // 2 / 2
+            await trx.raw("set constraints all immediate"); // kiểm ngay, giữ khóa dòng level tới commit
+            aChecked.open();
+            await releaseA.p;
+          }),
+        );
+        await aChecked.p;
+        let bDone = false;
+        const b = verdict(
+          pg().transaction(async (trx) => {
+            // Đổi reservation r0 lấy rB cùng số lượng: tổng không đổi, KHÔNG UPDATE dòng level (không tự lấy khóa dòng).
+            await trx("reservation_item").where({ id: "resitem_t185_r0" }).update({ deleted_at: new Date() });
+            await trx("reservation_item").insert(rawReservation("Đen/M", 1, "b"));
+            await trx.raw("set constraints all immediate");
+          }),
+        ).finally(() => (bDone = true));
+        await sleep(1_000);
+        expect(bDone).toBe(false); // chờ khóa dòng của A — bỏ FOR UPDATE thì B xong ngay
+        releaseA.open();
+        expect([await a, await b]).toEqual(["ok", "ok"]);
+        expect(await levelRow("Đen/M")).toMatchObject({ stocked: 2, reserved: 2 });
+        expect(await liveReservations("Đen/M")).toBe(2);
+      });
+
+      it("một phiên: giữ/tăng/khôi phục/chuyển vượt tồn → stock; đổi sổ reservation không đổi reserved (thêm, tăng, xoá mềm, xoá cứng) → drift; nhất quán → được", async () => {
+        expect(await reserve("Đen/S", 2, "big")).toBe("stock");
+        expect(await reserve("Đen/S", 1, "one")).toBe("ok"); // 1 / 1
+        const res = (rid: string) => pg()("reservation_item").where({ id: `resitem_t185_${rid}` });
+        const level = (k: string) => pg()("inventory_level").where(pairOf(k)).whereNull("deleted_at");
+        // Tăng quantity kèm reserved → vượt tồn.
+        expect(
+          await verdict(
             pg().transaction(async (trx) => {
-              await trx("reservation_item").insert(rawReservation("Đen/S", 1, `ins${n}`));
-              inserted[n]!.open();
-              await go.p;
+              await res("one").transacting(trx).update({ quantity: 2 });
+              await level("Đen/S").transacting(trx).increment("reserved_quantity", 1);
+            }),
+          ),
+        ).toBe("stock");
+        // Xoá mềm kèm trừ reserved → được; giữ "two" → được; khôi phục "one" kèm cộng reserved → vượt tồn.
+        const softDelete = (rid: string, k: string, at: Date | null, delta: number) =>
+          verdict(
+            pg().transaction(async (trx) => {
+              await res(rid).transacting(trx).update({ deleted_at: at });
+              await level(k).transacting(trx).increment("reserved_quantity", delta);
             }),
           );
-        const runs = [session(0), session(1)];
-        await Promise.all(inserted.map((l) => l.p));
-        go.open();
-        expect((await Promise.all(runs)).sort()).toEqual([CHECK_VIOLATION, "ok"]);
-        expect(await liveReservations("Đen/S")).toBe(1);
-      });
-
-      it("một phiên: chèn reservation vượt stocked → 23514; tăng quantity, khôi phục reservation đã xoá mềm, chuyển sang SKU/kho đã đầy → 23514; đúng biên → được", async () => {
-        expect(await outcome(pg()("reservation_item").insert(rawReservation("Đen/S", 2, "big")))).toBe(
-          CHECK_VIOLATION,
-        );
-        expect(await outcome(pg()("reservation_item").insert(rawReservation("Đen/S", 1, "one")))).toBe("ok");
-        const one = pg()("reservation_item").where({ id: "resitem_t185_one" });
-        expect(await outcome(one.clone().update({ quantity: 2 }))).toBe(CHECK_VIOLATION);
-        expect(await outcome(one.clone().update({ deleted_at: new Date() }))).toBe("ok");
-        expect(await outcome(pg()("reservation_item").insert(rawReservation("Đen/S", 1, "two")))).toBe("ok");
-        expect(await outcome(one.clone().update({ deleted_at: null }))).toBe(CHECK_VIOLATION); // 2 > 1
-        expect(await outcome(one.clone().update({ quantity: 5 }))).toBe("ok"); // còn xoá mềm → không tính
-        // Chuyển reservation (Trắng/M, đủ hàng) sang Đen/S (đã giữ hết) → 23514.
-        expect(await outcome(pg()("reservation_item").insert(rawReservation("Trắng/M", 1, "move")))).toBe(
-          "ok",
-        );
+        expect(await softDelete("one", "Đen/S", new Date(), -1)).toBe("ok");
+        expect(await reserve("Đen/S", 1, "two")).toBe("ok");
+        expect(await softDelete("one", "Đen/S", null, 1)).toBe("stock");
+        // Chuyển reservation (Trắng/M, đủ hàng) sang Đen/S (đã giữ hết), cập nhật cả hai level → vượt tồn.
+        expect(await reserve("Trắng/M", 1, "move")).toBe("ok");
         expect(
-          await outcome(
-            pg()("reservation_item")
-              .where({ id: "resitem_t185_move" })
-              .update({ inventory_item_id: fx.variants["Đen/S"]!.inventoryItemId }),
+          await verdict(
+            pg().transaction(async (trx) => {
+              await res("move").transacting(trx).update({
+                inventory_item_id: fx.variants["Đen/S"]!.inventoryItemId,
+              });
+              await level("Trắng/M").transacting(trx).increment("reserved_quantity", -1);
+              await level("Đen/S").transacting(trx).increment("reserved_quantity", 1);
+            }),
           ),
-        ).toBe(CHECK_VIOLATION);
+        ).toBe("stock");
+        // Drift: đổi sổ reservation mà không đổi reserved (Trắng/M còn hàng — chỉ vế drift bắt được).
+        expect(await verdict(pg()("reservation_item").insert(rawReservation("Trắng/M", 1, "raw")))).toBe(
+          "drift",
+        );
+        expect(await verdict(res("move").update({ quantity: 2 }))).toBe("drift");
+        expect(await verdict(res("move").update({ deleted_at: new Date() }))).toBe("drift");
+        expect(await verdict(res("move").delete())).toBe("drift");
+        expect(await levelRow("Trắng/M")).toMatchObject({
+          stocked: 10,
+          reserved: 1,
+        });
         expect(await liveReservations("Đen/S")).toBe(1);
+        expect(await liveReservations("Trắng/M")).toBe(1);
       });
 
-      it("cột reserved_quantity bị ghi lệch nhỏ hơn tổng giữ: hạ stocked dưới tổng reservation (vẫn ≥ reserved) → 23514", async () => {
+      it("hạ stocked dưới tổng reservation (cột reserved bị ghi lệch thấp hơn) → stock", async () => {
         await flow.client.placeOrder([["Đen/M", 3]], "vnpay"); // 10 / 3, tổng giữ 3
         const { id } = await levelRow("Đen/M");
-        const r = await outcome(
+        const r = await verdict(
           pg().transaction(async (trx) => {
             await trx("inventory_level").where({ id }).update({ reserved_quantity: 0 });
             await trx("inventory_level").where({ id }).update({ stocked_quantity: 2 }); // 2 ≥ 0 nhưng < 3
           }),
         );
-        expect(r).toBe(CHECK_VIOLATION);
+        expect(r).toBe("stock");
         expect(await levelRow("Đen/M")).toMatchObject({ stocked: 10, reserved: 3 });
-      });
-
-      it("đồng thời: phiên A chèn reservation (chưa commit), phiên B hạ stocked đúng bằng reserved cũ → một trong hai bị từ chối", async () => {
-        const { id } = await levelRow("Đen/M"); // 10 / 0
-        const aInserted = latch();
-        const releaseA = latch();
-        const a = outcome(
-          pg().transaction(async (trx) => {
-            await trx("reservation_item").insert(rawReservation("Đen/M", 1, "a"));
-            aInserted.open();
-            await releaseA.p;
-          }),
-        );
-        await aInserted.p;
-        const b = outcome(
-          pg().transaction(async (trx) => {
-            await trx("inventory_level").where({ id }).update({ stocked_quantity: 0 });
-          }),
-        );
-        releaseA.open();
-        expect([await a, await b].sort()).toEqual([CHECK_VIOLATION, "ok"]);
-        const after = await levelRow("Đen/M");
-        expect(after.stocked >= (await liveReservations("Đen/M"))).toBe(true);
       });
     });
 
+    /* ------------------------------------------------------------------ job đối chiếu attempt */
+
+    describe("reconcile-attempts: attempt bù trừ lỗi được hẹn lại, không đứng đầu hàng đợi (review T-185)", () => {
+      it("COMPENSATING quá lease được liệt kê; deferStaleAttempt đẩy lease → không liệt kê tới khi tới hẹn; preparing không bị hẹn", async () => {
+        const o = await flow.client.placeOrder([["Trắng/S", 1]], "cod");
+        // Mốc tương lai (job nền chạy theo giờ thật không chạm attempt này).
+        const t0 = new Date(Date.now() + 60 * MIN);
+        const now = new Date(t0.getTime() + 60 * MIN);
+        const ids = async (at: Date) => (await checkout().listStaleAttempts(at, 50)).map((a) => a.id);
+        await pg()("checkout_attempt").where({ id: o.attemptId }).update({
+          state: "compensated",
+          error_code: "COMPENSATING",
+          lease_until: t0,
+        });
+        expect(await ids(now)).toContain(o.attemptId);
+        expect(await checkout().deferStaleAttempt(o.attemptId, new Date(now.getTime() + 5 * MIN))).toBe(true);
+        expect(await ids(now)).not.toContain(o.attemptId);
+        expect(await ids(new Date(now.getTime() + 6 * MIN))).toContain(o.attemptId);
+        await pg()("checkout_attempt")
+          .where({ id: o.attemptId })
+          .update({ state: "preparing", error_code: null, lease_until: t0 });
+        expect(await checkout().deferStaleAttempt(o.attemptId, new Date(now.getTime() + 5 * MIN))).toBe(
+          false,
+        );
+        expect(await ids(now)).toContain(o.attemptId);
+      });
+    });
     /* ------------------------------------------------------------------ checkout */
 
     describe("checkout", () => {
@@ -668,7 +796,7 @@ medusaIntegrationTestRunner({
         expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 11, reserved: 11 });
       });
 
-      it("xuất kho đọc tồn cũ (ghi khác chen giữa lúc kiểm và lúc trừ) → hàng rào DB chặn trừ tồn → 409 FULFILLMENT_BLOCKED (không 500), stocked không đổi", async () => {
+      it("xuất kho đọc tồn cũ (ghi khác chen giữa lúc kiểm và lúc trừ) → hàng rào DB chặn trừ tồn → 409 FULFILLMENT_BLOCKED (không 500), trả lại reservation đã nhả, stocked không đổi", async () => {
         const o = await flow.place([["Đen/M", 1]], "cod"); // 10 / 1
         await flow.client.placeOrder([["Đen/M", 9]], "vnpay"); // 10 / 10
         const inventory = container.resolve(Modules.INVENTORY);
@@ -686,7 +814,12 @@ medusaIntegrationTestRunner({
         } finally {
           spy.mockRestore();
         }
-        expect((await inventoryLevel(container, fx, "Đen/M")).stocked).toBe(10);
+        // Không để trạng thái dở: reservation vừa nhả được trả lại, stocked chưa trừ (review T-185).
+        expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 10, reserved: 10 });
+        expect(await liveReservations("Đen/M")).toBe(2);
+        const line = await lineOf(o.orderId, "Đen/M");
+        const mine = await container.resolve(Modules.INVENTORY).listReservationItems({ line_item_id: line });
+        expect(mine.map((r) => Number(r.quantity))).toEqual([1]);
       });
     });
   },

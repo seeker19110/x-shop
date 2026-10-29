@@ -10,7 +10,7 @@ import { isUniqueViolation, type InventoryAdjustment } from "../../modules/audit
 import type { AuditEntryInput } from "../../modules/audit/service";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
-import { isInventoryGuardViolation } from "./guard";
+import { INVENTORY_CONFLICT_RETRY, inventoryGuardKind } from "./guard";
 
 /**
  * Điều chỉnh tồn có kiểm soát (T-025, INV03, SPEC-admin S-404): lý do trong danh mục, người làm, trước/sau, khóa chống
@@ -67,7 +67,7 @@ export type AdjustmentInput = z.output<typeof AdjustmentBody>;
 export class AdjustError extends Error {
   constructor(
     readonly status: number,
-    readonly code: "NOT_FOUND" | "BELOW_RESERVED" | "IDEMPOTENCY_CONFLICT",
+    readonly code: "NOT_FOUND" | "BELOW_RESERVED" | "IDEMPOTENCY_CONFLICT" | typeof INVENTORY_CONFLICT_RETRY,
     message: string,
     readonly extra: Record<string, unknown> = {},
   ) {
@@ -142,7 +142,16 @@ export async function adjustInventory(
     } catch (e) {
       // Hàng rào DB (T-185): số giữ đã tăng giữa lúc đọc và lúc ghi (đường ghi không qua khóa inventory_item) → cùng
       // nghĩa BELOW_RESERVED, không 500. Ghi bị từ chối nên tồn không đổi.
-      if (!isInventoryGuardViolation(e)) throw e;
+      const guard = inventoryGuardKind(e);
+      if (guard === null) throw e;
+      if (guard === "drift") {
+        // Số giữ bị ghi đè đồng thời (T-185) — ghi bị hủy, tồn không đổi; gửi lại cùng khóa đọc số mới.
+        throw new AdjustError(
+          409,
+          INVENTORY_CONFLICT_RETRY,
+          "Tồn kho vừa được cập nhật đồng thời — vui lòng thử lại",
+        );
+      }
       const [now] = await scope
         .resolve(Modules.INVENTORY)
         .listInventoryLevels({ inventory_item_id: input.inventory_item_id, location_id: input.location_id });

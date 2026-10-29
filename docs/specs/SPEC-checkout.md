@@ -34,7 +34,7 @@ lần, để không bị thu thêm ngầm và không mất hàng đã giữ.
 - Given SKU X còn `stocked=1, reserved=0`
 - When 50 giỏ khác nhau submit đồng thời
 - Then đúng 1 submit thành công; 49 nhận `409 INSUFFICIENT_STOCK` dạng hiểu được; `reserved_quantity=1`, không âm.
-- And hàng rào CSDL (T-185, IND-ECOM-001): constraint trigger `x_inventory_level_stock_guard` (DEFERRABLE INITIALLY DEFERRED) từ chối lúc commit mọi trạng thái cuối có `reserved > stocked`, số âm, hoặc tổng `reservation_item` còn sống của (SKU, kho) > `stocked` (D-134, bắt lost-update khi ghi không qua khóa) → `409 INSUFFICIENT_STOCK`, không 500.
+- And hàng rào CSDL (T-185, IND-ECOM-001): constraint trigger DEFERRABLE INITIALLY DEFERRED trên `inventory_level` và `reservation_item` kiểm lúc commit trạng thái cuối của mỗi (SKU, kho): (1) `x_inventory_level_stock_guard` — số âm, `reserved > stocked`, hoặc tổng `reservation_item` còn sống > `stocked` (D-134) → `409 INSUFFICIENT_STOCK`; (2) `x_inventory_reserved_drift` — `reserved_quantity` khác tổng `reservation_item` còn sống (ghi đồng thời không qua khóa đã ghi đè số giữ, kể cả khi còn hàng) → submit `409 BUSY_RETRY` (gửi lại cùng Idempotency-Key), route admin/native `409 INVENTORY_CONFLICT_RETRY` kèm `Retry-After`. Không 500.
 - And **backorder thực tế tắt theo D-133**: hàng rào chặn cả reservation có `allow_backorder` — biến thể bật backorder vẫn nhận `409 INSUFFICIENT_STOCK` khi hết hàng. Mở backorder cần quyết định mới + migration mới.
 
 ### S-005 Hết hạn giữ hàng (INV02, §6.2 bước 8)

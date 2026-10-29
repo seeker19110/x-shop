@@ -15,11 +15,11 @@ import {
 import { randomUUID } from "node:crypto";
 import { toSafeInteger } from "../../lib/checkout/cart";
 import { maskFreeText } from "../../lib/audit/sanitize";
-import { readCheckoutError } from "../../lib/checkout/errors";
+import { CheckoutError, readCheckoutError } from "../../lib/checkout/errors";
 import { cancelNativeOrder } from "../../lib/checkout/jobs";
 import { lockKeys } from "../../lib/checkout/locks";
 import { adjustInventory } from "../../lib/inventory/adjust";
-import { isInventoryGuardViolation } from "../../lib/inventory/guard";
+import { inventoryGuardKind } from "../../lib/inventory/guard";
 import { shippedFromLocations } from "../../lib/shipping/fulfillment";
 import { SEED } from "../../scripts/seed";
 import { sizeChartsOfProducts } from "../../lib/catalog/size-chart-snapshot";
@@ -416,8 +416,10 @@ async function ensureReplacementOrder(
     return result.order_id;
   } catch (e) {
     const known = readCheckoutError(e);
-    // Hàng rào DB (T-185) từ chối giữ hàng lúc commit → cùng nghĩa không đủ hàng.
-    if (known?.code === "INSUFFICIENT_STOCK" || (!known && isInventoryGuardViolation(e))) {
+    // Hàng rào DB (T-185) từ chối giữ hàng lúc commit: vượt tồn → không đủ hàng; số giữ bị ghi đè đồng thời → bận, thử lại.
+    const guard = known ? null : inventoryGuardKind(e);
+    if (guard === "drift") throw new CheckoutError("BUSY_RETRY");
+    if (known?.code === "INSUFFICIENT_STOCK" || guard === "stock") {
       throw new ReturnsError("INSUFFICIENT_STOCK", "Size muốn đổi hiện không đủ hàng", {
         lines: known?.detail?.lines ?? [],
       });

@@ -43,6 +43,8 @@ const logger = (c: MedusaContainer) => c.resolve(ContainerRegistrationKeys.LOGGE
 export const COD_OVERDUE_EXCEPTION_DUE_MS = hoursToMs(4);
 /** Chờ khoá giỏ tối đa 1 giây khi bù trừ attempt `preparing` quá hạn (lượt sau thử lại). */
 export const STALE_ATTEMPT_LOCK_WAIT_MS = secondsToMs(1);
+/** Bù trừ một attempt lỗi → hẹn lượt sau sau khoảng này (job chạy mỗi phút). */
+export const RECONCILE_RETRY_DELAY_MS = secondsToMs(300);
 
 async function withLock<T>(
   container: MedusaContainer,
@@ -351,6 +353,8 @@ async function expireOne(
 export interface ReconcileSummary {
   compensated: string[];
   skipped: string[];
+  /** Bù trừ lỗi (đã ghi log, hẹn lại sau `RECONCILE_RETRY_DELAY_MS`) — không chặn attempt khác trong lượt. */
+  failed: string[];
   /** Dừng ở ranh giới giữa hai attempt vì tiến trình đang tắt (T-172/D-081); phần còn lại chờ lượt sau. */
   stopped: "draining" | null;
 }
@@ -410,7 +414,7 @@ export async function reconcileAttempts(
 ): Promise<ReconcileSummary> {
   const now = opts.now ?? new Date();
   const s = service(container);
-  const summary: ReconcileSummary = { compensated: [], skipped: [], stopped: null };
+  const summary: ReconcileSummary = { compensated: [], skipped: [], failed: [], stopped: null };
   for (const a of await s.listStaleAttempts(now, opts.limit ?? 50)) {
     // Ranh giới giữa hai attempt (T-172/D-081): chưa claim attempt nào khi dừng → attempt còn `preparing` quá lease.
     if (isDraining()) {
@@ -420,22 +424,37 @@ export async function reconcileAttempts(
       );
       break;
     }
-    const outcome = await withLock(
-      container,
-      lockKeys.cart(a.cart_id),
-      STALE_ATTEMPT_LOCK_WAIT_MS,
-      "cart",
-      async () => {
-        if (!(await s.claimStaleAttempt(a.id, now))) return "skipped" as const;
-        const { orderIds, reservationIds } = await leftoversOfAttempt(container, a.id);
-        if (reservationIds.length > 0) {
-          await deleteReservationsWorkflow(container).run({ input: { ids: reservationIds } });
-        }
-        for (const id of orderIds) await cancelNativeOrder(container, id);
-        await s.compensateAttemptRecords(a.id, orderIds);
-        return "compensated" as const;
-      },
-    );
+    let outcome: "compensated" | "skipped" | "busy" | "failed";
+    try {
+      outcome = await withLock(
+        container,
+        lockKeys.cart(a.cart_id),
+        STALE_ATTEMPT_LOCK_WAIT_MS,
+        "cart",
+        async () => {
+          if (!(await s.claimStaleAttempt(a.id, now))) return "skipped" as const;
+          const { orderIds, reservationIds } = await leftoversOfAttempt(container, a.id);
+          if (reservationIds.length > 0) {
+            await deleteReservationsWorkflow(container).run({ input: { ids: reservationIds } });
+          }
+          for (const id of orderIds) await cancelNativeOrder(container, id);
+          await s.compensateAttemptRecords(a.id, orderIds);
+          return "compensated" as const;
+        },
+      );
+    } catch (e) {
+      // Hạ tầng khóa mất (Redis) là lỗi của cả lượt, không của attempt: giữ hành vi cũ (lượt dừng, phút sau chạy lại).
+      if (readCheckoutError(e)?.code === "LOCK_UNAVAILABLE") throw e;
+      // Lỗi của MỘT attempt (vd hàng rào tồn T-185 từ chối nhả giữ) không được dừng cả lượt: ghi log, hẹn lại sau để
+      // attempt khác trong hàng đợi (ORDER BY lease_until) vẫn được bù trừ (review T-185).
+      outcome = "failed";
+      const retryAt = new Date(now.getTime() + RECONCILE_RETRY_DELAY_MS);
+      const deferred = await s.deferStaleAttempt(a.id, retryAt).catch(() => false);
+      logger(container).error(
+        `[reconcile-attempts] Bù trừ attempt ${a.id} lỗi${deferred ? `, hẹn lại lúc ${retryAt.toISOString()}` : ""}: ${(e as Error)?.message ?? String(e)}`,
+        e instanceof Error ? e : undefined,
+      );
+    }
     summary[outcome === "busy" ? "skipped" : outcome].push(a.id);
   }
   return summary;
