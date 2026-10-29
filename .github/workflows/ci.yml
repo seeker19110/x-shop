@@ -80,8 +80,31 @@ jobs:
         run: bash .xtemplates/scripts/dev-task.sh require lint test
       - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
         run: bash .xtemplates/scripts/dev-task.sh setup
+      # SEC-SECRET-007 (T-183): output `gate-par` (gồm log test tích hợp Medusa chạy `--silent=false`) được tee ra file để
+      # bước gitleaks bên dưới quét — bí mật lọt vào log test = đỏ. `shell: bash` = `-eo pipefail`: mã thoát của gate-par
+      # vẫn quyết định bước (tee không nuốt lỗi). Thêm kiểm, không đổi lệnh cổng.
       - name: gate-par — typecheck ∥ lint ∥ build → test (kèm ngưỡng coverage của `test`) đúng lệnh trong xt.yaml
-        run: bash .xtemplates/scripts/dev-task.sh gate-par
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/test-logs"
+          bash .xtemplates/scripts/dev-task.sh gate-par 2>&1 | tee "$RUNNER_TEMP/test-logs/gate-par.log"
+      # SEC-SECRET-007, CMP-PRIV-008: gitleaks (CLI MIT, không dùng gitleaks-action vì EULA/giấy phép tổ chức — xem
+      # secret-scan.yml) quét THƯ MỤC log, không đọc lịch sử git (`dir` = `--no-git`), dùng cấu hình chung `.gitleaks.toml`
+      # (D-135). Phiên bản ghim + sha256 (gitleaks_8.30.0_checksums.txt, xác minh 2026-10-29). Nhẹ: ~6 MB, vài giây.
+      - name: gitleaks --no-git trên log test — `gitleaks dir` (SEC-SECRET-007)
+        if: ${{ !cancelled() }}
+        env:
+          GITLEAKS_VERSION: 8.30.0
+          GITLEAKS_SHA256: 79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          test -s "$RUNNER_TEMP/test-logs/gate-par.log"
+          "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir "$RUNNER_TEMP/test-logs" --config .gitleaks.toml --redact --no-banner
       # x-shop (T-110, QA-COV-001/002): coverage nhánh (v8) của domain + storefront (vitest) + backend unit (jest), rồi
       # ratchet so coverage-baseline.json — lines/branches tụt dưới baseline, hoặc PR hạ chính baseline so với nhánh đích
       # (`--against`), thì bước đỏ. Bước riêng vì `floor --run` không áp ở pha build (ADR-0041) và `test` của xt.yaml
