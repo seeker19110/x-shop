@@ -239,5 +239,19 @@
     "reason": "`union`, `where` là hằng của mã; filter đi qua params.",
     "kind": "interpolation",
     "idents": ["union", "where"]
+  },
+  {
+    "file": "apps/backend/src/migration-scripts/app-role-bookkeeping-readonly.ts",
+    "match": "APP_ROLE_EXISTS_SQL",
+    "reason": "Hằng SQL tĩnh của src/lib/db/app-role.ts (không nội suy, không giá trị người dùng) — dùng chung với test (T-184).",
+    "kind": "dynamic",
+    "idents": ["APP_ROLE_EXISTS_SQL"]
+  },
+  {
+    "file": "apps/backend/src/migration-scripts/app-role-bookkeeping-readonly.ts",
+    "match": "REVOKE_BOOKKEEPING_WRITES_SQL",
+    "reason": "Hằng SQL tĩnh của src/lib/db/app-role.ts (không nội suy, không giá trị người dùng) — test giữ khớp migration và scripts/db-app-grants.sql (T-184).",
+    "kind": "dynamic",
+    "idents": ["REVOKE_BOOKKEEPING_WRITES_SQL"]
   }
 ]

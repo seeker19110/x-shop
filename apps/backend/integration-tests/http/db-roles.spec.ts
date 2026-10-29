@@ -1,7 +1,10 @@
 import { createRequire } from "node:module";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { MigrationScriptsMigrator } from "@medusajs/framework/migrations";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import appRoleBookkeepingReadonly from "../../src/migration-scripts/app-role-bookkeeping-readonly";
+import { MIGRATION_BOOKKEEPING_TABLES } from "../../src/lib/db/app-role";
 import { parseEnv } from "../../src/lib/env";
 import { DB_TIMEOUTS } from "../../src/lib/infra/timeouts";
 import { Migration20261029120000 } from "../../src/modules/checkout/migrations/Migration20261029120000";
@@ -10,13 +13,16 @@ jest.setTimeout(180 * 1000);
 
 /**
  * T-184 (Q-02) — vai trò DB tách quyền trên DB test THẬT (DB riêng của suite, đã chạy mọi migration):
- *  - DB-SEC-002: `xshop_app` chỉ DML (không superuser/owner/CREATE), `xshop_migrator` không superuser, quản lý được
- *    xshop_app nhưng không thừa hưởng quyền của nó; cả ca ĐƯỢC PHÉP lẫn BỊ TỪ CHỐI (42501) chạy thật bằng vai trò đó.
- *  - DB-PERF-005: statement_timeout + idle_in_transaction_session_timeout đặt ở mức vai trò bởi migration, khớp mặc định
- *    phía ứng dụng; migration lũy đẳng, chạy đồng thời không lỗi, vai trò vắng không lỗi, down() hoàn lại.
+ *  - DB-SEC-002: `xshop_app` chỉ DML (không superuser/owner/CREATE), bảng sổ migration chỉ SELECT; `xshop_migrator` không
+ *    superuser/CREATEROLE, chỉ có membership SET trên xshop_app (không ADMIN/INHERIT); cả ca ĐƯỢC PHÉP lẫn BỊ TỪ CHỐI (42501)
+ *    chạy thật bằng ĐĂNG NHẬP vai trò đó.
+ *  - DB-PERF-005: statement_timeout + idle_in_transaction_session_timeout đặt ở mức vai trò bởi migration (lưới an toàn,
+ *    xshop_app tự đổi được — không phải kiểm soát bảo mật), khớp mặc định phía ứng dụng; migration lũy đẳng, chạy đồng thời
+ *    không lỗi (cả nhánh chèn lẫn nhánh cập nhật dòng pg_db_role_setting), vai trò vắng không lỗi, down() hoàn lại.
  *  - DB-SEC-007 (Q-02 phương án A — không áp dụng): một đơn vị bán, không đa tenant → 0 bảng có cột `tenant_id`.
  * Vai trò cấp cluster do scripts/db-roles.sh tạo (dev-services.sh / bước CI) — test KHÔNG tự tạo, để bắt được môi trường
- * thiếu vai trò. Mật khẩu xshop_app: XS_PG_APP_PASSWORD, vắng = giá trị giả mặc định của db-roles.sh.
+ * thiếu vai trò. Mật khẩu: XS_PG_APP_PASSWORD / XS_PG_MIGRATOR_PASSWORD, vắng = giá trị giả mặc định của db-roles.sh.
+ * Thiết lập cấp vai trò là của CẢ CLUSTER: test chỉ đụng đúng hai tham số timeout và trả giá trị ban đầu ở afterAll.
  */
 
 interface PgClient {
@@ -31,6 +37,9 @@ const { Client } = createRequire(require.resolve("@medusajs/framework"))("pg") a
 const APP = "xshop_app";
 const MIGRATOR = "xshop_migrator";
 const APP_PASSWORD = process.env.XS_PG_APP_PASSWORD || "xshop-app-dev-SENTINEL";
+const MIGRATOR_PASSWORD = process.env.XS_PG_MIGRATOR_PASSWORD || "xshop-migrator-dev-SENTINEL";
+const TIMEOUT_PARAMS = ["statement_timeout", "idle_in_transaction_session_timeout"] as const;
+const BOOKKEEPING = new Set<string>(MIGRATION_BOOKKEEPING_TABLES);
 const ROLE_SETTINGS = ["statement_timeout=30s", "idle_in_transaction_session_timeout=60s"];
 const DENIED = "42501";
 
@@ -72,6 +81,20 @@ async function sqlState(run: () => PromiseLike<unknown>): Promise<string> {
   return "OK";
 }
 
+/** Đặt (giá trị) hoặc RESET (null) đúng một tham số timeout của xshop_app — không `reset all` cấp cluster. */
+async function setAppTimeout(
+  run: (sql: string) => PromiseLike<unknown>,
+  param: (typeof TIMEOUT_PARAMS)[number],
+  value: string | null,
+): Promise<void> {
+  if (value === null) {
+    await run(`alter role xshop_app reset ${param}`);
+    return;
+  }
+  if (!/^[0-9a-z]+$/.test(value)) throw new Error(`giá trị timeout lạ: ${value}`);
+  await run(`alter role xshop_app set ${param} = '${value}'`);
+}
+
 async function roleSettings(pg: Knex): Promise<string[]> {
   const { rows } = await pg.raw(
     `select coalesce(s.setconfig, '{}') as setconfig
@@ -86,6 +109,7 @@ medusaIntegrationTestRunner({
   testSuite: ({ getContainer }) => {
     let pg: Knex;
     let database: string;
+    const original = new Map<(typeof TIMEOUT_PARAMS)[number], string | null>();
 
     beforeAll(async () => {
       pg = getContainer().resolve(ContainerRegistrationKeys.PG_CONNECTION);
@@ -96,6 +120,18 @@ medusaIntegrationTestRunner({
           `Thiếu vai trò ${APP}/${MIGRATOR} trên Postgres — chạy bash scripts/dev-services.sh (hoặc scripts/db-roles.sh)`,
         );
       }
+      const current = await roleSettings(pg);
+      for (const param of TIMEOUT_PARAMS) {
+        const entry = current.find((e) => e.startsWith(`${param}=`));
+        original.set(param, entry === undefined ? null : entry.slice(param.length + 1));
+      }
+    });
+
+    // Kết nối riêng tới DB quản trị: afterAll của runner đã đóng kết nối/DB của suite. Thiết lập vai trò là cấp cluster.
+    afterAll(async () => {
+      await withClient(process.env.DATABASE_URL as string, async (c) => {
+        for (const [param, value] of original) await setAppTimeout((sql) => c.query(sql), param, value);
+      });
     });
 
     describe("DB-SEC-002 — thuộc tính vai trò (cấp cluster)", () => {
@@ -122,7 +158,7 @@ medusaIntegrationTestRunner({
         expect(member.rows).toEqual([]);
       });
 
-      it("xshop_migrator: không superuser/tạo DB/bypass RLS; ADMIN trên xshop_app nhưng không thừa hưởng, không SET ROLE", async () => {
+      it("xshop_migrator: không superuser/tạo DB/tạo vai trò/bypass RLS; membership SET trên xshop_app, không ADMIN/INHERIT", async () => {
         const { rows } = await pg.raw(
           `select rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls, rolcanlogin
              from pg_roles where rolname = ?`,
@@ -132,7 +168,7 @@ medusaIntegrationTestRunner({
           {
             rolsuper: false,
             rolcreatedb: false,
-            rolcreaterole: true,
+            rolcreaterole: false,
             rolreplication: false,
             rolbypassrls: false,
             rolcanlogin: true,
@@ -145,19 +181,19 @@ medusaIntegrationTestRunner({
         );
         expect(member.rows.length).toBeGreaterThan(0);
         for (const m of member.rows) {
-          expect(m).toEqual({ role: APP, admin_option: true, inherit_option: false, set_option: false });
+          expect(m).toEqual({ role: APP, admin_option: false, inherit_option: false, set_option: true });
         }
         const has = await pg.raw(
           `select pg_has_role(?, ?, 'USAGE') as usage, pg_has_role(?, ?, 'SET') as set_role,
                   has_table_privilege(?, 'public."order"', 'SELECT') as sel`,
           [MIGRATOR, APP, MIGRATOR, APP, MIGRATOR],
         );
-        expect(has.rows[0]).toEqual({ usage: false, set_role: false, sel: false });
+        expect(has.rows[0]).toEqual({ usage: false, set_role: true, sel: false });
       });
     });
 
     describe("DB-SEC-002 — quyền của xshop_app trên DB đã migrate (migration Migration20261029120000)", () => {
-      it("mọi bảng public: đủ SELECT/INSERT/UPDATE/DELETE, không TRUNCATE/REFERENCES/TRIGGER, không owner", async () => {
+      it("mọi bảng public (trừ bảng sổ migration): đủ SELECT/INSERT/UPDATE/DELETE, không TRUNCATE/REFERENCES/TRIGGER, không owner", async () => {
         const { rows } = await pg.raw(
           `select c.oid::regclass::text as name, pg_get_userbyid(c.relowner) as owner,
                   has_table_privilege(?, c.oid, 'SELECT') as sel, has_table_privilege(?, c.oid, 'INSERT') as ins,
@@ -176,9 +212,42 @@ medusaIntegrationTestRunner({
         );
         const wrong = rows.filter(
           (r: Record<string, unknown>) =>
-            !(r.sel && r.ins && r.upd && r.del) || r.trunc || r.refs || r.trig || r.owner === APP,
+            !BOOKKEEPING.has(String(r.name)) &&
+            (!(r.sel && r.ins && r.upd && r.del) || r.trunc || r.refs || r.trig || r.owner === APP),
         );
         expect(wrong).toEqual([]);
+      });
+
+      it("bảng sổ migration: migration chặn ghi mikro_orm_migrations; cuối db:migrate (migration script) chặn cả 3 — ĐĂNG NHẬP xshop_app chỉ SELECT", async () => {
+        const writable = async (table: string) =>
+          (
+            await pg.raw(
+              `select has_table_privilege(?, ?, 'INSERT') or has_table_privilege(?, ?, 'UPDATE')
+                   or has_table_privilege(?, ?, 'DELETE') or has_table_privilege(?, ?, 'TRUNCATE') as w`,
+              [APP, table, APP, table, APP, table, APP, table],
+            )
+          ).rows[0].w;
+        // Migration module chạy khi mikro_orm_migrations đã có → chặn ngay.
+        expect(await writable("mikro_orm_migrations")).toBe(false);
+        // Giống cuối `medusa db:migrate`: runner tạo script_migrations rồi chạy migration script của dự án.
+        await new MigrationScriptsMigrator({ container: getContainer() }).ensureMigrationsTable();
+        await appRoleBookkeepingReadonly({ container: getContainer() } as never);
+        const codes: Record<string, string> = {};
+        await withClient(urlFor(database, { name: APP, password: APP_PASSWORD }), async (c) => {
+          for (const table of MIGRATION_BOOKKEEPING_TABLES) {
+            expect(await sqlState(() => c.query(`select count(*) from ${table}`))).toBe("OK");
+            for (const sql of [
+              `insert into ${table} default values`,
+              `update ${table} set id = id where false`,
+              `delete from ${table} where false`,
+              `truncate ${table}`,
+            ]) {
+              codes[sql] = await sqlState(() => c.query(sql));
+            }
+          }
+        });
+        expect(Object.entries(codes).filter(([, code]) => code !== DENIED)).toEqual([]);
+        expect(Object.keys(codes)).toHaveLength(12);
       });
 
       it("sequence: USAGE/SELECT (nextval), không UPDATE (setval); schema/DB: không CREATE, không owner gì", async () => {
@@ -245,29 +314,44 @@ medusaIntegrationTestRunner({
         }
       });
 
-      it("chạy bằng xshop_migrator (SET ROLE): ALTER ROLE xshop_app SET được; nâng đặc quyền xshop_app bị từ chối 42501", async () => {
-        const trx = await pg.transaction();
-        try {
-          await trx.raw("set local role xshop_migrator");
-          // Đúng câu migration chạy khi migrate bằng vai trò migrator (Postgres 16: CREATEROLE + ADMIN OPTION).
-          expect(await sqlState(() => trx.raw("alter role xshop_app set statement_timeout = '30s'"))).toBe(
-            "OK",
-          );
-          const denied: Record<string, string> = {};
-          for (const sql of [
-            "alter role xshop_app superuser",
-            "alter role xshop_app bypassrls",
-            "alter role xshop_app createdb",
-            "alter role xshop_migrator superuser",
-          ]) {
-            await trx.raw("savepoint s");
-            denied[sql] = await sqlState(() => trx.raw(sql));
-            await trx.raw("rollback to savepoint s");
+      it("ĐĂNG NHẬP xshop_migrator: chạy được khối timeout của migration (qua SET ROLE xshop_app); tạo vai trò/đổi mật khẩu/NOLOGIN/tự cấp INHERIT/xoá xshop_app bị từ chối 42501", async () => {
+        const [roleBlock] = await migrationSql("up");
+        if (roleBlock === undefined) throw new Error("migration up() phải có khối ALTER ROLE");
+        await withClient(urlFor(database, { name: MIGRATOR, password: MIGRATOR_PASSWORD }), async (c) => {
+          await c.query("begin");
+          try {
+            // Lệch giá trị (trong transaction, rollback ở cuối) để khối PHẢI chạy ALTER ROLE chứ không thoát sớm.
+            await c.query(
+              "select set_config('role', 'xshop_app', true); alter role xshop_app set statement_timeout = '1s'; reset role",
+            );
+            await c.query(roleBlock);
+            const { rows } = await c.query(
+              `select current_user as who, (select setconfig from pg_db_role_setting
+                  where setdatabase = 0 and setrole = 'xshop_app'::regrole) as setconfig`,
+            );
+            expect(rows[0]?.who).toBe(MIGRATOR);
+            expect(rows[0]?.setconfig).toEqual(expect.arrayContaining(ROLE_SETTINGS));
+            const denied: Record<string, string> = {};
+            for (const sql of [
+              "create role t184_backdoor login",
+              "alter role xshop_app password 'x-SENTINEL'",
+              "alter role xshop_app nologin",
+              "alter role xshop_app superuser",
+              "alter role xshop_app createdb",
+              "alter role xshop_migrator createrole",
+              "grant xshop_app to xshop_migrator with inherit true",
+              "grant xshop_app to xshop_migrator with admin true",
+              "drop role xshop_app",
+            ]) {
+              await c.query("savepoint s");
+              denied[sql] = await sqlState(() => c.query(sql));
+              await c.query("rollback to savepoint s");
+            }
+            expect(Object.entries(denied).filter(([, code]) => code !== DENIED)).toEqual([]);
+          } finally {
+            await c.query("rollback");
           }
-          expect(Object.entries(denied).filter(([, code]) => code !== DENIED)).toEqual([]);
-        } finally {
-          await trx.rollback();
-        }
+        });
       });
     });
 
@@ -301,25 +385,31 @@ medusaIntegrationTestRunner({
         expect(await roleSettings(pg)).toEqual(expect.arrayContaining(ROLE_SETTINGS));
       });
 
-      it("ĐỒNG THỜI: 8 phiên cùng chạy khối ALTER ROLE của up() ngay sau RESET → tất cả thành công, thiết lập đúng", async () => {
-        const [roleBlock] = await migrationSql("up");
-        if (roleBlock === undefined) throw new Error("migration up() phải có khối ALTER ROLE");
-        try {
-          for (let round = 0; round < 3; round++) {
-            await pg.raw("alter role xshop_app reset all");
-            const results = await Promise.allSettled(
-              Array.from({ length: 8 }, () =>
-                withClient(urlFor(database), (c) => c.query(`begin; ${roleBlock} commit;`)),
-              ),
-            );
-            expect(results.filter((r) => r.status === "rejected")).toEqual([]);
-            expect(await roleSettings(pg)).toEqual(expect.arrayContaining(ROLE_SETTINGS));
+      it.each([
+        ["vắng (RESET đúng 2 tham số) → nhánh chèn, 23505", null],
+        ["giá trị khác ('1s') → nhánh cập nhật, XX000", "1s"],
+      ])(
+        "ĐỒNG THỜI: 8 phiên cùng chạy khối ALTER ROLE của up() khi thiết lập %s → tất cả thành công, thiết lập đúng",
+        async (_label, start) => {
+          const [roleBlock] = await migrationSql("up");
+          if (roleBlock === undefined) throw new Error("migration up() phải có khối ALTER ROLE");
+          try {
+            for (let round = 0; round < 3; round++) {
+              for (const param of TIMEOUT_PARAMS) await setAppTimeout((sql) => pg.raw(sql), param, start);
+              const results = await Promise.allSettled(
+                Array.from({ length: 8 }, () =>
+                  withClient(urlFor(database), (c) => c.query(`begin; ${roleBlock} commit;`)),
+                ),
+              );
+              expect(results.filter((r) => r.status === "rejected")).toEqual([]);
+              expect(await roleSettings(pg)).toEqual(expect.arrayContaining(ROLE_SETTINGS));
+            }
+          } finally {
+            // Thiết lập là cấp cluster — luôn đưa về giá trị của migration dù ca đỏ (afterAll trả giá trị ban đầu).
+            await pg.raw(roleBlock);
           }
-        } finally {
-          // Thiết lập là cấp cluster — luôn trả lại dù ca đỏ.
-          await pg.raw(roleBlock);
-        }
-      });
+        },
+      );
 
       it("vai trò không tồn tại: up() và down() không lỗi, không tạo thiết lập nào", async () => {
         const ghost = "xshop_t184_khong_ton_tai";

@@ -455,7 +455,11 @@ rồi diễn tập deploy + rollback (§5) trên staging và ghi `last_drilled`.
 ```bash
 pnpm install --frozen-lockfile
 pnpm build   # domain → medusa build (backend) và next build (storefront)
-# 1) Migration TRƯỚC khi chạy bản mới (một lần, từ một máy/job duy nhất; bản trước phải chạy được với schema mới):
+# 1) Migration TRƯỚC khi chạy bản mới (một lần, từ một máy/job duy nhất; bản trước phải chạy được với schema mới).
+#    Vai trò DB (T-184, docs/ops/ENV.md mục "Vai trò DB"): hạ tầng tạo xshop_app + xshop_migrator TRƯỚC lần migrate đầu;
+#    `db:*` kết nối bằng MIGRATION_DATABASE_URL (xshop_migrator), server/worker bằng DATABASE_URL (xshop_app). Không dùng
+#    --skip-links/--skip-scripts ở production; lỡ dùng, hoặc vai trò tạo sau lần migrate đầu (log có WARNING "chưa có vai
+#    trò xshop_app") → chạy thêm: psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db-app-grants.sql
 cd apps/backend && npx medusa db:migrate
 # 2) Backend: hai tiến trình cùng mã, khác chế độ (mỗi tiến trình có đủ biến ở docs/ops/ENV.md)
 #    Script `start` bind 127.0.0.1 mặc định (BASE-SEC-010): sau LB / trong container PHẢI đặt HOST=0.0.0.0 cho tiến trình

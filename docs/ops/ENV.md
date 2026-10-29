@@ -188,25 +188,37 @@ là hằng cấu hình trong `apps/backend/src/lib/checkout/config.ts` (D-002) �
 
 `medusa build` nạp config nên cần `DATABASE_URL` dù không kết nối — build image truyền URL giả (D-007).
 
-### Vai trò DB (T-184, Q-02 — DB-SEC-002, DB-PERF-005)
+### Vai trò DB (T-184, Q-02, D-138 — DB-SEC-002, DB-PERF-005)
 
 | Vai trò | Thuộc tính | Quyền trên DB | Dùng ở |
 |---|---|---|---|
-| `xshop_app` | LOGIN; không SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS | `SELECT/INSERT/UPDATE/DELETE` mọi bảng `public`, `USAGE/SELECT` sequence; không CREATE, không owner, không TRUNCATE | `DATABASE_URL` (server, worker) |
-| `xshop_migrator` | LOGIN, CREATEROLE + ADMIN OPTION trên `xshop_app` (không thừa hưởng/không SET ROLE); không SUPERUSER/CREATEDB/BYPASSRLS | owner/DDL của DB do hạ tầng giao | `MIGRATION_DATABASE_URL` (`medusa db:*`) |
+| `xshop_app` | LOGIN; không SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS | `SELECT/INSERT/UPDATE/DELETE` bảng `public` (bảng sổ migration `mikro_orm_migrations`, `script_migrations`, `link_module_migrations`: CHỈ `SELECT`), `USAGE/SELECT` sequence; không CREATE/owner/TRUNCATE | `DATABASE_URL` (server, worker) |
+| `xshop_migrator` | LOGIN; không SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS; membership `xshop_app` chỉ `SET` (không ADMIN, không INHERIT) | owner/DDL của DB do hạ tầng giao | `MIGRATION_DATABASE_URL` (`medusa db:*`) |
 
-- Tạo vai trò (cấp cluster, lũy đẳng): `scripts/db-roles.sh` (SQL: `scripts/db-roles.sql`). Máy dev: `bash scripts/dev-services.sh`
-  gọi sẵn; CI: bước "Vai trò DB tách quyền" của `ci.yml`. Mật khẩu dev/CI là giá trị GIẢ (`XS_PG_APP_PASSWORD`,
-  `XS_PG_MIGRATOR_PASSWORD`, mặc định chứa `SENTINEL`) — production đặt mật khẩu thật qua kho bí mật, không qua script.
-- Quyền bảng + timeout cấp vai trò do migration `Migration20261029120000` (module checkout) đặt trên MỖI DB được migrate:
-  `ALTER ROLE xshop_app SET statement_timeout = '30s'`, `idle_in_transaction_session_timeout = '60s'` (khớp
-  `DB_STATEMENT_TIMEOUT_MS` mặc định và `DB_TIMEOUTS` của ứng dụng), GRANT DML + default privileges. Vai trò chưa có → migration
-  bỏ qua (không lỗi); tạo vai trò SAU khi DB đã migrate thì `scripts/db-roles.sh` cấp quyền bảng cho DB đó, còn timeout
-  cấp vai trò cần một lần migrate trên DB mới (vd chạy test tích hợp) hoặc `down`/`up` migration đó.
-- Máy dev mặc định VẪN dùng `xshop` (superuser) cho cả hai URL: test tích hợp và các script tạo DB tạm cần quyền tạo DB,
-  và DB dev cũ do `xshop` sở hữu nên `xshop_migrator` không ALTER được bảng của nó. Chạy thử ứng dụng bằng vai trò hẹp trên
-  DB dev đã migrate: `DATABASE_URL=postgres://xshop_app:xshop-app-dev-SENTINEL@localhost:5432/xshop` (giữ migrate bằng
-  `xshop`). Test kiểm: `pnpm --filter @x-shop/backend test:integration -- db-roles`.
+- `xshop_migrator` không có CREATEROLE/ADMIN OPTION (review T-184): không tạo được vai trò, không đổi mật khẩu/thuộc tính/
+  membership của `xshop_app`. Membership `SET` chỉ để migration chạy `ALTER ROLE xshop_app SET <timeout>` dưới chính
+  `xshop_app` (vai trò thường tự đặt mặc định của nó được). Hệ quả còn lại: qua `SET ROLE xshop_app`, migrator làm được mọi
+  việc `xshop_app` làm được — kể cả đổi mật khẩu của nó (không lấy thêm dữ liệu: migrator đã là owner).
+- Thứ tự production (RUNBOOK §8.2): hạ tầng tạo hai vai trò + mật khẩu (kho bí mật) TRƯỚC lần `medusa db:migrate` đầu. Migration
+  `Migration20261029120000` (module checkout) đặt trên MỖI DB được migrate: GRANT DML + default privileges, thu hồi ghi bảng
+  sổ đang có, `ALTER ROLE xshop_app SET statement_timeout = '30s'`, `idle_in_transaction_session_timeout = '60s'` (khớp
+  `DB_STATEMENT_TIMEOUT_MS` mặc định và `DB_TIMEOUTS`). Cuối `db:migrate`, migration script
+  `src/migration-scripts/app-role-bookkeeping-readonly.ts` thu hồi ghi trên bảng sổ tạo SAU migration module (link sync, runner
+  script) — chạy một lần.
+- Vai trò tạo SAU lần migrate đầu (migration/script đã ghi là chạy, chỉ để lại `WARNING` trong log), hoặc DB đã chạy
+  `db:migrate --skip-links`/`--skip-scripts` rồi sync link sau: áp lại bằng vai trò migration, lũy đẳng —
+  `psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db-app-grants.sql`.
+- Timeout cấp vai trò là LƯỚI AN TOÀN (mặc định cho mọi phiên đăng nhập bằng `xshop_app`, kể cả psql/job ngoài ứng dụng),
+  KHÔNG phải kiểm soát bảo mật: `xshop_app` tự `SET`/`RESET` được trong phiên của nó. Hạn thật của ứng dụng vẫn là
+  `DB_STATEMENT_TIMEOUT_MS` + `DB_TIMEOUTS` gửi trong gói startup.
+- Dev/CI: `scripts/db-roles.sh` (cấp cluster `scripts/db-roles.sql` + cấp DB `scripts/db-app-grants.sql`, lũy đẳng; sửa luôn vai
+  trò do bản trước của script tạo). Máy dev: `bash scripts/dev-services.sh` gọi sẵn; CI: bước "Vai trò DB tách quyền" của
+  `ci.yml`. Mật khẩu dev/CI là giá trị GIẢ (`XS_PG_APP_PASSWORD`, `XS_PG_MIGRATOR_PASSWORD`, mặc định chứa `SENTINEL`) —
+  production đặt mật khẩu thật qua kho bí mật, không qua script.
+- Máy dev mặc định VẪN dùng `xshop` (superuser) cho cả hai URL (D-138: tách vai trò là opt-in): test tích hợp và các script
+  tạo DB tạm cần quyền tạo DB, và DB dev cũ do `xshop` sở hữu nên `xshop_migrator` không ALTER được bảng của nó. Chạy thử ứng
+  dụng bằng vai trò hẹp trên DB dev đã migrate: `DATABASE_URL=postgres://xshop_app:xshop-app-dev-SENTINEL@localhost:5432/xshop`
+  (giữ migrate bằng `xshop`). Test kiểm: `pnpm --filter @x-shop/backend test:integration -- db-roles`.
 
 Test tích hợp `upload` (T-154, `apps/backend/integration-tests/http/upload-shared-storage.spec.ts`) mặc định dùng kho S3 giả
 trong tiến trình (CI không cần dịch vụ thêm). Giới hạn của kho giả: không multipart (file > 5 MiB qua stream thất bại), không kiểm
