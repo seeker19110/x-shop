@@ -18,6 +18,11 @@ import { types } from "@medusajs/framework/pg";
  *
  * Gọi ở `medusa-config.ts` (mọi tiến trình Medusa: server, worker, `medusa exec`, `db:migrate`, runner test tích hợp nạp
  * file này trước khi truy vấn). Gọi nhiều lần vô hại.
+ *
+ * GỠ parser (đường lùi): chỉ SAU KHI đã chạy down() của 4 migration T-186 đổi cột tiền sang bigint (module checkout,
+ * shipping, returns, settlement — Migration20261029180000…180300), tức cột tiền đã về `integer`. Gỡ trước thì mọi đường đọc
+ * DML/knex nhận lại int8 dạng CHUỖI (API trả `"total": "1330000"`, so sánh `===` sai, cộng thành nối chuỗi). Test tích hợp
+ * `int8-parser` khẳng định parser có hiệu lực trên cả đường MikroORM và knex của Medusa.
  */
 export const INT8_OID = types.builtins.INT8;
 
