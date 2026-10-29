@@ -1,10 +1,11 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { z } from "zod";
 import { adminPageQuery } from "../../../../lib/http/pagination";
-import { sendProblem, zodErrors } from "../../../../lib/http/problem";
+import { sendProblem } from "../../../../lib/http/problem";
 import { AUDIT_MODULE } from "../../../../modules/audit";
 import { AUDIT_OUTCOMES } from "../../../../modules/audit/service";
 import type AuditModuleService from "../../../../modules/audit/service";
+import { readQuery } from "../../../../lib/http/request-input";
 
 const Query = z
   .object({
@@ -22,10 +23,8 @@ const Query = z
  * theo action/kết quả (`outcome`)/actor/đối tượng. Chỉ đọc: không có route sửa/xoá (bảng chỉ ghi thêm, trigger DB chặn UPDATE/DELETE).
  */
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
-  const parsed = Query.safeParse(req.query);
-  if (!parsed.success) {
-    return sendProblem(res, 422, "VALIDATION", "Tham số không hợp lệ", zodErrors(parsed.error.issues));
-  }
+  const parsed = readQuery(req, Query);
+  if (!parsed.ok) return sendProblem(res, 422, "VALIDATION", "Tham số không hợp lệ", parsed.errors);
   const { limit, offset, ...filter } = parsed.data;
   const { entries, count } = await req.scope
     .resolve<AuditModuleService>(AUDIT_MODULE)

@@ -3,7 +3,7 @@ import { requirePermission } from "../../../../../lib/access/require-permission"
 import {
   DiscrepancyListQuery,
   handleSettlementError,
-  parseInput,
+  parseQuery,
   presentDiscrepancy,
   settlementOf,
 } from "../../../../../lib/settlement/http";
@@ -15,7 +15,7 @@ import {
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
     requirePermission(req, "settlement.read");
-    const { limit, offset, ...filter } = parseInput(DiscrepancyListQuery, req.query);
+    const { limit, offset, ...filter } = parseQuery(req, DiscrepancyListQuery);
     const { discrepancies, count } = await settlementOf(req).listDiscrepancies(filter, { limit, offset });
     res.setHeader("Cache-Control", "no-store");
     res.json({ discrepancies: discrepancies.map(presentDiscrepancy), count, limit, offset });

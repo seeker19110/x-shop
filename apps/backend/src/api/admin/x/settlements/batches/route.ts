@@ -4,7 +4,7 @@ import {
   BatchListQuery,
   handleSettlementError,
   importSettlementBatch,
-  parseInput,
+  parseQuery,
   settlementOf,
 } from "../../../../../lib/settlement/http";
 
@@ -33,7 +33,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
     requirePermission(req, "settlement.read");
-    const { limit, offset, ...filter } = parseInput(BatchListQuery, req.query);
+    const { limit, offset, ...filter } = parseQuery(req, BatchListQuery);
     const { batches, count } = await settlementOf(req).listBatches(filter, { limit, offset });
     res.setHeader("Cache-Control", "no-store");
     res.json({ batches, count, limit, offset });

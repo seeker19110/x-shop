@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { vnpay } from "@x-shop/domain";
 import { flattenQuery, handleVnpayIpn } from "../../../../../lib/checkout/payment";
 import { webhookRateLimit } from "../../../../../lib/http/webhook-rate-limit";
+import { readQueryBag } from "../../../../../lib/http/request-input";
 
 /**
  * GET /x/webhooks/vnpay/ipn — chỉ VNPAY gọi (không cần publishable key/đăng nhập; tin cậy duy nhất là chữ ký
@@ -17,8 +18,13 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void
     res.status(429).json(vnpay.IPN_RESPONSES.unknownError);
     return;
   }
+  const bag = readQueryBag(req);
+  if (!bag.ok) {
+    res.status(200).json(vnpay.IPN_RESPONSES.invalidSignature);
+    return;
+  }
   try {
-    const result = await handleVnpayIpn(req.scope, flattenQuery(req.query as Record<string, unknown>));
+    const result = await handleVnpayIpn(req.scope, flattenQuery(bag.data));
     res.status(200).json(result);
   } catch (e) {
     req.scope

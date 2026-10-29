@@ -2,7 +2,9 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import type { IAuthModuleService, IUserModuleService, MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
 import { isNonEmpty } from "@x-shop/domain";
+import { z } from "zod";
 import { sendProblem } from "../http/problem";
+import { readQuery } from "../http/request-input";
 import { userModuleInviteLookup } from "./register-gate";
 
 /**
@@ -40,8 +42,9 @@ type AuthedRequest = MedusaRequest & { auth_context?: { auth_identity_id?: strin
  * (fail-closed: thiếu identity trong Bearer cũng là không khớp).
  */
 export async function inviteAcceptGuard(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
-  const token = (req.query as { token?: unknown }).token;
-  if (typeof token !== "string" || !isNonEmpty(token)) return next();
+  const query = readQuery(req, z.object({ token: z.string().max(4096) }));
+  if (!query.ok || !isNonEmpty(query.data.token)) return next();
+  const token = query.data.token;
   const invite = await userModuleInviteLookup(req.scope.resolve<IUserModuleService>(Modules.USER)).byToken(
     token,
   );

@@ -2,7 +2,7 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { requirePermission } from "../../../../../lib/access/require-permission";
 import {
   handleSettlementError,
-  parseInput,
+  parseQuery,
   settlementOf,
   SummaryQuery,
 } from "../../../../../lib/settlement/http";
@@ -15,7 +15,7 @@ import {
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
     requirePermission(req, "report.read");
-    const q = parseInput(SummaryQuery, req.query);
+    const q = parseQuery(req, SummaryQuery);
     const report = await settlementOf(req).reportSummary({ from: q.from ?? null, to: q.to ?? null });
     res.setHeader("Cache-Control", "no-store");
     res.json(report);

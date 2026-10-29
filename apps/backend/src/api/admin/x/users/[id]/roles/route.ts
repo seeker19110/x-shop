@@ -5,6 +5,13 @@ import { z } from "zod";
 import { SECURITY_EVENTS } from "../../../../../../lib/audit/events";
 import { auditContextOf, recordAudit } from "../../../../../../lib/audit/record";
 import { sendProblem, zodErrors } from "../../../../../../lib/http/problem";
+import {
+  IdParams,
+  readParams,
+  readQuery,
+  sendInvalidInput,
+  sendParamNotFound,
+} from "../../../../../../lib/http/request-input";
 import { RBAC_MODULE } from "../../../../../../modules/rbac";
 import type RbacModuleService from "../../../../../../modules/rbac/service";
 
@@ -47,7 +54,9 @@ async function auditRoleFailure(
 
 /** GET /admin/x/users/:id/roles */
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
-  const id = req.params.id as string;
+  const params = readParams(req, IdParams);
+  if (!params.ok) return sendParamNotFound(res);
+  const id = params.data.id;
   if (!(await userExists(req, id))) return sendProblem(res, 404, "NOT_FOUND", "Không thấy người dùng");
   const rbac = req.scope.resolve<RbacModuleService>(RBAC_MODULE);
   res.setHeader("Cache-Control", "no-store");
@@ -59,7 +68,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const parsed = RoleBody.safeParse(req.body ?? {});
   if (!parsed.success)
     return sendProblem(res, 422, "VALIDATION", "Dữ liệu không hợp lệ", zodErrors(parsed.error.issues));
-  const id = req.params.id as string;
+  const params = readParams(req, IdParams);
+  if (!params.ok) return sendParamNotFound(res);
+  const id = params.data.id;
   if (!(await userExists(req, id))) {
     await auditRoleFailure(
       req,
@@ -93,13 +104,17 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 /** DELETE /admin/x/users/:id/roles {role} (hoặc ?role=) — thu hồi; không thu hồi owner cuối cùng (409 LAST_OWNER). */
 export const DELETE = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
+  const query = readQuery(req, z.object({ role: z.unknown().optional(), reason: z.unknown().optional() }));
+  if (!query.ok) return sendInvalidInput(res, query.errors);
   const parsed = RoleBody.safeParse({
-    role: body.role ?? req.query.role,
-    reason: body.reason ?? req.query.reason,
+    role: body.role ?? query.data.role,
+    reason: body.reason ?? query.data.reason,
   });
   if (!parsed.success)
     return sendProblem(res, 422, "VALIDATION", "Dữ liệu không hợp lệ", zodErrors(parsed.error.issues));
-  const id = req.params.id as string;
+  const params = readParams(req, IdParams);
+  if (!params.ok) return sendParamNotFound(res);
+  const id = params.data.id;
   const rbac = req.scope.resolve<RbacModuleService>(RBAC_MODULE);
   const ctx = auditContextOf(req);
   const before = await rbac.rolesOf(id);

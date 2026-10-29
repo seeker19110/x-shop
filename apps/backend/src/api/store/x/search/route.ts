@@ -8,6 +8,7 @@ import {
   runListing,
 } from "../../../../lib/catalog/listing";
 import { sendProblem } from "../../../../lib/http/problem";
+import { readQueryBag, sendInvalidInput } from "../../../../lib/http/request-input";
 
 const SUGGESTION_LIMIT = 6;
 
@@ -16,7 +17,9 @@ const SUGGESTION_LIMIT = 6;
  * bị cắt). Không có kết quả → gợi ý danh mục liên quan (khớp từ khoá), không thì danh mục gốc.
  */
 export const GET = async (req: MedusaStoreRequest, res: MedusaResponse) => {
-  const { request, errors } = parseListingQuery(req.query);
+  const bag = readQueryBag(req);
+  if (!bag.ok) return sendInvalidInput(res, bag.errors);
+  const { request, errors } = parseListingQuery(bag.data);
   if (errors.length) return sendProblem(res, 422, "INVALID_QUERY", "Tham số tìm kiếm không hợp lệ", errors);
   const result = await runListing(req.scope, req.publishable_key_context.sales_channel_ids, request);
   let suggestions: { categories: { handle: string; name: string }[] } = { categories: [] };

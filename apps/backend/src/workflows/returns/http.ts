@@ -3,6 +3,7 @@ import { isValidIdempotencyKey, type Permission, isNonEmpty } from "@x-shop/doma
 import { z } from "zod";
 import { requirePermission } from "../../lib/access/require-permission";
 import { adminAccessOf } from "../../lib/admin-security/guard";
+import { readQuery } from "../../lib/http/request-input";
 import { RETURN_KINDS, RETURN_REASONS, REFUND_METHODS } from "../../modules/returns/constants";
 import { ReturnsError } from "./errors";
 import type { Actor } from "./refunds";
@@ -35,6 +36,13 @@ export function parseBody<T extends z.ZodType>(schema: T, body: unknown): z.outp
     });
   }
   return parsed.data;
+}
+
+/** Query của route đổi/trả/hoàn tiền theo schema (`readQuery`); sai → ReturnsError VALIDATION như `parseBody`. */
+export function parseQuery<T extends z.ZodType>(req: MedusaRequest, schema: T): z.output<T> {
+  const r = readQuery(req, schema);
+  if (!r.ok) throw new ReturnsError("VALIDATION", "Dữ liệu không hợp lệ", { errors: r.errors });
+  return r.data;
 }
 
 const id = z.string().trim().min(1).max(128);

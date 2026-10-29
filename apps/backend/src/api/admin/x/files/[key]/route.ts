@@ -1,8 +1,10 @@
 import type { Readable } from "node:stream";
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { Modules } from "@medusajs/framework/utils";
+import { z } from "zod";
 import { requirePermission } from "../../../../../lib/access/require-permission";
 import { sendProblem } from "../../../../../lib/http/problem";
+import { pathId, readParams } from "../../../../../lib/http/request-input";
 import { isPrivateFileKey, mimeForFileKey } from "../../../../../lib/upload/key";
 import { PRIVATE_FILE_PERMISSION } from "../../../../../lib/upload/private";
 
@@ -29,7 +31,9 @@ const isMissing = (err: unknown) => {
 
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   requirePermission(req, PRIVATE_FILE_PERMISSION);
-  const key = (req.params as Record<string, unknown>).key;
+  const params = readParams(req, z.object({ key: pathId(256) }));
+  if (!params.ok) return notFound(res);
+  const { key } = params.data;
   const mime = mimeForFileKey(key);
   if (!isPrivateFileKey(key) || mime === null) return notFound(res);
 

@@ -7,6 +7,7 @@ import { FASHION_MODULE } from "../../../../modules/fashion";
 import type FashionModuleService from "../../../../modules/fashion/service";
 import { SizeChartCreateSchema } from "../../../../modules/fashion/validators";
 import { createSizeChartWorkflow } from "../../../../workflows/fashion/size-chart";
+import { readQuery } from "../../../../lib/http/request-input";
 
 const ListQuery = z.object({ code: z.string().max(200).optional(), ...adminPageQuery }).strict();
 
@@ -15,9 +16,8 @@ const ListQuery = z.object({ code: z.string().max(200).optional(), ...adminPageQ
  * Phân trang như mọi danh sách Admin (`limit` 1–100, mặc định 50; vượt khoảng/tham số lạ → 422 — XC-PERF-006).
  */
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
-  const parsed = ListQuery.safeParse(req.query);
-  if (!parsed.success)
-    return sendProblem(res, 422, "VALIDATION", "Tham số không hợp lệ", zodErrors(parsed.error.issues));
+  const parsed = readQuery(req, ListQuery);
+  if (!parsed.ok) return sendProblem(res, 422, "VALIDATION", "Tham số không hợp lệ", parsed.errors);
   const { limit, offset } = parsed.data;
   const fashion: FashionModuleService = req.scope.resolve(FASHION_MODULE);
   const code = parsed.data.code === undefined ? null : slugify(parsed.data.code);

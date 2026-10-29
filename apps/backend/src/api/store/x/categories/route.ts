@@ -6,6 +6,7 @@ import { sendProblem } from "../../../../lib/http/problem";
 import { CATALOG_INDEX_MODULE } from "../../../../modules/catalog-index";
 import type CatalogIndexModuleService from "../../../../modules/catalog-index/service";
 import { isNonEmpty } from "@x-shop/domain";
+import { readQueryBag, sendInvalidInput } from "../../../../lib/http/request-input";
 
 /**
  * GET /store/x/categories[?limit=&offset=] — danh mục đang có sản phẩm đã publish trong kênh bán của publishable key,
@@ -14,7 +15,9 @@ import { isNonEmpty } from "@x-shop/domain";
  * tối đa 200, lớn hơn bị kẹp) / `offset`; `count` = tổng số danh mục có hàng (XC-PERF-006).
  */
 export const GET = async (req: MedusaStoreRequest, res: MedusaResponse) => {
-  const { page, errors } = parseStorePage(req.query, CATEGORY_PAGE);
+  const bag = readQueryBag(req);
+  if (!bag.ok) return sendInvalidInput(res, bag.errors);
+  const { page, errors } = parseStorePage(bag.data, CATEGORY_PAGE);
   if (errors.length) return sendProblem(res, 422, "INVALID_QUERY", "Tham số phân trang không hợp lệ", errors);
   const index = req.scope.resolve<CatalogIndexModuleService>(CATALOG_INDEX_MODULE);
   const [counts, cats] = await Promise.all([

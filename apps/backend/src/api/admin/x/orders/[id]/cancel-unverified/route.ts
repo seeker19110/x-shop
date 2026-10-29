@@ -10,6 +10,7 @@ import {
   idempotencyKeyOf,
   parseBody,
 } from "../../../../../../workflows/returns/http";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/orders/:id/cancel-unverified — nhân viên quyền `payment.override` (chỉ owner; MFA + xác thực lại ≤ 5 phút, D-122) hủy đơn chờ thanh
@@ -25,7 +26,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
     const actor = actorOf(req, "payment.override");
     const key = idempotencyKeyOf(req);
     const body = parseBody(CancelUnverifiedBody, req.body);
-    const orderId = String(req.params.id);
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
+    const orderId = params.data.id;
     const r = await cancelUnverified(
       req.scope,
       {

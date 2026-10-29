@@ -5,6 +5,7 @@ import { CHECKOUT_MODULE } from "../../../../../../modules/checkout";
 import type CheckoutModuleService from "../../../../../../modules/checkout/service";
 import { handleReturnsRouteError } from "../../../../../../workflows/returns/errors";
 import { actorOf, CancelBody, idempotencyKeyOf, parseBody } from "../../../../../../workflows/returns/http";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/orders/:id/cancel — nhân viên quyền `order.cancel` hủy đơn (T-044; thay route native
@@ -19,7 +20,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
     const actor = actorOf(req, "order.cancel");
     const key = idempotencyKeyOf(req);
     const body = parseBody(CancelBody, req.body);
-    const orderId = String(req.params.id);
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
+    const orderId = params.data.id;
     const r = await cancelByStaff(
       req.scope,
       { order_id: orderId, actor_id: actor.id, reason: body.reason, idempotency_key: key },

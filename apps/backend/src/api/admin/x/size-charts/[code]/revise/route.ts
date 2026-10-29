@@ -1,20 +1,26 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { slugify } from "@x-shop/domain";
+import { z } from "zod";
 import { readCheckoutError, sendProblem as sendCheckoutProblem } from "../../../../../../lib/checkout/errors";
 import { sendProblem, zodErrors } from "../../../../../../lib/http/problem";
 import { SizeChartContentSchema } from "../../../../../../modules/fashion/validators";
 import { reviseSizeChartWorkflow } from "../../../../../../workflows/fashion/size-chart";
+import { pathId, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/size-charts/:code/revise — tạo phiên bản mới (bản cũ giữ nguyên cho đơn cũ), chuyển sản phẩm sang
  * bản mới. Trả bản mới, bản bị thay và danh sách sản phẩm đã chuyển. Hạ tầng khóa (Redis) lỗi/không trả lời → 503
  * LOCK_UNAVAILABLE + Retry-After; khóa bận → 409 BUSY_RETRY (problem+json như route checkout).
  */
+const CodeParams = z.object({ code: pathId(60) });
+
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const parsed = SizeChartContentSchema.safeParse(req.body);
   if (!parsed.success)
     return sendProblem(res, 422, "VALIDATION", "Dữ liệu không hợp lệ", zodErrors(parsed.error.issues));
-  const code = slugify(req.params.code as string);
+  const params = readParams(req, CodeParams);
+  if (!params.ok) return sendParamNotFound(res);
+  const code = slugify(params.data.code);
   const run = await reviseSizeChartWorkflow(req.scope)
     .run({ input: { ...parsed.data, code } })
     .then(

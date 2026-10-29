@@ -8,6 +8,7 @@ import { accessContext, handleRouteError } from "../../../../../../../lib/checko
 import { tryAcquireExpiring } from "../../../../../../../lib/checkout/locks";
 import { recheckAttempt } from "../../../../../../../lib/checkout/recheck";
 import { presentAttempt } from "../../../../../../../lib/checkout/submit";
+import { IdParams, readParams, readQuery } from "../../../../../../../lib/http/request-input";
 
 /**
  * `cart_id` ở query hoặc thân (T-085: schema runtime thay kiểm tay). Sai kiểu/rỗng/quá dài → coi như không có → 404 như
@@ -23,11 +24,14 @@ const RecheckInput = z.object({ cart_id: z.string().trim().min(1).max(100) });
  */
 export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promise<void> => {
   try {
+    const params = readParams(req, IdParams);
+    const query = readQuery(req, z.object({ cart_id: z.unknown().optional() }));
     const input = RecheckInput.safeParse({
-      cart_id: req.query.cart_id ?? (req.body as { cart_id?: unknown } | undefined)?.cart_id,
+      cart_id:
+        (query.ok ? query.data.cart_id : null) ?? (req.body as { cart_id?: unknown } | undefined)?.cart_id,
     });
     const cartId = input.success ? input.data.cart_id : "";
-    const attemptId = String(req.params.id ?? "");
+    const attemptId = params.ok ? params.data.id : "";
     const notFound = () => new CheckoutError("NOT_FOUND", "Không tìm thấy lần đặt hàng");
     const before = cartId && attemptId ? await presentAttempt(req.scope, attemptId) : null;
     if (!before || before.cart_id !== cartId) throw notFound();

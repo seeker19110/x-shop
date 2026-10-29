@@ -75,11 +75,44 @@ const BAD_BODY_EXCEPTIONS: Record<
 
 /**
  * Dấu hiệu validate bằng schema runtime trong file route (helper dùng zod hoặc parser giao thức có kiểm).
+ * `importSettlementBatch` (lib/settlement/http.ts): `parseQuery` + `readCsvBody` (≤ 1 MB, UTF-8, CSV có kiểm).
  * `parseStorePage` (lib/http/pagination.ts, T-121): allowlist `limit`/`offset`, chỉ nhận chuỗi số thập phân (mảng/object/
  * số mũ/âm → lỗi), trả danh sách lỗi cho 422 — cùng loại với `parseListingQuery`; có unit test riêng.
  */
 const VALIDATOR =
-  /\b(parseBody|parseInput|safeParse|readCsvBody|parseListingQuery|parseStorePage|handleGhnCallback|handleVnpayIpn)\s*\(/;
+  /\b(parseBody|parseInput|safeParse|readCsvBody|importSettlementBatch|parseListingQuery|parseStorePage|handleGhnCallback|handleVnpayIpn)\s*\(/;
+
+const SRC_DIR = join(__dirname, "../../src");
+
+/** Lớp HTTP dùng chung (không phải route.ts) cũng đọc đầu vào request → cùng luật. Đường dẫn tính từ `src/`. */
+const REQUEST_READER_LIBS = [
+  "lib/orders/http.ts",
+  "lib/settlement/http.ts",
+  "lib/checkout/http.ts",
+  "lib/admin-security/invite-guard.ts",
+  "workflows/returns/http.ts",
+];
+
+/**
+ * Ngoại lệ có lý do cho truy cập trực tiếp `req.params`/`req.query` (khoá: `route <method> <path>` hoặc đường dẫn lib).
+ * Trống: mọi đầu vào đã qua schema. Thêm mục = giải thích vì sao helper schema không dùng được.
+ */
+const DIRECT_INPUT_ALLOWLIST: Record<string, string> = {};
+
+/**
+ * Các chỗ mã đọc thẳng `req.params`/`req.query` (sau khi bỏ chú thích): `req.params…`, `req?.query`, `req["query"]`,
+ * `(req as T).query`, `const { query } = req`. Trả danh sách đoạn mã vi phạm (rỗng = sạch).
+ */
+function directRequestInputAccess(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const patterns = [
+    /\breq(?:uest)?\s*(?:\?\.|\.)\s*(?:params|query)\b/g,
+    /\breq(?:uest)?\s*\[\s*["'`](?:params|query)["'`]\s*\]/g,
+    /\bas\b[^)\n]*\)\s*(?:\?\.|\.)\s*(?:params|query)\b/g,
+    /\{[^{}]*\b(?:params|query)\b[^{}]*\}\s*=\s*req(?:uest)?\b/g,
+  ];
+  return patterns.flatMap((re) => [...code.matchAll(re)].map((m) => m[0].replace(/\s+/g, " ")));
+}
 
 interface Inventory {
   code: string[];
@@ -293,16 +326,54 @@ medusaIntegrationTestRunner({
         expect(problems).toEqual([]);
       });
 
-      it('file route đọc req.query thô → có kiểm `typeof … === "string"` tại chỗ hoặc validate schema trong file', () => {
+      it("[BASE-SEC-001, BE-API-003] không route/lớp HTTP dự án truy cập thẳng req.params/req.query — chỉ qua readParams/readQuery (zod)", () => {
+        const files = new Map<string, string>();
+        for (const [r, src] of scanned) files.set(`route ${r}`, src);
+        for (const f of REQUEST_READER_LIBS) files.set(f, readFileSync(join(SRC_DIR, f), "utf8"));
+        const problems: string[] = [];
+        for (const [name, src] of files) {
+          if (DIRECT_INPUT_ALLOWLIST[name]) continue;
+          for (const hit of directRequestInputAccess(src)) problems.push(`${name}: ${hit}`);
+        }
+        expect(problems).toEqual([]);
+        // Allowlist không được thừa: mục nào không còn truy cập trực tiếp phải bị xoá.
+        for (const name of Object.keys(DIRECT_INPUT_ALLOWLIST))
+          expect(directRequestInputAccess(files.get(name) ?? "")).not.toEqual([]);
+      });
+
+      it("bộ dò truy cập trực tiếp bắt đủ các dạng (kể cả alias/ép kiểu/destructuring) và bỏ qua chú thích", () => {
+        const bad = [
+          "const id = req.params.id as string;",
+          'const id = String(req.params.id ?? "");',
+          "const q = req.query;",
+          "const { query } = req;",
+          "const { params, scope } = req;",
+          "const t = (req.query as { token?: unknown }).token;",
+          "const x = (req as Foo).query.x;",
+          'const x = req["query"].x;',
+          "const x = req?.params?.id;",
+          "const x = request.query.x;",
+          "Object.keys(req.query)",
+        ];
+        for (const src of bad)
+          expect({ src, hits: directRequestInputAccess(src).length > 0 }).toEqual({ src, hits: true });
+        const good = [
+          "const p = readParams(req, IdParams);",
+          "const q = readQuery(req, Q);",
+          "// req.params.id — chú thích",
+          "/** GET /x/:id?cart_id= — req.query.cart_id */",
+          "req.queryConfig.fields",
+          "const m = req.scope.resolve(X);",
+        ];
+        for (const src of good)
+          expect({ src, hits: directRequestInputAccess(src) }).toEqual({ src, hits: [] });
+      });
+
+      it("route có tham số đường dẫn đọc nó qua readParams (hoặc requireOrderAccess cho :display_ref)", () => {
         const problems: string[] = [];
         for (const r of inventory.code) {
-          const src = scanned.get(r)!;
-          if (VALIDATOR.test(src)) continue;
-          for (const m of src.matchAll(/req\.query/g)) {
-            const line = src.slice(src.lastIndexOf("\n", m.index) + 1, src.indexOf("\n", m.index));
-            if (/typeof req\.query\.\w+ === "string"/.test(line)) continue;
-            problems.push(`${r}: ${line.trim()}`);
-          }
+          if (!/\{\w+\}/.test(r)) continue;
+          if (!/\b(readParams|requireOrderAccess)\s*\(/.test(scanned.get(r)!)) problems.push(r);
         }
         expect(problems).toEqual([]);
       });
@@ -434,6 +505,132 @@ medusaIntegrationTestRunner({
             else if (kind(r) === "order-token" && res.status !== 404 && !isEdgeReject(res))
               failures.push(`${r} [${v.slice(0, 24)}] → ${res.status} (không token phải 404)`);
           }
+        }
+        expect(failures).toEqual([]);
+      });
+
+      it("[BASE-SEC-001] tham số/query sai hình dạng (thiếu, rỗng, mảng, object, sai kiểu, quá dài) → 404/422 có problem+json, không 5xx", async () => {
+        const owner = await createMfaAdmin(rawApi, container, { roles: ["owner"] });
+        const admin = owner.headers;
+        const long = (n: number) => "x".repeat(n);
+        const cases: Array<{
+          name: string;
+          method: Method;
+          url: string;
+          headers: Record<string, string>;
+          status: number;
+          code: string;
+        }> = [
+          // Public: attempt thuộc phiên sở hữu giỏ — mọi hình dạng sai đều là "không thấy" (không lộ gì).
+          ...[
+            ["thiếu cart_id", ""],
+            ["cart_id rỗng", "?cart_id="],
+            ["cart_id lặp (?a=1&a=2)", "?cart_id=a&cart_id=b"],
+            ["cart_id object", "?cart_id[x]=1"],
+            ["cart_id quá dài", `?cart_id=${long(101)}`],
+          ].map(([name, qs]) => ({
+            name: `attempts: ${name}`,
+            method: "get" as Method,
+            url: `/store/x/checkout/attempts/att_1${qs}`,
+            headers: {},
+            status: 404,
+            code: "NOT_FOUND",
+          })),
+          {
+            name: "products/:handle quá dài",
+            method: "get",
+            url: `/store/x/products/${long(201)}`,
+            headers: {},
+            status: 404,
+            code: "NOT_FOUND",
+          },
+          {
+            name: "wards/:code không phải số",
+            method: "get",
+            url: "/store/x/addresses/provinces/abc/wards",
+            headers: {},
+            status: 404,
+            code: "NOT_FOUND",
+          },
+          // Admin: id quá dài không khớp tài nguyên nào → 404 NOT_FOUND (như id không tồn tại).
+          ...(
+            [
+              ["get", "/admin/x/settlements/batches/"],
+              ["get", "/admin/x/returns/"],
+              ["get", "/admin/x/imports/"],
+              ["get", "/admin/x/products/PID/publish-check".replace("PID", long(129))],
+            ] as Array<[Method, string]>
+          ).map(([method, base]) => ({
+            name: `id quá dài ${base.slice(0, 32)}`,
+            method,
+            url: base.endsWith("/") ? `${base}${long(129)}` : base,
+            headers: admin,
+            status: 404,
+            code: "NOT_FOUND",
+          })),
+          {
+            name: "refunds?order_id lặp",
+            method: "get",
+            url: "/admin/x/refunds?order_id=a&order_id=b",
+            headers: admin,
+            status: 422,
+            code: "VALIDATION",
+          },
+          {
+            name: "refunds?order_id rỗng",
+            method: "get",
+            url: "/admin/x/refunds?order_id=",
+            headers: admin,
+            status: 422,
+            code: "VALIDATION",
+          },
+          {
+            name: "refunds?order_id quá dài",
+            method: "get",
+            url: `/admin/x/refunds?order_id=${long(129)}`,
+            headers: admin,
+            status: 422,
+            code: "VALIDATION",
+          },
+          {
+            name: "audit?limit lặp",
+            method: "get",
+            url: "/admin/x/audit?limit=1&limit=2",
+            headers: admin,
+            status: 422,
+            code: "VALIDATION",
+          },
+          {
+            name: "audit?action object",
+            method: "get",
+            url: "/admin/x/audit?action[x]=1",
+            headers: admin,
+            status: 422,
+            code: "VALIDATION",
+          },
+          {
+            name: "settlements/batches?limit mảng",
+            method: "get",
+            url: "/admin/x/settlements/batches?limit=1&limit=2",
+            headers: admin,
+            status: 422,
+            code: "VALIDATION",
+          },
+          {
+            name: "returns?limit mảng",
+            method: "get",
+            url: "/admin/x/returns?limit=1&limit=2",
+            headers: admin,
+            status: 422,
+            code: "VALIDATION",
+          },
+        ];
+        const failures: string[] = [];
+        for (const c of cases) {
+          const res = await send(c.method, c.url, c.headers);
+          const ct = String(res.headers["content-type"] ?? "");
+          if (res.status !== c.status || res.data.code !== c.code || !ct.includes("application/problem+json"))
+            failures.push(`${c.name} → ${res.status} ${String(res.data.code)} (${ct})`);
         }
         expect(failures).toEqual([]);
       });

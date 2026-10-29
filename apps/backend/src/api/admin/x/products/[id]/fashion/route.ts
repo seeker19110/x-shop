@@ -4,6 +4,7 @@ import { readCheckoutError, sendProblem as sendCheckoutProblem } from "../../../
 import { sendProblem, zodErrors } from "../../../../../../lib/http/problem";
 import { ProductFashionSchema } from "../../../../../../modules/fashion/validators";
 import { setProductFashionWorkflow } from "../../../../../../workflows/fashion/set-product-fashion";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/products/:id/fashion — đặt thuộc tính thời trang, bảng size, số đo người mẫu (ADM01, PDP03–04).
@@ -16,7 +17,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const parsed = ProductFashionSchema.safeParse(req.body);
   if (!parsed.success)
     return sendProblem(res, 422, "VALIDATION", "Dữ liệu không hợp lệ", zodErrors(parsed.error.issues));
-  const id = req.params.id as string;
+  const params = readParams(req, IdParams);
+  if (!params.ok) return sendParamNotFound(res);
+  const id = params.data.id;
   const run = await setProductFashionWorkflow(req.scope)
     .run({ input: { ...parsed.data, product_id: id } })
     .then(

@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/util
 import { z } from "zod";
 import { msToSecondsCeil } from "@x-shop/domain";
 import { recordAudit } from "../audit/record";
+import { readQuery } from "../http/request-input";
 import { logServerError } from "../errors/error-handler";
 import { maskFreeText } from "../audit/sanitize";
 import { adminPageQuery } from "../http/pagination";
@@ -89,6 +90,13 @@ export function parseInput<T extends z.ZodType>(schema: T, input: unknown): z.ou
   return parsed.data;
 }
 
+/** Query của route settlement/báo cáo theo schema (`readQuery`); sai → 422 VALIDATION như `parseInput`. */
+export function parseQuery<T extends z.ZodType>(req: MedusaRequest, schema: T): z.output<T> {
+  const r = readQuery(req, schema);
+  if (!r.ok) throw new SettlementHttpError(422, "VALIDATION", "Dữ liệu không hợp lệ", {}, r.errors);
+  return r.data;
+}
+
 export const settlementOf = (req: MedusaRequest) =>
   req.scope.resolve<SettlementModuleService>(SETTLEMENT_MODULE);
 
@@ -166,7 +174,7 @@ const CSV_FILE_NAME = /\.(csv|txt)$/i;
  * parse tất cả-hoặc-không, rồi nhập dưới khóa theo nguồn. Trả `{ status, body, replayed }` để route gửi.
  */
 export async function importSettlementBatch(req: MedusaRequest, actorId: string) {
-  const query = parseInput(ImportQuery, req.query);
+  const query = parseQuery(req, ImportQuery);
   const body = await readCsvBody(req, SETTLEMENT_CONFIG.maxFileBytes);
   if (!body.ok) throw new SettlementHttpError(body.status, body.code, body.reason);
   if (body.fileName !== null && !CSV_FILE_NAME.test(body.fileName)) {
