@@ -37,7 +37,12 @@ function resolveImport(from: string, spec: string): string | null {
 const VALUE_IMPORT_FROM_DOMAIN =
   /import\s+(?!type\s)[^;]*?from\s+["']@x-shop\/domain(?!\/validation["'])[^"']*["']/;
 const DOMAIN_VALIDATION = resolve(SRC, "../../../packages/domain/src/validation");
-const BARE_IMPORT = /(?:import|export)\s[^;]*?from\s+["']([^."'][^"']*)["']/g;
+/**
+ * Mọi chỗ nạp module: `… from "x"` (import/export, kể cả `import type`), `import "x"` (không tên), `import("x")` động,
+ * `require("x")`. Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
+ */
+const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']([^"']+)["']/g;
+const importSpecs = (src: string): string[] => [...src.matchAll(SPEC_RE)].map((m) => m[1]!);
 
 function clientGraph(): Set<string> {
   const roots = walk(SRC).filter((f) => /^\s*["']use client["']/.test(readFileSync(f, "utf8")));
@@ -96,6 +101,15 @@ describe("client bundle chỉ kéo @x-shop/domain/validation (FE-FORM-001, Q-03)
     for (const route of backendRoutes) expect(route).toMatch(/from "@x-shop\/domain\/validation"/);
   });
 
+  it("bộ trích import bắt đủ: from, import không tên, import() động, require(), export * from", () => {
+    expect(
+      importSpecs(
+        'import "../money/index.js";\nconst a = await import("node:fs");\nconst b = require(\'../ledger\');\n' +
+          'export * from "./x.js";\nimport type { T } from "y";\nimport * as z from "zod/mini";',
+      ),
+    ).toEqual(["../money/index.js", "node:fs", "../ledger", "./x.js", "y", "zod/mini"]);
+  });
+
   it("đồ thị import của subpath validation: chỉ file trong validation/ và `zod/mini` (không tiền/sổ cái/trạng thái/node:*)", () => {
     const seen = new Set<string>();
     const bare = new Set<string>();
@@ -105,13 +119,15 @@ describe("client bundle chỉ kéo @x-shop/domain/validation (FE-FORM-001, Q-03)
       const file = stack.pop()!;
       if (seen.has(file)) continue;
       seen.add(file);
-      const src = readFileSync(file, "utf8");
-      for (const m of src.matchAll(/(?:import|export)\s[^;]*?from\s+["'](\.[^"']*)["']/g)) {
-        const dep = resolveImport(file, m[1]!.replace(/\.js$/, ""));
-        if (dep === null) unresolved.push(`${file} → ${m[1]}`);
+      for (const spec of importSpecs(readFileSync(file, "utf8"))) {
+        if (!spec.startsWith(".")) {
+          bare.add(spec);
+          continue;
+        }
+        const dep = resolveImport(file, spec.replace(/\.js$/, ""));
+        if (dep === null) unresolved.push(`${file} → ${spec}`);
         else stack.push(dep);
       }
-      for (const m of src.matchAll(BARE_IMPORT)) bare.add(m[1]!);
     }
     expect(unresolved).toEqual([]);
     expect([...seen].filter((f) => dirname(f) !== DOMAIN_VALIDATION)).toEqual([]);

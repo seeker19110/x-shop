@@ -43,16 +43,28 @@ const SUBMIT = {
 const FORM_ADDRESS = { provinceCode: "01", wardCode: WARD.code, line: "12 Phố Huế" };
 const FORM_CONTACT = { name: "An", phone: "0912345678", email: "" };
 
+/**
+ * Mọi chỗ nạp module trong mã nguồn: `… from "x"` (import/export, kể cả `import type`), `import "x"` (không tên),
+ * `import("x")` động, `require("x")`. Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
+ */
+const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']([^"']+)["']/g;
+const importSpecs = (src: string): string[] => [...src.matchAll(SPEC_RE)].map((m) => m[1]!);
+
 describe("validation: subpath thuần (không kéo phần khác của domain vào bundle client)", () => {
+  it("bộ trích import bắt đủ: from, import không tên, import() động, require(), export * from", () => {
+    expect(
+      importSpecs(
+        'import "../money/index.js";\nconst a = await import("node:fs");\nconst b = require(\'../ledger\');\n' +
+          'export * from "./x.js";\nimport type { T } from "y";\nimport * as z from "zod/mini";',
+      ),
+    ).toEqual(["../money/index.js", "node:fs", "../ledger", "./x.js", "y", "zod/mini"]);
+  });
+
   it("mọi file nguồn chỉ import trong thư mục validation/ và `zod/mini`", () => {
     const dir = fileURLToPath(new URL(".", import.meta.url));
     const files = readdirSync(dir).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
     expect(files.sort()).toEqual(["checkout.ts", "index.ts", "phone.ts", "text.ts"]);
-    const specs = files.flatMap((f) =>
-      [
-        ...readFileSync(`${dir}${f}`, "utf8").matchAll(/(?:import|export)\s[^;]*?from\s+["']([^"']+)["']/g),
-      ].map((m) => m[1]!),
-    );
+    const specs = files.flatMap((f) => importSpecs(readFileSync(`${dir}${f}`, "utf8")));
     expect(specs.length).toBeGreaterThan(0);
     expect(specs.filter((s) => !(s === "zod/mini" || /^\.\/[\w-]+\.js$/.test(s)))).toEqual([]);
   });
@@ -174,6 +186,60 @@ describe("validation: schema theo trường (ca biên)", () => {
     for (const bad of [0, -1, 1.5, "1", null, 1_000_001, Number.NaN]) {
       expect(cartVersionSchema.safeParse(bad).error?.issues[0]?.message).toBe(M.cartVersion);
     }
+  });
+});
+
+describe("validation: giới hạn chiều dài và trường thừa (biên đúng/sai)", () => {
+  const quoteFields = (body: unknown) => {
+    const r = parseCheckoutRequest(checkoutQuoteRequestSchema, body);
+    return r.ok ? [] : r.issues;
+  };
+
+  it("địa chỉ là strictObject: trường thừa trong address → lỗi riêng `address.<khoá>`", () => {
+    expect(quoteFields({ ...QUOTE, address: { ...ADDRESS, district_code: "001" } })).toEqual([
+      { field: "address.district_code", message: M.unknownKey },
+    ]);
+    const submit = parseCheckoutRequest(checkoutSubmitRequestSchema, {
+      ...SUBMIT,
+      address: { ...ADDRESS, x: 1 },
+      contact: { ...CONTACT, y: 1 },
+    });
+    expect(submit.ok ? [] : submit.issues.map((i) => i.field)).toEqual(["contact.y", "address.x"]);
+  });
+
+  it("dòng địa chỉ thô > 500 ký tự bị chặn TRƯỚC khi chuẩn hoá (dù gọn lại chỉ còn ít ký tự)", () => {
+    const padded = (n: number) => `12 Phố Huế${" ".repeat(n - "12 Phố Huế".length)}`;
+    expect(addressLineSchema.safeParse(padded(500)).data).toBe("12 Phố Huế");
+    expect(addressLineSchema.safeParse(padded(501)).error?.issues[0]?.message).toBe(M.lineTooLong);
+    expect(quoteFields({ ...QUOTE, address: { ...ADDRESS, line: padded(501) } })).toEqual([
+      { field: "address.line", message: M.lineTooLong },
+    ]);
+  });
+
+  it("mã tỉnh/xã tối đa 10 ký tự (sau khi bỏ trắng)", () => {
+    const ok = quoteFields({ ...QUOTE, address: { ...ADDRESS, province_code: "0".repeat(10) } });
+    expect(ok).toEqual([]);
+    expect(
+      quoteFields({
+        ...QUOTE,
+        address: { ...ADDRESS, province_code: "0".repeat(11), ward_code: "1".repeat(11) },
+      }),
+    ).toEqual([
+      { field: "address.province_code", message: M.province },
+      { field: "address.ward_code", message: M.ward },
+    ]);
+    expect(quoteFields({ ...QUOTE, address: { ...ADDRESS, ward_code: ` ${WARD.code} ` } })).toEqual([]);
+  });
+
+  it("id giỏ/báo giá tối đa 100 ký tự", () => {
+    expect(quoteFields({ ...QUOTE, cart_id: "c".repeat(100) })).toEqual([]);
+    expect(quoteFields({ ...QUOTE, cart_id: "c".repeat(101) })).toEqual([
+      { field: "cart_id", message: M.cartId },
+    ]);
+    const r = parseCheckoutRequest(checkoutSubmitRequestSchema, { ...SUBMIT, quote_id: "q".repeat(101) });
+    expect(r.ok ? [] : r.issues).toEqual([{ field: "quote_id", message: M.quoteId }]);
+    const empty = parseCheckoutRequest(checkoutSubmitRequestSchema, { ...SUBMIT, quote_id: "  " });
+    expect(empty.ok ? [] : empty.issues).toEqual([{ field: "quote_id", message: M.quoteId }]);
   });
 });
 
