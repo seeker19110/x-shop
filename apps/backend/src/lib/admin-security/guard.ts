@@ -16,6 +16,7 @@ import { isAdminPath, isAdminXPath, resolveAdminRule, strictestRule, type AdminR
 import { registerAttempt, registerRefund, registerSuccess, type LimitScope } from "./rate-limit";
 import { normalizeAdminPath, normalizeMethod } from "./route-match";
 import { checkAndTouchSession, evaluateMfa, mfaCompletedAtMs, type AdminAuthContext } from "./session";
+import { AuthRouteParams, readParams, readQueryBag } from "../http/request-input";
 
 type AuthedRequest = MedusaRequest & { auth_context?: AdminAuthContext };
 
@@ -235,7 +236,8 @@ export function applyNativeFieldPolicy(
 ): string[] | null {
   const policy = nativeFieldPolicy(path, roles);
   if (policy === null) return null;
-  const requested = requestedFields(req.query as Record<string, unknown> | undefined);
+  const query = readQueryBag(req);
+  const requested = requestedFields(query.ok ? query.data : undefined);
   const bad = requested === null ? ["(fields/order không hợp lệ)"] : forbiddenFields(requested, policy);
   if (bad.length > 0) return [...new Set(bad)].slice(0, 10).map((f) => f.slice(0, 120));
   const r = req as FieldFilteredRequest;
@@ -318,6 +320,11 @@ export function authRateLimit(scope: LimitScope, identityOf: (req: MedusaRequest
   };
 }
 
+function isEmailpassRoute(req: MedusaRequest): boolean {
+  const params = readParams(req, AuthRouteParams.pick({ auth_provider: true }));
+  return params.ok && params.data.auth_provider === "emailpass";
+}
+
 /**
  * Chỉ chạy `mw` khi tham số `auth_provider` (Express đã giải mã `%xx`) đúng là `emailpass` — provider mật khẩu duy nhất.
  * Dùng cho matcher tham số `/auth/:actor_type/:auth_provider`: matcher này cũng khớp route tĩnh `/auth/token/refresh`,
@@ -328,7 +335,7 @@ export function emailpassOnly(
   mw: (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => Promise<void> | void,
 ) {
   return (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) =>
-    req.params.auth_provider === "emailpass" ? mw(req, res, next) : next();
+    isEmailpassRoute(req) ? mw(req, res, next) : next();
 }
 
 /**
@@ -337,7 +344,7 @@ export function emailpassOnly(
  * nhập (chỉ khai POST) và nhận JWT thật. Dashboard/SDK đăng nhập emailpass bằng POST; provider khác (OAuth) không bị chạm.
  */
 export function rejectEmailpassGet(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
-  if (req.params.auth_provider !== "emailpass") return next();
+  if (!isEmailpassRoute(req)) return next();
   res.setHeader("Allow", "POST");
   return sendProblem(res, 405, "METHOD_NOT_ALLOWED", "Đăng nhập email/mật khẩu chỉ nhận POST");
 }

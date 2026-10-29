@@ -10,6 +10,7 @@ import { sendRateLimited, storeOf } from "./guard";
 import { registerAttempt } from "./rate-limit";
 import type { SecurityStore } from "./store";
 import { secondsToMs } from "@x-shop/domain";
+import { AuthRouteParams, readParams } from "../http/request-input";
 
 /**
  * `POST /auth/:actor_type/:auth_provider/reset-password` (T-143, BE-AUTH-003, D-085, D-086) — yêu cầu email đặt lại mật
@@ -131,10 +132,11 @@ export async function resetPasswordGuard(req: MedusaRequest, res: MedusaResponse
     return sendProblem(res, RESET_INVALID.status, RESET_INVALID.code, RESET_INVALID.title);
   }
 
+  const params = readParams(req, AuthRouteParams);
   scheduleResetWork(req.scope, store, {
     identifier,
-    actorType: String(req.params.actor_type),
-    provider: String(req.params.auth_provider),
+    actorType: params.ok ? params.data.actor_type : "",
+    provider: params.ok ? params.data.auth_provider : "",
   });
   await sleep(Math.max(0, RESET_RESPONSE_MS - (Date.now() - startedAt)));
   res.sendStatus(201);

@@ -37,6 +37,12 @@ export const readQueryBag = (req: { query?: unknown }) => run(QueryBag, req.quer
 /** Chuỗi đơn (không nhận mảng/object), không rỗng, tối đa `max` ký tự — mẫu cho `:id`. */
 export const pathId = (max = 128) => z.string().min(1).max(max);
 
+/** `/auth/:actor_type/:auth_provider` (route native Medusa; middleware của dự án đọc qua schema này). */
+export const AuthRouteParams = z.object({
+  actor_type: z.string().max(64),
+  auth_provider: z.string().max(64),
+});
+
 /** `{ id }` — tham số đường dẫn `:id` chuẩn. */
 export const IdParams = z.object({ id: pathId() });
 

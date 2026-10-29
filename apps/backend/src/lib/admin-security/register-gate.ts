@@ -3,6 +3,7 @@ import type { IUserModuleService } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { isNonEmpty } from "@x-shop/domain";
 import { sendProblem } from "../http/problem";
+import { AuthRouteParams, readParams } from "../http/request-input";
 
 /**
  * Cổng đăng ký `POST /auth/:actor_type/:auth_provider/register` (BE-AUTH-003, T-138, D-068, D-075).
@@ -120,10 +121,12 @@ export function adminPathOf(req: MedusaRequest): string {
 
 export async function registerGate(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
   const body = (req.body ?? {}) as { email?: unknown; invite_token?: unknown };
+  // Sai dạng → chuỗi rỗng: `mayRegister` từ chối (chỉ nhận user + emailpass).
+  const params = readParams(req, AuthRouteParams);
   const allowed = await mayRegister(
     {
-      actorType: req.params.actor_type,
-      provider: req.params.auth_provider,
+      actorType: params.ok ? params.data.actor_type : "",
+      provider: params.ok ? params.data.auth_provider : "",
       email: body.email,
       inviteToken: body.invite_token,
       refererToken: inviteTokenFromReferer(req.headers.referer, req.headers.host, adminPathOf(req)),

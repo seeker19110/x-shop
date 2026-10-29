@@ -345,6 +345,11 @@ medusaIntegrationTestRunner({
           role: "support",
         });
         expect(missing.status).toBe(404);
+        // Id sai dạng (quá dài) → vẫn 404 và vẫn ghi audit failure NOT_FOUND (hành vi T-091 giữ nguyên sau T-177).
+        const malformed = await call("POST", `/admin/x/users/${"u".repeat(200)}/roles`, owner.headers, {
+          role: "support",
+        });
+        expect(malformed.status).toBe(404);
         const support = await createAdmin(rawApi, container, { roles: ["support"] });
         const denied = await call("POST", `/admin/x/users/${target.userId}/roles`, support.headers, {
           role: "owner",
@@ -360,9 +365,17 @@ medusaIntegrationTestRunner({
         });
         const failed = await waitRows({ action: SECURITY_EVENTS.ROLE_GRANTED, resource_id: missingId }, 1);
         expect(failed[0]).toMatchObject({ outcome: "failure", changes: { error_code: "NOT_FOUND" } });
+        const malformedRows = await waitRows(
+          { action: SECURITY_EVENTS.ROLE_GRANTED, resource_id: "(invalid-id)" },
+          1,
+        );
+        expect(malformedRows[0]).toMatchObject({ outcome: "failure", changes: { error_code: "NOT_FOUND" } });
         const rbac = await waitRows({ action: SECURITY_EVENTS.RBAC_DENIED, actor_id: support.userId }, 1);
         expect(rbac[0]).toMatchObject({ outcome: "denied" });
-        expectWellFormed([...ok, ...failed, ...rbac], [owner.email, target.email, support.email]);
+        expectWellFormed(
+          [...ok, ...failed, ...malformedRows, ...rbac],
+          [owner.email, target.email, support.email],
+        );
       });
     });
 

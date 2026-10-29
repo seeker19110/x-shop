@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { directRequestInputAccess, projectSources } from "../helpers/request-input-scan";
 import seedXShop from "../../src/scripts/seed";
 import { createAdmin, createMfaAdmin, noThrow, storeHeaders, type AdminAccount } from "../helpers/auth";
 
@@ -84,35 +85,11 @@ const VALIDATOR =
 
 const SRC_DIR = join(__dirname, "../../src");
 
-/** Lớp HTTP dùng chung (không phải route.ts) cũng đọc đầu vào request → cùng luật. Đường dẫn tính từ `src/`. */
-const REQUEST_READER_LIBS = [
-  "lib/orders/http.ts",
-  "lib/settlement/http.ts",
-  "lib/checkout/http.ts",
-  "lib/admin-security/invite-guard.ts",
-  "workflows/returns/http.ts",
-];
-
 /**
- * Ngoại lệ có lý do cho truy cập trực tiếp `req.params`/`req.query` (khoá: `route <method> <path>` hoặc đường dẫn lib).
- * Trống: mọi đầu vào đã qua schema. Thêm mục = giải thích vì sao helper schema không dùng được.
+ * Ngoại lệ có lý do cho truy cập trực tiếp `req.params`/`req.query` (khoá: đường dẫn tính từ `src/`). Trống: mọi đầu vào
+ * đã qua schema. Thêm mục = giải thích vì sao helper schema không dùng được.
  */
 const DIRECT_INPUT_ALLOWLIST: Record<string, string> = {};
-
-/**
- * Các chỗ mã đọc thẳng `req.params`/`req.query` (sau khi bỏ chú thích): `req.params…`, `req?.query`, `req["query"]`,
- * `(req as T).query`, `const { query } = req`. Trả danh sách đoạn mã vi phạm (rỗng = sạch).
- */
-function directRequestInputAccess(source: string): string[] {
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-  const patterns = [
-    /\breq(?:uest)?\s*(?:\?\.|\.)\s*(?:params|query)\b/g,
-    /\breq(?:uest)?\s*\[\s*["'`](?:params|query)["'`]\s*\]/g,
-    /\bas\b[^)\n]*\)\s*(?:\?\.|\.)\s*(?:params|query)\b/g,
-    /\{[^{}]*\b(?:params|query)\b[^{}]*\}\s*=\s*req(?:uest)?\b/g,
-  ];
-  return patterns.flatMap((re) => [...code.matchAll(re)].map((m) => m[0].replace(/\s+/g, " ")));
-}
 
 interface Inventory {
   code: string[];
@@ -327,13 +304,12 @@ medusaIntegrationTestRunner({
       });
 
       it("[BASE-SEC-001, BE-API-003] không route/lớp HTTP dự án truy cập thẳng req.params/req.query — chỉ qua readParams/readQuery (zod)", () => {
-        const files = new Map<string, string>();
-        for (const [r, src] of scanned) files.set(`route ${r}`, src);
-        for (const f of REQUEST_READER_LIBS) files.set(f, readFileSync(join(SRC_DIR, f), "utf8"));
+        const files = projectSources(SRC_DIR); // toàn bộ src/**/*.ts (route, lib, middleware, subscriber, script)
+        expect(files.size).toBeGreaterThan(100);
         const problems: string[] = [];
         for (const [name, src] of files) {
           if (DIRECT_INPUT_ALLOWLIST[name]) continue;
-          for (const hit of directRequestInputAccess(src)) problems.push(`${name}: ${hit}`);
+          for (const hit of directRequestInputAccess(src, name)) problems.push(`${name}: ${hit}`);
         }
         expect(problems).toEqual([]);
         // Allowlist không được thừa: mục nào không còn truy cập trực tiếp phải bị xoá.
@@ -354,6 +330,16 @@ medusaIntegrationTestRunner({
           "const x = req?.params?.id;",
           "const x = request.query.x;",
           "Object.keys(req.query)",
+          "const x = req!.query.x;",
+          "const x = req!.params.id;",
+          "export function f({ query }: MedusaRequest) { return query.x }",
+          "export const g = ({ params }: MedusaStoreRequest) => params.id;",
+          "const x = (<any>req).query;",
+          "const x = (req satisfies MedusaRequest).query.x;",
+          'const u = "a//b"; const x = req.query.x;',
+          "const { query } = req as MedusaRequest;",
+          "const x = req[k];",
+          "const x = (req as unknown as R)\n  .params.id;",
         ];
         for (const src of bad)
           expect({ src, hits: directRequestInputAccess(src).length > 0 }).toEqual({ src, hits: true });
@@ -364,6 +350,9 @@ medusaIntegrationTestRunner({
           "/** GET /x/:id?cart_id= — req.query.cart_id */",
           "req.queryConfig.fields",
           "const m = req.scope.resolve(X);",
+          'const s = "req.query.x"; const t = `req.params`;',
+          "const { scope } = req;",
+          "const x = other.query.y;",
         ];
         for (const src of good)
           expect({ src, hits: directRequestInputAccess(src) }).toEqual({ src, hits: [] });

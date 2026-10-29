@@ -11,10 +11,16 @@ import { cleanupUnlinkedIdentityForInvite } from "../lib/admin-security/invite-g
 const EventPayload = z.object({ id: z.string().min(1).max(128) });
 
 export default async function inviteIdentityCleanup({ event, container }: SubscriberArgs<{ id?: unknown }>) {
-  const data = EventPayload.safeParse(event.data);
-  if (!data.success) return;
-  const { id } = data.data;
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+  const data = EventPayload.safeParse(event.data);
+  if (!data.success) {
+    // Không ghi giá trị thô (có thể dài/PII) — chỉ tên sự kiện và trường sai.
+    logger.warn(
+      `[admin-security] ${event.name}: bỏ qua payload không hợp lệ (${data.error.issues.map((i) => i.path.join(".") || "*").join(",")})`,
+    );
+    return;
+  }
+  const { id } = data.data;
   try {
     const n = await cleanupUnlinkedIdentityForInvite(container, id);
     if (n > 0)

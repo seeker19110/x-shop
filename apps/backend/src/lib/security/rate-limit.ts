@@ -15,6 +15,7 @@ import {
   type NextRequestRule,
   type WindowSample,
 } from "./sliding-window";
+import { readQueryBag } from "../http/request-input";
 
 export * from "./sliding-window";
 
@@ -197,7 +198,8 @@ export const searchRateLimit = rateLimitMiddleware((req) => {
  */
 export const productSearchRateLimit = rateLimitMiddleware((req) => {
   const ip = ipKey(req);
-  const searching = parseFilter(sanitizeQuery(req.query as Record<string, unknown>)).filter.q !== null;
+  const query = readQueryBag(req);
+  const searching = query.ok && parseFilter(sanitizeQuery(query.data)).filter.q !== null;
   return [(c, now) => (isNonEmpty(ip) && searching ? consume(c, "searchIp", ip, now) : null)];
 });
 

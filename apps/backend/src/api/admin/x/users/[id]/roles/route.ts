@@ -24,6 +24,9 @@ const RoleBody = z.object({
   reason: z.string().trim().max(500).optional(),
 });
 
+/** `resource_id` audit khi `:id` sai dạng (rỗng/quá dài/không phải chuỗi) — không ghi id thô của đầu vào hỏng. */
+const INVALID_ID_MARK = "(invalid-id)";
+
 async function userExists(req: MedusaRequest, id: string): Promise<boolean> {
   const users = await req.scope.resolve(Modules.USER).listUsers({ id: [id] }, { select: ["id"] });
   return users.length > 0;
@@ -69,7 +72,18 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   if (!parsed.success)
     return sendProblem(res, 422, "VALIDATION", "Dữ liệu không hợp lệ", zodErrors(parsed.error.issues));
   const params = readParams(req, IdParams);
-  if (!params.ok) return sendParamNotFound(res);
+  if (!params.ok) {
+    // Id sai dạng cũng là thao tác không thành công trên user không có → vẫn ghi audit (T-091); id thô không dùng được.
+    await auditRoleFailure(
+      req,
+      SECURITY_EVENTS.ROLE_GRANTED,
+      INVALID_ID_MARK,
+      parsed.data.role,
+      parsed.data.reason ?? null,
+      "NOT_FOUND",
+    );
+    return sendParamNotFound(res);
+  }
   const id = params.data.id;
   if (!(await userExists(req, id))) {
     await auditRoleFailure(
