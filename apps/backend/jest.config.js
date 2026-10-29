@@ -23,11 +23,12 @@ if (process.env.TEST_TYPE?.startsWith("integration")) {
 
 module.exports = {
   transform: {
-    "^.+\\.[jt]s$": [
+    "^.+\\.[jt]sx?$": [
       "@swc/jest",
       {
         jsc: {
-          parser: { syntax: "typescript", decorators: true },
+          parser: { syntax: "typescript", tsx: true, decorators: true },
+          transform: { react: { runtime: "automatic" } },
         },
       },
     ],
@@ -41,7 +42,7 @@ module.exports = {
   moduleNameMapper: {
     "^(\\.{1,2}/.*)\\.js$": "$1",
   },
-  moduleFileExtensions: ["js", "ts", "json"],
+  moduleFileExtensions: ["js", "ts", "tsx", "json"],
   modulePathIgnorePatterns: ["dist/", "<rootDir>/.medusa/"],
   setupFiles: ["./integration-tests/setup.ts"],
   ...(process.env.TEST_TYPE?.startsWith("integration") && {
@@ -68,6 +69,8 @@ if (process.env.TEST_TYPE === "integration:http") {
 } else if (process.env.TEST_TYPE === "unit") {
   module.exports.testMatch = [
     "**/src/**/__tests__/**/*.unit.spec.[jt]s",
+    // Component Admin (React); môi trường jsdom đặt bằng docblock `@jest-environment jsdom` trong từng file.
+    "**/src/admin/**/__tests__/**/*.unit.spec.tsx",
     // Hạ tầng test (giành Redis DB của globalSetup, T-146) — test đơn vị dùng Redis giả.
     "<rootDir>/integration-tests/__tests__/*.unit.spec.[jt]s",
   ];

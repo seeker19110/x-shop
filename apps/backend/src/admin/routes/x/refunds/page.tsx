@@ -13,7 +13,9 @@ import {
   toast,
 } from "@medusajs/ui";
 import { useState, type ReactNode } from "react";
+import { ConfirmDialog } from "../../../components/confirm-dialog";
 import { ProblemAlert } from "../../../components/problem-alert";
+import { confirmSpec } from "../../../lib/confirm-dialog";
 import { adminFetch, newIdempotencyKey } from "../../../lib/api";
 import { formatInstant, formatVnd } from "../../../lib/format";
 import {
@@ -121,6 +123,7 @@ const RefundsPage = (): ReactNode => {
   const [evidence, setEvidence] = useState("");
   const [method, setMethod] = useState<RefundMethodChoice>("manual");
   const [busy, setBusy] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<AdminApiError | null>(null);
   const [exhaustedIds, setExhaustedIds] = useState<ReadonlySet<string>>(new Set());
 
@@ -367,7 +370,11 @@ const RefundsPage = (): ReactNode => {
               variant={pending.kind === "reject" || pending.kind === "cancel" ? "danger" : "primary"}
               isLoading={busy === pending.refund.id}
               disabled={confirmDisabled(pending)}
-              onClick={() => act(pending.refund, pending.kind)}
+              onClick={() =>
+                pending.kind === "execute" || pending.kind === "reject"
+                  ? setConfirming(true)
+                  : void act(pending.refund, pending.kind)
+              }
             >
               {pending.kind === "reject"
                 ? "Từ chối"
@@ -383,6 +390,26 @@ const RefundsPage = (): ReactNode => {
           </div>
         </Container>
       )}
+
+      <ConfirmDialog
+        spec={
+          confirming && pending && (pending.kind === "execute" || pending.kind === "reject")
+            ? confirmSpec(pending.kind === "execute" ? "refund-execute" : "refund-reject", {
+                ref: pending.refund.id,
+                amount: pending.refund.amount,
+              })
+            : null
+        }
+        onCancel={() => setConfirming(false)}
+        onConfirm={async () => {
+          if (!pending) return;
+          try {
+            await act(pending.refund, pending.kind);
+          } finally {
+            setConfirming(false);
+          }
+        }}
+      />
 
       {rows && (
         <Container className="p-0">
