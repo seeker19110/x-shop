@@ -10,10 +10,14 @@ import { Migration20261026210500 as ImportT101 } from "../../src/modules/catalog
 
 jest.setTimeout(180 * 1000);
 
-/** Mã lỗi Postgres: 23505 unique_violation, 23514 check_violation, 23503 foreign_key_violation. */
+/**
+ * Mã lỗi Postgres: 23505 unique_violation, 23514 check_violation, 23503 foreign_key_violation,
+ * 22P02 invalid_text_representation.
+ */
 const UNIQUE = "23505";
 const CHECK = "23514";
 const FOREIGN_KEY = "23503";
+const INVALID_TEXT = "22P02";
 
 const uid = (p: string) => `${p}_${randomUUID().replace(/-/g, "")}`;
 
@@ -132,7 +136,9 @@ medusaIntegrationTestRunner({
       });
 
       it("amount không phải số nguyên (chuỗi '1.5') → DB từ chối", async () => {
-        await expect(insertLedger({ amount: "1.5", txn: uid("t") })).rejects.toThrow(/integer/);
+        // 22P02 invalid_text_representation — theo mã SQLSTATE, không theo tên kiểu trong thông báo: cột tiền đổi
+        // integer → bigint (T-186) mà ca này vẫn đúng trên cả hai schema (N−1/N).
+        expect(await pgError(insertLedger({ amount: "1.5", txn: uid("t") }))).toBe(INVALID_TEXT);
       });
     });
 

@@ -1,12 +1,16 @@
 import { defineConfig, loadEnv } from "@medusajs/framework/utils";
 import { EMAILPASS_HASH_CONFIG } from "./src/lib/admin-security/password-hash";
 import { sessionCookieConfig } from "./src/lib/admin-security/session-cookie";
+import { installInt8Parser } from "./src/lib/db/int8";
 import { isMigrationCommand, loadEnvOrExit } from "./src/lib/env";
 import { databaseConfig, redisQueueOptions, redisRequestOptions } from "./src/lib/infra/timeouts";
 import { appLoggerFromEnv } from "./src/lib/log/app-logger";
 import { fileProviderEntry } from "./src/lib/upload/config";
 
 loadEnv(process.env.NODE_ENV || "development", process.cwd());
+
+// int8 (cột tiền bigint) → number có kiểm Number.isSafeInteger, trước mọi truy vấn (T-186, src/lib/db/int8.ts).
+installInt8Parser();
 
 // Cấu hình sai → in tên biến (không in giá trị) và thoát mã 1 trước khi Medusa khởi động (BASE-CFG-002).
 const env = loadEnvOrExit(process.env);
