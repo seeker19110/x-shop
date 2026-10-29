@@ -154,6 +154,10 @@ jobs:
       # trong `gate` (không thêm job/required check). Mỗi script chạy kèm test của chính nó.
       - name: Đặc tả API (openapi + spectral) — `pnpm check:openapi`
         run: pnpm check:openapi
+      # x-shop (T-187, ARC-INT-001/BE-API-008): thêm kiểm — mỗi route ghi nhận Idempotency-Key hoặc nằm trong allowlist có
+      # lý do + test song song; OpenAPI khai `x-idempotency` khớp mã. Kèm test của chính script.
+      - name: Idempotency route ghi — `pnpm check:idempotency` (ARC-INT-001)
+        run: pnpm check:idempotency && pnpm check:idempotency:test
       - name: Bản đồ dữ liệu ↔ migration/PII — `pnpm check:data-map`
         run: pnpm check:data-map
       - name: Cấu trúc ADR — `node scripts/check-adr.mjs`
