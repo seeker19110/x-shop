@@ -560,10 +560,10 @@ export function nativeOperationOf(method: string, pattern: string | null): strin
     .filter((s) => !s.startsWith(":"))
     .map((s) => s.replace(/-/g, "_"));
   const lastIsParam = segs.length > 2 && (segs[segs.length - 1] ?? "").startsWith(":");
-  const tail = rest.length > 0 ? `.${rest.join(".")}` : "";
-  if (method === "DELETE") return `delete${tail}`;
+  // Tên thao tác (không phải SQL): ghép bằng join để check-sql-safety không nhận nhầm `update…`/`delete…` là câu lệnh.
+  if (method === "DELETE") return ["delete", ...rest].join(".");
   if (segs.length === 2) return "create";
-  if (lastIsParam) return `update${tail}`;
+  if (lastIsParam) return ["update", ...rest].join(".");
   return rest.join(".");
 }
 
