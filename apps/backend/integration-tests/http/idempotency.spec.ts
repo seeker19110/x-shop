@@ -1,10 +1,16 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { IMPORT_COLUMNS } from "@x-shop/domain";
+import catalogIndexDrainJob from "../../src/jobs/catalog-index-drain";
+import catalogIndexRebuildJob from "../../src/jobs/catalog-index-rebuild";
+import codConfirmTimeoutJob from "../../src/jobs/cod-confirm-timeout";
+import expireHoldsJob from "../../src/jobs/expire-holds";
 import orderAccessCleanupJob from "../../src/jobs/order-access-cleanup";
+import outboxDispatchJob from "../../src/jobs/outbox-dispatch";
+import reconcileAttemptsJob from "../../src/jobs/reconcile-attempts";
 import { loadProductSources } from "../../src/lib/catalog/product-source";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
@@ -26,8 +32,9 @@ jest.setTimeout(600 * 1000);
  *  (a) route nhận `Idempotency-Key`: cùng khoá + cùng nội dung → cùng phản hồi, không tác dụng lần hai; cùng khoá khác
  *      nội dung → 409 IDEMPOTENCY_CONFLICT (Q-07: giữ hợp đồng đang chạy — mẫu khung là 422); thiếu khoá → 422 (mẫu
  *      khung 400); cùng khoá ×2 song song → một lần xử lý (bên sau chờ rồi trả kết quả bên thắng, hoặc 202/409 BUSY_RETRY).
- *      `POST /admin/x/orders/{id}/cancel-unverified` cần kịch bản cổng riêng — phủ ở cancel-unverified.spec.ts.
- *  (b) khoá lưu ≥ 24 giờ: các bảng giữ khoá không có cột hết hạn, không mã nào xoá; bản ghi 25 giờ tuổi vẫn trả lại.
+ *      Mỗi route nhận khoá PHẢI có kịch bản trong `KEYED` (scripts/check-idempotency.mjs kiểm).
+ *  (b) khoá lưu ≥ 24 giờ: các bảng giữ khoá không có cột hết hạn; không chỗ xoá nào ngoài danh sách đã duyệt (quét cả
+ *      tên bảng lẫn hằng tên bảng); bản ghi 23 giờ 59 phút tuổi còn nguyên sau MỌI job trong src/jobs và vẫn trả lại.
  *  (c) route trong scripts/idempotency-allowlist.json chưa có test song song ở spec khác: gọi ×2 song song → trạng
  *      thái cuối như gọi một lần.
  */
@@ -80,6 +87,18 @@ medusaIntegrationTestRunner({
     const statusOf = (r: Res<J>) =>
       r.status < 300 ? String(r.status) : `${r.status}:${String(r.data.code)}`;
     const withKey = (k: string | null): Record<string, string> => (k ? { "Idempotency-Key": k } : {});
+    /** Route đòi xác thực lại ≤ 5 phút (map quyền `reauth`): owner đăng nhập lại (mật khẩu + TOTP), giữ tối đa 3 phút. */
+    let freshOwner: { at: number; headers: { authorization: string } } | null = null;
+    const ownerFresh = async () => {
+      if (!freshOwner || Date.now() - freshOwner.at > 3 * 60_000) {
+        const headers = await loginWithMfa(rawApi as unknown as HttpClient, staff.owner, {
+          method: "totp",
+          code: totp(staff.owner.secret),
+        });
+        freshOwner = { at: Date.now(), headers };
+      }
+      return freshOwner.headers;
+    };
 
     beforeAll(async () => {
       container = getContainer();
@@ -233,6 +252,34 @@ medusaIntegrationTestRunner({
           idOf: (r) => r.data.order_id,
         };
       },
+      "POST /admin/x/orders/{id}/cancel-unverified": async () => {
+        // Đơn VNPAY chưa trả, quá hạn giữ hàng (attempt `created|pending` quá `hold_expires_at`) → diện chưa xác minh; cổng
+        // mock trả "chưa trả" ở lần hỏi cuối nên route hủy.
+        const o = await flow.client.placeOrder([["Đen/S", 1]], "vnpay");
+        await pg()("order_finance")
+          .where({ order_id: o.orderId })
+          .update({ hold_expires_at: new Date(Date.now() - 60_000) });
+        const owner = await ownerFresh();
+        return {
+          created: 200,
+          send: (k, v) =>
+            flow.admin(
+              `/admin/x/orders/${o.orderId}/cancel-unverified`,
+              owner,
+              {
+                reason: "Đã đối chiếu cổng merchant VNPAY: không có giao dịch thành công",
+                merchant_ref: v === "a" ? "VNP-14422574" : "VNP-99887766",
+              },
+              withKey(k),
+            ),
+          effect: async () => ({
+            count: await rowsOf("x_order_cancel", { order_id: o.orderId }),
+            cancelled_events: (await outboxOf(o.orderId, "order.cancelled")).length,
+            reserved: (await inventoryLevel(container, fx, "Đen/S")).reserved,
+          }),
+          idOf: (r) => r.data.order_id,
+        };
+      },
       "POST /admin/x/inventory/adjustments": async () => {
         const item = fx.variants["Trắng/M"]!.inventoryItemId;
         return {
@@ -317,7 +364,28 @@ medusaIntegrationTestRunner({
         "inventory_adjustment",
       ];
 
-      it("TTL ≥ 24 giờ: bảng giữ khoá không có cột hết hạn, mã không xoá, inventory_adjustment chặn xoá ở DB", async () => {
+      /**
+       * Chỗ mã xoá bản ghi giữ khoá đã duyệt (`<file tương đối src/>`). Hiện rỗng: khoá lưu vĩnh viễn. Job lưu giữ sau này
+       * (Q-20) thêm file vào đây và PHẢI giữ ≥ 24 giờ — test động dưới chạy mọi job trên bản ghi 23 giờ 59 phút tuổi.
+       */
+      const REVIEWED_DELETE_SITES: string[] = [];
+
+      /** Chỗ xoá bảng giữ khoá trong một đoạn mã — theo tên bảng viết thẳng lẫn hằng tên bảng (vd `ORDER_CANCEL_TABLE`). */
+      const deleteSites = (text: string, idents: string[]) => {
+        const tables = KEY_TABLES.join("|");
+        const names = [...KEY_TABLES.map((t) => `["'\`]${t}["'\`]`), ...idents].join("|");
+        const res = [
+          new RegExp(`DELETE\\s+FROM\\s+"?(${tables})\\b`, "i"),
+          ...(idents.length
+            ? [new RegExp(`DELETE\\s+FROM\\s+"?\\$\\{\\s*(${idents.join("|")})\\s*\\}`, "i")]
+            : []),
+          new RegExp(`\\(\\s*(${names})\\s*\\)[\\s\\S]{0,200}?\\.(del|delete|truncate)\\(`),
+          /\b(soft)?[dD]elete(CheckoutAttempts|InventoryAdjustments|Returns|Refunds|OrderCancels)\b/,
+        ];
+        return res.filter((re) => re.test(text)).map((re) => re.source);
+      };
+
+      it("TTL ≥ 24 giờ: bảng giữ khoá không có cột hết hạn; mã không xoá (kể cả qua hằng tên bảng) ngoài chỗ đã duyệt; inventory_adjustment chặn xoá ở DB", async () => {
         const cols = (await pg()
           .select("table_name", "column_name")
           .from("information_schema.columns")
@@ -329,13 +397,9 @@ medusaIntegrationTestRunner({
           const expiry = names.filter(
             (n) => /expir|ttl|valid_until|purge/i.test(n) && n !== "hold_expires_at",
           );
-          expect({ t, expiry }).toEqual({
-            t,
-            expiry: [],
-          });
+          expect({ t, expiry }).toEqual({ t, expiry: [] });
         }
 
-        // Không đường mã nào (job dọn, service, workflow) xoá bản ghi giữ khoá — lưu vĩnh viễn ⇒ ≥ 24 giờ.
         const src = join(__dirname, "../../src");
         const files: string[] = [];
         const walk = (d: string) => {
@@ -343,20 +407,37 @@ medusaIntegrationTestRunner({
             const p = join(d, n);
             if (statSync(p).isDirectory()) {
               if (n !== "__tests__" && n !== "migrations") walk(p);
-            } else if (p.endsWith(".ts")) files.push(p);
+            } else if (/\.[cm]?[jt]s$/.test(p)) files.push(p);
           }
         };
         walk(src);
-        const tables = KEY_TABLES.join("|");
-        const deletes = [
-          new RegExp(`DELETE\\s+FROM\\s+"?(${tables})\\b`, "i"),
-          new RegExp(`\\(\\s*["'\`](${tables})["'\`]\\s*\\)[\\s\\S]{0,200}?\\.(del|delete)\\(`),
-          /\b(soft)?[dD]elete(CheckoutAttempts|InventoryAdjustments)\b/,
+        const texts = files.map((f) => ({ f: relative(src, f), text: readFileSync(f, "utf8") }));
+        // Hằng mang tên bảng giữ khoá (RETURN_TABLE, REFUND_TABLE, ORDER_CANCEL_TABLE, ADJUSTMENT_TABLE…).
+        const idents = [
+          ...new Set(
+            texts.flatMap(({ text }) =>
+              [
+                ...text.matchAll(
+                  new RegExp(`\\b([A-Za-z_$][\\w$]*)\\s*=\\s*["'\`](${KEY_TABLES.join("|")})["'\`]`, "g"),
+                ),
+              ].map((m) => m[1]!),
+            ),
+          ),
         ];
-        const hits = files.flatMap((f) => {
-          const text = readFileSync(f, "utf8");
-          return deletes.filter((re) => re.test(text)).map((re) => `${f}: ${re.source}`);
-        });
+        expect(idents).toEqual(
+          expect.arrayContaining(["ORDER_CANCEL_TABLE", "REFUND_TABLE", "RETURN_TABLE"]),
+        );
+        // Bộ quét bắt được cả dạng qua hằng (hồi quy review T-187 🟠3).
+        expect(deleteSites("await db(ORDER_CANCEL_TABLE).where({ id }).del();", idents)).not.toEqual([]);
+        expect(
+          deleteSites("await this.exec(`DELETE FROM ${REFUND_TABLE} WHERE id = ?`)", idents),
+        ).not.toEqual([]);
+        expect(deleteSites('await db("x_return").where({ id }).delete();', idents)).not.toEqual([]);
+        expect(deleteSites("await db(ORDER_CANCEL_TABLE).where({ id }).first();", idents)).toEqual([]);
+
+        const hits = texts
+          .filter(({ f }) => !REVIEWED_DELETE_SITES.includes(f))
+          .flatMap(({ f, text }) => deleteSites(text, idents).map((re) => `${f}: ${re}`));
         expect(hits).toEqual([]);
 
         // inventory_adjustment là sổ chỉ ghi thêm: DB từ chối xoá (trigger) kể cả khi mã muốn xoá.
@@ -368,29 +449,57 @@ medusaIntegrationTestRunner({
         expect(await rowsOf("inventory_adjustment", { id: res.data.adjustment.id })).toBe(1);
       });
 
-      it("TTL ≥ 24 giờ: bản ghi khoá 25 giờ tuổi (checkout, yêu cầu trả, lệnh hủy) sau job dọn vẫn trả lại kết quả cũ, không xử lý lần hai", async () => {
+      /** MỌI job đã đăng ký trong src/jobs — thêm job mới mà không thêm ở đây thì test đỏ. */
+      const JOBS: Record<string, (c: MedusaContainer) => Promise<unknown>> = {
+        "catalog-index-drain": catalogIndexDrainJob,
+        "catalog-index-rebuild": catalogIndexRebuildJob,
+        "cod-confirm-timeout": codConfirmTimeoutJob,
+        "expire-holds": expireHoldsJob,
+        "order-access-cleanup": orderAccessCleanupJob,
+        "outbox-dispatch": outboxDispatchJob,
+        "reconcile-attempts": reconcileAttemptsJob,
+      };
+
+      it("TTL ≥ 24 giờ: bản ghi khoá 23 giờ 59 phút tuổi (checkout, yêu cầu trả, lệnh hủy, hủy chưa xác minh) còn nguyên sau MỌI job trong src/jobs, gửi lại trả kết quả cũ, không xử lý lần hai", async () => {
+        const jobFiles = readdirSync(join(__dirname, "../../src/jobs"))
+          .filter((n) => /\.[cm]?[jt]s$/.test(n))
+          .map((n) => n.replace(/\.[cm]?[jt]s$/, ""))
+          .sort();
+        expect(jobFiles).toEqual(Object.keys(JOBS).sort());
+
         const cases: Array<[string, string]> = [
           ["POST /store/x/checkout/submit", "checkout_attempt"],
           ["POST /store/x/orders/{display_ref}/returns", "x_return"],
           ["POST /admin/x/orders/{id}/cancel", "x_order_cancel"],
+          ["POST /admin/x/orders/{id}/cancel-unverified", "x_order_cancel"],
         ];
+        const made: Array<{ route: string; table: string; s: Keyed; k: string; first: Res<J> }> = [];
         for (const [route, table] of cases) {
           const s = await KEYED[route]!();
           const k = key();
           const first = await s.send(k, "a");
-          expect(first.status).toBe(s.created);
-          const afterFirst = await s.effect();
-          // Khoá lưu có thể kèm tiền tố phạm vi (`staff:`, `<order_id>:`) — so theo hậu tố.
+          expect({ route, status: first.status }).toEqual({ route, status: s.created });
+          // Khoá lưu có thể kèm tiền tố phạm vi (`staff:`, `unverified:`, `<order_id>:`) — so theo hậu tố.
           const aged = await pg()(table)
             .whereLike("idempotency_key", `%${k}`)
-            .update({ created_at: pg().raw("created_at - interval '25 hours'") });
+            .update({ created_at: pg().raw("created_at - interval '23 hours 59 minutes'") });
           expect({ route, aged }).toEqual({ route, aged: 1 });
-          await orderAccessCleanupJob(container);
+          made.push({ route, table, s, k, first });
+        }
 
+        // Đo tác dụng SAU khi dựng xong mọi ca (đếm đơn là toàn cục — ca sau tạo thêm đơn).
+        const before = await Promise.all(made.map((m) => m.s.effect()));
+        for (const job of Object.values(JOBS)) await job(container);
+
+        for (const [i, { route, table, s, k, first }] of made.entries()) {
+          expect({ route, kept: await pg()(table).whereLike("idempotency_key", `%${k}`).count() }).toEqual({
+            route,
+            kept: [{ count: "1" }],
+          });
           const replay = await s.send(k, "a");
           expect({ route, status: replay.status }).toEqual({ route, status: 200 });
           expect(s.idOf(replay)).toBe(s.idOf(first));
-          expect(await s.effect()).toEqual(afterFirst);
+          expect(await s.effect()).toEqual(before[i]);
           expect(statusOf(await s.send(k, "b"))).toBe("409:IDEMPOTENCY_CONFLICT");
         }
       });
@@ -669,10 +778,7 @@ medusaIntegrationTestRunner({
           roles: ["support"],
         });
         // Route đòi xác thực lại ≤ 5 phút (map quyền `reauth`): owner đăng nhập lại ngay trước khi gọi.
-        const fresh = await loginWithMfa(rawApi as unknown as HttpClient, staff.owner, {
-          method: "totp",
-          code: totp(staff.owner.secret),
-        });
+        const fresh = await ownerFresh();
         const url = `/admin/x/users/${target.userId}/roles`;
         const both = (await Promise.all(
           [1, 2].map(() =>
