@@ -312,14 +312,69 @@ test("main: trộn `${}` + `+` — allowlist chỉ khai phần `${}` thì vẫn 
 test("scanSource: biến trần ở sink truy tới khai báo gần nhất; khởi tạo được kiểm như sink trực tiếp", () => {
   assert.deepEqual(scanSource("const sql = 'select 1';\nq.whereRaw(sql);")[0].exprs, []);
   assert.deepEqual(scanSource("const sql = `select ${x} from t`;\nq.whereRaw(sql);")[0].exprs, ["x"]);
-  assert.deepEqual(scanSource("let sql = 'a ' + tail;\nq.whereRaw(sql);")[0].exprs, ["tail"]);
+  // let/var không được coi là hằng → buộc chính tên nằm trong idents
+  assert.deepEqual(scanSource("let sql = 'a ' + tail;\nq.whereRaw(sql);")[0].exprs, ["sql"]);
   assert.deepEqual(scanSource("function f(sql) {\n q.whereRaw(sql);\n}")[0].exprs, ["sql"]);
-  // khai báo gần nhất thắng (mục `match: sql` không còn phủ mọi `.whereRaw(sql)` trong tệp)
+  // hai khai báo cùng tên trong tệp → không đoán được cái nào áp dụng → fail-closed
   const two = "const sql = 'a';\nq.whereRaw(sql);\nconst sql2 = 1;\nconst sql = `b ${y}`;\nq.whereRaw(sql);";
   assert.deepEqual(
     scanSource(two).map((f) => f.exprs),
-    [[], ["y"]],
+    [["sql"], ["sql"]],
   );
+});
+
+test("scanSource: biến sql trần bị lách (gán lại / trùng tham số) → fail-closed, buộc khai idents", () => {
+  // A: nối thêm bằng `+=`
+  const A = 'const sql = "select 1";\nsql += (filter as any).user;\nq.whereRaw(sql);';
+  assert.deepEqual(scanSource(A)[0].exprs, ["sql"]);
+  // B: gán lại cả biểu thức (với const đổi thành let/var cũng vậy)
+  const B = 'const sql = "true";\nsql = `x ${(filter as any).user}`;\nq.whereRaw(sql);';
+  assert.deepEqual(scanSource(B)[0].exprs, ["sql"]);
+  assert.deepEqual(scanSource('var sql = "true";\nsql ||= u;\nq.whereRaw(sql);')[0].exprs, ["sql"]);
+  // C: tham số cùng tên ở hàm khác (có kiểu / không kiểu / mũi tên / destructuring)
+  const decl = 'const sql = "select 1";\nq.whereRaw(sql);\n';
+  for (const evil of [
+    "export function evil(q: any, sql: string) { return q.whereRaw(sql); }",
+    "export function evil(q, sql) { return q.whereRaw(sql); }",
+    "export const evil = (q, sql) => q.whereRaw(sql);",
+    "export const evil = sql => q.whereRaw(sql);",
+    "export const evil = ({ sql }) => q.whereRaw(sql);",
+  ]) {
+    const f = scanSource(decl + evil);
+    assert.ok(f.length >= 2, evil);
+    assert.deepEqual(f[0].exprs, ["sql"], evil);
+  }
+  // đối chứng: gọi hàm có truyền `sql`, phép so sánh và thuộc tính cùng tên không làm hỏng ca hợp lệ
+  const ok = 'const sql = "select 1";\nif (x.sql === 1 || sql == 2) foo(a, sql);\nq.whereRaw(sql);';
+  assert.deepEqual(scanSource(ok)[0].exprs, []);
+});
+
+test("main: A/B/C lách qua mục dynamic `sql` → exit 1 kể cả có mục allowlist; khai idents mới xanh", () => {
+  const al = (idents) =>
+    JSON.stringify([
+      {
+        file: "apps/x/src/a.ts",
+        kind: "dynamic",
+        match: "sql",
+        ...(idents && { idents }),
+        reason: "lý do đủ dài ở đây ok",
+      },
+    ]);
+  const ok = 'const sql = "select 1";\nq.whereRaw(sql);';
+  assert.equal(main(fixture({ "apps/x/src/a.ts": ok }, al(null))), 0);
+  const A = ok.replace("q.whereRaw", "sql += (filter as any).user;\nq.whereRaw");
+  const C = ok + "\nexport function evil(q: any, sql: string) { return q.whereRaw(sql); }";
+  for (const src of [A, C]) {
+    assert.equal(main(fixture({ "apps/x/src/a.ts": src }, al(null))), 1);
+    assert.equal(main(fixture({ "apps/x/src/a.ts": src }, al(["sql"]))), 0);
+  }
+});
+
+test("scanSource: template một dòng có `\\n` dạng escape sau chú thích `--` vẫn được nhận ra", () => {
+  assert.deepEqual(kinds("const q = `-- lấy\\nSELECT * FROM t WHERE id = '${id}'`;"), ["sql-template"]);
+  assert.deepEqual(kinds("const q = `--lấy\\r\\n  select ${a}`;"), ["sql-template"]);
+  assert.deepEqual(kinds("const q = `\\n\\t(select ${a})`;"), ["sql-template"]);
+  assert.deepEqual(scanSource("const s = `-- chỉ ghi chú\\nvà không phải sql ${a}`;"), []);
 });
 
 test("main: mục dynamic `sql` không che khai báo template có nội suy chưa khai idents", () => {

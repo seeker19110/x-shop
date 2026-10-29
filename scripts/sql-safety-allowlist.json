@@ -11,7 +11,7 @@
     "match": "req",
     "reason": "Không phải SQL: `query` là truy vấn trạng thái giao dịch/hoàn tiền của cổng thanh toán (gateway.query), không chạm DB.",
     "kind": "dynamic",
-    "idents": ["await providerRequestOf(container, r, actor)"]
+    "idents": ["req"]
   },
   {
     "file": "apps/backend/src/modules/catalog-index/query.ts",

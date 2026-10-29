@@ -29,7 +29,8 @@ const SINK = new RegExp(
   "g",
 );
 // Bỏ chú thích/ngoặc đầu (`-- …\nSELECT`, `/* */ SELECT`, `(SELECT`) trước khi so động từ SQL.
-const LEADING_NOISE = /^(?:\s+|\(|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)+/;
+// Tính cả `\n`/`\r`/`\t` dạng ESCAPE trong mã nguồn (template một dòng `-- lấy\nSELECT …`).
+const LEADING_NOISE = /^(?:\s+|\\[nrt]|\(|--(?:(?!\\[nr])[^\n])*(?:\n|\\[nr]|$)|\/\*[\s\S]*?\*\/)+/;
 const SQL_VERB = /^(select|insert\s+into|update|delete\s+from|with|alter|drop|create|truncate|merge)\b/i;
 const startsLikeSql = (text) => SQL_VERB.test(text.replace(LEADING_NOISE, ""));
 const SOURCE_FILE = /\.(ts|tsx|js|mjs|cjs)$/;
@@ -275,8 +276,32 @@ function sqlExprs(expr) {
 const BARE_IDENT = /^[A-Za-z_$][\w$]*$/;
 
 /**
- * Biểu thức của đối số sink. Biến trần (`whereRaw(sql)`): truy tới khai báo `const|let|var sql =` gần nhất phía trên trong cùng
- * tệp và kiểm khởi tạo như sink trực tiếp; không thấy khai báo (tham số hàm…) hay không phải chuỗi tĩnh → chính tên biến.
+ * Fail-closed (regex, không phải AST): tên chỉ có MỘT khai báo `const` trong tệp, không được gán lại (`=`, `+=`, `||=`…), không
+ * trùng tham số hàm (có kiểu, hàm thường, mũi tên, destructuring) và không phải `let`/`var`. Sai một điều kiện → trả `false` để
+ * buộc chính tên biến phải nằm trong `idents`. Nghi ngờ thì coi là không an toàn (có thể báo thừa, không báo thiếu).
+ */
+function isSingleConstBinding(src, name) {
+  const n = name.replace(/\$/g, "\\$");
+  const decls = [...src.matchAll(new RegExp(`\\b(const|let|var)\\s+${n}(?![\\w$])`, "g"))];
+  if (decls.length !== 1 || decls[0][1] !== "const") return false;
+  const assign = new RegExp(
+    `(?<![\\w$.])${n}\\s*(?:\\*\\*|&&|\\|\\||\\?\\?|<<|>>>?|[-+*/%&|^])?=(?![=>])`,
+    "g",
+  );
+  if ([...src.matchAll(assign)].length !== 1) return false;
+  const params = [
+    `[(,]\\s*(?:\\.\\.\\.)?${n}\\s*\\??\\s*:`, // (q, sql: string)
+    `function\\s*\\*?\\s*[\\w$]*\\s*(?:<[^>]*>)?\\([^)]*(?<![\\w$.])${n}(?![\\w$])[^)]*\\)`, // function f(q, sql)
+    `\\([^()]*(?<![\\w$.])${n}(?![\\w$])[^()]*\\)\\s*(?::[^=;]+)?=>`, // (q, sql) =>
+    `(?<![\\w$.])${n}\\s*=>`, // sql =>
+    `\\{[^{}]*(?<![\\w$.])${n}(?![\\w$])[^{}]*\\}\\s*(?::[^)]*)?[,)]`, // ({ sql }) hoặc ({ sql }, x)
+  ];
+  return !params.some((re) => new RegExp(re).test(src));
+}
+
+/**
+ * Biểu thức của đối số sink. Biến trần (`whereRaw(sql)`): truy tới khai báo `const sql =` duy nhất trong tệp (xem `isSingleConstBinding`)
+ * và kiểm khởi tạo như sink trực tiếp; không thấy khai báo, `let`/`var`, gán lại, trùng tham số hàm → chính tên biến.
  */
 function argExprs(src, mask, open, arg) {
   const name = arg.trim();
@@ -288,7 +313,7 @@ function argExprs(src, mask, open, arg) {
         new RegExp(`\\b(?:const|let|var)\\s+${name.replace(/\$/g, "\\$")}\\s*(?::[^=]+)?=(?!=)`, "g"),
       ),
   ].pop();
-  if (!decl) return [name];
+  if (!decl || !isSingleConstBinding(src, name)) return [name];
   const start = decl.index + decl[0].length;
   let depth = 0;
   let i = start;
