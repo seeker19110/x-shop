@@ -319,17 +319,22 @@ medusaIntegrationTestRunner({
             await releaseA.p;
           }),
         );
-        await aReserved.p;
         let bDone = false;
-        const b = verdict(
-          pg().transaction(async (trx) => {
-            // Như ghi tuyệt đối của Medusa (`stocked = đọc + Δ` với số đọc cũ): chỉ đặt cột stocked.
-            await trx("inventory_level").where({ id }).update({ stocked_quantity: 0 });
-          }),
-        ).finally(() => (bDone = true));
-        await sleep(300);
-        expect(bDone).toBe(false); // B đang chờ khóa dòng của A
-        releaseA.open();
+        let b: Promise<string> = Promise.resolve("not_started");
+        try {
+          await Promise.race([aReserved.p, a]); // A lỗi trước khi mở cổng → không chờ mãi
+          b = verdict(
+            pg().transaction(async (trx) => {
+              // Như ghi tuyệt đối của Medusa (`stocked = đọc + Δ` với số đọc cũ): chỉ đặt cột stocked.
+              await trx("inventory_level").where({ id }).update({ stocked_quantity: 0 });
+            }),
+          ).finally(() => (bDone = true));
+          await sleep(300);
+          expect(bDone).toBe(false); // B đang chờ khóa dòng của A
+        } finally {
+          // T-224: mở A cả khi assert trên đỏ — không để A (giữ khóa dòng) và B treo hook/test tới hết hạn 300 s.
+          releaseA.open();
+        }
         expect(await a).toBe("ok");
         expect(await b).toBe("stock");
         expect(await levelRow("Đen/S")).toMatchObject({ stocked: 1, reserved: 1 });
@@ -471,19 +476,26 @@ medusaIntegrationTestRunner({
             await releaseA.p;
           }),
         );
-        await aChecked.p;
         let bDone = false;
-        const b = verdict(
-          pg().transaction(async (trx) => {
-            // Đổi reservation r0 lấy rB cùng số lượng: tổng không đổi, KHÔNG UPDATE dòng level (không tự lấy khóa dòng).
-            await trx("reservation_item").where({ id: "resitem_t185_r0" }).update({ deleted_at: new Date() });
-            await trx("reservation_item").insert(rawReservation("Đen/M", 1, "b"));
-            await trx.raw("set constraints all immediate");
-          }),
-        ).finally(() => (bDone = true));
-        await sleep(1_000);
-        expect(bDone).toBe(false); // chờ khóa dòng của A — bỏ FOR UPDATE thì B xong ngay
-        releaseA.open();
+        let b: Promise<string> = Promise.resolve("not_started");
+        try {
+          await Promise.race([aChecked.p, a]); // A lỗi trước khi mở cổng → không chờ mãi
+          b = verdict(
+            pg().transaction(async (trx) => {
+              // Đổi reservation r0 lấy rB cùng số lượng: tổng không đổi, KHÔNG UPDATE dòng level (không tự lấy khóa dòng).
+              await trx("reservation_item")
+                .where({ id: "resitem_t185_r0" })
+                .update({ deleted_at: new Date() });
+              await trx("reservation_item").insert(rawReservation("Đen/M", 1, "b"));
+              await trx.raw("set constraints all immediate");
+            }),
+          ).finally(() => (bDone = true));
+          await sleep(1_000);
+          expect(bDone).toBe(false); // chờ khóa dòng của A — bỏ FOR UPDATE thì B xong ngay
+        } finally {
+          // T-224: mở A cả khi assert trên đỏ (vd. bỏ FOR UPDATE) — không để A giữ khóa dòng, B và hook teardown treo 300 s.
+          releaseA.open();
+        }
         expect([await a, await b]).toEqual(["ok", "ok"]);
         expect(await levelRow("Đen/M")).toMatchObject({ stocked: 2, reserved: 2 });
         expect(await liveReservations("Đen/M")).toBe(2);
