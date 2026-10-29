@@ -10,6 +10,7 @@
 export const SECRET_ENV_KEYS = [
   // URL chứa user:mật-khẩu
   "DATABASE_URL",
+  "MIGRATION_DATABASE_URL",
   "REDIS_URL",
   "JWT_SECRET",
   "COOKIE_SECRET",

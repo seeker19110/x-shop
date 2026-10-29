@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { parseTrustedProxies, TRUSTED_PROXY_KEYWORDS } from "../security/client-ip";
 import { privateDirProblem } from "../upload/private";
+import { sameDatabaseTarget } from "./migration";
 import { formatEffectiveConfig, withRedaction } from "./redact";
 import {
   hoursToMs,
@@ -14,6 +15,7 @@ import {
 } from "@x-shop/domain";
 
 export { REDACTED, SECRET_ENV_KEYS, formatEffectiveConfig, redactConfig } from "./redact";
+export { isMigrationCommand, sameDatabaseTarget } from "./migration";
 
 /**
  * Cấu hình môi trường của backend, kiểm bằng zod khi nạp `medusa-config.ts` (BASE-CFG-002).
@@ -335,6 +337,11 @@ const baseSchema = z.object({
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
     z.string({ message: "bắt buộc" }).pipe(urlWithProtocol(["postgres:", "postgresql:"], "postgres://")),
   ),
+  // Vai trò migration (T-184, DB-SEC-002): chỉ lệnh `medusa db:*` dùng (src/lib/env/migration.ts); vắng = DATABASE_URL.
+  // Phải cùng máy chủ/cổng/database với DATABASE_URL (superRefine) — chỉ khác vai trò.
+  MIGRATION_DATABASE_URL: optionalText.pipe(
+    urlWithProtocol(["postgres:", "postgresql:"], "postgres://").optional(),
+  ),
   REDIS_URL: optionalText.pipe(urlWithProtocol(["redis:", "rediss:"], "redis:// hoặc rediss://").optional()),
   JWT_SECRET: optionalText.pipe(secret.optional()),
   COOKIE_SECRET: optionalText.pipe(secret.optional()),
@@ -470,6 +477,16 @@ export const ENV_SCHEMA_KEYS: readonly string[] = Object.keys(baseSchema.shape);
 
 const schema = baseSchema
   .superRefine((env, ctx) => {
+    if (
+      env.MIGRATION_DATABASE_URL !== undefined &&
+      !sameDatabaseTarget(env.MIGRATION_DATABASE_URL, env.DATABASE_URL)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["MIGRATION_DATABASE_URL"],
+        message: "phải trỏ cùng máy chủ, cổng và database với DATABASE_URL (chỉ khác vai trò)",
+      });
+    }
     if (env.SHUTDOWN_DRAIN_DELAY_MS !== undefined && env.SHUTDOWN_DRAIN_DELAY_MS >= env.SHUTDOWN_TIMEOUT_MS) {
       ctx.addIssue({
         code: "custom",
@@ -622,6 +639,7 @@ const schema = baseSchema
     const effective = {
       ...env,
       host: env.HOST ?? DEFAULT_BIND_HOST,
+      MIGRATION_DATABASE_URL: env.MIGRATION_DATABASE_URL ?? env.DATABASE_URL,
       STORE_CORS: env.STORE_CORS ?? DEV_CORS_DEFAULTS.STORE_CORS,
       ADMIN_CORS: env.ADMIN_CORS ?? DEV_CORS_DEFAULTS.ADMIN_CORS,
       AUTH_CORS: env.AUTH_CORS ?? DEV_CORS_DEFAULTS.AUTH_CORS,

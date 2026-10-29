@@ -79,6 +79,8 @@ export function s3RequestHandlerOptions(override: Partial<S3Timeouts> = {}): S3R
 
 export interface DatabaseEnv {
   DATABASE_URL: string;
+  /** Vai trò migration (T-184); vắng = DATABASE_URL. Chỉ dùng khi `migration: true`. */
+  MIGRATION_DATABASE_URL?: string;
   DB_POOL_MAX: number;
   DB_STATEMENT_TIMEOUT_MS: number;
 }
@@ -103,13 +105,18 @@ export function withStatementTimeout(databaseUrl: string, statementTimeoutMs: nu
   return url.toString();
 }
 
-/** `projectConfig.databaseUrl` + `databaseDriverOptions` cho medusa-config. */
-export function databaseConfig(env: DatabaseEnv): DatabaseConfig {
+/**
+ * `projectConfig.databaseUrl` + `databaseDriverOptions` cho medusa-config. `migration: true` (lệnh `medusa db:*`,
+ * src/lib/env/migration.ts) → kết nối bằng MIGRATION_DATABASE_URL (vai trò owner/DDL, T-184); còn lại → DATABASE_URL
+ * (vai trò ứng dụng chỉ DML).
+ */
+export function databaseConfig(env: DatabaseEnv, opts: { migration?: boolean } = {}): DatabaseConfig {
   if (!Number.isSafeInteger(env.DB_POOL_MAX) || env.DB_POOL_MAX < 1) {
     throw new Error("DB_POOL_MAX phải là số nguyên ≥ 1");
   }
+  const url = opts.migration === true ? (env.MIGRATION_DATABASE_URL ?? env.DATABASE_URL) : env.DATABASE_URL;
   return {
-    databaseUrl: withStatementTimeout(env.DATABASE_URL, env.DB_STATEMENT_TIMEOUT_MS),
+    databaseUrl: withStatementTimeout(url, env.DB_STATEMENT_TIMEOUT_MS),
     databaseDriverOptions: {
       connectionTimeoutMillis: DB_TIMEOUTS.connectTimeoutMs,
       idle_in_transaction_session_timeout: DB_TIMEOUTS.idleInTransactionTimeoutMs,

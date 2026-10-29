@@ -1,6 +1,6 @@
 import { defineConfig, loadEnv } from "@medusajs/framework/utils";
 import { sessionCookieConfig } from "./src/lib/admin-security/session-cookie";
-import { loadEnvOrExit } from "./src/lib/env";
+import { isMigrationCommand, loadEnvOrExit } from "./src/lib/env";
 import { databaseConfig, redisQueueOptions, redisRequestOptions } from "./src/lib/infra/timeouts";
 import { appLoggerFromEnv } from "./src/lib/log/app-logger";
 import { fileProviderEntry } from "./src/lib/upload/config";
@@ -70,8 +70,9 @@ const http = {
 };
 
 // Postgres: pool có trần (DB_POOL_MAX mỗi tiến trình), connect timeout, statement_timeout, idle_in_transaction (T-092,
-// docs/db/connections.md).
-const db = databaseConfig(env);
+// docs/db/connections.md). Lệnh `medusa db:*` (migrate, rollback, sync-links…) kết nối bằng MIGRATION_DATABASE_URL — vai
+// trò owner/DDL; server/worker/exec dùng DATABASE_URL — vai trò ứng dụng chỉ DML (T-184, DB-SEC-002).
+const db = databaseConfig(env, { migration: isMigrationCommand(process.argv) });
 
 module.exports = defineConfig({
   // Logger JSON một dòng/stdout có che bí mật + PII (T-090, src/lib/log/) thay logger mặc định của Medusa.
