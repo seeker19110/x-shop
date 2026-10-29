@@ -239,9 +239,15 @@ medusaIntegrationTestRunner({
         const script = path.resolve(__dirname, "../../../../scripts/ops/check-scrypt-params.mjs");
         const check = () =>
           new Promise<{ code: number; out: string }>((resolve) => {
-            execFile(process.execPath, [script, url.toString()], (err, stdout) => {
-              resolve({ code: err ? Number((err as { code?: unknown }).code ?? 1) : 0, out: stdout });
-            });
+            // URL qua env (script không nhận đối số — tránh lộ mật khẩu DB trong ps).
+            execFile(
+              process.execPath,
+              [script],
+              { env: { ...process.env, DATABASE_URL: url.toString() } },
+              (err, stdout) => {
+                resolve({ code: err ? Number((err as { code?: unknown }).code ?? 1) : 0, out: stdout });
+              },
+            );
           });
 
         const admin = await createAdmin(rawApi, container, { roles: [] });

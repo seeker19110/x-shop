@@ -4,8 +4,10 @@
  * cho scrypt (logN ≥ 17, r ≥ 8, p ≥ 1). Hash tham số cũ (vd logN 15 trước T-181) chỉ được nâng ở lần đăng nhập đúng
  * (D-137) — tài khoản lâu không đăng nhập vẫn còn hash cũ; script đếm để chủ dự án buộc đặt lại mật khẩu trước ra mắt.
  *
- *   DATABASE_URL=postgres://… node scripts/ops/check-scrypt-params.mjs
- *   node scripts/ops/check-scrypt-params.mjs postgres://…
+ *   DATABASE_URL=postgres://… node scripts/ops/check-scrypt-params.mjs     (hoặc `pnpm check:scrypt-params`)
+ *
+ * URL CHỈ lấy từ biến môi trường DATABASE_URL — không nhận qua đối số dòng lệnh (đối số lộ mật khẩu DB trong `ps`, lịch
+ * sử shell, log CI); có đối số → exit 2.
  *
  * CHỈ ĐỌC (`SELECT` trên `provider_identity`). Không in email/hash — chỉ số đếm và id provider identity cần xử lý.
  * Header định dạng scrypt-kdf 2.x (base64 của 96 byte): "scrypt" · phiên bản (1) · logN (1) · r (u32 BE) · p (u32 BE) · …
@@ -60,9 +62,15 @@ export const QUERY = `select id, provider_metadata->>'password' as hash
  where provider = 'emailpass' and deleted_at is null and provider_metadata ? 'password'`;
 
 export async function main(argv = process.argv.slice(2), env = process.env, out = console) {
-  const url = argv[0] ?? env.DATABASE_URL;
+  if (argv.length > 0) {
+    out.error(
+      "check-scrypt-params: không nhận đối số — đặt URL qua biến môi trường DATABASE_URL (đối số lộ mật khẩu trong ps/lịch sử)",
+    );
+    return 2;
+  }
+  const url = env.DATABASE_URL;
   if (!url) {
-    out.error("check-scrypt-params: thiếu DATABASE_URL (hoặc đối số URL)");
+    out.error("check-scrypt-params: thiếu DATABASE_URL");
     return 2;
   }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");

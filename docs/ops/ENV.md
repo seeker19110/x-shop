@@ -135,6 +135,11 @@ MEDUSA_BACKEND_URL=https://api.shop.example.vn
 # CHỈ TEST (không qua schema, không đặt ở production): tiền tố khoá Redis của rate limit admin để các lần chạy test tích hợp
 # dùng chung một Redis không rò bộ đếm sang nhau (apps/backend/src/lib/admin-security/store.ts).
 # XS_SECURITY_KEY_NAMESPACE=it-local
+# BIẾN CỦA NODE/LIBUV (không qua schema): số luồng thread pool libuv, mặc định 4, [1, 1024]. Phải đặt ở env THẬT của tiến
+# trình (Dockerfile/systemd/k8s), KHÔNG đặt trong .env — libuv đọc lúc tạo thread pool, trước khi Medusa nạp .env. Trần
+# scrypt đồng thời của đăng nhập admin = max(1, giá trị − 1) (lib/admin-security/scrypt-gate.ts, ADR-0006): tăng giá trị
+# thì bộ nhớ đỉnh tăng ≈ 128 MiB mỗi luồng scrypt thêm — định cỡ container theo đó.
+# UV_THREADPOOL_SIZE=4
 # Log (T-090): JSON một dòng/stdout, đã che bí mật + PII. Ngưỡng: error|warn|info|http|verbose|debug|silly; vắng = info.
 # LOG_LEVEL=info
 # Mặc định an toàn (T-098, BASE-CFG-007, BASE-SEC-010). Bind: scripts `dev`/`start` của backend VÀ storefront chạy `medusa|next … -H "${HOST:-127.0.0.1}"` —

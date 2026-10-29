@@ -1,7 +1,8 @@
 {
   "backend": {
     "doc": {
-      "XS_SECURITY_KEY_NAMESPACE": "Chỉ test tích hợp: tách khoá Redis rate limit giữa các lần chạy (apps/backend/src/lib/admin-security/store.ts); đọc trực tiếp process.env, không qua schema nên không đổi hành vi."
+      "XS_SECURITY_KEY_NAMESPACE": "Chỉ test tích hợp: tách khoá Redis rate limit giữa các lần chạy (apps/backend/src/lib/admin-security/store.ts); đọc trực tiếp process.env, không qua schema nên không đổi hành vi.",
+      "UV_THREADPOOL_SIZE": "Biến của Node/libuv, phải đặt ở env thật của tiến trình (libuv đọc trước khi nạp .env) nên không thuộc schema zod; backend chỉ đọc để tính trần scrypt đồng thời (apps/backend/src/lib/admin-security/scrypt-gate.ts, ADR-0006), giá trị sai → mặc định 4."
     },
     "schema": {}
   },

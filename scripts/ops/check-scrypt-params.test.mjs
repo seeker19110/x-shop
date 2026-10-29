@@ -48,9 +48,22 @@ test("phân loại: rỗng → 0; đạt/dưới chuẩn/sai định dạng tác
   assert.deepEqual(r.byLogN, { 15: 1, 17: 2 });
 });
 
-test("thiếu URL → exit 2, không kết nối", async () => {
+test("thiếu DATABASE_URL → exit 2, không kết nối", async () => {
   const errors = [];
   const code = await main([], {}, { log() {}, error: (m) => errors.push(m) });
   assert.equal(code, 2);
   assert.match(errors[0], /DATABASE_URL/);
+});
+
+test("URL qua đối số bị từ chối (exit 2) kể cả khi có DATABASE_URL; thông báo không lặp lại đối số", async () => {
+  const errors = [];
+  const secretUrl = "postgres://u:SENTINEL-mat-khau@db.example.test:5432/x";
+  const code = await main(
+    [secretUrl],
+    { DATABASE_URL: secretUrl },
+    { log() {}, error: (m) => errors.push(m) },
+  );
+  assert.equal(code, 2);
+  assert.match(errors[0], /DATABASE_URL/);
+  assert.ok(!errors.join("\n").includes("SENTINEL"));
 });
