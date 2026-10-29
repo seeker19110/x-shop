@@ -17,6 +17,7 @@ import {
 } from "../lib/admin-security/guard";
 import { inviteAcceptGuard } from "../lib/admin-security/invite-guard";
 import { registerGate } from "../lib/admin-security/register-gate";
+import { reservationLocationGuard } from "../lib/admin-security/reservation-guard";
 import { resetPasswordGuard } from "../lib/admin-security/reset-password";
 import { securityAuditTrail } from "../lib/audit/http";
 import { inputAuditTrail, withInputAudit } from "../lib/audit/input";
@@ -90,6 +91,13 @@ export default defineMiddlewares({
       // (api/admin/x/permissions.ts, fail-closed), route native theo lib/admin-security/native-permissions.ts.
       matcher: "/admin",
       middlewares: [adminSecurityGuard],
+    },
+    {
+      // Đổi kho của reservation qua route native → 400 RESERVATION_LOCATION_CHANGE_UNSUPPORTED (T-224): Medusa 2.22.1 bỏ −q
+      // ở kho cũ nên hàng rào tồn DB luôn từ chối (lib/admin-security/reservation-guard.ts). Theo method → sau cổng RBAC.
+      methods: ["POST"],
+      matcher: "/admin/reservations/:id",
+      middlewares: [reservationLocationGuard],
     },
     {
       // Upload ảnh admin (SEC04): kiểm Content-Type/Content-Length TRƯỚC multer (toàn cục), MIME bằng magic bytes SAU

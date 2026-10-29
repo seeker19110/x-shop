@@ -134,6 +134,8 @@ export const NATIVE_ADMIN_ROUTES: readonly NativeRoute[] = [
   // D-010: ghi tồn native đi vòng qua lý do/idempotency/khóa của INV03 → chỉ owner; kho dùng /admin/x/inventory/adjustments.
   { methods: W, path: "/admin/inventory-items/*", rule: p("settings.manage") },
   { methods: R, path: "/admin/inventory-items/*", rule: p("inventory.read") },
+  // Đổi `location_id` của reservation (POST /admin/reservations/:id) bị chặn thêm 400 RESERVATION_LOCATION_CHANGE_UNSUPPORTED
+  // sau cổng này — lỗi gốc Medusa 2.22.1 luôn lệch số giữ ở kho cũ (T-224, reservation-guard.ts).
   { methods: W, path: "/admin/reservations/*", rule: p("settings.manage") },
   { methods: R, path: "/admin/reservations/*", rule: p("inventory.read") },
   // Kho hàng (địa chỉ kho của shop, không PII): màn tồn kho/giữ hàng, chi tiết đơn (kho của vận đơn), form tạo vận đơn.

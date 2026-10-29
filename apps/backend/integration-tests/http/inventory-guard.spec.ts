@@ -775,6 +775,51 @@ medusaIntegrationTestRunner({
           ip = newIp();
         }
       });
+
+      it("route native POST /admin/reservations/:id đổi location_id → 400 RESERVATION_LOCATION_CHANGE_UNSUPPORTED trước khi tới Medusa (tồn hai kho không đổi); cùng kho → 200; vai trò kho → 403; id không có → lỗi gốc của Medusa", async () => {
+        await flow.client.placeOrder([["Đen/M", 2]], "vnpay"); // 10 / 2
+        const [res] = await reservationsOf(container, fx, "Đen/M");
+        const url = `/admin/reservations/${res!.id}`;
+        // Kho đích có dòng tồn (5) — đúng ca lỗi gốc: Medusa cộng +q ở kho mới, bỏ −q ở kho cũ → hàng rào DB luôn từ chối.
+        const inventory = container.resolve(Modules.INVENTORY);
+        const target = {
+          inventory_item_id: fx.variants["Đen/M"]!.inventoryItemId,
+          location_id: fx.quarantineLocationId,
+        };
+        if ((await inventory.listInventoryLevels(target)).length === 0) {
+          await inventory.createInventoryLevels([{ ...target, stocked_quantity: 5 }]);
+        }
+        const before = await quarantine("Đen/M");
+        // RBAC trước: kho (không có settings.manage) bị 403 kể cả khi đổi kho — không dò được reservation.
+        expect((await flow.admin(url, A("warehouse"), { location_id: fx.quarantineLocationId })).status).toBe(
+          403,
+        );
+        const bad = await flow.admin(url, A("owner"), { location_id: fx.quarantineLocationId });
+        expect(bad.status).toBe(400);
+        expect(bad.headers["content-type"]).toContain("application/problem+json");
+        expect(bad.data).toMatchObject({
+          code: "RESERVATION_LOCATION_CHANGE_UNSUPPORTED",
+          errors: [{ param: "location_id", reason: "location_change_unsupported" }],
+        });
+        expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 10, reserved: 2 });
+        expect(await quarantine("Đen/M")).toBe(before);
+        const [after] = await reservationsOf(container, fx, "Đen/M");
+        expect(after).toMatchObject({ id: res!.id, location_id: fx.sellableLocationId, quantity: 2 });
+        // Cùng kho (kèm sửa mô tả) → route gốc chạy bình thường.
+        const same = await flow.admin(url, A("owner"), {
+          location_id: fx.sellableLocationId,
+          description: "T-224 cùng kho",
+        });
+        expect(same.status).toBe(200);
+        expect(await inventoryLevel(container, fx, "Đen/M")).toEqual({ stocked: 10, reserved: 2 });
+        // Reservation không tồn tại → cổng không chặn, route gốc trả lỗi của chính nó (Medusa 2.22.1: 400 "not found").
+        const missing = await flow.admin("/admin/reservations/resitem_t224_none", A("owner"), {
+          location_id: fx.quarantineLocationId,
+        });
+        expect(missing.status).toBeGreaterThanOrEqual(400);
+        expect(missing.status).toBeLessThan(500);
+        expect(missing.data.code).not.toBe("RESERVATION_LOCATION_CHANGE_UNSUPPORTED");
+      });
     });
 
     /* ------------------------------------------------------------------ điều chỉnh tồn */
