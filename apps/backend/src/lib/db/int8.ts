@@ -3,14 +3,14 @@ import { types } from "@medusajs/framework/pg";
 /**
  * Bộ đọc `bigint` (int8) của Postgres thành `number` (T-186, Q-22, DB-MODEL-002, XC-UNITS-005).
  *
- * Cột tiền của module dự án là `bigint` (số nguyên VND). Driver `pg` mặc định trả int8 dạng CHUỖI (an toàn cho số > 2^53)
+ * Cột tiền của module dự án chuyển sang `bigint` (số nguyên VND, Q-22). Driver `pg` mặc định trả int8 dạng CHUỖI (an toàn cho số > 2^53)
  * và MikroORM 6.6 không ép về number cho property DML `model.number()` (PostgreSqlConnection chỉ đặt parser cho
  * date/timestamp; Medusa DML 2.22.1 không có kiểu "bigint trả number": `model.number()` = `integer`, `model.bigNumber()` =
  * `numeric` + cột `raw_*`). Không ép thì chuỗi lọt ra API (`"total": "1330000"`) và vào jsonb, so sánh `===` sai, cộng
  * thành nối chuỗi. Nên ép MỘT chỗ, ở tầng driver: mọi đường đọc (service DML, knex thô, MikroORM) cùng nhận `number`.
  *
  * Phạm vi: parser toàn cục của `pg-types` (đối tượng `types` mà `pg` của Medusa/MikroORM/knex cùng dùng — một bản
- * `pg-types` trong cây phụ thuộc; test tích hợp `money-bigint` khẳng định qua service DML thật). Ảnh hưởng mọi giá trị int8
+ * `pg-types` trong cây phụ thuộc; test tích hợp `int8-parser` khẳng định trong tiến trình Medusa thật). Ảnh hưởng mọi giá trị int8
  * trong tiến trình, kể cả của Medusa lõi (vd `count(*)`): đều thành `number`. Giá trị ngoài số nguyên an toàn (|x| > 2^53−1)
  * → `RangeError`, truy vấn bị từ chối (pg 8 bắt lỗi parser theo dòng và reject query) — không làm tròn lặng lẽ.
  * Không đổi: `numeric` (OID 1700, vd `sum(bigint)`) vẫn là chuỗi — mã đọc qua `toVnd`/`Number` như trước; mảng `int8[]`
@@ -19,10 +19,10 @@ import { types } from "@medusajs/framework/pg";
  * Gọi ở `medusa-config.ts` (mọi tiến trình Medusa: server, worker, `medusa exec`, `db:migrate`, runner test tích hợp nạp
  * file này trước khi truy vấn). Gọi nhiều lần vô hại.
  *
- * GỠ parser (đường lùi): chỉ SAU KHI đã chạy down() của 4 migration T-186 đổi cột tiền sang bigint (module checkout,
- * shipping, returns, settlement — Migration20261029180000…180300), tức cột tiền đã về `integer`. Gỡ trước thì mọi đường đọc
- * DML/knex nhận lại int8 dạng CHUỖI (API trả `"total": "1330000"`, so sánh `===` sai, cộng thành nối chuỗi). Test tích hợp
- * `int8-parser` khẳng định parser có hiệu lực trên cả đường MikroORM và knex của Medusa.
+ * GỠ parser (đường lùi): nếu DB đã áp các migration T-186 đổi cột tiền của module dự án sang `bigint`, chỉ gỡ SAU KHI đã
+ * chạy down() của chúng (cột về `integer`). Gỡ khi cột tiền còn là bigint thì mọi đường đọc DML/knex nhận lại int8 dạng
+ * CHUỖI (API trả `"total": "1330000"`, so sánh `===` sai, cộng thành nối chuỗi). Chưa có cột bigint nào thì gỡ không đổi
+ * dữ liệu tiền, chỉ đổi giá trị int8 của Medusa lõi (vd `count(*)`) về lại chuỗi.
  */
 export const INT8_OID = types.builtins.INT8;
 
