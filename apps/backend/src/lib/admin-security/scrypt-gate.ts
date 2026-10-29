@@ -133,6 +133,16 @@ export function scryptGate(): ConcurrencyGate {
 }
 
 /**
+ * CHỈ dùng trong test: thay semaphore dùng chung (vd hạn chờ lớn, cổng riêng từng ca để không rò trạng thái giữa ca);
+ * `null` = lần gọi `scryptGate()` sau tạo lại bản mặc định. Trả bản đang dùng để test khôi phục.
+ */
+export function replaceScryptGateForTest(gate: ConcurrencyGate | null): ConcurrencyGate | null {
+  const previous = shared;
+  shared = gate;
+  return previous;
+}
+
+/**
  * Cờ "đã từ chối vì scrypt bận" theo request. Auth Module của Medusa nuốt lỗi của provider thành `{ success: false }`
  * rồi route ném 401 (thông điệp có thể bị thay bằng "Authentication failed") — nên provider báo ngoài luồng qua
  * AsyncLocalStorage; middleware `/auth` mở ngữ cảnh, handler lỗi toàn cục đọc cờ để trả 503.

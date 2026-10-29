@@ -20,6 +20,7 @@ import {
   SCRYPT_QUEUE_MAX,
   ScryptBusyError,
   scryptConcurrency,
+  replaceScryptGateForTest,
   scryptGate,
   uvThreadpoolSize,
   withAuthBusyContext,
@@ -31,7 +32,7 @@ import {
  * HTTP 503 AUTH_BUSY + Retry-After.
  */
 
-jest.setTimeout(120_000);
+jest.setTimeout(180_000);
 
 function deferred() {
   let resolve!: () => void;
@@ -39,6 +40,36 @@ function deferred() {
   return { promise, resolve };
 }
 const tick = () => new Promise((r) => setImmediate(r));
+
+/**
+ * Mỗi ca một cổng riêng (cùng trần/hàng chờ như production) để không rò trạng thái giữa ca; hạn chờ lớn để kết quả không
+ * phụ thuộc tốc độ máy (máy CI tải nặng: 16 phép logN 17 / trần 3 có thể > 5 s hạn chờ thật). Hết ca phải xả sạch.
+ */
+const TEST_WAIT_TIMEOUT_MS = 90_000;
+let testGate: ConcurrencyGate;
+let previousGate: ConcurrencyGate | null = null;
+
+async function drained(gate: ConcurrencyGate, limitMs = 60_000): Promise<void> {
+  const until = performance.now() + limitMs;
+  while ((gate.active > 0 || gate.waiting > 0) && performance.now() < until) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+beforeEach(() => {
+  testGate = new ConcurrencyGate({
+    max: scryptConcurrency(),
+    queueMax: SCRYPT_QUEUE_MAX,
+    waitTimeoutMs: TEST_WAIT_TIMEOUT_MS,
+  });
+  previousGate = replaceScryptGateForTest(testGate);
+});
+
+afterEach(async () => {
+  await drained(testGate);
+  replaceScryptGateForTest(previousGate);
+  expect({ active: testGate.active, waiting: testGate.waiting }).toEqual({ active: 0, waiting: 0 });
+});
 
 describe("ConcurrencyGate", () => {
   it("giới hạn đúng số việc đồng thời, FIFO, xong hết", async () => {
@@ -79,7 +110,8 @@ describe("ConcurrencyGate", () => {
     const ran = jest.fn(async () => "c");
     const t = performance.now();
     await expect(gate.run(ran)).rejects.toThrow(new ScryptBusyError("queue_full"));
-    expect(performance.now() - t).toBeLessThan(50);
+    // Từ chối ngay, không chờ hạn 10 s (ngưỡng rộng cho máy tải nặng).
+    expect(performance.now() - t).toBeLessThan(2000);
     expect(ran).not.toHaveBeenCalled();
     hold.resolve();
     await a;
@@ -272,7 +304,7 @@ describe("provider emailpass dùng semaphore chung (logN 17)", () => {
       `[scrypt-gate] fs.readFile chờ ${Math.round(fsMs)} ms trong đợt 16 đăng nhập; trần ${scryptConcurrency()}\n`,
     );
     expect(results.every((r) => r.success === false && r.error === "Invalid email or password")).toBe(true);
-    expect(peak).toBeLessThanOrEqual(scryptConcurrency());
+    expect(peak).toBeLessThanOrEqual(gate.options.max);
     // Không có trần: ~3,3 s (review). Có trần: còn ≥ 1 luồng rảnh → vài ms; ngưỡng rộng cho máy CI tải nặng.
     expect(fsMs).toBeLessThan(1000);
     expect(gate.active).toBe(0);
@@ -305,7 +337,8 @@ describe("provider emailpass dùng semaphore chung (logN 17)", () => {
       for (const r of [existing, missing]) {
         expect(r.error).toBeInstanceOf(ScryptBusyError);
         expect(r.busy).toBe(true);
-        expect(r.ms).toBeLessThan(200);
+        // Không chờ hàng (hạn chờ của cổng test là 90 s) — ngưỡng rộng cho máy tải nặng.
+        expect(r.ms).toBeLessThan(5000);
       }
       // Đăng ký (email mới → hashPassword; email có → kiểm mật khẩu): cũng bận, cũng đánh dấu.
       const regNew = await attempt(async () => {
