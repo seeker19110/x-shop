@@ -45,6 +45,18 @@ const isExported = (node) =>
 const literalText = (node) =>
   node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : undefined;
 
+/** `exports.X = …`, `module.exports = …`, `module.exports.X = …` (kể cả `exports["X"]`). */
+function isCommonJsExport(expr) {
+  if (!ts.isBinaryExpression(expr) || expr.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return false;
+  let target = expr.left;
+  while (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
+    const base = target.expression;
+    if (ts.isIdentifier(base) && (base.text === "exports" || base.text === "module")) return true;
+    target = base;
+  }
+  return false;
+}
+
 /** `[id]` → `{id}`; đường dẫn tính từ thư mục api. */
 export function routePathOf(apiDir, file) {
   const rel = relative(apiDir, dirname(file)).split(sep).join("/");
@@ -66,7 +78,25 @@ export function analyzeRoute(source, fileName = "route.ts") {
       );
       continue;
     }
+    if (ts.isExportAssignment(st)) {
+      problems.push(
+        `\`${st.isExportEquals ? "export =" : "export default"}\` — Medusa nạp handler theo tên export; khai \`export const|function METHOD\``,
+      );
+      continue;
+    }
+    if (ts.isExpressionStatement(st) && isCommonJsExport(st.expression)) {
+      problems.push(
+        "gán `exports.*`/`module.exports` — không phân tích được; khai `export const|function METHOD`",
+      );
+      continue;
+    }
     if (!isExported(st)) continue;
+    if (ts.isImportEqualsDeclaration(st) || ts.isModuleDeclaration(st)) {
+      problems.push(
+        `\`${st.getText(sf).split("\n")[0]}\` — export import/namespace không phân tích được; khai handler bằng \`export const|function METHOD\``,
+      );
+      continue;
+    }
     if (ts.isFunctionDeclaration(st)) {
       if (st.name && HTTP_METHODS.includes(st.name.text)) handlers.push({ method: st.name.text, node: st });
     } else if (ts.isVariableStatement(st)) {
@@ -189,14 +219,103 @@ export function testsOfSource(source, fileName = "x.spec.ts") {
       if (t?.kind === "test") {
         const name = literalText(n.arguments[0]);
         const fn = n.arguments[1];
-        if (name !== undefined)
-          out.push({ name, skipped: t.skipped || describeSkipped, body: fn ? fn.getText(sf) : "" });
+        if (name !== undefined) out.push({ name, skipped: t.skipped || describeSkipped, fn, sf });
       }
     }
     ts.forEachChild(n, (c) => visit(c, skippedHere));
   };
   visit(sf, false);
   return out;
+}
+
+/** Văn bản của string/template literal (phần chèn `${…}` thành ký hiệu giữ chỗ \u0000). */
+function literalTextWithHoles(n) {
+  if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) return n.text;
+  if (ts.isTemplateExpression(n))
+    return n.head.text + n.templateSpans.map((sp) => "\u0000" + sp.literal.text).join("");
+  return undefined;
+}
+
+/**
+ * Regex khớp ĐỦ đường dẫn của route theo thứ tự trong một literal: đoạn tĩnh giữ nguyên, `{param}` = một đoạn bất kỳ
+ * (giá trị hoặc `${…}`), kết thúc ở ranh giới đoạn (`/`, `?`, `#`, `${…}` hoặc hết chuỗi).
+ */
+export function routeLiteralRegex(route) {
+  const path = route.split(" ")[1];
+  const body = path
+    .split("/")
+    .filter(Boolean)
+    .map((seg) => (seg.startsWith("{") ? "[^/?#]+" : seg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+    .join("/");
+  return new RegExp(`(^|[^A-Za-z0-9_.-])/${body}(?=$|[/?#\u0000])`);
+}
+
+/** Tên được gọi của một CallExpression: `f(…)` → "f", `a.b.f(…)` → "f". */
+const calleeName = (call) =>
+  ts.isIdentifier(call.expression)
+    ? call.expression.text
+    : ts.isPropertyAccessExpression(call.expression)
+      ? call.expression.name.text
+      : undefined;
+
+/** Nút khai báo hàm/biến tên `name` ở bất kỳ đâu trong file (helper của test). */
+function declarationsNamed(sf, name) {
+  const out = [];
+  const visit = (n) => {
+    if (
+      (ts.isFunctionDeclaration(n) || ts.isVariableDeclaration(n)) &&
+      n.name &&
+      ts.isIdentifier(n.name) &&
+      n.name.text === name
+    )
+      out.push(n);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+/** Có literal (string/template) trong `node` chứa đủ đường dẫn route theo thứ tự. */
+function hasRouteLiteral(node, re) {
+  let found = false;
+  const visit = (n) => {
+    if (found) return;
+    const text = literalTextWithHoles(n);
+    if (text !== undefined && re.test(text)) found = true;
+    else ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return found;
+}
+
+/**
+ * Test chứng minh gọi route song song (phân tích AST — chú thích không tính): có lời gọi `Promise.all(…)` thật, và
+ * hoặc thân test có literal chứa đủ đường dẫn route theo thứ tự, hoặc (mục khai `calls` = tên hàm phụ) thân test gọi
+ * hàm đó VÀ khai báo hàm đó trong cùng file có literal chứa đủ đường dẫn route.
+ */
+export function provesParallelCall(test, route, calls) {
+  if (!test.fn) return false;
+  let promiseAll = false;
+  let callsHelper = false;
+  const visit = (n) => {
+    if (ts.isCallExpression(n)) {
+      const c = n.expression;
+      if (
+        ts.isPropertyAccessExpression(c) &&
+        ts.isIdentifier(c.expression) &&
+        c.expression.text === "Promise" &&
+        ["all", "allSettled"].includes(c.name.text)
+      )
+        promiseAll = true;
+      if (calls && calleeName(n) === calls) callsHelper = true;
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(test.fn);
+  if (!promiseAll) return false;
+  const re = routeLiteralRegex(route);
+  if (!calls) return hasRouteLiteral(test.fn, re);
+  return callsHelper && declarationsNamed(test.sf, calls).some((d) => hasRouteLiteral(d, re));
 }
 
 /** Đoạn đường dẫn tĩnh cuối của route ("POST /a/{id}/approve" → "approve"). */
@@ -229,22 +348,22 @@ export function checkAllowlist(root, list) {
     if (typeof e.reason !== "string" || e.reason.trim().length < MIN_REASON) {
       errors.push(`${at}: \`reason\` thiếu hoặc quá ngắn (< ${MIN_REASON} ký tự)`);
     }
-    let calls = null;
-    if (e.calls !== undefined) {
-      try {
-        calls = new RegExp(e.calls);
-      } catch {
-        errors.push(`${at}: \`calls\` không phải regex hợp lệ`);
-      }
-    }
-    const segment = lastStaticSegment(e.route);
+    if (e.calls !== undefined)
+      errors.push(`${at}: \`calls\` khai theo từng mục \`tests[]\`, không ở mức route`);
     const tests = Array.isArray(e.tests) ? e.tests : [];
     if (tests.length === 0) errors.push(`${at}: thiếu \`tests\` (test song song chứng minh)`);
-    let parallel = false;
     for (const t of tests) {
       if (typeof t?.file !== "string" || typeof t?.name !== "string" || t.name.length < 10) {
         errors.push(`${at}: mục test phải có \`file\` và \`name\` (≥ 10 ký tự)`);
         continue;
+      }
+      let calls = null;
+      if (t.calls !== undefined) {
+        if (typeof t.calls === "string" && /^[A-Za-z_$][\w$]*$/.test(t.calls)) calls = t.calls;
+        else {
+          errors.push(`${at}: \`tests[].calls\` phải là tên hàm phụ (định danh JS), không phải regex`);
+          continue;
+        }
       }
       if (!existsSync(join(root, t.file))) {
         errors.push(`${at}: không có file test ${t.file}`);
@@ -259,17 +378,10 @@ export function checkAllowlist(root, list) {
         errors.push(`${at}: test "${t.name}" bị skip/todo — không chứng minh được`);
         continue;
       }
-      if (
-        found.some(
-          (x) => x.body.includes("Promise.all") && (calls ? calls.test(x.body) : x.body.includes(segment)),
-        )
-      ) {
-        parallel = true;
-      }
-    }
-    if (tests.length > 0 && !parallel) {
+      if (found.some((x) => provesParallelCall(x, e.route, calls))) continue;
+      // MỌI test được dẫn phải chứng minh (không để mục dẫn test của route khác làm "bằng chứng" phụ).
       errors.push(
-        `${at}: không test nào gọi route song song (thân test cần \`Promise.all\` và ${calls ? `khớp \`calls\` ${calls}` : `"${segment}"`})`,
+        `${at}: test "${t.name}" không gọi route song song — cần lời gọi \`Promise.all(…)\` thật và literal chứa đủ đường dẫn ${e.route.split(" ")[1]} trong thân test${calls ? `, hoặc gọi \`${calls}(…)\` khai trong cùng file có literal đó` : " (hoặc khai `calls` = tên hàm phụ chứa literal)"}`,
       );
     }
   }

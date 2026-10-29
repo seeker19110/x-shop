@@ -1,5 +1,5 @@
 {
-  "$comment": "T-187 (Q-06, ARC-INT-001): route ghi KHÔNG nhận Idempotency-Key — idempotent theo trạng thái (state), theo khoá tự nhiên UNIQUE (natural-key) hoặc không có tác dụng nghiệp vụ trùng lặp (no-business-effect). Mỗi mục: lý do + test song song chứng minh (scripts/check-idempotency.mjs kiểm lời gọi it/test đúng tên, không skip, thân có Promise.all và đoạn đường dẫn cuối của route — hoặc regex `calls` khi test gọi route qua hàm phụ). Route mới thiếu khoá mà không có ở đây → check đỏ; mục không còn route → check đỏ.",
+  "$comment": "T-187 (Q-06, ARC-INT-001): route ghi KHÔNG nhận Idempotency-Key — idempotent theo trạng thái (state), theo khoá tự nhiên UNIQUE (natural-key) hoặc không có tác dụng nghiệp vụ trùng lặp (no-business-effect). Mỗi mục: lý do + test song song chứng minh (scripts/check-idempotency.mjs kiểm lời gọi it/test đúng tên, không skip, có lời gọi Promise.all thật và literal chứa đủ đường dẫn route — hoặc `calls` = tên hàm phụ khai trong cùng file chứa đường dẫn, khi test gọi route qua hàm phụ). Route mới thiếu khoá mà không có ở đây → check đỏ; mục không còn route → check đỏ.",
   "routes": [
     {
       "route": "DELETE /admin/x/users/{id}/roles",
@@ -9,10 +9,6 @@
         {
           "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
           "name": "thu hồi cùng vai trò ×2 song song → một lần thu hồi (changed true + false), một dòng audit"
-        },
-        {
-          "file": "apps/backend/integration-tests/http/rbac.spec.ts",
-          "name": "đồng thời: thu hồi hai owner cuối song song → đúng một thành công, owner cuối được giữ (LAST_OWNER)"
         }
       ]
     },
@@ -23,11 +19,13 @@
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/catalog-import.spec.ts",
-          "name": "hai commit đồng thời cùng id → đúng một lần ghi, lần kia trả kết quả đã lưu"
+          "name": "hai commit đồng thời cùng id → đúng một lần ghi, lần kia trả kết quả đã lưu",
+          "calls": "commit"
         },
         {
           "file": "apps/backend/integration-tests/http/catalog-import.spec.ts",
-          "name": "commit → catalog.import.committed đúng MỘT lần (cả khi gọi lại và đồng thời); còn lỗi → commit_rejected"
+          "name": "commit → catalog.import.committed đúng MỘT lần (cả khi gọi lại và đồng thời); còn lỗi → commit_rejected",
+          "calls": "commit"
         }
       ]
     },
@@ -64,7 +62,8 @@
         },
         {
           "file": "apps/backend/integration-tests/http/shipping-fulfillment.spec.ts",
-          "name": "5 lần gọi lại song song sau khi đã có vận đơn → vẫn 1 fulfillment, không trừ thêm"
+          "name": "5 lần gọi lại song song sau khi đã có vận đơn → vẫn 1 fulfillment, không trừ thêm",
+          "calls": "createShipment"
         }
       ]
     },
@@ -76,10 +75,6 @@
         {
           "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
           "name": "đặt thuộc tính thời trang ×2 song song cùng nội dung → đúng một bộ số đo, như gọi một lần"
-        },
-        {
-          "file": "apps/backend/integration-tests/http/catalog-model.spec.ts",
-          "name": "hai lượt thành công đồng thời (T-150), ép cùng đọc trước khi xoá → đúng một bộ số đo (của lượt sau)"
         }
       ]
     },
@@ -101,7 +96,8 @@
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/refund-guard.spec.ts",
-          "name": "2 lệnh hủy song song → một changed, một trả nguyên; audit một lần"
+          "name": "2 lệnh hủy song song → một changed, một trả nguyên; audit một lần",
+          "calls": "cancel"
         }
       ]
     },
@@ -112,11 +108,13 @@
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/refunds.spec.ts",
-          "name": "3 lệnh thực hiện song song → cổng hoàn đúng một lần"
+          "name": "3 lệnh thực hiện song song → cổng hoàn đúng một lần",
+          "calls": "execute"
         },
         {
           "file": "apps/backend/integration-tests/http/refund-provider-fallback.spec.ts",
-          "name": "R1: 3 lệnh thực hiện song song khi cổng tắt → cùng 409, một lần chuyển `failed` (một audit)"
+          "name": "R1: 3 lệnh thực hiện song song khi cổng tắt → cùng 409, một lần chuyển `failed` (một audit)",
+          "calls": "execute"
         }
       ]
     },
@@ -186,10 +184,10 @@
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/settlement.spec.ts",
-          "name": "5 lần nhập cùng batch song song → 1 batch (201 + 200×4); hai batch khác nhau cùng đơn song song → một khớp, một thu dư"
+          "name": "5 lần nhập cùng batch song song → 1 batch (201 + 200×4); hai batch khác nhau cùng đơn song song → một khớp, một thu dư",
+          "calls": "importCsv"
         }
-      ],
-      "calls": "importCsv\\("
+      ]
     },
     {
       "route": "POST /admin/x/settlements/discrepancies/{id}/resolve",
@@ -275,7 +273,8 @@
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/order-lookup.spec.ts",
-          "name": "COD placed: hủy native, nhả reservation, mã released; gọi lại/đồng thời idempotent (một sự kiện hủy)"
+          "name": "COD placed: hủy native, nhả reservation, mã released; gọi lại/đồng thời idempotent (một sự kiện hủy)",
+          "calls": "cancel"
         }
       ]
     },
@@ -297,7 +296,8 @@
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/order-lookup.spec.ts",
-          "name": "đồng thời: hai lần tra cứu khớp cùng lúc → hai sự kiện riêng; hai dispatcher song song gửi mỗi sự kiện đúng một lần"
+          "name": "đồng thời: hai lần tra cứu khớp cùng lúc → hai sự kiện riêng; hai dispatcher song song gửi mỗi sự kiện đúng một lần",
+          "calls": "lookup"
         }
       ]
     },
@@ -308,7 +308,8 @@
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/order-lookup.spec.ts",
-          "name": "[api1-bola post /store/x/orders/session] đổi liên kết → phiên đơn; dùng lại/giả/hết hạn/sai loại → 404; hai lần đổi đồng thời chỉ một thành công"
+          "name": "[api1-bola post /store/x/orders/session] đổi liên kết → phiên đơn; dùng lại/giả/hết hạn/sai loại → 404; hai lần đổi đồng thời chỉ một thành công",
+          "calls": "session"
         }
       ]
     },
@@ -319,11 +320,13 @@
       "tests": [
         {
           "file": "apps/backend/integration-tests/http/shipping.spec.ts",
-          "name": "dị dạng → 400; vận đơn lạ → 200 bỏ qua; callback lặp song song → 1 sự kiện"
+          "name": "dị dạng → 400; vận đơn lạ → 200 bỏ qua; callback lặp song song → 1 sự kiện",
+          "calls": "callback"
         },
         {
           "file": "apps/backend/integration-tests/http/shipping-return-to-sender.spec.ts",
-          "name": "callback lặp + đồng thời → một yêu cầu hàng hoàn, cách ly cộng một lần, một hoàn tiền, đơn hủy một lần"
+          "name": "callback lặp + đồng thời → một yêu cầu hàng hoàn, cách ly cộng một lần, một hoàn tiền, đơn hủy một lần",
+          "calls": "callback"
         }
       ]
     }

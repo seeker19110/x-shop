@@ -145,8 +145,12 @@ test("keyModeOf: bỏ chú thích; req.get('Idempotency-Key') phải kèm isVali
   assert.equal(keyModeOf("export const POST = (req, res) => res.json({});"), null);
 });
 
-test("fail-closed: export { … }, export * from, export let/var, export phân rã → lỗi", () => {
+test("fail-closed: export { … }, export *, export let/var, phân rã, export =/default, export import/namespace, exports.* → lỗi", () => {
   for (const src of [
+    "const impl = { POST() {} };\nexport = impl;\n",
+    "export default { POST: () => {} };\n",
+    'import * as Impl from "./impl";\nexport import POST = Impl.POST;\n',
+    "export namespace Handlers { export const POST = () => {}; }\n",
     'export { POST } from "./impl";\n',
     "const handler = () => {};\nexport { handler as PATCH };\n",
     'export * from "./impl";\n',
@@ -159,6 +163,25 @@ test("fail-closed: export { … }, export * from, export let/var, export phân r
     });
     assert.ok(
       errors.some((e) => e.startsWith("apps/backend/src/api/admin/x/evil/route.ts: ")),
+      `${src}: ${JSON.stringify(errors)}`,
+    );
+  }
+  // CommonJS trong route.js: exports.X / module.exports / module.exports.X / exports["X"].
+  for (const src of [
+    "exports.POST = async (req, res) => res.json({});\n",
+    "module.exports = { POST: async () => {} };\n",
+    "module.exports.DELETE = async () => {};\n",
+    'exports["PUT"] = async () => {};\n',
+  ]) {
+    const errors = errorsOf({
+      routes: {
+        "store/x/things": KEYED_SRC,
+        "admin/x/things/[id]/approve": PLAIN_SRC,
+        "admin/x/evil": { file: "route.js", src },
+      },
+    });
+    assert.ok(
+      errors.some((e) => e.startsWith("apps/backend/src/api/admin/x/evil/route.js: ")),
       `${src}: ${JSON.stringify(errors)}`,
     );
   }
@@ -280,7 +303,11 @@ test("allowlist: kind lạ, lý do ngắn, thiếu test, file test không có, t
       /không có file test/,
     ],
     [{ ...ENTRY, route: "GET /admin/x/things" }, /`route` phải dạng "METHOD \/path"/],
-    [{ ...ENTRY, calls: "(" }, /`calls` không phải regex hợp lệ/],
+    [{ ...ENTRY, calls: "doIt" }, /`calls` khai theo từng mục `tests\[\]`/],
+    [
+      { ...ENTRY, tests: [{ file: TEST_FILE, name: PARALLEL, calls: ".*" }] },
+      /`tests\[\]\.calls` phải là tên hàm phụ/,
+    ],
   ];
   for (const [entry, re] of cases) {
     const errors = errorsOf({ allow: [entry] });
@@ -320,20 +347,64 @@ test("allowlist: tên chỉ nằm trong chú thích/chuỗi khác, it.skip/xit/i
   );
 });
 
-test("allowlist: test được dẫn phải gọi route song song (Promise.all + đoạn đường dẫn cuối, hoặc regex `calls`)", () => {
-  const noParallel = errorsOf({
-    testSource: `it("${PARALLEL}", async () => { await post(\`/admin/x/things/\${id}/approve\`); });\n`,
+test("allowlist: test được dẫn phải gọi route song song — Promise.all thật (AST) + literal đủ đường dẫn, hoặc hàm phụ `calls` chứa literal", () => {
+  const T = (body, extra = "") => `${extra}it("${PARALLEL}", async () => { ${body} });\n`;
+  const bad = (opts) => {
+    const errors = errorsOf(opts);
+    assert.equal(errors.length, 1, JSON.stringify(errors));
+    assert.match(errors[0], /test "duyệt ×2 song song → một lần duyệt" không gọi route song song/);
+  };
+  // Không Promise.all.
+  bad({ testSource: T("await post(`/admin/x/things/${id}/approve`);") });
+  // Route khác (đuôi khác).
+  bad({ testSource: T('await Promise.all([post("/admin/x/things/1/reject")]);') });
+  // (A4) Cùng đuôi `approve` nhưng tiền tố khác.
+  bad({ testSource: T("await Promise.all([post(`/admin/x/others/${id}/approve`)]);") });
+  bad({ testSource: T('await Promise.all([post("/admin/x/approve")]);') });
+  // (A5) Chỉ trong chú thích, thân không làm gì.
+  bad({ testSource: T("// Promise.all(post(`/admin/x/things/${id}/approve`))\nexpect(1).toBe(1);") });
+  bad({ testSource: T("/* Promise.all */ await post(`/admin/x/things/${id}/approve`);") });
+  // "Promise.all" chỉ là chuỗi.
+  bad({ testSource: T('const s = "Promise.all"; await post(`/admin/x/things/${id}/approve`);') });
+  // Đạt: literal thường/template, kèm query string.
+  assert.deepEqual(
+    errorsOf({ testSource: T('await Promise.all([post("/admin/x/things/42/approve?x=1")]);') }),
+    [],
+  );
+  assert.deepEqual(
+    errorsOf({
+      testSource: T("const url = `/admin/x/things/${id}/approve`;\nawait Promise.allSettled([post(url)]);"),
+    }),
+    [],
+  );
+
+  // Hàm phụ: `calls` = tên hàm, phải được gọi trong test VÀ khai trong cùng file có literal đủ đường dẫn.
+  const helper = "const doIt = (id) => api.post(`/admin/x/things/${id}/approve`);\n";
+  const viaHelper = T("await Promise.all([doIt(1), doIt(1)]);", helper);
+  const withCalls = (calls) => [{ ...ENTRY, tests: [{ file: TEST_FILE, name: PARALLEL, calls }] }];
+  bad({ testSource: viaHelper });
+  assert.deepEqual(errorsOf({ testSource: viaHelper, allow: withCalls("doIt") }), []);
+  // (A3) Hàm phụ trỏ route khác / không được gọi / không khai trong file.
+  bad({
+    testSource: T(
+      "await Promise.all([doIt(1)]);",
+      "const doIt = (id) => api.post(`/admin/x/things/${id}/confirm`);\n",
+    ),
+    allow: withCalls("doIt"),
   });
-  assert.equal(noParallel.length, 1);
-  assert.match(noParallel[0], /không test nào gọi route song song .*"approve"/);
-  const otherRoute = errorsOf({
-    testSource: `it("${PARALLEL}", async () => { await Promise.all([post("/admin/x/things/1/reject")]); });\n`,
+  bad({ testSource: T("await Promise.all([other(1)]);", helper), allow: withCalls("doIt") });
+  bad({ testSource: T("await Promise.all([doIt(1)]);"), allow: withCalls("doIt") });
+
+  // MỌI test được dẫn phải chứng minh: thêm một test không liên quan → lỗi dù test kia đạt.
+  const errors = errorsOf({
+    testSource:
+      T("await Promise.all([post(`/admin/x/things/${id}/approve`)]);") +
+      'it("ca không liên quan gì", async () => {});\n',
+    allow: [{ ...ENTRY, tests: [...ENTRY.tests, { file: TEST_FILE, name: "ca không liên quan gì" }] }],
   });
-  assert.match(otherRoute[0] ?? "", /không test nào gọi route song song/);
-  // Test gọi qua hàm phụ: mục khai `calls`.
-  const viaHelper = `it("${PARALLEL}", async () => { await Promise.all([doIt(1), doIt(1)]); });\n`;
-  assert.equal(errorsOf({ testSource: viaHelper }).length, 1);
-  assert.deepEqual(errorsOf({ testSource: viaHelper, allow: [{ ...ENTRY, calls: "doIt\\(" }] }), []);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /test "ca không liên quan gì" không gọi route song song/);
+
   assert.deepEqual(
     testsOfSource(`test("a b c d e f", async () => { x(); });\nit(\`tpl \${v}\`, () => {});\n`).map(
       (t) => t.name,
