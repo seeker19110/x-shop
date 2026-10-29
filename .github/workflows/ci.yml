@@ -41,9 +41,9 @@ jobs:
   gate:
     name: gate
     runs-on: ubuntu-latest
-    # 30 → 50 (2026-10-29): lần xanh cuối 26 phút; bộ tích hợp tăng (845 test) nên gate bị huỷ ở 30 phút từ 27/10.
+    # 30 → 60 (2026-10-29): bộ tích hợp tăng (862 test) — gate bị huỷ ở 30 phút từ 27/10; lần xanh ở trần 50 mất 49 phút.
     # Trần thời gian chạy, không phải ngưỡng chất lượng. Chia shard test cần sửa xt.yaml (T-128, chờ người).
-    timeout-minutes: 50
+    timeout-minutes: 60
     # x-shop: test tích hợp Medusa (giữ hàng, idempotency, IPN — AT04/AT05/AT35) chạy trên Postgres/Redis thật (đặc tả §13.3).
     services:
       postgres:
