@@ -89,8 +89,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/test-logs"
           bash .xtemplates/scripts/dev-task.sh gate-par 2>&1 | tee "$RUNNER_TEMP/test-logs/gate-par.log"
       # SEC-SECRET-007, CMP-PRIV-008: gitleaks (CLI MIT, không dùng gitleaks-action vì EULA/giấy phép tổ chức — xem
-      # secret-scan.yml) quét THƯ MỤC log, không đọc lịch sử git (`dir` = `--no-git`), dùng cấu hình chung `.gitleaks.toml`
-      # (D-135). Phiên bản ghim + sha256 (gitleaks_8.30.0_checksums.txt, xác minh 2026-10-29). Nhẹ: ~6 MB, vài giây.
+      # secret-scan.yml) quét THƯ MỤC log, không đọc lịch sử git (`dir` = `--no-git`), dùng `.gitleaks-logs.toml` (kế thừa
+      # `.gitleaks.toml` D-135, chỉ thêm ngoại lệ UUID chuẩn — trace_id trong log HTTP bị generic-api-key bắt nhầm). Phiên bản ghim + sha256 (gitleaks_8.30.0_checksums.txt, xác minh 2026-10-29). Nhẹ: ~6 MB, vài giây.
       - name: gitleaks --no-git trên log test — `gitleaks dir` (SEC-SECRET-007)
         if: ${{ !cancelled() }}
         env:
@@ -104,7 +104,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/gitleaks-bin"
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
           test -s "$RUNNER_TEMP/test-logs/gate-par.log"
-          "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir "$RUNNER_TEMP/test-logs" --config .gitleaks.toml --redact --no-banner
+          "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir "$RUNNER_TEMP/test-logs" --config .gitleaks-logs.toml --redact --no-banner
       # x-shop (T-110, QA-COV-001/002): coverage nhánh (v8) của domain + storefront (vitest) + backend unit (jest), rồi
       # ratchet so coverage-baseline.json — lines/branches tụt dưới baseline, hoặc PR hạ chính baseline so với nhánh đích
       # (`--against`), thì bước đỏ. Bước riêng vì `floor --run` không áp ở pha build (ADR-0041) và `test` của xt.yaml

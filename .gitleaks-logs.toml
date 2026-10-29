@@ -1,0 +1,13 @@
+# Cấu hình gitleaks RIÊNG cho bước quét log test ở CI (SEC-SECRET-007, T-183). Kế thừa nguyên .gitleaks.toml (D-135).
+# Thêm một ngoại lệ: UUID chuẩn không phải bí mật. Log HTTP có dòng `POST /auth/user/emailpass/reset-password trace_id=<uuid>`
+# — từ khoá `password` trong đường dẫn khiến luật generic-api-key bắt nhầm UUID. Chỉ bỏ qua khi CẢ giá trị khớp là UUID
+# (neo ^$ theo `secret`); khoá thật (ghp_…, JWT, chuỗi dài) vẫn bị bắt. Chạy từ gốc repo (đường dẫn extend tương đối).
+title = "x-shop log scan"
+
+[extend]
+path = ".gitleaks.toml"
+
+[[allowlists]]
+description = "UUID chuẩn (trace_id, id bản ghi) không phải bí mật"
+regexTarget = "secret"
+regexes = ['''^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$''']
