@@ -70,7 +70,7 @@ describe("admin-dialog: component", () => {
     render(<ConfirmDialog spec={refundSpec()} onConfirm={onConfirm} onCancel={onCancel} />);
     fireEvent.click(await screen.findByRole("button", { name: "Hủy bỏ" }));
     expect(onConfirm).not.toHaveBeenCalled();
-    expect(onCancel).toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
   it("xác nhận → gọi đúng một lần", async () => {
@@ -88,10 +88,42 @@ describe("admin-dialog: component", () => {
     const onConfirm = jest.fn(() => new Promise<void>((r) => (release = r)));
     render(<ConfirmDialog spec={refundSpec()} onConfirm={onConfirm} onCancel={jest.fn()} />);
     const btn = await screen.findByRole("button", { name: "Hoàn tiền 150.000 ₫" });
-    fireEvent.click(btn);
-    fireEvent.click(btn);
-    fireEvent.doubleClick(btn);
+    // Cùng một act: React chưa kịp render `disabled` giữa hai click → chỉ ref đồng bộ mới chặn được.
+    await act(async () => {
+      fireEvent.click(btn);
+      fireEvent.click(btn);
+      fireEvent.doubleClick(btn);
+    });
     expect(onConfirm).toHaveBeenCalledTimes(1);
     await act(async () => release());
+  });
+
+  it("onConfirm reject một lần rồi resolve: lỗi báo qua onError, bấm lại được → gọi 2 lần", async () => {
+    const onConfirm = jest.fn().mockRejectedValueOnce(new Error("gateway")).mockResolvedValueOnce(undefined);
+    const onError = jest.fn();
+    render(
+      <ConfirmDialog spec={refundSpec()} onConfirm={onConfirm} onCancel={jest.fn()} onError={onError} />,
+    );
+    const btn = await screen.findByRole("button", { name: "Hoàn tiền 150.000 ₫" });
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0] as [Error])[0].message).toBe("gateway");
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    expect(onConfirm).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("onConfirm reject mà không có onError: không unhandled rejection", async () => {
+    const onConfirm = jest.fn().mockRejectedValue(new Error("x"));
+    render(<ConfirmDialog spec={refundSpec()} onConfirm={onConfirm} onCancel={jest.fn()} />);
+    const btn = await screen.findByRole("button", { name: "Hoàn tiền 150.000 ₫" });
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 });

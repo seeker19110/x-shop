@@ -9,13 +9,15 @@ interface Props {
   onConfirm: () => void | Promise<void>;
   /** Esc, nút Hủy bỏ hoặc bấm ra ngoài — không làm gì ngoài việc đóng. */
   onCancel: () => void;
+  /** `onConfirm` bị reject: lỗi được báo ở đây (không để thành unhandled rejection); dialog mở lại cho bấm lần nữa. */
+  onError?: (error: unknown) => void;
 }
 
 /**
  * Hộp thoại xác nhận dùng chung (UX-STATE-008). Dựa trên Prompt (Radix AlertDialog): Esc đóng, tiêu điểm mặc định ở
  * nút Hủy bỏ (nút an toàn). Chặn bấm đúp bằng ref đồng bộ (state cập nhật chậm hơn click thứ hai).
  */
-export function ConfirmDialog({ spec, onConfirm, onCancel }: Props) {
+export function ConfirmDialog({ spec, onConfirm, onCancel, onError }: Props) {
   const fired = useRef(false);
   const [busy, setBusy] = useState(false);
 
@@ -25,6 +27,8 @@ export function ConfirmDialog({ spec, onConfirm, onCancel }: Props) {
     setBusy(true);
     try {
       await onConfirm();
+    } catch (e) {
+      onError?.(e);
     } finally {
       setBusy(false);
       fired.current = false;
@@ -47,7 +51,7 @@ export function ConfirmDialog({ spec, onConfirm, onCancel }: Props) {
             </Prompt.Description>
           </Prompt.Header>
           <Prompt.Footer>
-            <Prompt.Cancel onClick={onCancel}>{spec.cancelLabel}</Prompt.Cancel>
+            <Prompt.Cancel>{spec.cancelLabel}</Prompt.Cancel>
             <Prompt.Action
               disabled={busy}
               className={spec.destructive ? "bg-ui-button-danger hover:bg-ui-button-danger-hover" : undefined}
