@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { MedusaError } from "@medusajs/framework/utils";
 import { z } from "zod";
-import { windowStartMs } from "../../security/sliding-window";
+import { MemoryCounter } from "../../security/__tests__/memory-counter";
 import { DENY_AUDIT_THROTTLE, type WindowCounter, type WindowPeek } from "../deny-throttle";
 import { SECURITY_EVENTS } from "../events";
 import {
@@ -198,18 +198,12 @@ describe("trần chung vô danh (review T-175 vòng 2)", () => {
     expect(anonCapVerdict(null)).toBe("record");
   });
 
-  /** Bộ đếm cửa sổ cố định trong bộ nhớ, khoá (bucket, đầu cửa sổ) — như `rate_limit_counter`. */
+  /** Bộ đếm dùng chung của test bảo mật (cùng ngữ nghĩa `rate_limit_counter`), lấy `.current` như `counterOf`/`peekCounterOf`. */
   function memoryCounter() {
-    const store = new Map<string, number>();
-    const key = (bucket: string, windowMs: number, now: Date) =>
-      `${bucket}@${windowStartMs(windowMs, now.getTime())}`;
-    const counter: WindowCounter = async (bucket, windowMs, now) => {
-      const k = key(bucket, windowMs, now);
-      const n = (store.get(k) ?? 0) + 1;
-      store.set(k, n);
-      return n;
-    };
-    const peek: WindowPeek = async (bucket, windowMs, now) => store.get(key(bucket, windowMs, now)) ?? 0;
+    const m = new MemoryCounter();
+    const counter: WindowCounter = async (bucket, windowMs, now) =>
+      (await m.hit(bucket, windowMs, now)).current;
+    const peek: WindowPeek = async (bucket, windowMs, now) => (await m.peek(bucket, windowMs, now)).current;
     return { counter, peek };
   }
   const EVENT = SECURITY_EVENTS.INPUT_DESERIALIZE_FAILED;
@@ -241,7 +235,7 @@ describe("trần chung vô danh (review T-175 vòng 2)", () => {
     expect(await anonGlobalCap(counter, peek, EVENT, EDGE, rawC, noop)).toBe("skip");
   });
 
-  it("ĐỒNG THỜI (Promise.all): 65 request chồng nhau → đúng trần dòng thường + MỘT dòng đánh dấu, occurrence ≥ trần + 1", async () => {
+  it("ĐỒNG THỜI (thứ tự tất định): 65 request chụp thô trước, đếm dòng theo thứ tự NGƯỢC → đúng trần dòng thường + MỘT dòng đánh dấu, occurrence = số thô cửa sổ", async () => {
     const { counter, peek } = memoryCounter();
     const raw = anonBucket(EVENT, "raw");
     const n = INPUT_ANON_GLOBAL_CAP + 15;
@@ -285,6 +279,28 @@ describe("trần chung vô danh (review T-175 vòng 2)", () => {
     expect(await anonGlobalCap(fresh.counter, broken, EVENT, next, null, () => errors++)).toEqual({
       mark: "reached",
       occurrence: null,
+    });
+  });
+
+  it("đếm thô của request lỗi (rawAtHit = null) + bucket thô rỗng/thấp (< trần + 1) → occurrence null, không 0/số thấp; bucket thô ≥ trần + 1 → dùng số đọc lại", async () => {
+    const raw = anonBucket(EVENT, "raw");
+    const rows = anonBucket(EVENT, "rows");
+    const noop = () => undefined;
+    for (const rawCount of [0, 10, INPUT_ANON_GLOBAL_CAP]) {
+      const { counter, peek } = memoryCounter();
+      for (let i = 0; i < rawCount; i++) await counter(raw, W, EDGE);
+      for (let i = 0; i < INPUT_ANON_GLOBAL_CAP; i++) await counter(rows, W, EDGE);
+      expect(await anonGlobalCap(counter, peek, EVENT, EDGE, null, noop)).toEqual({
+        mark: "reached",
+        occurrence: null,
+      });
+    }
+    const { counter, peek } = memoryCounter();
+    for (let i = 0; i < INPUT_ANON_GLOBAL_CAP + 7; i++) await counter(raw, W, EDGE);
+    for (let i = 0; i < INPUT_ANON_GLOBAL_CAP; i++) await counter(rows, W, EDGE);
+    expect(await anonGlobalCap(counter, peek, EVENT, EDGE, null, noop)).toEqual({
+      mark: "reached",
+      occurrence: INPUT_ANON_GLOBAL_CAP + 7,
     });
   });
 

@@ -211,6 +211,11 @@ export async function anonGlobalCap(
   } catch {
     onCounterError();
   }
+  // Đếm thô của request này lỗi (`rawAtHit === null`) mà bucket thô đọc lại < trần + 1 → bucket thô không đáng tin
+  // (thô luôn ≥ dòng = trần + 1 nếu mọi lần đếm thô thành công) → `null` ("không biết"), không ghi 0/số thấp sai nghĩa.
+  if (rawAtHit === null && (rawNow === null || !(rawNow >= INPUT_ANON_GLOBAL_CAP + 1))) {
+    return { mark: "reached", occurrence: null };
+  }
   const known = [rawAtHit, rawNow].filter((v): v is number => v !== null && Number.isSafeInteger(v));
   return { mark: "reached", occurrence: known.length > 0 ? Math.max(...known) : null };
 }
