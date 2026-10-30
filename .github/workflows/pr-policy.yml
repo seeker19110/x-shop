@@ -122,3 +122,18 @@ jobs:
           node --test scripts/check-specs.test.mjs
           git log --format=%s "$BASE_SHA..$HEAD_SHA" > "$RUNNER_TEMP/subjects.txt"
           COMMIT_SUBJECTS_FILE="$RUNNER_TEMP/subjects.txt" node scripts/check-specs.mjs --pr
+      # STD-API-008, STD-PROC-003, QA-INT-007 (T-194): PR không được phá vỡ hợp đồng `docs/design/openapi.yaml` (xoá path/field,
+      # đổi kiểu, thêm field request bắt buộc…) trừ khi có nhãn `breaking` + `BREAKING CHANGE:` ở commit/tiêu đề. Logic + test ở
+      # scripts/check-api-breaking.mjs; cần thư viện `yaml` (ghim ở package.json gốc) nên cài phụ thuộc gốc, bỏ script vòng đời.
+      # Nhãn/tiêu đề đi qua env, không nội suy vào shell; base đọc từ lịch sử (fetch-depth 0 ở trên), không checkout.
+      - name: PR không phá vỡ hợp đồng OpenAPI — `check-api-breaking.mjs`
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts --filter .
+          node --test scripts/check-api-breaking.test.mjs
+          node scripts/check-api-breaking.mjs --base "$BASE_SHA"

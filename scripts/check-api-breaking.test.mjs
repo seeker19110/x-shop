@@ -1,0 +1,332 @@
+// Test cho check-api-breaking.mjs: repo git tạm + diffSpecs/hasBreakingMarker thuần.
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
+import { diffSpecs, hasBreakingMarker, OPENAPI_PATH, parseLabels, run } from "./check-api-breaking.mjs";
+
+const SPEC = `
+openapi: 3.1.0
+info: { title: t, version: "1" }
+paths:
+  /a:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/A" }
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Req" }
+      responses:
+        "200": { description: ok }
+        "201": { description: created }
+  /b:
+    get:
+      responses:
+        "200": { description: ok }
+components:
+  schemas:
+    A:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        n: { type: integer }
+        kind: { type: string, enum: [x, y] }
+        child: { $ref: "#/components/schemas/Node" }
+    Node:
+      type: object
+      properties:
+        name: { type: string }
+        next: { $ref: "#/components/schemas/Node" }
+    Req:
+      type: object
+      required: [a]
+      properties:
+        a: { type: string }
+        b: { type: string }
+`;
+
+const sh = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+
+function repo(newSpec, { message = "chore: sửa spec" } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "api-breaking-"));
+  mkdirSync(join(dir, dirname(OPENAPI_PATH)), { recursive: true });
+  sh(dir, "init", "-q", "-b", "master");
+  sh(dir, "config", "user.email", "t@example.com");
+  sh(dir, "config", "user.name", "t");
+  sh(dir, "config", "commit.gpgsign", "false");
+  writeFileSync(join(dir, OPENAPI_PATH), SPEC);
+  sh(dir, "add", ".");
+  sh(dir, "commit", "-q", "-m", "chore: gốc");
+  sh(dir, "checkout", "-q", "-b", "feat");
+  writeFileSync(join(dir, OPENAPI_PATH), newSpec);
+  sh(dir, "add", ".");
+  sh(dir, "commit", "-q", "--allow-empty", "-m", message);
+  return dir;
+}
+const withRepo = (newSpec, opts, fn) => {
+  const dir = repo(newSpec, opts);
+  try {
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+const diff = (mutate) => {
+  const o = parse(SPEC);
+  const n = parse(SPEC);
+  mutate(n);
+  return diffSpecs(o, n);
+};
+const has = (list, re) => list.some((x) => re.test(x));
+
+test("không đổi → 0", () => {
+  withRepo(SPEC, {}, (dir) => assert.equal(run({ root: dir, base: "master", env: {} }).code, 0));
+});
+
+test("xoá path → 1", () => {
+  withRepo(
+    SPEC.replace(/ {2}\/b:\n {4}get:\n {6}responses:\n {8}"200": \{ description: ok \}\n/, ""),
+    {},
+    (dir) => {
+      const r = run({ root: dir, base: "master", env: {} });
+      assert.equal(r.code, 1);
+      assert.match(r.lines.join("\n"), /\/b: xoá path/);
+    },
+  );
+});
+
+test("thêm field response → 0", () => {
+  withRepo(
+    SPEC.replace(
+      "        n: { type: integer }\n",
+      "        n: { type: integer }\n        extra: { type: string }\n",
+    ),
+    {},
+    (dir) => assert.equal(run({ root: dir, base: "master", env: {} }).code, 0),
+  );
+});
+
+test("nhãn breaking + BREAKING CHANGE trong thân commit → 0; thiếu một vế → 1", () => {
+  const broken = SPEC.replace("        n: { type: integer }\n", "");
+  withRepo(broken, { message: "feat(api): bỏ n\n\nBREAKING CHANGE: bỏ field n" }, (dir) => {
+    assert.equal(run({ root: dir, base: "master", env: { PR_LABELS: "area:api,Breaking" } }).code, 0);
+    assert.equal(run({ root: dir, base: "master", env: { PR_LABELS: "area:api" } }).code, 1);
+    assert.equal(run({ root: dir, base: "master", env: {} }).code, 1);
+  });
+  withRepo(broken, { message: "feat(api): bỏ n" }, (dir) => {
+    assert.equal(run({ root: dir, base: "master", env: { PR_LABELS: "breaking" } }).code, 1);
+    assert.equal(
+      run({ root: dir, base: "master", env: { PR_LABELS: "breaking", PR_TITLE: "feat(api)!: bỏ n" } }).code,
+      0,
+    );
+  });
+});
+
+test("base ref không tồn tại → 2", () => {
+  withRepo(SPEC, {}, (dir) => assert.equal(run({ root: dir, base: "khong-co", env: {} }).code, 2));
+});
+
+test("parseLabels: mảng JSON, danh sách phẩy, rỗng, JSON hỏng", () => {
+  assert.deepEqual(parseLabels('["Breaking","area:api"]'), ["breaking", "area:api"]);
+  assert.deepEqual(parseLabels("a, B\nc"), ["a", "b", "c"]);
+  assert.deepEqual(parseLabels(""), []);
+  assert.deepEqual(parseLabels(undefined), []);
+  assert.deepEqual(parseLabels("[hỏng"), []);
+});
+
+test("hasBreakingMarker", () => {
+  assert.ok(hasBreakingMarker("feat!: x"));
+  assert.ok(hasBreakingMarker("feat(api)!: x"));
+  assert.ok(hasBreakingMarker("feat: x\n\nBREAKING CHANGE: y"));
+  assert.ok(hasBreakingMarker("BREAKING-CHANGE: y"));
+  assert.ok(!hasBreakingMarker("feat: nhắc BREAKING CHANGE: giữa dòng"));
+  assert.ok(!hasBreakingMarker("feat: x"));
+  assert.ok(!hasBreakingMarker(""));
+});
+
+test("$ref: xoá field trong schema dùng chung/đệ quy bị bắt; vòng $ref không treo", () => {
+  const r1 = diff((d) => delete d.components.schemas.Node.properties.name);
+  assert.ok(has(r1, /child\.name.*R3/), r1.join("\n"));
+  const r2 = diff((d) => (d.components.schemas.Node.properties.name = { type: "integer" }));
+  assert.ok(has(r2, /R4/));
+  assert.deepEqual(
+    diff(() => {}),
+    [],
+  );
+});
+
+test("quy tắc response", () => {
+  assert.ok(
+    has(
+      diff((d) => delete d.paths["/a"].post),
+      /P2/,
+    ),
+  );
+  assert.ok(
+    has(
+      diff((d) => delete d.paths["/a"].post.responses["201"]),
+      /R1/,
+    ),
+  );
+  assert.ok(
+    has(
+      diff((d) => (d.components.schemas.A.properties.n = { type: "string" })),
+      /R4/,
+    ),
+  );
+  assert.ok(
+    has(
+      diff((d) => (d.components.schemas.A.properties.n = { type: ["integer", "null"] })),
+      /R4/,
+    ),
+  );
+  assert.deepEqual(
+    diff((d) => (d.components.schemas.A.properties.n = { type: "integer", minimum: 0 })),
+    [],
+  );
+  assert.ok(
+    has(
+      diff((d) => (d.components.schemas.A.properties.kind.enum = ["x"])),
+      /R6/,
+    ),
+  );
+  assert.deepEqual(
+    diff((d) => (d.components.schemas.A.properties.kind.enum = ["x", "y", "z"])),
+    [],
+  );
+  assert.ok(
+    has(
+      diff((d) => (d.components.schemas.A.required = [])),
+      /R5/,
+    ),
+  );
+  assert.ok(
+    has(
+      diff((d) => delete d.paths["/a"].get.responses["200"].content["application/json"]),
+      /R2/,
+    ),
+  );
+  assert.deepEqual(
+    diff((d) => (d.paths["/a"].get.responses["404"] = { description: "x" })),
+    [],
+  );
+  // Xoá response lỗi (4xx) không tính.
+  const o = parse(SPEC);
+  o.paths["/a"].get.responses["404"] = { description: "x" };
+  assert.deepEqual(diffSpecs(o, parse(SPEC)), []);
+});
+
+test("quy tắc request", () => {
+  assert.ok(
+    has(
+      diff((d) => d.components.schemas.Req.required.push("b")),
+      /b.*Q3/,
+    ),
+  );
+  assert.ok(
+    has(
+      diff((d) => {
+        d.components.schemas.Req.properties.c = { type: "string" };
+        d.components.schemas.Req.required.push("c");
+      }),
+      /c.*Q3/,
+    ),
+  );
+  assert.deepEqual(
+    diff((d) => (d.components.schemas.Req.properties.c = { type: "string" })),
+    [],
+  );
+  assert.ok(
+    has(
+      diff((d) => (d.components.schemas.Req.properties.a = { type: "integer" })),
+      /Q4/,
+    ),
+  );
+  assert.deepEqual(
+    diff((d) => (d.components.schemas.Req.properties.a = { type: ["string", "null"] })),
+    [],
+  );
+  assert.ok(
+    has(
+      diff((d) => (d.components.schemas.Req.properties.a = { type: "string", maxLength: 5 })),
+      /Q6/,
+    ),
+  );
+  assert.ok(
+    has(
+      diff(
+        (d) =>
+          (d.paths["/b"].get.parameters = [
+            { name: "q", in: "query", required: true, schema: { type: "string" } },
+          ]),
+      ),
+      /Q1/,
+    ),
+  );
+  assert.deepEqual(
+    diff((d) => (d.paths["/b"].get.parameters = [{ name: "q", in: "query", schema: { type: "string" } }])),
+    [],
+  );
+  assert.ok(
+    has(
+      diff(
+        (d) =>
+          (d.paths["/b"].get.requestBody = {
+            required: true,
+            content: { "application/json": { schema: { type: "object" } } },
+          }),
+      ),
+      /Q2/,
+    ),
+  );
+  assert.ok(
+    has(
+      diff((d) => {
+        delete d.components.schemas.Req.properties.b;
+        d.components.schemas.Req.additionalProperties = false;
+      }),
+      /Q7/,
+    ),
+  );
+});
+
+test("allOf được gộp: xoá field ở nhánh allOf bị bắt", () => {
+  const setup = (d) => {
+    d.components.schemas.A = {
+      allOf: [
+        { $ref: "#/components/schemas/Node" },
+        { type: "object", properties: { z: { type: "string" } } },
+      ],
+    };
+  };
+  const o = parse(SPEC);
+  setup(o);
+  const n = parse(SPEC);
+  setup(n);
+  n.components.schemas.A.allOf[1].properties = {};
+  assert.ok(has(diffSpecs(o, n), /\.z.*R3/));
+});
+
+test("chạy CLI (exit code)", () => {
+  const script = join(dirname(fileURLToPath(import.meta.url)), "check-api-breaking.mjs");
+  withRepo(SPEC, {}, (dir) => {
+    execFileSync("node", [script, "--root", dir, "--base", "master"], { stdio: "pipe" });
+  });
+  withRepo(SPEC.replace("        n: { type: integer }\n", ""), {}, (dir) => {
+    assert.throws(
+      () => execFileSync("node", [script, "--root", dir, "--base", "master"], { stdio: "pipe" }),
+      (e) => e.status === 1,
+    );
+  });
+});
