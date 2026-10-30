@@ -198,7 +198,9 @@ export class AppLogger {
         version: this.opts.version,
         env: this.opts.env,
         ...(ctx?.trace_id !== undefined && { trace_id: ctx.trace_id }),
-        ...(ctx?.span_id !== undefined && { span_id: ctx.span_id }),
+        // Schema: có trace_id thì bắt buộc span_id (BASE-ERR-006) — ngữ cảnh thiếu span thì sinh span mới.
+        ...(ctx?.trace_id !== undefined && { span_id: ctx.span_id ?? newSpanId() }),
+        ...(ctx?.trace_id === undefined && ctx?.span_id !== undefined && { span_id: ctx.span_id }),
         ...(redactLog(extra) as Record<string, unknown>),
         ...(error !== undefined && (redactLog(exceptionFields(error)) as Record<string, unknown>)),
       };

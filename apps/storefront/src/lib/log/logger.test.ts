@@ -3,7 +3,15 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { schemaErrors as validateSchema } from "../../../../../scripts/log-schema-validate.cjs";
 import { onRequestError } from "../../instrumentation";
-import { createLogger, escapeLine, exceptionFields, newTraceId, traceIdFromHeaders } from "./logger";
+import {
+  createLogger,
+  escapeLine,
+  exceptionFields,
+  newSpanId,
+  newTraceId,
+  parentSpanIdFromHeaders,
+  traceIdFromHeaders,
+} from "./logger";
 import { MAX_ARRAY, REDACTED, isSensitiveKey, redactLog, redactText } from "./redact";
 import { logRequestError, pathOnly, safePath } from "./request-error";
 
@@ -466,5 +474,83 @@ describe("logger: chỉ phía server", () => {
     };
     walk(src);
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("logger: span_id (BASE-ERR-006)", () => {
+  const TP = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+  const SPAN = /^(?!0{16}$)[0-9a-f]{16}$/;
+  const base = {
+    timestamp: "2026-10-30T01:02:03.004Z",
+    level: "info",
+    severity_number: 9,
+    message: "m",
+    service: "s",
+    version: "1",
+    env: "e",
+  };
+
+  it("log request có traceparent: span_id là span MỚI của storefront, parent-id ghi ở parent_span_id; hợp schema", () => {
+    const { logger, records } = capture();
+    const child = logger.forRequest({ traceparent: TP });
+    child.info("a");
+    child.info("b");
+    const [a, b] = records();
+    expect(a?.trace_id).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(String(a?.span_id)).toMatch(SPAN);
+    expect(a?.span_id).not.toBe("00f067aa0ba902b7");
+    expect(a?.parent_span_id).toBe("00f067aa0ba902b7");
+    expect(b?.span_id).toBe(a?.span_id);
+    expect(schemaErrors(a)).toEqual([]);
+  });
+
+  it("log request không có traceparent: span_id ngẫu nhiên, không có parent_span_id; hai request khác span", () => {
+    const { logger, records } = capture();
+    logger.forRequest({}).info("a");
+    logger.forRequest({ "x-request-id": "req-1" }).info("b");
+    const [a, b] = records();
+    expect(String(a?.span_id)).toMatch(SPAN);
+    expect(a?.span_id).not.toBe(b?.span_id);
+    expect(a).not.toHaveProperty("parent_span_id");
+    expect(schemaErrors(a)).toEqual([]);
+    expect(schemaErrors(b)).toEqual([]);
+  });
+
+  it("dòng không gắn request (fatal/khởi động) vẫn hợp schema và có span_id; span_id giả bị thay", () => {
+    const { logger, records } = capture();
+    logger.fatal("khởi động hỏng", new Error("x"));
+    logger.info("a", { span_id: "0000000000000000" });
+    logger.info("b", { span_id: "ABCDEF0123456789" });
+    for (const r of records()) {
+      expect(String(r.span_id)).toMatch(SPAN);
+      expect(schemaErrors(r)).toEqual([]);
+    }
+  });
+
+  it("parentSpanIdFromHeaders: chỉ nhận traceparent hợp lệ", () => {
+    expect(parentSpanIdFromHeaders(new Headers({ traceparent: TP }))).toBe("00f067aa0ba902b7");
+    expect(parentSpanIdFromHeaders(undefined)).toBeUndefined();
+    expect(parentSpanIdFromHeaders({ traceparent: "garbage" })).toBeUndefined();
+    expect(
+      parentSpanIdFromHeaders({ traceparent: TP.replace("00f067aa0ba902b7", "0".repeat(16)) }),
+    ).toBeUndefined();
+    expect(parentSpanIdFromHeaders({ traceparent: TP.replace(/^00/, "ff") })).toBeUndefined();
+  });
+
+  it("newSpanId: 16 hex thường, không toàn 0, không lặp", () => {
+    const ids = new Set(Array.from({ length: 50 }, () => newSpanId()));
+    expect(ids.size).toBe(50);
+    for (const id of ids) expect(id).toMatch(SPAN);
+  });
+
+  it("schema: có trace_id thì bắt buộc span_id; span_id sai khuôn/toàn 0 bị bắt; không trace_id thì không cần", () => {
+    expect(schemaErrors(base)).toEqual([]);
+    expect(schemaErrors({ ...base, trace_id: "t-1" })).toEqual(["$: thiếu span_id"]);
+    expect(schemaErrors({ ...base, trace_id: "t-1", span_id: "00f067aa0ba902b7" })).toEqual([]);
+    for (const bad of ["0000000000000000", "00F067AA0BA902B7", "00f067aa0ba902b", "00f067aa0ba902b70", ""])
+      expect(schemaErrors({ ...base, trace_id: "t-1", span_id: bad })).not.toEqual([]);
+    expect(
+      schemaErrors({ ...base, trace_id: "t-1", span_id: "00f067aa0ba902b7", parent_span_id: "x" }),
+    ).not.toEqual([]);
   });
 });

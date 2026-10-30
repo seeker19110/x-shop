@@ -5,8 +5,10 @@ import { redactLog, redactText } from "./redact";
  * Logger JSON có cấu trúc của storefront SERVER (BASE-ERR-005/006, T-190) — cùng hợp đồng với backend
  * (`docs/ops/log-schema.json`): mỗi bản ghi MỘT dòng JSON ra stdout, không ghi file, không gửi đi đâu (việc của Collector):
  *   `timestamp` RFC 3339 UTC ms (`…Z`) · `level` + `severity_number` (OTel: debug 5, info 9, warn 13, error 17, fatal 21) ·
- *   `message` · `service` · `version` · `env` · `trace_id` · ngoại lệ `exception.type/message/stacktrace` (OTel semconv).
- * `trace_id`: `x-request-id` hợp lệ → trace-id của `traceparent` (W3C) → sinh mới (32 hex). Header là dữ liệu không tin
+ *   `message` · `service` · `version` · `env` · `trace_id` · `span_id` · ngoại lệ `exception.type/message/stacktrace` (OTel semconv).
+ * `trace_id`: `x-request-id` hợp lệ → trace-id của `traceparent` (W3C) → sinh mới (32 hex). `span_id` (16 hex thường, không toàn 0) là span HIỆN TẠI
+ * của storefront: luôn sinh mới (crypto); parent-id của `traceparent` hợp lệ (nếu có) KHÔNG dùng làm span_id (đó là span của
+ * phía gọi — W3C/OTel) mà ghi ở `parent_span_id`. Schema: có `trace_id` thì bắt buộc `span_id`. Header là dữ liệu không tin
  * cậy: chỉ nhận khi khớp mẫu an toàn cho log/JSON.
  * Mọi trường đi qua `redactLog`/`redactText` (bí mật + PII). Logger không bao giờ ném.
  *
@@ -76,6 +78,24 @@ export function traceIdFromHeaders(headers: HeaderBag): string {
   )
     return m[2];
   return newTraceId();
+}
+
+const SPAN_ID = /^(?!0{16}$)[0-9a-f]{16}$/;
+
+/** span_id W3C: 8 byte ngẫu nhiên → 16 hex thường, không toàn 0. */
+export function newSpanId(): string {
+  const b = new Uint8Array(8);
+  globalThis.crypto.getRandomValues(b);
+  if (b.every((x) => x === 0)) b[7] = 1;
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+/** parent-id của `traceparent` hợp lệ (cùng điều kiện với `traceIdFromHeaders`), hoặc undefined. */
+export function parentSpanIdFromHeaders(headers: HeaderBag): string | undefined {
+  const tp = headerValue(headers, "traceparent")?.trim();
+  const m = tp === undefined ? null : TRACEPARENT.exec(tp);
+  if (m?.[1] === undefined || m[1] === "ff" || m[2] === undefined || m[3] === undefined) return undefined;
+  return ALL_ZERO_TRACE.test(m[2]) || ALL_ZERO_PARENT.test(m[3]) ? undefined : m[3];
 }
 
 export interface ExceptionFields {
@@ -193,7 +213,12 @@ export class Logger {
 
   /** Logger con theo header của request (`x-request-id`/`traceparent`). */
   forRequest(headers: HeaderBag): Logger {
-    return this.child({ trace_id: traceIdFromHeaders(headers) });
+    const parent = parentSpanIdFromHeaders(headers);
+    return this.child({
+      trace_id: traceIdFromHeaders(headers),
+      span_id: newSpanId(),
+      ...(parent !== undefined && { parent_span_id: parent }),
+    });
   }
 
   emit(severity: Severity, message: string, fields: Record<string, unknown> = {}, error?: unknown): void {
@@ -203,8 +228,11 @@ export class Logger {
       for (const [k, v] of Object.entries({ ...this.bound, ...fields })) if (!RESERVED.has(k)) merged[k] = v;
       const rawTrace = merged.trace_id;
       delete merged.trace_id;
+      const rawSpan = merged.span_id;
+      delete merged.span_id;
       const trace_id =
         typeof rawTrace === "string" && REQUEST_ID_PATTERN.test(rawTrace) ? rawTrace : newTraceId();
+      const span_id = typeof rawSpan === "string" && SPAN_ID.test(rawSpan) ? rawSpan : newSpanId();
       const record = {
         timestamp: this.now().toISOString(),
         level: severity,
@@ -214,6 +242,7 @@ export class Logger {
         version: this.version,
         env: this.env,
         trace_id,
+        span_id,
         ...(redactLog(merged) as Record<string, unknown>),
         ...(error !== undefined && redactException(exceptionFields(error))),
       };

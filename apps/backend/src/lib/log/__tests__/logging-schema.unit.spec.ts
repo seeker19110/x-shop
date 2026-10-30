@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { schemaErrors as validateSchema } from "../../../../../../scripts/log-schema-validate.cjs";
 import { fatalLogLine } from "../../errors/process";
-import { createLogger } from "../logger";
+import { createLogger, runWithLogContext } from "../logger";
 
 /**
  * T-190 (BASE-ERR-005/006): dòng log của backend (logger ứng dụng + dòng fatal của process.ts) hợp `docs/ops/log-schema.json`
@@ -89,5 +89,59 @@ describe("logging: dòng log backend theo schema chung", () => {
       if (keep.v !== undefined) process.env.npm_package_version = keep.v;
       (process.env as Record<string, string | undefined>).NODE_ENV = keep.e;
     }
+  });
+});
+
+describe("logging: span_id bắt buộc khi có trace_id (BASE-ERR-006)", () => {
+  const SPAN = /^(?!0{16}$)[0-9a-f]{16}$/;
+  const make = () => {
+    const raw: string[] = [];
+    const logger = createLogger({
+      service: "x-shop-backend",
+      version: "0.1.0",
+      env: "test",
+      level: "silly",
+      write: (l) => raw.push(l),
+      now: () => new Date("2026-10-30T01:02:03.004Z"),
+    });
+    return { logger, rec: () => raw.map((l) => JSON.parse(l) as Record<string, unknown>) };
+  };
+
+  it("log request (ngữ cảnh có trace_id + span_id) hợp schema", () => {
+    const { logger, rec } = make();
+    runWithLogContext({ trace_id: "req-1", span_id: "00f067aa0ba902b7" }, () => logger.info("trong"));
+    expect(rec()[0]).toMatchObject({ trace_id: "req-1", span_id: "00f067aa0ba902b7" });
+    expect(schemaErrors(rec()[0])).toEqual([]);
+  });
+
+  it("ngữ cảnh chỉ có trace_id → logger sinh span_id hợp lệ (schema không đỏ)", () => {
+    const { logger, rec } = make();
+    runWithLogContext({ trace_id: "req-2" }, () => logger.info("a"));
+    expect(String(rec()[0]?.span_id)).toMatch(SPAN);
+    expect(schemaErrors(rec()[0])).toEqual([]);
+  });
+
+  it("dòng ngoài request (khởi động) không có trace_id/span_id vẫn hợp schema", () => {
+    const { logger, rec } = make();
+    logger.info("khởi động");
+    expect(rec()[0]).not.toHaveProperty("trace_id");
+    expect(rec()[0]).not.toHaveProperty("span_id");
+    expect(schemaErrors(rec()[0])).toEqual([]);
+  });
+
+  it("schema bắt: trace_id thiếu span_id, span_id toàn 0 hoặc viết hoa", () => {
+    const line = {
+      timestamp: "2026-10-30T01:02:03.004Z",
+      level: "info",
+      severity_number: 9,
+      message: "m",
+      service: "s",
+      version: "1",
+      env: "e",
+      trace_id: "t",
+    };
+    expect(schemaErrors(line)).toEqual(["$: thiếu span_id"]);
+    expect(schemaErrors({ ...line, span_id: "0000000000000000" })).not.toEqual([]);
+    expect(schemaErrors({ ...line, span_id: "00F067AA0BA902B7" })).not.toEqual([]);
   });
 });

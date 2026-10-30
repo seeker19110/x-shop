@@ -25,12 +25,22 @@
       "description": "Mã tham chiếu request: x-request-id hợp lệ, hoặc trace-id 32 hex của traceparent, hoặc mã sinh mới.",
       "pattern": "^[A-Za-z0-9._:-]{1,128}$"
     },
-    "span_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "span_id": {
+      "type": "string",
+      "description": "Span HIỆN TẠI của chính dịch vụ ghi log (W3C/OTel: 16 hex thường, không toàn 0) — không phải parent-id của traceparent đến (parent đó, nếu có, nằm ở parent_span_id). Bắt buộc khi có trace_id.",
+      "pattern": "^(?!0{16}$)[0-9a-f]{16}$"
+    },
+    "parent_span_id": {
+      "type": "string",
+      "description": "parent-id của traceparent hợp lệ đến từ phía gọi (nếu có).",
+      "pattern": "^(?!0{16}$)[0-9a-f]{16}$"
+    },
     "exception.type": { "type": "string" },
     "exception.message": { "type": "string" },
     "exception.stacktrace": { "type": "string" }
   },
   "allOf": [
+    { "if": { "required": ["trace_id"] }, "then": { "required": ["span_id"] } },
     { "if": { "properties": { "level": { "const": "trace" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 1 } } } },
     { "if": { "properties": { "level": { "const": "debug" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 5 } } } },
     { "if": { "properties": { "level": { "const": "info" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 9 } } } },
