@@ -1029,3 +1029,11 @@
 - Chọn: Allowlist có lý do: chưa phát hành/chưa có production (T-060 chờ người), route admin nội bộ, không client ngoài; giữ giới hạn đầu vào
 - Lý do (tiêu chí chất lượng cuối): (1) an toàn: giữ đầu vào có cận (bỏ cận là lùi về kém an toàn); không có client triển khai nào bị vỡ vì chưa có production; (2) đường lùi: xoá mục allowlist; phương án 2 làm release-please lên 1.0.0 vô cớ. Mục allowlist ghi evidence = route admin RBAC + chưa có môi trường production; sau G7 (phát hành) mọi siết ràng buộc phải theo nhãn breaking
 - Đường lùi: Xoá mục allowlist size-charts code, gắn nhãn breaking cho PR
+
+### D-147 · 2026-10-30T09:49:58+00:00 · Redis: image redis:7-alpine hiện là 7.4 (RSALv2/SSPLv1, không OSI); 7.2 là BSD-3; EOL cả hai 2029-12-01
+
+- Phương án: (1) Ghim redis:7.2-alpine (BSD-3) ở CI và dev; production theo cùng bản · (2) Giữ 7.4 (RSAL cho phép dùng nội bộ, cấm cung cấp Redis như dịch vụ cho bên thứ ba) · (3) Chuyển Valkey (BSD, fork Linux Foundation)
+- Chọn: Ghim redis:7.2-alpine (BSD-3) ở CI và dev; production theo cùng bản
+- Lý do (tiêu chí chất lượng cuối): (1) pháp lý: cách hiểu chặt hơn — giấy phép OSI rõ ràng, không phụ thuộc diễn giải 'as a service'; (2) đường lùi: đổi tag; cùng giao thức, cùng EOL 2029-12-01 nên không mất hỗ trợ; (3) thay đổi nhỏ nhất (cùng nhánh 7.x, client ioredis không đổi) — Valkey là bước lớn hơn, để dành khi 7.2 gần EOL
+- Đường lùi: Đổi lại tag redis:7-alpine (7.4) hoặc chuyển Valkey; cập nhật docs/RISKS.md
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Chủ dự án xác nhận dùng Redis 7.2 BSD hoặc chọn Valkey/dịch vụ Redis quản lý cho production
