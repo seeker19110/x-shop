@@ -59,7 +59,14 @@ export interface CartView {
 export const EMPTY_CART_VIEW: CartView = { lines: [], itemCount: 0, subtotal: 0, blocked: false };
 
 export type CartErrorCode =
-  "CART_DISABLED" | "INVALID_INPUT" | "NOT_FOUND" | "OUT_OF_STOCK" | "LIMIT" | "UNAVAILABLE";
+  | "CART_DISABLED"
+  | "INVALID_INPUT"
+  | "NOT_FOUND"
+  | "OUT_OF_STOCK"
+  | "LIMIT"
+  | "UNAVAILABLE"
+  /** Ghi giỏ hết hạn chờ và đọc lại cũng lỗi: không biết đã ghi hay chưa — người dùng cần kiểm giỏ. */
+  | "CART_UNKNOWN";
 
 export type CartActionResult =
   { ok: true; count: number; message: string } | { ok: false; code: CartErrorCode; message: string };
