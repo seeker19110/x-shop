@@ -69,4 +69,13 @@ describe("adminPageQuery (quy ước Admin: vượt khoảng → lỗi, không k
     ])
       expect(Q.safeParse(bad).success).toBe(false);
   });
+
+  it("T-200: rỗng/khoảng trắng/mảng/null không thành 0; chỉ chữ số thập phân (như Store)", () => {
+    // Trước đây z.coerce.number(): `?offset=` → 0, `?limit[]=5` → 5, `1e2` → 100, `0x10` → 16.
+    for (const v of ["", " ", [], ["5"], null, "1e2", "0x10", "+5", "5.0", "-0"]) {
+      expect({ v, ok: Q.safeParse({ offset: v }).success }).toEqual({ v, ok: false });
+      expect({ v, ok: Q.safeParse({ limit: v }).success }).toEqual({ v, ok: false });
+    }
+    expect(Q.parse({ offset: "0" })).toEqual({ limit: 50, offset: 0 });
+  });
 });

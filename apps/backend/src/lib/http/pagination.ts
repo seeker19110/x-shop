@@ -13,19 +13,31 @@ import type { ProblemError } from "./problem";
  */
 export const ADMIN_PAGE = { limitDefault: 50, limitMax: 100, offsetMax: 100_000 } as const;
 
-/** Trường zod `limit`/`offset` cho danh sách Admin (dàn vào `z.object({...})`). */
+/** Số nguyên dương thập phân (tối đa 16 chữ số — dài hơn coi như sai, tránh chuỗi số khổng lồ). */
+const DIGITS = /^\d{1,16}$/;
+
+/**
+ * Số nguyên trong query Admin: CHỈ chuỗi chữ số thập phân (cùng `DIGITS` của Store) rồi mới kiểm khoảng. Không dùng
+ * `z.coerce.number()` (BASE-DATA-003, T-200): nó biến `?offset=`/`" "`/`[]`/`null` thành 0 (rỗng thành giá trị hợp lệ),
+ * nhận `?limit[]=5` (mảng → 5) và `1e2`/`0x10`/`+5`/`5.0` — trái hợp đồng "không phải số nguyên → 422".
+ */
+const adminQueryInt = (min: number, max: number) =>
+  z
+    .string()
+    .regex(DIGITS, "phải là số nguyên thập phân")
+    .transform(Number)
+    .pipe(z.number().int().min(min).max(max));
+
+/** Trường zod `limit`/`offset` cho danh sách Admin (dàn vào `z.object({...})`); vắng → mặc định. */
 export const adminPageQuery = {
-  limit: z.coerce.number().int().min(1).max(ADMIN_PAGE.limitMax).default(ADMIN_PAGE.limitDefault),
-  offset: z.coerce.number().int().min(0).max(ADMIN_PAGE.offsetMax).default(0),
+  limit: adminQueryInt(1, ADMIN_PAGE.limitMax).default(ADMIN_PAGE.limitDefault),
+  offset: adminQueryInt(0, ADMIN_PAGE.offsetMax).default(0),
 };
 
 export interface PageWindow {
   limit: number;
   offset: number;
 }
-
-/** Số nguyên dương thập phân (tối đa 16 chữ số — dài hơn coi như sai, tránh chuỗi số khổng lồ). */
-const DIGITS = /^\d{1,16}$/;
 
 /** Đọc một giá trị query dạng chuỗi (qs có thể sinh mảng/object — coi như sai). */
 function single(raw: unknown): string | undefined | null {
