@@ -107,6 +107,7 @@ const GET_ROUTES: Record<string, Bound> = {
   "get /store/x/checkout/attempts/{id}": { kind: "single", why: "trạng thái một lần checkout" },
   "get /store/x/orders/{display_ref}": { kind: "single", why: "chi tiết một đơn" },
   "get /store/x/products/{handle}": { kind: "single", why: "chi tiết một sản phẩm" },
+  "get /admin/x/version": { kind: "single", why: "phiên bản build đang chạy, một đối tượng" },
   "get /x/health": { kind: "single", why: "liveness, không trả danh sách" },
   "get /x/readyz": { kind: "single", why: "readiness, không trả danh sách" },
   "get /x/webhooks/vnpay/ipn": { kind: "single", why: "IPN VNPAY (một giao dịch)" },
