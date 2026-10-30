@@ -4,7 +4,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { check, COMPONENTS_DIR, isDataComponent, statesIn, stripComments } from "./check-ui-states.mjs";
+import {
+  APP_DIR,
+  check,
+  COMPONENTS_DIR,
+  isAsyncPage,
+  isDataComponent,
+  statesIn,
+  stripComments,
+} from "./check-ui-states.mjs";
 
 const COMP = `"use client";\nexport function A() { fetch("/x"); return null; }\n`;
 const full = (names = ["loading", "empty", "error", "success"]) =>
@@ -222,4 +230,79 @@ test("component lọt vào nhờ tiêu chí mở rộng (import actions) cũng b
   } finally {
     rmSync(root, { recursive: true });
   }
+});
+
+// ---- Luật màn hình (T-226) ----
+const A = APP_DIR;
+const ASYNC = "export default async function P() { await x(); return null; }\n";
+const SYNC = "export default function P() { return null; }\n";
+const withComps = (files) => ({ [`${C}/.keep.ts`]: "", ...files });
+const run = (files) => {
+  const root = tree(withComps(files));
+  try {
+    return check(root);
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+};
+
+test("isAsyncPage: async mặc định, arrow, tên tham chiếu; đồng bộ/chú thích → false", () => {
+  assert.equal(isAsyncPage(ASYNC), true);
+  assert.equal(isAsyncPage("export default async () => null;"), true);
+  assert.equal(isAsyncPage("async function Pg() {}\nexport default Pg;"), true);
+  assert.equal(isAsyncPage("const Pg = async () => null;\nexport default Pg;"), true);
+  assert.equal(isAsyncPage(SYNC), false);
+  assert.equal(isAsyncPage("// export default async function X() {}\n" + SYNC), false);
+  assert.equal(isAsyncPage("export async function generateMetadata() {}\n" + SYNC), false);
+  assert.equal(isAsyncPage(""), false);
+});
+
+test("page async thiếu loading/error → 1, nêu đủ cả hai", () => {
+  const r = run({ [`${A}/(shop)/gio/page.tsx`]: ASYNC });
+  assert.equal(r.code, 1);
+  assert.ok(r.lines.some((l) => /gio\/page\.tsx: page async thiếu loading\.tsx/.test(l)));
+  assert.ok(r.lines.some((l) => /gio\/page\.tsx: page async thiếu error\.tsx/.test(l)));
+});
+
+test("kế thừa loading/error từ group và app/ → 0; global-error không thay error", () => {
+  const ok = run({
+    [`${A}/(shop)/a/b/page.tsx`]: ASYNC,
+    [`${A}/(shop)/loading.tsx`]: "x",
+    [`${A}/error.tsx`]: "x",
+  });
+  assert.equal(ok.code, 0);
+  const ge = run({
+    [`${A}/page.tsx`]: ASYNC,
+    [`${A}/loading.tsx`]: "x",
+    [`${A}/global-error.tsx`]: "x",
+  });
+  assert.equal(ge.code, 1);
+  assert.ok(ge.lines.some((l) => /thiếu error\.tsx/.test(l)));
+});
+
+test("loading ở nhánh anh em/con không phủ segment này; page đồng bộ không bị yêu cầu", () => {
+  const r = run({
+    [`${A}/error.tsx`]: "x",
+    [`${A}/a/page.tsx`]: ASYNC,
+    [`${A}/b/loading.tsx`]: "x",
+    [`${A}/a/c/loading.tsx`]: "x",
+    [`${A}/s/page.tsx`]: SYNC,
+  });
+  assert.equal(r.code, 1);
+  assert.equal(r.lines.filter((l) => /page async thiếu/.test(l)).length, 1);
+  assert.match(r.lines[0], /a\/page\.tsx: page async thiếu loading/);
+});
+
+test("allowlist màn hình: có lý do → bỏ qua; mục thừa → 1; rule sai/lý do ngắn → 2", () => {
+  const base = { [`${A}/p/page.tsx`]: ASYNC, [`${A}/error.tsx`]: "x" };
+  const al = (arr) => ({ "scripts/ui-states-allowlist.json": JSON.stringify(arr) });
+  const entry = { file: `${A}/p/page.tsx`, rule: "loading", reason: "trang tĩnh, không chờ dữ liệu mạng" };
+  assert.equal(run({ ...base, ...al([entry]) }).code, 0);
+  assert.equal(run({ ...base, [`${A}/p/loading.tsx`]: "x", ...al([entry]) }).code, 1);
+  assert.equal(run({ ...base, ...al([{ ...entry, rule: "x" }]) }).code, 2);
+  assert.equal(run({ ...base, ...al([{ ...entry, reason: "ngắn" }]) }).code, 2);
+});
+
+test("không có thư mục app → không lỗi (0 page)", () => {
+  assert.equal(run({}).code, 0);
 });

@@ -17,6 +17,13 @@
 // Ngoại lệ: scripts/ui-states-allowlist.json — mảng `{ "file": "<đường dẫn từ gốc>", "reason": "<≥ 20 ký tự>" }`.
 // Mục không lý do/lý do quá ngắn → thoát 2; mục trỏ file không còn là component dữ liệu → thoát 1 (không để danh sách mục).
 //
+// LUẬT MÀN HÌNH (T-226): mỗi `page.tsx` BẤT ĐỒNG BỘ trong apps/storefront/src/app/** (xuất mặc định `async function`/
+// `async` arrow, hoặc xuất tên đã khai báo async) cần `loading.tsx` ở chính segment hoặc tổ tiên bất kỳ tới `app/` (route
+// group `(x)` cũng là tổ tiên — loading.tsx của group phủ mọi trang con) và `error.tsx` ở segment hoặc tổ tiên tới `app/`
+// (`global-error.tsx` KHÔNG thay `error.tsx`). Giới hạn: chỉ nhận diện `async` ở khai báo mặc định (không dò `await` lồng
+// trong component đồng bộ — loại đó không hợp lệ ở Server Component). Ngoại lệ màn hình: mục allowlist có thêm
+// `"rule": "loading" | "error"` và `file` = đường dẫn page.tsx; mục không còn vi phạm → thoát 1.
+//
 // Thoát 0 = đạt; 1 = thiếu test/ca hoặc ngoại lệ mục; 2 = đầu vào/allowlist sai.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -26,6 +33,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const COMPONENTS_DIR = "apps/storefront/src/components";
 export const ALLOWLIST_FILE = "scripts/ui-states-allowlist.json";
 export const MIN_REASON = 20;
+export const APP_DIR = "apps/storefront/src/app";
 export const STATES = ["loading", "empty", "error", "success"];
 
 // Ký tự cuối (có nghĩa) trước một `/` mà SAU ĐÓ là regex literal chứ không phải phép chia.
@@ -170,6 +178,56 @@ export function statesIn(src) {
   return found;
 }
 
+/** page.tsx có hàm xuất mặc định bất đồng bộ (Server Component async)? */
+export function isAsyncPage(src) {
+  const code = stripComments(src);
+  if (/\bexport\s+default\s+async\b/.test(code)) return true;
+  const ref = /\bexport\s+default\s+(?:function\s+)?([A-Za-z_$][\w$]*)\s*(?:;|$|\()/m.exec(code);
+  if (ref && ref[1] !== "async") {
+    const n = ref[1].replace(/\$/g, "\\$");
+    return new RegExp(`\\basync\\s+function\\s+${n}\\b|\\b(?:const|let|var)\\s+${n}\\s*=\\s*async\\b`).test(
+      code,
+    );
+  }
+  return false;
+}
+
+/** Luật màn hình: trả `{ problems, pages }`; `allow` = mục allowlist có `rule`. */
+function checkScreens(root, files, allow) {
+  const prefix = `${APP_DIR}/`;
+  const inApp = files.filter((f) => f.startsWith(prefix));
+  const has = new Set(inApp);
+  const pages = inApp.filter(
+    (f) => /(?:^|\/)page\.tsx$/.test(f) && isAsyncPage(readFileSync(join(root, f), "utf8")),
+  );
+  const covered = (page, name) => {
+    let d = dirname(page);
+    for (;;) {
+      if (has.has(`${d}/${name}.tsx`)) return true;
+      if (d === APP_DIR || !d.startsWith(prefix)) return false;
+      d = dirname(d);
+    }
+  };
+  const allowed = new Set(allow.map((a) => `${a.file}#${a.rule}`));
+  const problems = [];
+  const used = new Set();
+  for (const pg of pages) {
+    for (const name of ["loading", "error"]) {
+      if (covered(pg, name)) continue;
+      const key = `${pg}#${name}`;
+      if (allowed.has(key)) used.add(key);
+      else problems.push(`${pg}: page async thiếu ${name}.tsx (ở segment hoặc tổ tiên tới app/)`);
+    }
+  }
+  for (const key of allowed) {
+    if (!used.has(key)) {
+      const [f, r] = key.split("#");
+      problems.push(`${ALLOWLIST_FILE}: "${f}" (rule ${r}) không còn vi phạm — xóa mục`);
+    }
+  }
+  return { problems, pages };
+}
+
 export function check(root) {
   const dir = join(root, COMPONENTS_DIR);
   if (!existsSync(dir)) return { code: 2, lines: [`Không thấy ${COMPONENTS_DIR} ở ${root}`] };
@@ -198,6 +256,12 @@ export function check(root) {
       lines: bad.map((a) => `${ALLOWLIST_FILE}: mục "${a?.file ?? "?"}" thiếu lý do (≥ ${MIN_REASON} ký tự)`),
     };
   }
+  const screenAllow = allow.filter((a) => a.rule !== undefined);
+  const badRule = screenAllow.filter((a) => a.rule !== "loading" && a.rule !== "error");
+  if (badRule.length > 0) {
+    return { code: 2, lines: badRule.map((a) => `${ALLOWLIST_FILE}: mục "${a.file}" có rule không hợp lệ`) };
+  }
+  allow = allow.filter((a) => a.rule === undefined);
   const allowed = new Set(allow.map((a) => a.file));
 
   const problems = [];
@@ -226,7 +290,14 @@ export function check(root) {
       );
     }
   }
-  const lines = [...problems, `${comps.length} component dữ liệu, ${problems.length} vấn đề`];
+  const appDir = join(root, APP_DIR);
+  const appFiles = existsSync(appDir) ? walk(appDir).map((p) => relative(root, p).split("\\").join("/")) : [];
+  const screens = checkScreens(root, appFiles, screenAllow);
+  problems.push(...screens.problems);
+  const lines = [
+    ...problems,
+    `${comps.length} component dữ liệu, ${screens.pages.length} page async, ${problems.length} vấn đề`,
+  ];
   return { code: problems.length > 0 ? 1 : 0, lines };
 }
 
