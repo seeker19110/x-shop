@@ -12,7 +12,8 @@
 #                     (NEXT_PUBLIC_* và XS_MEDIA_URL là THAM SỐ BUILD của image storefront, đặt ở đây không có tác dụng).
 #   postgres.env    — POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB (superuser của cluster; ứng dụng KHÔNG dùng vai trò này —
 #                     tạo xshop_app/xshop_migrator bằng scripts/db-roles.sql + db-app-grants.sql trước lần migrate đầu).
-#   redis.env       — REDIS_PASSWORD (≥ 32 ký tự ngẫu nhiên; cùng giá trị trong REDIS_URL của backend.env).
+#   redis.env       — REDIS_PASSWORD (≥ 32 ký tự ngẫu nhiên, nên hex: `openssl rand -hex 32`; cùng giá trị trong REDIS_URL
+#                     của backend.env — ký tự đặc biệt trong URL phải percent-encode).
 #   Đường dẫn file đổi được qua biến XSHOP_*_ENV_FILE. Image ghim theo DIGEST (build một lần, đẩy cùng digest qua staging →
 #   production — OPS-DEPLOY-001): XSHOP_BACKEND_IMAGE=<registry>/x-shop-backend@sha256:…,
 #   XSHOP_STOREFRONT_IMAGE=<registry>/x-shop-storefront@sha256:….
@@ -96,21 +97,23 @@ services:
     <<: *hardening
     # D-147: 7.2 (BSD-3). Cùng digest với services của CI (.github/workflows/ci.yml).
     image: redis:7.2-alpine@sha256:2c933526722b4126a61d5c170f766dc159adf97682f0b1cbbc27b1666ba96d84
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
+    # Chạy thẳng bằng user redis của image (uid 999, gid 1000 — kiểm 2026-10-30 bằng `id redis` trong image), không cần
+    # capability nào: entrypoint chỉ chown + hạ quyền khi chạy bằng root (`id -u` = 0); /data của image thuộc 999:1000 nên
+    # volume tên mới nhận đúng chủ. Chạy bằng root với cap_drop ALL thì lần khởi động thứ hai `find … -exec chown` lỗi
+    # (thiếu DAC) → vòng restart.
+    user: "999:1000"
     env_file:
       - path: ${XSHOP_REDIS_ENV_FILE:-./redis.env}
         required: true
-    # Mật khẩu bắt buộc (đọc từ redis.env lúc chạy, không nội suy vào file này); AOF giữ hàng đợi BullMQ/workflow qua lần
-    # khởi động lại; noeviction: BullMQ yêu cầu (không xoá khoá hàng đợi khi đầy bộ nhớ). Gọi lại docker-entrypoint.sh với
-    # đối số đầu `redis-server` để entrypoint của image vẫn hạ quyền xuống user redis.
+    # Mật khẩu bắt buộc (đọc từ redis.env lúc chạy, không nội suy vào file này; rỗng/vắng → thoát ngay); AOF giữ hàng đợi
+    # BullMQ/workflow qua lần khởi động lại; noeviction: BullMQ yêu cầu (không xoá khoá hàng đợi khi đầy bộ nhớ).
+    # Mật khẩu nằm trong REDIS_URL (userinfo) → sinh dạng hex (`openssl rand -hex 32`) hoặc percent-encode ký tự đặc biệt.
     entrypoint:
       - sh
       - -c
       - >-
-        exec docker-entrypoint.sh redis-server --requirepass "$$REDIS_PASSWORD"
+        exec docker-entrypoint.sh redis-server
+        --requirepass "$${REDIS_PASSWORD:?thiếu REDIS_PASSWORD}"
         --appendonly yes --maxmemory-policy noeviction
     volumes:
       - redisdata:/data

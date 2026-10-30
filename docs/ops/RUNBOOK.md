@@ -467,8 +467,10 @@ attempt_txn_conflict`, `provider_txn_id` = khoản thu mới, `attempt_provider_
 
 ## 8. Deploy
 
-last_drilled: chưa diễn tập. **Hiện trạng thật:** repo chưa có Dockerfile, workflow deploy hay IaC; hạ tầng production chưa được chọn (chủ
-dự án — cần tài khoản/khoá thật). Phần dưới là các bước đã có lệnh thật trong repo, KHÔNG phải quy trình đã chạy.
+last_drilled: chưa diễn tập. **Hiện trạng thật:** repo có `Dockerfile` (target `backend`, `storefront`), `compose.prod.example.yml` (ví dụ
+một máy) và CI `.github/workflows/image.yml` (build + hadolint + Trivy, KHÔNG push) — T-191, D-150: container chỉ là định dạng artefact.
+Chưa có registry, workflow deploy hay IaC; hạ tầng production chưa được chọn (chủ dự án — cần tài khoản/khoá thật). Phần dưới là các
+bước đã có lệnh thật trong repo, KHÔNG phải quy trình đã chạy trên production (compose mẫu mới chạy thử cục bộ với biến giả, 2026-10-30).
 
 ### 8.1 Cơ chế deploy — việc chờ người
 
@@ -498,6 +500,35 @@ pnpm --filter @x-shop/storefront start
 Production thiếu/sai biến → backend thoát mã 1 và in TÊN biến (không in giá trị): đọc log khởi động trước khi chuyển lưu lượng. Chạy ≥ 2
 instance server thì `REDIS_URL` bắt buộc (§3.2.1). File upload/xuất: `FILE_STORAGE=s3` bắt buộc (§8.2b). Không deploy khi đang có sự cố
 thanh toán (§1).
+
+#### 8.2c Cùng các bước bằng container (T-191, D-150)
+
+Image chạy đúng các lệnh trên (không thêm hành vi): `backend` = ENTRYPOINT CLI medusa trên `.medusa/server`, lệnh mặc định `start`,
+`HOST=0.0.0.0`, `PORT=9000`; server và worker CÙNG image, khác `MEDUSA_WORKER_MODE`; migrate = cùng image, lệnh `db:migrate`.
+`storefront` = `next start`. Cả hai chạy uid 1000, `STOPSIGNAL SIGTERM`, có HEALTHCHECK (server `/x/readyz`, worker `/health`, storefront
+`/robots.txt`). Mẫu file biến và lệnh chi tiết ở đầu `compose.prod.example.yml`.
+
+```bash
+# Build MỘT lần mỗi commit, gắn tag = SHA; promote theo digest (OPS-DEPLOY-001) — registry/pipeline: chờ §8.1.
+docker build --target backend -t x-shop-backend:<sha> .
+docker build --target storefront -t x-shop-storefront:<sha>-<môi-trường> \
+  --build-arg NEXT_PUBLIC_SITE_URL=https://shop.example.vn --build-arg NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=pk_… \
+  --build-arg XS_MEDIA_URL=https://media.shop.example.vn   # + NEXT_PUBLIC_ANALYTICS_TRANSPORT nếu dùng
+# Đặt XSHOP_BACKEND_IMAGE / XSHOP_STOREFRONT_IMAGE = <registry>/…@sha256:<digest>; file biến backend.env, storefront.env,
+# postgres.env, redis.env (không commit; docs/ops/ENV.md).
+docker compose -f compose.prod.example.yml up -d postgres redis
+docker compose -f compose.prod.example.yml run --rm backend-migrate          # bước 1
+docker compose -f compose.prod.example.yml up -d backend-server backend-worker # bước 2
+docker compose -f compose.prod.example.yml up -d storefront                  # bước 3
+```
+
+- Postgres/Redis không publish cổng (mạng `data` internal — BASE-SEC-010); backend server/storefront chỉ publish lên `127.0.0.1` cho
+  reverse proxy TLS (§8.2a). `stop_grace_period: 35s` > `SHUTDOWN_TIMEOUT_MS` (mặc định 25 s): tăng biến này thì tăng theo.
+- **Ngoại lệ đã chấp nhận (D-150, Q2 của T-191): image storefront build THEO MÔI TRƯỜNG.** `NEXT_PUBLIC_*` và `XS_MEDIA_URL` được Next
+  nhúng lúc build (docs/ops/ENV.md mục Storefront) → staging và production là hai image storefront khác nhau, trái WF-ENV-006/OPS-DEPLOY-001
+  ở riêng storefront. Bù lại: build cả hai từ CÙNG commit SHA với cùng lockfile, ghi digest từng môi trường vào log deploy; chỉ tham số build
+  công khai khác nhau. Backend không có ngoại lệ: một digest cho mọi môi trường (cấu hình chỉ qua biến lúc chạy).
+- CI `image.yml` (không phải required check): HIGH/CRITICAL đã có bản vá = đỏ; chưa có bản vá chỉ in báo cáo; chạy lại hằng tuần.
 
 ### 8.2b Lưu trữ file dùng chung giữa các bản sao (T-154, ARC-RES-005)
 

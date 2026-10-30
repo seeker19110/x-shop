@@ -239,6 +239,11 @@ pnpm --filter @x-shop/backend test:integration -- upload
 ```
 
 ## Storefront (`apps/storefront/.env`)
+
+Image container (T-191, D-150): `NEXT_PUBLIC_*` và `XS_MEDIA_URL` là THAM SỐ BUILD (`docker build --build-arg …`; `NEXT_PUBLIC_SITE_URL`,
+`NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY` bắt buộc) — đặt lúc chạy không có tác dụng. Vì vậy image storefront build theo từng môi trường
+(ngoại lệ đã chấp nhận của WF-ENV-006, RUNBOOK §8.2c); các biến còn lại đặt lúc chạy như dưới.
+
 ```dotenv
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 # Publishable key do seed tạo ("Storefront x-shop") — công khai theo thiết kế của Medusa.

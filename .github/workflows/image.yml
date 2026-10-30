@@ -26,6 +26,9 @@ on:
       - .github/workflows/image.yml
   push:
     branches: [master]
+  # Hằng tuần: base image/gói không đổi vẫn có CVE mới công bố (BASE-DEP-009). Giờ lẻ tránh đỉnh tải của runner.
+  schedule:
+    - cron: "43 3 * * 3" # thứ Tư 03:43 UTC
   workflow_dispatch: {}
 
 permissions:
@@ -85,6 +88,26 @@ jobs:
           test "$(docker image inspect "$IMAGE_REF" --format '{{.Config.User}}')" = "1000:1000"
           test "$(docker image inspect "$IMAGE_REF" --format '{{.Config.StopSignal}}')" = "SIGTERM"
           test -n "$(docker image inspect "$IMAGE_REF" --format '{{if .Config.Healthcheck}}{{.Config.Healthcheck.Test}}{{end}}')"
+      # Smoke nhẹ (không cần DB/Redis): phụ thuộc production phân giải được từ WORKDIR của image (đường `require` đi lên
+      # node_modules của pnpm, @x-shop/domain đã build) và phụ thuộc dev KHÔNG có trong image.
+      - name: Smoke — phân giải module trong image
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = "backend" ]; then
+            mods="@medusajs/medusa/commands/start @medusajs/cli/cli.js @x-shop/domain"
+          else
+            mods="next/dist/bin/next react-dom @x-shop/domain"
+          fi
+          docker run --rm --entrypoint node "$IMAGE_REF" -e '
+            const [need, absent] = [process.argv[1].split(" "), ["ts-node", "vite", "jest", "vitest", "typescript"]];
+            for (const m of need) console.log("ok", m, "→", require.resolve(m));
+            for (const m of absent) {
+              let found = false;
+              try { require.resolve(m); found = true; } catch {}
+              if (found) { console.error("phụ thuộc dev lọt vào image:", m); process.exit(1); }
+            }' "$mods"
       # aquasecurity/trivy-action v0.36.0 — tag có chữ ký (annotated), SHA commit (^{}) lấy bằng
       # `git ls-remote https://github.com/aquasecurity/trivy-action refs/tags/v0.36.0` ngày 2026-10-30. Sự cố chuỗi cung ứng
       # 03/2026 (tag cũ của action bị ghi đè) → CHỈ ghim SHA, không dùng tag. Trivy v0.76.1 (bản mới nhất 2026-10-30,
