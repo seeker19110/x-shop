@@ -20,7 +20,7 @@ jobs:
   policy:
     name: pr-policy
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8 # trần thời gian (không phải ngưỡng chất lượng): bước check-api-breaking cài phụ thuộc gốc (T-194)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

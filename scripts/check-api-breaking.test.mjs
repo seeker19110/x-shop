@@ -7,7 +7,15 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
-import { diffSpecs, hasBreakingMarker, OPENAPI_PATH, parseLabels, run } from "./check-api-breaking.mjs";
+import {
+  ALLOWLIST_PATH,
+  diffDetailed,
+  diffSpecs,
+  hasBreakingMarker,
+  OPENAPI_PATH,
+  parseLabels,
+  run,
+} from "./check-api-breaking.mjs";
 
 const SPEC = `
 openapi: 3.1.0
@@ -316,6 +324,91 @@ test("allOf được gộp: xoá field ở nhánh allOf bị bắt", () => {
   setup(n);
   n.components.schemas.A.allOf[1].properties = {};
   assert.ok(has(diffSpecs(o, n), /\.z.*R3/));
+});
+
+const BROKEN_N = SPEC.replace("        n: { type: integer }\n", "");
+const ENTRY = {
+  rule: "R3",
+  method: "GET",
+  path: "/a",
+  location: "response",
+  name: "n",
+  reason: "Server đã bỏ field này từ trước PR, spec chỉ cập nhật theo.",
+  evidence: "apps/backend/src/x.ts:10",
+};
+const writeAllow = (dir, entries) => {
+  mkdirSync(join(dir, dirname(ALLOWLIST_PATH)), { recursive: true });
+  writeFileSync(join(dir, ALLOWLIST_PATH), JSON.stringify({ entries }));
+};
+const runIn = (dir) => run({ root: dir, base: "master", env: {} });
+
+test("allowlist: mục khớp → bỏ qua thay đổi (exit 0); bỏ mục → 1", () => {
+  const d = diffDetailed(parse(SPEC), parse(BROKEN_N));
+  assert.deepEqual(
+    d.map((x) => [x.rule, x.method, x.path, x.location, x.name]),
+    [["R3", "GET", "/a", "response", "n"]],
+  );
+  withRepo(BROKEN_N, {}, (dir) => {
+    writeAllow(dir, [ENTRY]);
+    assert.equal(runIn(dir).code, 0);
+    writeAllow(dir, []);
+    assert.equal(runIn(dir).code, 1);
+  });
+});
+
+test("allowlist: mục thừa (không còn thay đổi nào khớp) → exit 1", () => {
+  withRepo(SPEC, {}, (dir) => {
+    writeAllow(dir, [ENTRY]);
+    const r = runIn(dir);
+    assert.equal(r.code, 1);
+    assert.match(r.lines.join("\n"), /mục thừa/);
+  });
+});
+
+test("allowlist: thiếu/ngắn reason, thiếu/sai evidence, thiếu trường, JSON hỏng → exit 2", () => {
+  withRepo(BROKEN_N, {}, (dir) => {
+    for (const bad of [
+      { ...ENTRY, reason: "ngắn" },
+      { ...ENTRY, reason: undefined },
+      { ...ENTRY, evidence: undefined },
+      { ...ENTRY, evidence: "không có dòng" },
+      { ...ENTRY, name: undefined },
+    ]) {
+      writeAllow(dir, [bad]);
+      assert.equal(runIn(dir).code, 2);
+    }
+    writeFileSync(join(dir, ALLOWLIST_PATH), "{hỏng");
+    assert.equal(runIn(dir).code, 2);
+  });
+});
+
+test("allowlist tham số request: name là tên tham số", () => {
+  const withParam = (max) =>
+    SPEC.replace(
+      "  /b:\n    get:\n",
+      `  /b:\n    get:\n      parameters:\n        - { name: page, in: query, schema: { type: integer${max ? ", maximum: 9999" : ""} } }\n`,
+    );
+  const d = diffDetailed(parse(withParam(false)), parse(withParam(true)));
+  assert.deepEqual(
+    d.map((x) => [x.rule, x.method, x.path, x.location, x.name]),
+    [["Q6", "GET", "/b", "param", "page"]],
+  );
+});
+
+test("W1: thêm enum response → cảnh báo, không đỏ", () => {
+  const o = parse(SPEC);
+  const n = parse(SPEC);
+  n.components.schemas.A.properties.kind.enum = ["x", "y", "z"];
+  assert.deepEqual(diffSpecs(o, n), []);
+  assert.deepEqual(
+    diffDetailed(o, n).map((x) => x.rule),
+    ["W1"],
+  );
+  withRepo(SPEC.replace("enum: [x, y]", "enum: [x, y, z]"), {}, (dir) => {
+    const r = runIn(dir);
+    assert.equal(r.code, 0);
+    assert.match(r.lines.join("\n"), /CẢNH BÁO.*W1/);
+  });
 });
 
 test("chạy CLI (exit code)", () => {

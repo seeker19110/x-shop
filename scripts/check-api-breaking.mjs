@@ -17,7 +17,8 @@
 //     R3  xoá / đổi tên property của response (mọi độ sâu: object lồng, items mảng, allOf).
 //     R4  đổi kiểu: kiểu mới không nằm trong tập kiểu cũ (vd string→integer, integer→number, thêm `null`).
 //     R5  property từng `required` trong response nay tuỳ chọn.
-//     R6  thu hẹp enum của response (bỏ giá trị đã có). Thêm giá trị enum KHÔNG bị tính (giới hạn; client nên chịu được).
+//     R6  thu hẹp enum của response (bỏ giá trị đã có).
+//     W1  CẢNH BÁO (in ra, không đỏ — D-145): thêm giá trị enum vào response; client chặt có thể vỡ, oasdiff cũng chỉ cảnh báo.
 //   Request (tham số + requestBody)
 //     Q1  thêm tham số bắt buộc mới; tham số tuỳ chọn → bắt buộc.
 //     Q2  thêm requestBody bắt buộc khi trước không có; requestBody tuỳ chọn → bắt buộc.
@@ -27,7 +28,10 @@
 //     Q6  siết ràng buộc request: tăng minimum/minLength/minItems, giảm maximum/maxLength/maxItems, thêm/đổi pattern.
 //     Q7  xoá property request khi schema mới `additionalProperties: false` (client cũ gửi sẽ bị từ chối).
 //   Không xét (giới hạn đã biết): oneOf/anyOf (so theo chỉ số khi cùng số nhánh, khác số nhánh bỏ qua), security,
-//   đổi `description`/`example`, xoá tham số tuỳ chọn, thêm property/enum/response mới (tương thích ngược).
+//   đổi `description`/`example`, xoá tham số tuỳ chọn, thêm property/response mới (tương thích ngược).
+//
+// Allowlist có bằng chứng (D-145): scripts/api-breaking-allowlist.json — mục khớp (rule, method, path, location, name) bị bỏ
+// qua; mục không khớp thay đổi nào (base đã chứa) → exit 1 (mục thừa); thiếu reason (≥ 20 ký tự)/evidence (file:dòng) → exit 2.
 //
 // Ngoại lệ có kiểm soát — chỉ khi ĐỒNG THỜI:
 //   (a) env PR_LABELS (mảng JSON tên nhãn như check-fix-pr, hoặc phân tách bằng dấu phẩy/xuống dòng) có nhãn `breaking`; và
@@ -116,6 +120,9 @@ export function compareSchema(docOld, docNew, so, sn, dir, where, out, memo = ne
     const gone = o.enum.filter((v) => !n.enum.some((w) => w === v));
     if (gone.length > 0)
       out.push(`${where}: thu hẹp enum, bỏ ${JSON.stringify(gone)} [${dir === "response" ? "R6" : "Q5"}]`);
+    const added = n.enum.filter((v) => !o.enum.some((w) => w === v));
+    if (dir === "response" && added.length > 0)
+      out.push(`${where}: thêm giá trị enum response ${JSON.stringify(added)} — client chặt có thể vỡ [W1]`);
   } else if (dir === "request" && Array.isArray(n.enum) && o.enum === undefined) {
     out.push(`${where}: thêm ràng buộc enum ${JSON.stringify(n.enum)} [Q5]`);
   }
@@ -188,14 +195,27 @@ function paramMap(doc, pathItem, op) {
   return m;
 }
 
-/** Trả danh sách mô tả phá vỡ khi chuyển từ `docOld` sang `docNew` (đã parse). */
-export function diffSpecs(docOld, docNew) {
-  const out = [];
+/**
+ * Bản ghi có cấu trúc cho từng thay đổi: { rule, method, path, location, name, text }. `location` = "path" | "operation" |
+ * "param" | "body" | "response"; `name` = tên tham số, hoặc đường dẫn property trong body/response ("" = chính nó).
+ * Rule bắt đầu bằng `W` là cảnh báo (không làm đỏ).
+ */
+export function diffDetailed(docOld, docNew) {
+  const all = [];
+  const rec = (method, path, location, base, name) => ({
+    push(text) {
+      const rule = /\[([A-Z]\d)\]$/.exec(text)?.[1] ?? "?";
+      const where = text.slice(0, text.indexOf(": "));
+      const suffix = where.startsWith(base) ? where.slice(base.length).replace(/^\./, "") : "";
+      const full = location === "param" ? `${name}${suffix === "" ? "" : `.${suffix}`}` : suffix;
+      all.push({ rule, method, path, location, name: full, text });
+    },
+  });
   const pathsOld = docOld.paths ?? {};
   const pathsNew = docNew.paths ?? {};
   for (const [path, itemOldRaw] of Object.entries(pathsOld)) {
     if (!(path in pathsNew)) {
-      out.push(`${path}: xoá path [P1]`);
+      rec("*", path, "path", path, "").push(`${path}: xoá path [P1]`);
       continue;
     }
     const itemOld = deref(docOld, itemOldRaw);
@@ -204,9 +224,10 @@ export function diffSpecs(docOld, docNew) {
       const opOld = itemOld[method];
       if (!opOld) continue;
       const opNew = itemNew[method];
-      const tag = `${method.toUpperCase()} ${path}`;
+      const M = method.toUpperCase();
+      const tag = `${M} ${path}`;
       if (!opNew) {
-        out.push(`${tag}: xoá operation [P2]`);
+        rec(M, path, "operation", tag, "").push(`${tag}: xoá operation [P2]`);
         continue;
       }
       // Tham số.
@@ -214,11 +235,12 @@ export function diffSpecs(docOld, docNew) {
       const pNew = paramMap(docNew, itemNew, opNew);
       for (const [k, np] of pNew) {
         const op = pOld.get(k);
+        const out = rec(M, path, "param", `${tag} param ${k}`, np.name);
         if (!op) {
-          if (np.required) out.push(`${tag}: thêm tham số bắt buộc ${k} [Q1]`);
+          if (np.required) out.push(`${tag} param ${k}: thêm tham số bắt buộc [Q1]`);
           continue;
         }
-        if (np.required && !op.required) out.push(`${tag}: tham số ${k} tuỳ chọn → bắt buộc [Q1]`);
+        if (np.required && !op.required) out.push(`${tag} param ${k}: tham số tuỳ chọn → bắt buộc [Q1]`);
         if (op.schema && np.schema)
           compareSchema(docOld, docNew, op.schema, np.schema, "request", `${tag} param ${k}`, out);
       }
@@ -227,12 +249,23 @@ export function diffSpecs(docOld, docNew) {
       const bNew = opNew.requestBody ? deref(docNew, opNew.requestBody) : undefined;
       if (bNew) {
         if (bNew.required && !(bOld && bOld.required))
-          out.push(`${tag}: requestBody ${bOld ? "tuỳ chọn → bắt buộc" : "bắt buộc mới"} [Q2]`);
+          rec(M, path, "body", `${tag} body`, "").push(
+            `${tag} body: requestBody ${bOld ? "tuỳ chọn → bắt buộc" : "bắt buộc mới"} [Q2]`,
+          );
         if (bOld)
           for (const [mt, c] of Object.entries(bOld.content ?? {})) {
             const cn = (bNew.content ?? {})[mt];
+            const base = `${tag} body(${mt})`;
             if (cn?.schema && c?.schema)
-              compareSchema(docOld, docNew, c.schema, cn.schema, "request", `${tag} body(${mt})`, out);
+              compareSchema(
+                docOld,
+                docNew,
+                c.schema,
+                cn.schema,
+                "request",
+                base,
+                rec(M, path, "body", base, ""),
+              );
           }
       }
       // Responses.
@@ -240,24 +273,43 @@ export function diffSpecs(docOld, docNew) {
       const rNew = opNew.responses ?? {};
       for (const [code, respOldRaw] of Object.entries(rOld)) {
         if (!(code in rNew)) {
-          if (/^2/.test(code)) out.push(`${tag}: xoá response thành công ${code} [R1]`);
+          if (/^2/.test(code))
+            rec(M, path, "response", `${tag} ${code}`, "").push(
+              `${tag} ${code}: xoá response thành công [R1]`,
+            );
           continue;
         }
         const respOld = deref(docOld, respOldRaw);
         const respNew = deref(docNew, rNew[code]);
         for (const [mt, c] of Object.entries(respOld.content ?? {})) {
           const cn = (respNew.content ?? {})[mt];
+          const base = `${tag} ${code}(${mt})`;
           if (!cn) {
-            out.push(`${tag} ${code}: xoá media type ${mt} [R2]`);
+            rec(M, path, "response", base, "").push(`${base}: xoá media type [R2]`);
             continue;
           }
           if (c?.schema && cn.schema)
-            compareSchema(docOld, docNew, c.schema, cn.schema, "response", `${tag} ${code}(${mt})`, out);
+            compareSchema(
+              docOld,
+              docNew,
+              c.schema,
+              cn.schema,
+              "response",
+              base,
+              rec(M, path, "response", base, ""),
+            );
         }
       }
     }
   }
-  return out;
+  return all;
+}
+
+/** Danh sách mô tả PHÁ VỠ (không gồm cảnh báo `W*`) khi chuyển từ `docOld` sang `docNew` (đã parse). */
+export function diffSpecs(docOld, docNew) {
+  return diffDetailed(docOld, docNew)
+    .filter((d) => !d.rule.startsWith("W"))
+    .map((d) => d.text);
 }
 
 /** Có `BREAKING CHANGE:` đầu dòng (thân/footer) hoặc tiêu đề `type(scope)!:`. Regex không có nhóm lặp mơ hồ. */
@@ -284,6 +336,41 @@ export function parseLabels(raw) {
 /** Được phép phá vỡ khi có nhãn `breaking` VÀ có dấu hiệu BREAKING trong tiêu đề PR hoặc commit. */
 export function isBreakingAllowed({ labels, title, commitMessages }) {
   return parseLabels(labels).includes("breaking") && [title ?? "", ...commitMessages].some(hasBreakingMarker);
+}
+
+export const ALLOWLIST_PATH = "scripts/api-breaking-allowlist.json";
+const entryKey = (e) => `${e.rule} ${String(e.method).toUpperCase()} ${e.path} ${e.location} ${e.name}`;
+
+/**
+ * Đọc allowlist `{ "entries": [{ rule, method, path, location, name, reason, evidence }] }`. Không có tệp = rỗng.
+ * Mục thiếu trường / `reason` < 20 ký tự / `evidence` không dạng file:dòng → lỗi (exit 2). `evidence` = `file:dòng` của
+ * code server đã ép giới hạn đó TRƯỚC PR (kiểm lại bằng lệnh đọc file ở base); `location` = param|body|response|path|operation.
+ */
+export function loadAllowlist(root) {
+  let raw;
+  try {
+    raw = readFileSync(join(root, ALLOWLIST_PATH), "utf8");
+  } catch {
+    return { entries: [] };
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return { entries: [], error: `${ALLOWLIST_PATH} không phải JSON: ${e.message}` };
+  }
+  const entries = data?.entries;
+  if (!Array.isArray(entries)) return { entries: [], error: `${ALLOWLIST_PATH}: thiếu mảng "entries"` };
+  for (const [i, e] of entries.entries()) {
+    for (const f of ["rule", "method", "path", "location", "name"])
+      if (typeof e?.[f] !== "string")
+        return { entries: [], error: `${ALLOWLIST_PATH}[${i}]: thiếu trường "${f}"` };
+    if (typeof e.reason !== "string" || e.reason.trim().length < 20)
+      return { entries: [], error: `${ALLOWLIST_PATH}[${i}]: "reason" phải ≥ 20 ký tự` };
+    if (typeof e.evidence !== "string" || !/\S+:\d+/.test(e.evidence))
+      return { entries: [], error: `${ALLOWLIST_PATH}[${i}]: "evidence" phải dạng file:dòng` };
+  }
+  return { entries };
 }
 
 const git = (root, args) =>
@@ -321,14 +408,39 @@ export function run({ root, base, env }) {
   } catch (e) {
     return { code: 2, lines: [`check-api-breaking: không đọc được ${OPENAPI_PATH}: ${e.message}`] };
   }
-  let breaks;
+  let detailed;
   try {
-    breaks = diffSpecs(parse(oldText), parse(newText));
+    detailed = diffDetailed(parse(oldText), parse(newText));
   } catch (e) {
     return { code: 2, lines: [`check-api-breaking: lỗi phân tích: ${e.message}`] };
   }
-  if (breaks.length === 0)
-    return { code: 0, lines: ["check-api-breaking: không có thay đổi phá vỡ hợp đồng."] };
+  const warnings = detailed.filter((d) => d.rule.startsWith("W"));
+  let found = detailed.filter((d) => !d.rule.startsWith("W"));
+  const lines = warnings.map((w) => `check-api-breaking: CẢNH BÁO ${w.text}`);
+
+  // Allowlist có bằng chứng (D-145): bỏ qua thay đổi khớp mục; mục không khớp gì → thừa → đỏ.
+  const loaded = loadAllowlist(root);
+  if (loaded.error) return { code: 2, lines: [...lines, `check-api-breaking: ${loaded.error}`] };
+  const used = new Set();
+  found = found.filter((d) => {
+    const key = entryKey(d);
+    if (!loaded.entries.some((e) => entryKey(e) === key)) return true;
+    used.add(key);
+    return false;
+  });
+  const stale = loaded.entries.filter((e) => !used.has(entryKey(e)));
+  if (stale.length > 0) {
+    lines.push(
+      `check-api-breaking: ${stale.length} mục thừa trong ${ALLOWLIST_PATH} (base đã chứa thay đổi hoặc không còn khớp) — xoá mục:`,
+      ...stale.map((e) => `  - ${entryKey(e)}`),
+    );
+  }
+  const staleCode = stale.length > 0 ? 1 : 0;
+  const breaks = found.map((d) => d.text);
+  if (breaks.length === 0) {
+    lines.push("check-api-breaking: không có thay đổi phá vỡ hợp đồng (ngoài allowlist).");
+    return { code: staleCode, lines };
+  }
 
   let commitMessages = [];
   try {
@@ -338,13 +450,13 @@ export function run({ root, base, env }) {
   } catch {
     /* không đọc được lịch sử → coi như không có dấu hiệu */
   }
-  const lines = [
+  lines.push(
     `check-api-breaking: ${breaks.length} thay đổi phá vỡ hợp đồng so với ${base}:`,
     ...breaks.map((b) => `  - ${b}`),
-  ];
+  );
   if (isBreakingAllowed({ labels: env.PR_LABELS, title: env.PR_TITLE, commitMessages })) {
     lines.push("Được phép: nhãn `breaking` + dấu hiệu BREAKING CHANGE/`!:` trong tiêu đề hoặc commit.");
-    return { code: 0, lines };
+    return { code: staleCode, lines };
   }
   lines.push(
     "Không được phép. Muốn phá vỡ có chủ đích: gắn nhãn PR `breaking` VÀ ghi `BREAKING CHANGE: <mô tả>` trong thân commit (hoặc tiêu đề `type!:`); nếu không, giữ tương thích ngược (thêm field/endpoint mới, không xoá/đổi).",
