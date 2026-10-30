@@ -15,7 +15,7 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ total: null }, { status: 422 });
   }
   try {
-    const r = await listProducts({ ...filter, page: 1 }, { category, pageSize: 1 });
+    const r = await listProducts({ ...filter, page: 1 }, { category, pageSize: 1, maxRetries: 0 });
     return Response.json({ total: r.total }, { headers: { "Cache-Control": CATALOG_API_CACHE_CONTROL } });
   } catch (e) {
     return rateLimitedResponse(e, { total: null }) ?? Response.json({ total: null }, { status: 503 });

@@ -231,6 +231,14 @@ describe("backend (XS_DATA_SOURCE=backend)", () => {
       await listProducts(EMPTY_FILTER).catch((e: unknown) => e);
       expect(calls.n).toBe(1);
     }
+    // Route proxy đặt maxRetries 0 (client đã retry): 503 → đúng 1 lần gọi backend, không retry lồng.
+    calls.n = 0;
+    reply(new Response("x", { status: 503 }), ok({ data: [], count: 0 }));
+    await listProducts(EMPTY_FILTER, { maxRetries: 0 }).catch((e: unknown) => e);
+    expect(calls.n).toBe(1);
+    calls.n = 0;
+    await search(EMPTY_FILTER, { maxRetries: 0 }).catch((e: unknown) => e);
+    expect(calls.n).toBe(1);
     vi.restoreAllMocks();
   });
 

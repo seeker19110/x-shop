@@ -18,7 +18,7 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ suggestions: [] }, { headers: { "Cache-Control": CATALOG_API_CACHE_CONTROL } });
   }
   try {
-    const r = await search({ ...EMPTY_FILTER, q }, { pageSize: MAX_SUGGESTIONS });
+    const r = await search({ ...EMPTY_FILTER, q }, { pageSize: MAX_SUGGESTIONS, maxRetries: 0 });
     const titles = [...new Set(r.items.map((i) => i.title))].slice(0, MAX_SUGGESTIONS);
     return Response.json(
       { suggestions: titles },

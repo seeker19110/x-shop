@@ -33,6 +33,11 @@ const RETRY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 interface ListOptions {
   category?: string | null;
   pageSize?: number;
+  /**
+   * Số lần thử lại phía server (mặc định RETRIES). Route proxy `/api/catalog/*` đặt 0: đầu bên kia (clientFetch) đã
+   * retry — chỉ MỘT tầng retry cho mỗi chuỗi gọi, tránh nhân tải lồng.
+   */
+  maxRetries?: number;
 }
 
 /** Chỉ http(s) (env đã qua zod khi khởi động — kiểm lại tại điểm gửi). */
@@ -48,6 +53,7 @@ async function backendGet<T>(
   fresh = false,
   extraHeaders: Record<string, string> = {},
   tags: readonly string[] = LIST_TAGS,
+  maxRetries: number = RETRIES,
 ): Promise<T> {
   const base = assertHttpBase(getServerEnv().MEDUSA_BACKEND_URL);
   const qs = params && params.size > 0 ? `?${params.toString()}` : "";
@@ -66,7 +72,7 @@ async function backendGet<T>(
           ? { cache: "no-store" as const }
           : { next: { revalidate: CATALOG_REVALIDATE_S, tags: [...tags] } }),
       },
-      { timeoutMs: TIMEOUT_MS, maxRetries: RETRIES, maxRetryAfterMs: 2000, retryStatuses: RETRY_STATUSES },
+      { timeoutMs: TIMEOUT_MS, maxRetries, maxRetryAfterMs: 2000, retryStatuses: RETRY_STATUSES },
     );
   } catch {
     throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");
@@ -118,12 +124,22 @@ export async function listProducts(
     }
     return fixtureList(filter, { category: opts.category, pageSize: opts.pageSize ?? CATALOG_PAGE_SIZE });
   }
-  return mapList(await backendGet<unknown>("/store/x/products", listParams(filter, opts)), backendBase());
+  return mapList(
+    await backendGet<unknown>(
+      "/store/x/products",
+      listParams(filter, opts),
+      false,
+      {},
+      LIST_TAGS,
+      opts.maxRetries,
+    ),
+    backendBase(),
+  );
 }
 
 export async function search(
   filter: CatalogFilter,
-  opts: { pageSize?: number } = {},
+  opts: { pageSize?: number; maxRetries?: number } = {},
 ): Promise<SearchResponse> {
   if (resolveDataSource() === "fixtures") {
     if (filter.priceMin !== null && filter.priceMax !== null && filter.priceMin > filter.priceMax) {
@@ -134,7 +150,14 @@ export async function search(
   // Tìm kiếm bị giới hạn theo IP khách ở backend (SEC03): chuyển tiếp IP (khi tin proxy) — khoá cache dữ liệu vì vậy
   // tách theo IP, chấp nhận được vì truy vấn tìm kiếm vốn phân tán.
   return mapSearch(
-    await backendGet<unknown>("/store/x/search", listParams(filter, opts), false, await clientIpHeader()),
+    await backendGet<unknown>(
+      "/store/x/search",
+      listParams(filter, opts),
+      false,
+      await clientIpHeader(),
+      LIST_TAGS,
+      opts.maxRetries,
+    ),
     backendBase(),
   );
 }

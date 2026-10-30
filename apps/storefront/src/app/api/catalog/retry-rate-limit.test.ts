@@ -69,8 +69,9 @@ describe("retry × giới hạn tốc độ của backend", () => {
     backendReply = () => new Response("{}", { status: 503 });
     const res = await fetchWithRetry("/api/catalog/count", {}, noSleep);
     expect(res.status).toBe(503);
-    // 4 lượt client × 2 lượt backendGet (1 lần thử lại 502/503/504 phía server) — trần nhân tải đã biết.
-    expect(backendCalls).toBe(8);
+    // Chỉ MỘT tầng retry: client 1 + 3 lần thử lại = 4 lượt; mỗi lượt route gọi backend đúng 1 lần (maxRetries 0)
+    // → 4 × 1 = 4 (không phải 4 × 2 = 8 như khi retry lồng).
+    expect(backendCalls).toBe(4);
   });
 });
 
