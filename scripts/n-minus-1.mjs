@@ -56,7 +56,6 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parse as parseYaml } from "yaml";
 import {
   DEFAULT_BASE,
   MIGRATION_FILE,
@@ -150,23 +149,63 @@ const MEDUSA_PKG = /^@medusajs\/[^@/]+$/;
 const DEP_FIELDS = ["dependencies", "devDependencies", "optionalDependencies"];
 
 /**
- * Tập "tên@phiên bản" của mọi gói `@medusajs/*` trong nội dung pnpm-lock.yaml (lockfile v9): khoá `packages:` và
- * `version:` ở `importers:` (gồm hậu tố peer). Nội dung không phải lockfile (YAML hỏng, thiếu `packages`)
- * → ném lỗi (người gọi chọn fail-safe).
+ * Tập "tên@phiên-bản" của mọi gói `@medusajs/*` trong nội dung pnpm-lock.yaml (lockfile v9), CHỈ phân tích dòng (không
+ * phụ thuộc gói ngoài: bước detect chạy trước `pnpm install`). Nguồn: khoá cấp 2 dưới `packages:`/`snapshots:` và
+ * `version:` của từng gói dưới `importers:`. Hậu tố peer `(…)` bị cắt từ dấu `(` đầu tiên TRƯỚC khi tách tên —
+ * peer đổi (react, zod…) không làm đổi tập. Không giống lockfile v9 (thiếu `lockfileVersion`/`packages:`) → ném lỗi
+ * (người gọi chọn fail-safe).
  */
 export function medusaPackages(text) {
-  const doc = parseYaml(String(text ?? ""));
-  if (!doc || typeof doc !== "object" || !doc.packages || typeof doc.packages !== "object")
-    throw new Error("không phải pnpm-lock.yaml hợp lệ (thiếu `packages`)");
+  const lines = String(text ?? "").split(/\r?\n/);
   const out = new Set();
-  for (const key of Object.keys(doc.packages)) {
-    const at = key.lastIndexOf("@");
-    if (at > 0 && MEDUSA_PKG.test(key.slice(0, at))) out.add(key);
+  const norm = (v) => {
+    const cut = v.indexOf("(");
+    return (cut < 0 ? v : v.slice(0, cut)).trim();
+  };
+  const unquote = (v) => v.trim().replace(/^(['"])(.*)\1$/, "$2");
+  const addKey = (key) => {
+    const spec = norm(key);
+    const at = spec.lastIndexOf("@");
+    if (at > 0 && MEDUSA_PKG.test(spec.slice(0, at))) out.add(spec);
+  };
+  let section = "";
+  let hasVersion = false;
+  let hasPackages = false;
+  let field = "";
+  let dep = null;
+  for (const line of lines) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const top = /^([A-Za-z][A-Za-z0-9]*):/.exec(line);
+    if (top) {
+      section = top[1];
+      hasVersion ||= section === "lockfileVersion";
+      hasPackages ||= section === "packages";
+      field = "";
+      dep = null;
+      continue;
+    }
+    if (section === "packages" || section === "snapshots") {
+      const k = /^ {2}(\S.*?):\s*(?:\{.*)?$/.exec(line);
+      if (k && !line.startsWith("   ")) addKey(unquote(k[1]));
+    } else if (section === "importers") {
+      const f = /^ {4}([A-Za-z]+):\s*$/.exec(line);
+      if (/^ {4}\S/.test(line)) {
+        field = f && DEP_FIELDS.includes(f[1]) ? f[1] : "";
+        dep = null;
+        continue;
+      }
+      if (!field) continue;
+      const d = /^ {6}(\S.*?):\s*$/.exec(line);
+      if (d) {
+        dep = unquote(d[1]);
+        continue;
+      }
+      const v = /^ {8}version:\s*(\S.*)$/.exec(line);
+      if (v && dep) addKey(`${dep}@${unquote(v[1])}`);
+    }
   }
-  for (const imp of Object.values(doc.importers ?? {}))
-    for (const field of DEP_FIELDS)
-      for (const [name, v] of Object.entries(imp?.[field] ?? {}))
-        if (MEDUSA_PKG.test(name) && typeof v?.version === "string") out.add(`${name}@${v.version}`);
+  if (!hasVersion || !hasPackages)
+    throw new Error("không phải pnpm-lock.yaml v9 hợp lệ (thiếu lockfileVersion/packages)");
   return out;
 }
 

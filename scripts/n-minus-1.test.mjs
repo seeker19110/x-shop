@@ -1206,7 +1206,7 @@ test("medusaPackages: lấy tên@phiên bản của @medusajs/* từ packages v�
   assert.equal(medusaPackages(lock()).size, 0);
 });
 
-test("medusaPackages: giữ hậu tố peer ở importers; không nhầm gói tên giống (@medusajs-ext, medusajs-x)", () => {
+test("medusaPackages: cắt hậu tố peer ở importers; không nhầm gói tên giống (@medusajs-ext, medusajs-x)", () => {
   const text = `lockfileVersion: '9.0'
 importers:
   .:
@@ -1225,10 +1225,7 @@ packages:
   '@medusajs/ui@4.2.8':
     resolution: {integrity: sha512-x}
 `;
-  assert.deepEqual([...medusaPackages(text)].sort(), [
-    "@medusajs/ui@4.2.8",
-    "@medusajs/ui@4.2.8(react@19.3.1)",
-  ]);
+  assert.deepEqual([...medusaPackages(text)].sort(), ["@medusajs/ui@4.2.8"]);
 });
 
 test("medusaLockChange: giống hệt → không chạy", () => {
@@ -1351,4 +1348,55 @@ test("lockfile trên repo git thật: đổi @medusajs/* (kể cả chưa commit
   writeFileSync(lockPath, lock({ medusa: { framework: "2.23.0" }, other: { zod: "2" } }));
   assert.equal(await go(), 0);
   assert.equal(readFileSync(out, "utf8"), "run=false\nrun=false\nrun=true\n");
+});
+
+test("medusaLockChange: chỉ đổi peer (react/zod trong hậu tố) của @medusajs/* → không chạy", () => {
+  const mk = (peer) => `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      '@medusajs/ui':
+        specifier: 4.2.8
+        version: 4.2.8(react@${peer})
+packages:
+  '@medusajs/ui@4.2.8':
+    resolution: {integrity: sha512-x}
+snapshots:
+  '@medusajs/ui@4.2.8(react@${peer})':
+    dependencies:
+      react: ${peer}
+`;
+  const r = medusaLockChange(mk("19.3.0"), mk("19.3.1"));
+  assert.equal(r.run, false);
+  assert.deepEqual([...medusaPackages(mk("19.3.1"))], ["@medusajs/ui@4.2.8"]);
+});
+
+test("detect không phụ thuộc gói ngoài: chạy --detect-only trong thư mục không có node_modules", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "n1-nomods-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const here = dirname(fileURLToPath(import.meta.url));
+  mkdirSync(join(dir, "scripts"), { recursive: true });
+  for (const f of ["n-minus-1.mjs", "check-migrations.mjs"])
+    writeFileSync(join(dir, "scripts", f), readFileSync(join(here, f)));
+  writeFileSync(join(dir, "pnpm-lock.yaml"), lock({ medusa: { framework: "2.22.1" } }));
+  for (const e of N1_ALLOW) {
+    // validateAllow đòi các migration trong N1_ALLOW còn trong cây
+    mkdirSync(dirname(join(dir, e.migration)), { recursive: true });
+    writeFileSync(join(dir, e.migration), "export {};\n");
+  }
+  const g = (...a) =>
+    execFileSync("git", ["-C", dir, "-c", "user.email=t@example.invalid", "-c", "user.name=t", ...a], {
+      stdio: "pipe",
+    });
+  g("init", "-q", "-b", "main");
+  g("add", ".");
+  g("commit", "-q", "-m", "base");
+  const out = join(dir, "gh-output");
+  // exit 0 (execFileSync ném nếu ≠ 0, kể cả ERR_MODULE_NOT_FOUND) và ghi run=false: không có gì đổi so với HEAD.
+  execFileSync(process.execPath, ["scripts/n-minus-1.mjs", "--detect-only", "--base", "HEAD"], {
+    cwd: dir,
+    stdio: "pipe",
+    env: { ...process.env, GITHUB_OUTPUT: out },
+  });
+  assert.equal(readFileSync(out, "utf8"), "run=false\n");
 });

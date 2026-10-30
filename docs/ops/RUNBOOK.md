@@ -341,7 +341,11 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   mà tập `@medusajs/*` trong lockfile không đổi (không có trường hợp thật: `overrides`/peer cũng sinh khoá mới ở lockfile; nếu pnpm
   đổi định dạng lockfile → parse hỏng → chạy) — chỉ gói ngoài `@medusajs/*` (vd `@mikro-orm/*`, `pg`) đổi thì KHÔNG kích dù có thể
   ảnh hưởng schema; (2) job chỉ kiểm cái đo được: sau khi kích do nâng Medusa, N−1 (lõi cũ) so schema `public` với HEAD (lõi mới) —
-  migration lõi thêm/đổi bảng của Medusa hiện ra là "schema lệch", rồi test tích hợp N−1 chạy trên DB do runner dựng bằng mã N−1
+  migration lõi chỉ THÊM bảng mới → chỉ log "chỉ có ở schema HEAD" (`diffSchemas.onlyHead`, không đỏ); migration lõi ĐỔI/XOÁ
+  cột, ràng buộc, index hay bảng lõi đã có → "schema lệch" mã 2 và **không có cách miễn** (`N1_ALLOW` chỉ miễn ca test; phần phủ chỉ
+  gồm migration tùy biến), nên PR nâng Medusa có migration lõi kiểu này đỏ cho tới khi có cơ chế miễn lệch lõi có lý do
+  (đề xuất: mục miễn schema theo bảng lõi + lý do + số đo, hoặc bỏ qua bảng không thuộc module tùy biến và chỉ giữ cảnh báo —
+  cần thiết kế riêng, chưa làm); tạm thời: nâng Medusa là PR riêng, người duyệt xác nhận bằng log job + diễn tập staging; rồi test tích hợp N−1 chạy trên DB do runner dựng bằng mã N−1
   (không phải trên DB đã migrate bằng lõi mới); KHÔNG kiểm dữ liệu: migration lõi chạy trên dữ liệu production lớn (khoá/thời gian),
   tương thích dữ liệu hiện có, đường lùi lõi (Medusa không có migration down đáng tin — chưa xác minh) → diễn tập trên staging
   bằng bản sao dữ liệu (§4.2, §11) trước khi deploy bản nâng Medusa; (3) PR nâng Medusa mà lockfile không đổi do xung đột/merge sai
