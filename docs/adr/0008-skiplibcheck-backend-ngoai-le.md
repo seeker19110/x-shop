@@ -1,4 +1,4 @@
-# ADR-0007 — Backend giữ `skipLibCheck: true` (ngoại lệ; domain và storefront đã tắt)
+# ADR-0008 — Backend giữ `skipLibCheck: true` (ngoại lệ; domain và storefront đã tắt)
 
 ## Trạng thái
 
