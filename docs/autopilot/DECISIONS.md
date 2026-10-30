@@ -1015,3 +1015,10 @@
 - Chọn: Vitest 4 ca có assert hành vi + script đếm (đã có, chạy trong gate)
 - Lý do (tiêu chí chất lượng cuối): (1) đúng: vitest kiểm hành vi thật (assert nội dung, aria) còn story chỉ hiển thị; (3) đơn giản: không thêm phụ thuộc lớn (Storybook ~ hàng trăm gói), test chạy sẵn trong gate; (5) chi phí CI thấp
 - Đường lùi: Thêm Storybook + story Loading/Empty/Error/Default, script đếm story thay check-ui-states
+
+### D-145 · 2026-10-30T09:05:14+00:00 · check-api-breaking báo 3 lần siết ràng buộc tham số request (Q6) trên PR #20: page maximum 9999 (products, search), code maxLength 200 (size-charts)
+
+- Phương án: (1) Allowlist tập trung có lý do + bằng chứng server đã enforce từ trước (spec bắt kịp code); mục thừa khi base đã chứa thay đổi → đỏ · (2) Gắn nhãn breaking + BREAKING CHANGE cho PR #20 · (3) Bỏ Q6 cho tham số query
+- Chọn: Allowlist tập trung có lý do + bằng chứng server đã enforce từ trước (spec bắt kịp code); mục thừa khi base đã chứa thay đổi → đỏ
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: nếu server đã từ chối giá trị vượt giới hạn từ trước thì client không vỡ — đây là tài liệu bắt kịp, không phải phá vỡ; giữ Q6 nghiêm cho mọi thay đổi khác; (2) đường lùi: xoá mục allowlist; (3) đơn giản, review được trong diff. Nếu kiểm ra server CHƯA enforce trước PR này thì đó là phá vỡ thật → phải theo phương án 2
+- Đường lùi: Xoá scripts/api-breaking-allowlist.json và gắn nhãn breaking cho PR có siết ràng buộc
