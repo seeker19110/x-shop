@@ -1,8 +1,13 @@
 import { EventEmitter } from "node:events";
 import { MedusaError } from "@medusajs/framework/utils";
 import { z } from "zod";
+import { windowStartMs } from "../../security/sliding-window";
+import { DENY_AUDIT_THROTTLE, type WindowCounter, type WindowPeek } from "../deny-throttle";
+import { SECURITY_EVENTS } from "../events";
 import {
+  anonBucket,
   anonCapVerdict,
+  anonGlobalCap,
   classifyInputError,
   INPUT_ANON_GLOBAL_CAP,
   isAnonMilestone,
@@ -191,6 +196,96 @@ describe("trần chung vô danh (review T-175 vòng 2)", () => {
     expect(anonCapVerdict(INPUT_ANON_GLOBAL_CAP + 2)).toBe("skip");
     expect(anonCapVerdict(10_000)).toBe("skip");
     expect(anonCapVerdict(null)).toBe("record");
+  });
+
+  /** Bộ đếm cửa sổ cố định trong bộ nhớ, khoá (bucket, đầu cửa sổ) — như `rate_limit_counter`. */
+  function memoryCounter() {
+    const store = new Map<string, number>();
+    const key = (bucket: string, windowMs: number, now: Date) =>
+      `${bucket}@${windowStartMs(windowMs, now.getTime())}`;
+    const counter: WindowCounter = async (bucket, windowMs, now) => {
+      const k = key(bucket, windowMs, now);
+      const n = (store.get(k) ?? 0) + 1;
+      store.set(k, n);
+      return n;
+    };
+    const peek: WindowPeek = async (bucket, windowMs, now) => store.get(key(bucket, windowMs, now)) ?? 0;
+    return { counter, peek };
+  }
+  const EVENT = SECURITY_EVENTS.INPUT_DESERIALIZE_FAILED;
+  const W = DENY_AUDIT_THROTTLE.windowMs;
+  // Ca biên thời gian: mọi request rơi vào ms CUỐI của cửa sổ (đọc lại phải dùng cùng `now` → cùng cửa sổ).
+  const EDGE = new Date(Date.UTC(2026, 9, 30, 4, 0, 0) + W - 1);
+
+  it("ĐỒNG THỜI (xen kẽ): request đếm thô 50 nhận dòng thứ trần + 1 sau request đếm thô 51 → occurrence = số thô lúc chạm trần (51), không phải 50", async () => {
+    const { counter, peek } = memoryCounter();
+    const raw = anonBucket(EVENT, "raw");
+    const noop = () => undefined;
+    // 49 request tuần tự: thô 1..49, dòng 1..49 — đều ghi thường.
+    for (let i = 1; i < INPUT_ANON_GLOBAL_CAP; i++) {
+      const r = await counter(raw, W, EDGE);
+      expect(await anonGlobalCap(counter, peek, EVENT, EDGE, r, noop)).toBe("record");
+    }
+    // A đếm thô (50), rồi bị chậm; B đếm thô (51) và đếm dòng TRƯỚC A.
+    const rawA = await counter(raw, W, EDGE);
+    const rawB = await counter(raw, W, EDGE);
+    expect([rawA, rawB]).toEqual([INPUT_ANON_GLOBAL_CAP, INPUT_ANON_GLOBAL_CAP + 1]);
+    expect(await anonGlobalCap(counter, peek, EVENT, EDGE, rawB, noop)).toBe("record");
+    // A nhận dòng thứ trần + 1 → dòng đánh dấu; số thô của cửa sổ lúc đó là 51 (bản cũ ghi 50 = số chụp sớm của A).
+    expect(await anonGlobalCap(counter, peek, EVENT, EDGE, rawA, noop)).toEqual({
+      mark: "reached",
+      occurrence: INPUT_ANON_GLOBAL_CAP + 1,
+    });
+    // Vượt nữa → chỉ đếm; vẫn đúng MỘT dòng đánh dấu bất kể thứ tự.
+    const rawC = await counter(raw, W, EDGE);
+    expect(await anonGlobalCap(counter, peek, EVENT, EDGE, rawC, noop)).toBe("skip");
+  });
+
+  it("ĐỒNG THỜI (Promise.all): 65 request chồng nhau → đúng trần dòng thường + MỘT dòng đánh dấu, occurrence ≥ trần + 1", async () => {
+    const { counter, peek } = memoryCounter();
+    const raw = anonBucket(EVENT, "raw");
+    const n = INPUT_ANON_GLOBAL_CAP + 15;
+    // Mọi request đếm thô trước (chụp sớm), sau đó đếm dòng theo thứ tự NGƯỢC — xấu nhất cho số chụp sớm.
+    const snaps: number[] = [];
+    for (let i = 0; i < n; i++) snaps.push(await counter(raw, W, EDGE));
+    const outcomes = await Promise.all(
+      [...snaps].reverse().map((r) => anonGlobalCap(counter, peek, EVENT, EDGE, r, () => undefined)),
+    );
+    expect(outcomes.filter((o) => o === "record")).toHaveLength(INPUT_ANON_GLOBAL_CAP);
+    const marks = outcomes.filter((o) => typeof o === "object");
+    expect(marks).toEqual([{ mark: "reached", occurrence: n }]);
+    expect(outcomes.filter((o) => o === "skip")).toHaveLength(n - INPUT_ANON_GLOBAL_CAP - 1);
+  });
+
+  it("biên cửa sổ: đọc lại thô dùng cùng `now` — không lẫn số của cửa sổ kế tiếp; đọc lỗi → số chụp sớm; cả hai không có → null", async () => {
+    const { counter, peek } = memoryCounter();
+    const raw = anonBucket(EVENT, "raw");
+    const rows = anonBucket(EVENT, "rows");
+    const next = new Date(EDGE.getTime() + 1); // ms đầu của cửa sổ kế tiếp
+    for (let i = 0; i < 999; i++) await counter(raw, W, next);
+    for (let i = 0; i < INPUT_ANON_GLOBAL_CAP; i++) await counter(rows, W, EDGE);
+    const r = await counter(raw, W, EDGE); // thô của cửa sổ EDGE = 1
+    expect(await anonGlobalCap(counter, peek, EVENT, EDGE, r, () => undefined)).toEqual({
+      mark: "reached",
+      occurrence: 1,
+    });
+
+    let errors = 0;
+    const broken: WindowPeek = async () => {
+      throw new Error("db");
+    };
+    const fresh = memoryCounter();
+    for (let i = 0; i < INPUT_ANON_GLOBAL_CAP; i++) await fresh.counter(rows, W, EDGE);
+    expect(await anonGlobalCap(fresh.counter, broken, EVENT, EDGE, 42, () => errors++)).toEqual({
+      mark: "reached",
+      occurrence: 42,
+    });
+    expect(errors).toBe(1);
+    for (let i = 0; i < INPUT_ANON_GLOBAL_CAP; i++) await fresh.counter(anonBucket(EVENT, "rows"), W, next);
+    expect(await anonGlobalCap(fresh.counter, broken, EVENT, next, null, () => errors++)).toEqual({
+      mark: "reached",
+      occurrence: null,
+    });
   });
 
   it("mốc theo số request THÔ: 1000, 10000… (dưới 1000 không phải mốc — trần + dòng đánh dấu đã phủ)", () => {

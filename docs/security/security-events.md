@@ -153,12 +153,12 @@ Gộp trong cửa sổ 60 giây, chỉ ghi lần 1, 10, 100, 1000… của nhóm
 | `auth.lockout` (429)                                                    | (nguồn IP, `auth.lockout`, `rate_limited`) |
 | `auth.password_reset_requested` (vô danh, không rate limit)             | (nguồn IP, sự kiện, kết quả)                |
 | `rbac.denied` (gồm `MFA_REQUIRED`/`REAUTH_REQUIRED`)                     | (actor, lớp route, lý do) — actor đã xác thực |
-| `input.validation_failed`, `input.deserialize_failed` (mọi lần, kể cả có actor) | (actor đã xác thực hoặc nguồn IP, sự kiện, mã lỗi) — không theo method hay đường dẫn (client chọn tuỳ ý: 32 method × đường dẫn rác vẫn là một nhóm); thêm **trần chung** cho nguồn vô danh: ≤ `INPUT_ANON_GLOBAL_CAP` (50) dòng (đã qua gộp nguồn) mỗi sự kiện mỗi cửa sổ trên toàn hệ thống (xoay nhiều IP không làm ngập); dòng thứ 51 là **dòng đánh dấu** (`changes.global_cap: { cap, mark: "reached", occurrence: <số request thô> }`), sau đó chỉ đếm; bộ đếm **thô** (mọi request vô danh bị từ chối, kể cả bị gộp nguồn) ghi thêm một dòng ở lần 1000, 10000… của cửa sổ (`mark: "milestone"`) — độ lớn đợt thật |
+| `input.validation_failed`, `input.deserialize_failed` (mọi lần, kể cả có actor) | (actor đã xác thực hoặc nguồn IP, sự kiện, mã lỗi) — không theo method hay đường dẫn (client chọn tuỳ ý: 32 method × đường dẫn rác vẫn là một nhóm); thêm **trần chung** cho nguồn vô danh: ≤ `INPUT_ANON_GLOBAL_CAP` (50) dòng (đã qua gộp nguồn) mỗi sự kiện mỗi cửa sổ trên toàn hệ thống (xoay nhiều IP không làm ngập); dòng thứ 51 là **dòng đánh dấu** (`changes.global_cap: { cap, mark: "reached", occurrence: <số request thô của cửa sổ đọc lại lúc chạm trần — bộ đếm không lỗi thì ≥ 51> }` — không phải số thô request đó nhận khi đếm: các request ghi chồng nhau sau `finish`), sau đó chỉ đếm; bộ đếm **thô** (mọi request vô danh bị từ chối, kể cả bị gộp nguồn) ghi thêm một dòng ở lần 1000, 10000… của cửa sổ (`mark: "milestone"`) — độ lớn đợt thật |
 
 Bề mặt ghi DB của request vô danh hỏng (JSON hỏng, đường dẫn mã hoá hỏng), không cần đăng nhập: mỗi request = 2 upsert
 `rate_limit_counter` (bucket thô chung theo sự kiện — một hàng nóng — và bucket theo nguồn) + 1 upsert bucket dòng chung khi
-qua gộp nguồn. Số bucket bị chặn bởi số nguồn IP khác nhau trong cửa sổ (job dọn bộ đếm theo TTL); số dòng `audit_log` bị
-chặn bởi trần chung + log10 của số request. Chặn ở biên (rate limit/WAF của proxy) vẫn là lớp chính chống ngập request;
+qua gộp nguồn (+ 1 SELECT đọc lại bucket thô chỉ ở dòng đánh dấu — một lần mỗi sự kiện mỗi cửa sổ). Số bucket bị chặn
+bởi số nguồn IP khác nhau trong cửa sổ (job dọn bộ đếm theo TTL); số dòng `audit_log` bị chặn bởi trần chung + log10 của số request. Chặn ở biên (rate limit/WAF của proxy) vẫn là lớp chính chống ngập request;
 trần chung chỉ giảm nhẹ phía audit. Chưa làm: nhớ "đã vượt trần" trong bộ nhớ instance để bớt upsert hàng nóng (trạng thái
 theo instance lệch với bộ đếm chung khi nhiều instance và khi test xoá bộ đếm — để sau, khi đo thấy tranh chấp hàng).
 

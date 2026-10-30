@@ -10,7 +10,7 @@ import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
 import { KEY_PREFIX } from "../../src/lib/admin-security/store";
 import { DENY_AUDIT_THROTTLE } from "../../src/lib/audit/deny-throttle";
 import { SECURITY_EVENTS } from "../../src/lib/audit/events";
-import { INPUT_ANON_GLOBAL_CAP } from "../../src/lib/audit/input";
+import { anonBucket, INPUT_ANON_GLOBAL_CAP } from "../../src/lib/audit/input";
 import { outcomeOfStatus } from "../../src/lib/audit/http";
 import { hashIdentifier } from "../../src/lib/audit/record";
 import { SecurityAuditRecord } from "../../src/lib/audit/schema";
@@ -1344,10 +1344,33 @@ medusaIntegrationTestRunner({
             );
             expect(res.status).toBe(400);
           }
-          await sleep(1200);
-          const rows = (
-            await Promise.all(Array.from({ length: n }, (_v, i) => list({ request_id: `${rid}-${i}` })))
-          ).flat();
+          // Ghi audit chạy SAU `finish`, bất đồng bộ — dưới tải có thể trễ quá một khoảng ngủ cố định. Chờ theo điều kiện:
+          // bộ đếm dòng chung đã nhận đủ `n` quyết định trần (mỗi IP là lần 1 của nhóm nguồn → mọi request đều đếm dòng)
+          // VÀ đã có ≥ trần + 1 dòng; rồi một nhịp nữa để dòng thừa (nếu có lỗi) kịp hiện — assert dưới vẫn so bằng.
+          const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+          const rowsBucket = anonBucket(SECURITY_EVENTS.INPUT_DESERIALIZE_FAILED, "rows");
+          const decided = async () =>
+            Number(
+              (
+                (await pg.raw(
+                  `SELECT COALESCE(SUM(count), 0) AS n FROM rate_limit_counter WHERE bucket = ?`,
+                  [rowsBucket],
+                )) as { rows: { n: string | number }[] }
+              ).rows[0]?.n ?? 0,
+            );
+          const listAll = async () =>
+            (
+              await Promise.all(Array.from({ length: n }, (_v, i) => list({ request_id: `${rid}-${i}` })))
+            ).flat();
+          const until = Date.now() + 15_000;
+          let rows = await listAll();
+          while (((await decided()) < n || rows.length < INPUT_ANON_GLOBAL_CAP + 1) && Date.now() < until) {
+            await sleep(100);
+            rows = await listAll();
+          }
+          await sleep(400);
+          rows = await listAll();
+          expect(await decided()).toBe(n);
           // Trần + MỘT dòng đánh dấu (vòng 2 review: không chặn im lặng).
           expect(rows).toHaveLength(INPUT_ANON_GLOBAL_CAP + 1);
           // Mỗi IP là lần 1 của nhóm nguồn của nó — chỉ trần chung chặn phần vượt.

@@ -28,6 +28,9 @@ export interface DenyGroup {
 /** Bộ đếm cửa sổ cố định: tăng rồi trả số đếm sau khi tăng (≥ 1). */
 export type WindowCounter = (bucket: string, windowMs: number, now: Date) => Promise<number>;
 
+/** Đọc (không tăng) số đếm của cửa sổ cố định chứa `now`; chưa có dòng → 0. */
+export type WindowPeek = (bucket: string, windowMs: number, now: Date) => Promise<number>;
+
 export function denyBucket(g: DenyGroup): string {
   const key = [g.actorType, g.actorId ?? "", g.method, g.routeClass, g.reason].join("\u0000");
   return `audit.rbac_denied:${createHash("sha256").update(key, "utf8").digest("hex").slice(0, 40)}`;

@@ -9,9 +9,10 @@ import {
   denyBucket,
   isRecordedOccurrence,
   type WindowCounter,
+  type WindowPeek,
 } from "./deny-throttle";
 import { SECURITY_EVENTS, type SecurityEventName } from "./events";
-import { counterOf, ipGroupOf, parseJsonBody, resolveActor } from "./http";
+import { counterOf, ipGroupOf, parseJsonBody, peekCounterOf, resolveActor } from "./http";
 import { hashIdentifier, recordAudit } from "./record";
 import { maskFreeText } from "./sanitize";
 
@@ -37,8 +38,9 @@ import { maskFreeText } from "./sanitize";
  *     hay đường dẫn (client chọn tuỳ ý: đổi method/đường dẫn mỗi lần là lách được);
  *   - trần chung cho nguồn VÔ DANH theo sự kiện: tối đa `INPUT_ANON_GLOBAL_CAP` dòng (đã qua gộp nguồn) mỗi cửa sổ trên
  *     toàn hệ thống (xoay nhiều IP không làm ngập); dòng thứ trần + 1 là dòng ĐÁNH DẤU (`changes.global_cap.mark:
- *     reached`), sau đó chỉ đếm; bộ đếm THÔ (mọi request vô danh bị từ chối, kể cả bị gộp nguồn) ghi thêm một dòng ở lần
- *     1000, 10000… của cửa sổ (`mark: milestone`, `occurrence` = số request thô).
+ *     reached`, `occurrence` = số request thô của cửa sổ lúc chạm trần — `anonGlobalCap`), sau đó chỉ đếm; bộ đếm THÔ
+ *     (mọi request vô danh bị từ chối, kể cả bị gộp nguồn) ghi thêm một dòng ở lần 1000, 10000… của cửa sổ
+ *     (`mark: milestone`, `occurrence` = số request thô).
  * Ghi audit lỗi → log lỗi (không PII), không ảnh hưởng request.
  */
 
@@ -144,7 +146,7 @@ export function inputResourceOf(req: MedusaRequest, rejection: InputRejection | 
 }
 
 /** Bucket của bộ đếm chung vô danh theo sự kiện: `raw` = mọi request vô danh bị từ chối; `rows` = dòng đã qua gộp nguồn. */
-function anonBucket(event: SecurityEventName, kind: "raw" | "rows"): string {
+export function anonBucket(event: SecurityEventName, kind: "raw" | "rows"): string {
   return denyBucket({
     actorType: "global",
     actorId: null,
@@ -180,6 +182,37 @@ async function countOrNull(
     onError();
     return null;
   }
+}
+
+export type AnonCapOutcome = "record" | "skip" | { mark: "reached"; occurrence: number | null };
+
+/**
+ * Tầng trần chung cho một request vô danh ĐÃ qua gộp nguồn (`decision.record`): đếm dòng rồi theo `anonCapVerdict`.
+ *
+ * `occurrence` của dòng đánh dấu = số request THÔ của cửa sổ ĐỌC LẠI lúc chạm trần, không phải `rawAtHit` (số thô request
+ * này nhận khi đếm): việc ghi chạy sau `finish`, các request chồng nhau — request A đếm thô 50, request B đếm thô 51 rồi
+ * đếm dòng TRƯỚC A (dòng 50), A nhận dòng 51 → số chụp sớm của A (50) < trần + 1, sai nghĩa "số thô lúc chạm trần". Mỗi
+ * request đếm thô trước khi đếm dòng, cùng `now` (cùng cửa sổ) ⇒ lúc đọc lại: thô ≥ dòng = trần + 1. Đọc lỗi → `rawAtHit`.
+ * Số dòng ghi vẫn do UPSERT nguyên tử của bộ đếm dòng quyết (đúng trần + 1 dòng/cửa sổ/sự kiện), không phụ thuộc thứ tự.
+ */
+export async function anonGlobalCap(
+  counter: WindowCounter,
+  peek: WindowPeek,
+  event: SecurityEventName,
+  now: Date,
+  rawAtHit: number | null,
+  onCounterError: () => void,
+): Promise<AnonCapOutcome> {
+  const verdict = anonCapVerdict(await countOrNull(counter, anonBucket(event, "rows"), now, onCounterError));
+  if (verdict !== "reached") return verdict;
+  let rawNow: number | null = null;
+  try {
+    rawNow = await peek(anonBucket(event, "raw"), DENY_AUDIT_THROTTLE.windowMs, now);
+  } catch {
+    onCounterError();
+  }
+  const known = [rawAtHit, rawNow].filter((v): v is number => v !== null && Number.isSafeInteger(v));
+  return { mark: "reached", occurrence: known.length > 0 ? Math.max(...known) : null };
 }
 
 async function recordInputRejection(
@@ -223,11 +256,9 @@ async function recordInputRejection(
   } else {
     if (!decision.record) return;
     if (anonymous) {
-      const verdict = anonCapVerdict(
-        await countOrNull(counter, anonBucket(event, "rows"), now, onCounterError),
-      );
-      if (verdict === "skip") return;
-      if (verdict === "reached") globalCap = { mark: "reached", occurrence: raw };
+      const cap = await anonGlobalCap(counter, peekCounterOf(req), event, now, raw, onCounterError);
+      if (cap === "skip") return;
+      if (cap !== "record") globalCap = cap;
     }
   }
   const params = problemParamsOf(body);

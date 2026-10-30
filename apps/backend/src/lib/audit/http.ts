@@ -9,7 +9,7 @@ import { normalizeMethod } from "../admin-security/route-match";
 import { rawRequestPath } from "../http/request-path";
 import { ipRateKey } from "../security/client-ip";
 import { clientIpOf } from "../security/config";
-import { decideDenyAudit, type WindowCounter } from "./deny-throttle";
+import { decideDenyAudit, type WindowCounter, type WindowPeek } from "./deny-throttle";
 import { SECURITY_EVENTS, type SecurityEventName } from "./events";
 import { hashIdentifier, recordAudit } from "./record";
 
@@ -711,6 +711,12 @@ export const counterOf =
   (req: MedusaRequest): WindowCounter =>
   async (bucket, windowMs, now) =>
     (await req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE).hitRateCounter(bucket, windowMs, now))
+      .current;
+
+export const peekCounterOf =
+  (req: MedusaRequest): WindowPeek =>
+  async (bucket, windowMs, now) =>
+    (await req.scope.resolve<CheckoutModuleService>(CHECKOUT_MODULE).peekRateCounter(bucket, windowMs, now))
       .current;
 
 async function recordFinished(
