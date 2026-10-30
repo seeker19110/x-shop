@@ -276,11 +276,11 @@ jobs:
           TOTAL: ${{ strategy.job-total }}
         run: bash .xtemplates/scripts/dev-task.sh e2e "$SHARD" "$TOTAL"
 
-  # readme-smoke (BASE-DOC-005, XC-DX-001): chạy ĐÚNG khối bash đầu tiên của README.md (mục "Bắt đầu nhanh") trên
+  # onboarding-smoke (BASE-DOC-005, XC-DX-001): chạy ĐÚNG khối bash đầu tiên của README.md (mục "Bắt đầu nhanh") trên
   # clone sạch, để tài liệu không lệch mã; đo thời gian vào step summary. Job ngắn, độc lập, nằm trong `quality.needs`
   # (không thêm required check). Lệnh trong README không cần Postgres/Redis hay bí mật.
-  readme-smoke:
-    name: readme-smoke
+  onboarding-smoke:
+    name: onboarding-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -293,12 +293,12 @@ jobs:
       - name: Chạy đúng các lệnh ở khối bash đầu tiên của README.md
         run: |
           set -euo pipefail
-          awk '/^```bash$/{f=1;next} /^```$/{if(f)exit} f' README.md > "$RUNNER_TEMP/readme-smoke.sh"
-          [ -s "$RUNNER_TEMP/readme-smoke.sh" ] || { echo "::error::README.md không có khối bash"; exit 1; }
-          cat "$RUNNER_TEMP/readme-smoke.sh"
+          awk '/^```bash$/{f=1;next} /^```$/{if(f)exit} f' README.md > "$RUNNER_TEMP/onboarding-smoke.sh"
+          [ -s "$RUNNER_TEMP/onboarding-smoke.sh" ] || { echo "::error::README.md không có khối bash"; exit 1; }
+          cat "$RUNNER_TEMP/onboarding-smoke.sh"
           start=$(date +%s)
-          bash -euxo pipefail "$RUNNER_TEMP/readme-smoke.sh"
-          echo "readme-smoke: $(( $(date +%s) - start )) giây" | tee -a "$GITHUB_STEP_SUMMARY"
+          bash -euxo pipefail "$RUNNER_TEMP/onboarding-smoke.sh"
+          echo "onboarding-smoke: $(( $(date +%s) - start )) giây" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # x-shop (T-163, OPS-DEPLOY-003, D-115): test tích hợp của bản N−1 (ref gốc) trên schema N (migration của HEAD) —
   # `scripts/n-minus-1.mjs` (cây N−1 qua git archive, phủ migration HEAD, chứng minh schema trùng `db:migrate` của HEAD,
@@ -369,7 +369,7 @@ jobs:
   # `rules/branches` chỉ cần quyền đọc metadata mà GITHUB_TOKEN luôn có — `contents: read` của workflow là đủ.
   quality:
     name: quality
-    needs: [gate, e2e, readme-smoke]
+    needs: [gate, e2e, onboarding-smoke]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
