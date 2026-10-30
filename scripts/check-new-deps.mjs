@@ -75,9 +75,14 @@ const isNameChar = (c) => c !== undefined && /[A-Za-z0-9._~-]/.test(c);
 const TRAIL_PUNCT = new Set([".", ",", ";", ":"]);
 
 export function sectionNewDeps(body) {
-  const text = String(body ?? "")
-    .normalize("NFC")
-    .replace(/<!--[\s\S]*?-->/g, "");
+  // Bỏ chú thích HTML lặp tới khi ổn định: chú thích lồng/ghép (`<!<!---->--`) không còn sót `<!--` (CodeQL
+  // js/incomplete-multi-character-sanitization); `<!--` không đóng thì bỏ tới hết thân.
+  let text = String(body ?? "").normalize("NFC");
+  for (let prev = ""; prev !== text;) {
+    prev = text;
+    text = text.replace(/<!--[\s\S]*?-->/g, "");
+  }
+  text = text.replace(/<!--[\s\S]*$/, "");
   const lines = text.split(/\r?\n/);
   // Dòng `## ` trong code fence không phải tiêu đề mục.
   let fenced = false;

@@ -131,3 +131,8 @@ test("overrideName: `>` trong khoảng phiên bản không phải dấu cha>con"
   assert.equal(overrideName("a>@s/y"), "@s/y");
   assert.equal(overrideName("@s/x@1"), "@s/x");
 });
+
+test("sectionNewDeps: chú thích HTML lồng/không đóng không để lộ tên gói", () => {
+  assert.equal(sectionNewDeps("## Phụ thuộc mới\n<!<!---->-- `zod` -->\n- `a`").includes("zod"), false);
+  assert.equal(sectionNewDeps("## Phụ thuộc mới\n- `a` <!-- `b`").includes("b"), false);
+});
