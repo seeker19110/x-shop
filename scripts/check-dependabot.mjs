@@ -5,7 +5,7 @@
 // Tập mong đợi (ecosystem, directory) suy từ repo:
 //   npm             — mỗi thư mục có package.json: gốc + các thư mục của pnpm-workspace.yaml (mẫu `dir/*` hoặc đường dẫn cụ thể).
 //   github-actions  — `/` nếu `.github/workflows/` có file .yml/.yaml.
-//   docker          — thư mục chứa `Dockerfile` hoặc `Dockerfile.*` (bỏ node_modules, .git, build output).
+//   docker          — thư mục chứa `Dockerfile` hoặc `Dockerfile.*` (bỏ node_modules, thư mục ẩn như .git/.claude, build output).
 // Thiếu khối khai báo cho manifest → exit 1; khai báo mà manifest không còn (Dependabot lỗi mỗi lượt) → exit 1.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
@@ -68,7 +68,8 @@ function findDockerDirs(root) {
     }
     for (const e of entries) {
       if (e.isDirectory()) {
-        if (!SKIP.has(e.name)) walk(join(abs, e.name));
+        // Thư mục ẩn (.claude/worktrees, .git, .cache…) không phải manifest của repo.
+        if (!SKIP.has(e.name) && !e.name.startsWith(".")) walk(join(abs, e.name));
       } else if (e.name === "Dockerfile" || e.name.startsWith("Dockerfile.")) out.add(abs);
     }
   };

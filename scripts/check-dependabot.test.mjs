@@ -103,10 +103,11 @@ test("mẫu workspace không hỗ trợ -> ném UnsupportedPatternError, không 
   }
 });
 
-test("Dockerfile trong node_modules bị bỏ qua", () => {
+test("Dockerfile trong node_modules và thư mục ẩn (.claude/worktrees) bị bỏ qua", () => {
   withRepo(
     {
       "node_modules/x/Dockerfile": "FROM x",
+      ".claude/worktrees/agent-1/Dockerfile": "FROM x",
       ".github/dependabot.yml": dep(["npm", "/"], ["npm", "/apps/a"], ["github-actions", "/"]),
     },
     (root) => assert.deepEqual(check(root), []),
