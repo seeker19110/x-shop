@@ -26,12 +26,13 @@
 //     Q4  đổi kiểu của tham số/property request theo hướng thu hẹp (kiểu cũ không nằm trong tập kiểu mới).
 //     Q5  thu hẹp enum request (bỏ giá trị đã chấp nhận) hoặc thêm enum vào trường trước đó không có.
 //     Q6  siết ràng buộc request: tăng minimum/minLength/minItems, giảm maximum/maxLength/maxItems, thêm/đổi pattern.
+//     Q8  bỏ media type của requestBody (vd application/json → chỉ còn form): client cũ gửi bị từ chối.
 //     Q7  xoá property request khi schema mới `additionalProperties: false` (client cũ gửi sẽ bị từ chối).
 //   Không xét (giới hạn đã biết): oneOf/anyOf (so theo chỉ số khi cùng số nhánh, khác số nhánh bỏ qua), security,
 //   đổi `description`/`example`, xoá tham số tuỳ chọn, thêm property/response mới (tương thích ngược).
 //
 // Allowlist có bằng chứng (D-145): scripts/api-breaking-allowlist.json — mục khớp (rule, method, path, location, name) bị bỏ
-// qua; mục không khớp thay đổi nào (base đã chứa) → exit 1 (mục thừa); thiếu reason (≥ 20 ký tự)/evidence (file:dòng) → exit 2.
+// qua; mục không khớp thay đổi nào (base đã chứa — thường sau khi PR merge) → CẢNH BÁO "xoá mục" (exit giữ nguyên; dọn mục thừa khi thấy cảnh báo); thiếu reason (≥ 20 ký tự)/evidence (file:dòng) → exit 2.
 //
 // Ngoại lệ có kiểm soát — chỉ khi ĐỒNG THỜI:
 //   (a) env PR_LABELS (mảng JSON tên nhãn như check-fix-pr, hoặc phân tách bằng dấu phẩy/xuống dòng) có nhãn `breaking`; và
@@ -74,23 +75,27 @@ const typesOf = (s) => {
   if (s.type === undefined) return null;
   return new Set(Array.isArray(s.type) ? s.type : [s.type]);
 };
-const isSubset = (a, b) => [...a].every((x) => b.has(x));
+/** integer ⊂ number: tập có `number` thì coi như có cả `integer`. */
+const widen = (t) => (t.has("number") ? new Set([...t, "integer"]) : t);
+const isSubset = (a, b) => [...widen(a)].every((x) => widen(b).has(x));
 
 /** Gộp `allOf` thành một schema phẳng (properties/required/type); giữ phần còn lại của schema gốc. */
-function flatten(doc, schema) {
+function flatten(doc, schema, stack = new Set()) {
   const s = deref(doc, schema) ?? {};
-  if (!Array.isArray(s.allOf)) return s;
+  if (!Array.isArray(s.allOf) || stack.has(s)) return s;
+  stack.add(s);
   const merged = { ...s };
   delete merged.allOf;
   merged.properties = { ...(s.properties ?? {}) };
   merged.required = [...(s.required ?? [])];
   for (const part of s.allOf) {
-    const f = flatten(doc, part);
+    const f = flatten(doc, part, stack);
     Object.assign(merged.properties, f.properties ?? {});
     merged.required.push(...(f.required ?? []));
     for (const k of ["type", "enum", "items", "additionalProperties"])
       if (merged[k] === undefined && f[k] !== undefined) merged[k] = f[k];
   }
+  stack.delete(s);
   return merged;
 }
 
@@ -99,13 +104,16 @@ function flatten(doc, schema) {
  * `memo` (WeakMap) chặn vòng lặp vô hạn khi schema tự tham chiếu.
  */
 export function compareSchema(docOld, docNew, so, sn, dir, where, out, memo = new WeakMap()) {
-  const o = flatten(docOld, so);
-  const n = flatten(docNew, sn);
-  if (typeof o !== "object" || typeof n !== "object") return;
-  const seen = memo.get(o) ?? new Set();
-  if (seen.has(n)) return;
-  seen.add(n);
-  memo.set(o, seen);
+  // Memo theo schema đã giải $ref (object ổn định trong tài liệu), không theo bản flatten tạo mới mỗi lần.
+  const ko = deref(docOld, so);
+  const kn = deref(docNew, sn);
+  if (typeof ko !== "object" || ko === null || typeof kn !== "object" || kn === null) return;
+  const seen = memo.get(ko) ?? new Set();
+  if (seen.has(kn)) return;
+  seen.add(kn);
+  memo.set(ko, seen);
+  const o = flatten(docOld, ko);
+  const n = flatten(docNew, kn);
 
   const to = typesOf(o);
   const tn = typesOf(n);
@@ -114,6 +122,10 @@ export function compareSchema(docOld, docNew, so, sn, dir, where, out, memo = ne
       out.push(`${where}: đổi kiểu (${[...to]} → ${[...tn]}) [R4]`);
     if (dir === "request" && !isSubset(to, tn))
       out.push(`${where}: thu hẹp kiểu (${[...to]} → ${[...tn]}) [Q4]`);
+  } else if (to && !tn && dir === "response") {
+    out.push(`${where}: mất khai báo kiểu (${[...to]} → bất kỳ) [R4]`);
+  } else if (!to && tn && dir === "request") {
+    out.push(`${where}: thêm khai báo kiểu (bất kỳ → ${[...tn]}) [Q4]`);
   }
 
   if (Array.isArray(o.enum) && Array.isArray(n.enum)) {
@@ -256,6 +268,10 @@ export function diffDetailed(docOld, docNew) {
           for (const [mt, c] of Object.entries(bOld.content ?? {})) {
             const cn = (bNew.content ?? {})[mt];
             const base = `${tag} body(${mt})`;
+            if (!cn) {
+              rec(M, path, "body", base, "").push(`${base}: bỏ media type của requestBody [Q8]`);
+              continue;
+            }
             if (cn?.schema && c?.schema)
               compareSchema(
                 docOld,
@@ -452,13 +468,10 @@ export function run({ root, base, env }) {
     return false;
   });
   const stale = loaded.entries.filter((e) => !used.has(entryKey(e)));
-  if (stale.length > 0) {
-    lines.push(
-      `check-api-breaking: ${stale.length} mục thừa trong ${ALLOWLIST_PATH} (base đã chứa thay đổi hoặc không còn khớp) — xoá mục:`,
-      ...stale.map((e) => `  - ${entryKey(e)}`),
-    );
-  }
-  const staleCode = stale.length > 0 ? 1 : 0;
+  // Mục thừa chỉ CẢNH BÁO (không đỏ): sau khi PR merge, base đã chứa thay đổi nên mục tự thành thừa — không được làm đỏ mọi PR sau.
+  for (const e of stale)
+    lines.push(`check-api-breaking: CẢNH BÁO mục allowlist thừa, hãy xoá mục: ${entryKey(e)}`);
+  const staleCode = 0;
   const breaks = found.map((d) => d.text);
   if (breaks.length === 0) {
     lines.push("check-api-breaking: không có thay đổi phá vỡ hợp đồng (ngoài allowlist).");

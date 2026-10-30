@@ -357,13 +357,80 @@ test("allowlist: mục khớp → bỏ qua thay đổi (exit 0); bỏ mục → 
   });
 });
 
-test("allowlist: mục thừa (không còn thay đổi nào khớp) → exit 1", () => {
+test("allowlist: mục thừa (base đã chứa thay đổi) → CẢNH BÁO, exit 0", () => {
   withRepo(SPEC, {}, (dir) => {
     writeAllow(dir, [ENTRY]);
     const r = runIn(dir);
-    assert.equal(r.code, 1);
-    assert.match(r.lines.join("\n"), /mục thừa/);
+    assert.equal(r.code, 0);
+    assert.match(r.lines.join("\n"), /CẢNH BÁO.*thừa.*xoá mục/);
   });
+  // Tái hiện lỗi review: sau merge, base == HEAD chứa thay đổi, mục allowlist còn → không được đỏ.
+  const dir = repo(BROKEN_N);
+  try {
+    writeAllow(dir, [ENTRY]);
+    assert.equal(run({ root: dir, base: "HEAD", env: {} }).code, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("kiểu: integer→number request không phải thu hẹp; number→integer là thu hẹp", () => {
+  const o = parse(SPEC);
+  o.components.schemas.Req.properties.a = { type: "integer" };
+  const n = parse(SPEC);
+  n.components.schemas.Req.properties.a = { type: "number" };
+  assert.deepEqual(diffSpecs(o, n), []);
+  assert.ok(has(diffSpecs(n, o), /Q4/));
+  // response: integer→number là đổi kiểu (rộng hơn), number→integer thì không.
+  const ro = parse(SPEC);
+  const rn = parse(SPEC);
+  rn.components.schemas.A.properties.n = { type: "number" };
+  assert.ok(has(diffSpecs(ro, rn), /R4/));
+  assert.deepEqual(diffSpecs(rn, ro), []);
+});
+
+test("kiểu: response mất `type` → R4; request thêm `type` → Q4", () => {
+  assert.ok(
+    has(
+      diff((d) => (d.components.schemas.A.properties.id = {})),
+      /R4/,
+    ),
+  );
+  const o = parse(SPEC);
+  o.components.schemas.Req.properties.b = {};
+  assert.ok(has(diffSpecs(o, parse(SPEC)), /Q4/));
+  assert.deepEqual(diffSpecs(parse(SPEC), o), []);
+});
+
+test("Q8: bỏ media type của requestBody", () => {
+  const o = parse(SPEC);
+  const n = parse(SPEC);
+  n.paths["/a"].post.requestBody.content = {
+    "application/x-www-form-urlencoded": { schema: { $ref: "#/components/schemas/Req" } },
+  };
+  const r = diffDetailed(o, n);
+  assert.deepEqual(
+    r.map((x) => [x.rule, x.location]),
+    [["Q8", "body"]],
+  );
+});
+
+test("$ref vòng qua allOf không tràn stack", () => {
+  const cyc = () => {
+    const d = parse(SPEC);
+    d.components.schemas.Loop = {
+      allOf: [
+        { $ref: "#/components/schemas/Loop" },
+        { type: "object", properties: { x: { type: "string" } } },
+      ],
+    };
+    d.components.schemas.A = { $ref: "#/components/schemas/Loop" };
+    return d;
+  };
+  assert.deepEqual(diffSpecs(cyc(), cyc()), []);
+  const n = cyc();
+  n.components.schemas.Loop.allOf[1].properties = {};
+  assert.ok(has(diffSpecs(cyc(), n), /\.x.*R3/));
 });
 
 test("allowlist: thiếu/ngắn reason, thiếu/sai evidence, thiếu trường, JSON hỏng → exit 2", () => {

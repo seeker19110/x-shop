@@ -42,7 +42,6 @@ const IGNORED = new Set([
   "deprecated",
   "readOnly",
   "writeOnly",
-  "nullable",
 ]);
 const HANDLED = new Set([
   "type", "enum", "const", "required", "properties", "additionalProperties", "items", "allOf", "oneOf", "anyOf", "not",
@@ -202,6 +201,8 @@ describe("hợp đồng fixture backend ↔ openapi.yaml (QA-INT-007)", () => {
       expect(validate({ oneOf: [{ type: "string" }, { type: "integer" }] }, 1)).toEqual([]);
       expect(validate({ oneOf: [{ type: "number" }, { type: "integer" }] }, 1)).toHaveLength(1);
       expect(() => validate({ type: "string", dependentSchemas: {} }, "x")).toThrow(/chưa hỗ trợ/);
+      // `nullable` là OpenAPI 3.0, không hợp lệ ở 3.1 (dùng type: [.., "null"]) → ném như từ khoá lạ.
+      expect(() => validate({ type: "string", nullable: true }, null)).toThrow(/nullable/);
     });
     it("responseSchema báo lỗi rõ khi openapi thiếu schema", () => {
       expect(() => responseSchema("/khong/co", "get", "200")).toThrow(/openapi không có schema/);

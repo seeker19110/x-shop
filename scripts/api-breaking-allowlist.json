@@ -1,4 +1,5 @@
 {
+  "_doc": "Mỗi mục: rule, method, path, location, name, reason (≥ 20 ký tự), evidence (file:dòng hoặc decision:D-NNN). Mục khớp thay đổi nào thì bỏ qua thay đổi đó. Khi PR merge, base đã chứa thay đổi nên script in CẢNH BÁO mục thừa (không đỏ) — hãy xoá mục đó khỏi tệp này (xem đầu scripts/check-api-breaking.mjs).",
   "entries": [
     {
       "rule": "Q6",

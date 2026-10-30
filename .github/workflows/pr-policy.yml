@@ -125,6 +125,7 @@ jobs:
       # STD-API-008, STD-PROC-003, QA-INT-007 (T-194): PR không được phá vỡ hợp đồng `docs/design/openapi.yaml` (xoá path/field,
       # đổi kiểu, thêm field request bắt buộc…) trừ khi có nhãn `breaking` + `BREAKING CHANGE:` ở commit/tiêu đề. Logic + test ở
       # scripts/check-api-breaking.mjs; cần thư viện `yaml` (ghim ở package.json gốc) nên cài phụ thuộc gốc, bỏ script vòng đời.
+      # Node ghim theo .nvmrc đã cài bởi bước actions/setup-node phía trên (cùng job, ghim SHA); corepack bật ngay trước pnpm.
       # Nhãn/tiêu đề đi qua env, không nội suy vào shell; base đọc từ lịch sử (fetch-depth 0 ở trên), không checkout.
       - name: PR không phá vỡ hợp đồng OpenAPI — `check-api-breaking.mjs`
         env:
