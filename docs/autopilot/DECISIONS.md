@@ -1022,3 +1022,10 @@
 - Chọn: Allowlist tập trung có lý do + bằng chứng server đã enforce từ trước (spec bắt kịp code); mục thừa khi base đã chứa thay đổi → đỏ
 - Lý do (tiêu chí chất lượng cuối): (1) đúng: nếu server đã từ chối giá trị vượt giới hạn từ trước thì client không vỡ — đây là tài liệu bắt kịp, không phải phá vỡ; giữ Q6 nghiêm cho mọi thay đổi khác; (2) đường lùi: xoá mục allowlist; (3) đơn giản, review được trong diff. Nếu kiểm ra server CHƯA enforce trước PR này thì đó là phá vỡ thật → phải theo phương án 2
 - Đường lùi: Xoá scripts/api-breaking-allowlist.json và gắn nhãn breaking cho PR có siết ràng buộc
+
+### D-146 · 2026-10-30T09:13:52+00:00 · check-api-breaking: GET /admin/x/size-charts tham số code thêm maxLength 200 trong PR #20 (server trước đó không giới hạn) — phá vỡ thật theo D-145
+
+- Phương án: (1) Allowlist có lý do: chưa phát hành/chưa có production (T-060 chờ người), route admin nội bộ, không client ngoài; giữ giới hạn đầu vào · (2) Gắn nhãn breaking + BREAKING CHANGE (release-please nhảy major) · (3) Bỏ .max(200) ở server và spec
+- Chọn: Allowlist có lý do: chưa phát hành/chưa có production (T-060 chờ người), route admin nội bộ, không client ngoài; giữ giới hạn đầu vào
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: giữ đầu vào có cận (bỏ cận là lùi về kém an toàn); không có client triển khai nào bị vỡ vì chưa có production; (2) đường lùi: xoá mục allowlist; phương án 2 làm release-please lên 1.0.0 vô cớ. Mục allowlist ghi evidence = route admin RBAC + chưa có môi trường production; sau G7 (phát hành) mọi siết ràng buộc phải theo nhãn breaking
+- Đường lùi: Xoá mục allowlist size-charts code, gắn nhãn breaking cho PR
