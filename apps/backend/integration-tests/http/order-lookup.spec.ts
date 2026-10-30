@@ -16,6 +16,7 @@ import {
   type NotificationAdapter,
   type OutgoingMessage,
 } from "../../src/lib/notify/adapters";
+import { currentLogContext } from "../../src/lib/log/logger";
 import { issueOrderToken, ORDER_ACCESS_CONFIG, readOrderToken } from "../../src/lib/orders/access";
 import { validateOutboxPayload } from "../../src/lib/outbox/payload";
 import {
@@ -492,27 +493,59 @@ medusaIntegrationTestRunner({
       it("đồng đều qua HTTP: không có đơn và sai SĐT → cùng số truy vấn, so sánh hằng thời gian, số lần HMAC; không outbox; cùng phản hồi", async () => {
         const o = await place([["Trắng/M", 1]], "cod");
         const s = service();
+        // Spy gắn trên service/`node:crypto` dùng chung cả tiến trình: job nền (outbox-dispatch mỗi 10 s đọc
+        // `listOrderFinances({ order_id })` + `hitRateCounter("breaker.budget:…")` cho sự kiện `order.placed_pending` của
+        // chính đơn vừa đặt) chạy chồng lên request thì đếm lẫn → CI 24d227c nhận `find: 2`. Chỉ đếm lời gọi nằm TRONG
+        // ngữ cảnh của request đang đo: middleware `requestLogContext` mở AsyncLocalStorage với `trace_id` = `x-request-id`
+        // (lib/log/http.ts); lời gọi ngoài request (job, test) không mang `trace_id` đó. Ngữ cảnh mất → đếm 0 → `find: 1` đỏ.
+        let traceSeq = 0;
+        let measuring: string | null = null;
+        const scopedCounter = <T extends object>(target: T, method: keyof T & string) => {
+          const host = target as unknown as Record<string, (...args: unknown[]) => unknown>;
+          const original = host[method]!;
+          const counter = { inRequest: 0, outside: 0 };
+          const spy = jest.spyOn(host, method).mockImplementation(function (
+            this: unknown,
+            ...args: unknown[]
+          ) {
+            if (measuring !== null && currentLogContext()?.trace_id === measuring) counter.inRequest += 1;
+            else counter.outside += 1;
+            return original.apply(this, args);
+          });
+          return { counter, spy };
+        };
         const spies = {
-          find: jest.spyOn(s, "listOrderFinances"),
-          rate: jest.spyOn(s, "hitRateCounter"),
-          outbox: jest.spyOn(s, "insertOutbox"),
+          find: scopedCounter(s, "listOrderFinances"),
+          rate: scopedCounter(s, "hitRateCounter"),
+          outbox: scopedCounter(s, "insertOutbox"),
           // So sánh hằng thời gian: không có đơn vẫn phải so (giá trị giả) như khi sai SĐT. HMAC: hai nhánh cùng số lần
           // (T-149 bỏ bước ký token ở tra cứu — có thể là 0).
-          compare: jest.spyOn(nodeCrypto, "timingSafeEqual"),
-          hmac: jest.spyOn(nodeCrypto, "createHmac"),
+          compare: scopedCounter(nodeCrypto, "timingSafeEqual"),
+          hmac: scopedCounter(nodeCrypto, "createHmac"),
         };
-        const counted = async (body: unknown) => {
-          for (const spy of Object.values(spies)) spy.mockClear();
-          const r = await lookup(body);
-          return {
-            status: r.status,
-            body: JSON.stringify(r.data),
-            find: spies.find.mock.calls.length,
-            rate: spies.rate.mock.calls.length,
-            outbox: spies.outbox.mock.calls.length,
-            compare: spies.compare.mock.calls.length,
-            hmac: spies.hmac.mock.calls.length,
-          };
+        const outsideCalls = () => Object.values(spies).reduce((n, x) => n + x.counter.outside, 0);
+        const counted = async (body: unknown, alongside: () => Promise<unknown> = async () => undefined) => {
+          for (const { counter } of Object.values(spies))
+            Object.assign(counter, { inRequest: 0, outside: 0 });
+          const traceId = `lookup-uniform-${process.pid}-${++traceSeq}`;
+          measuring = traceId;
+          try {
+            const [r] = await Promise.all([
+              api.post("/store/x/orders/lookup", body, cfg({ "x-request-id": traceId })) as Promise<Res<J>>,
+              alongside(),
+            ]);
+            return {
+              status: r.status,
+              body: JSON.stringify(r.data),
+              find: spies.find.counter.inRequest,
+              rate: spies.rate.counter.inRequest,
+              outbox: spies.outbox.counter.inRequest,
+              compare: spies.compare.counter.inRequest,
+              hmac: spies.hmac.counter.inRequest,
+            };
+          } finally {
+            measuring = null;
+          }
         };
         try {
           const notFound = await counted({ display_ref: "XS-ZZZZZZ", phone: CONTACT.phone });
@@ -522,8 +555,20 @@ medusaIntegrationTestRunner({
           expect(wrongPhone).toEqual(notFound);
           const ok = await counted({ display_ref: o.ref, phone: CONTACT.phone });
           expect(ok).toMatchObject({ ...notFound, outbox: 1, hmac: expect.any(Number) });
+
+          // Hồi quy (CI 24d227c): việc ngoài request chạy CHỒNG lên request đang đo — đúng các lời gọi job nền làm
+          // (đọc đơn theo order_id, đếm ngân sách breaker) cộng so sánh/HMAC — không được lọt vào số đếm của request.
+          const noise = async () => {
+            await s.listOrderFinances({ order_id: o.orderId });
+            await s.hitRateCounter("test.noise:lookup-uniform", 60_000, new Date());
+            nodeCrypto.timingSafeEqual(Buffer.alloc(4), Buffer.alloc(4));
+            nodeCrypto.createHmac("sha256", "noise").update("x").digest();
+          };
+          const underNoise = await counted({ display_ref: "XS-YYYYYY", phone: "0911222333" }, noise);
+          expect(underNoise).toEqual(notFound);
+          expect(outsideCalls()).toBeGreaterThanOrEqual(4); // việc chồng thật sự đã chạy trong cửa sổ đo
         } finally {
-          for (const spy of Object.values(spies)) spy.mockRestore();
+          for (const { spy } of Object.values(spies)) spy.mockRestore();
         }
       });
 
