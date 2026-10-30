@@ -1044,3 +1044,18 @@
 - Chọn: Giữ gate-par song song; FE-BUILD-003 phần thứ tự để chờ người (cùng nhóm T-068/T-128 sửa xt.yaml); tick phần skipLibCheck (PRF-WEB-002)
 - Lý do (tiêu chí chất lượng cuối): (1) đúng: không đổi cấu hình cổng ngoài quyền (xt.yaml bị guard/D-052); cả job gate đỏ khi typecheck hoặc lint đỏ nên không có gì merge được — chỉ khác thứ tự chạy; (2) đường lùi rõ: áp khi chủ dự án sửa xt.yaml
 - Đường lùi: Sửa xt.yaml: gate-par chạy typecheck ∥ lint rồi build; tick FE-BUILD-003
+
+### D-149 · 2026-10-30T17:06:28+00:00 · Trường note tuỳ chọn (đổi/trả, duyệt, điều chỉnh tồn, hoàn tiền) gửi "" hoặc toàn khoảng trắng đang lưu ""
+
+- Phương án: (1) Chuẩn hoá ""/khoảng trắng → null ở schema (giống email "" = vắng, T-188) · (2) Giữ "" để phân biệt đã gửi nhưng trống với vắng
+- Chọn: Chuẩn hoá ""/khoảng trắng → null ở schema (giống email "" = vắng, T-188)
+- Lý do (tiêu chí chất lượng cuối): (3) thống nhất với hợp đồng email "" = vắng (D-142/T-188) và đơn giản cho hiển thị/che; (1) không mất thông tin nghiệp vụ — ghi chú trống không mang nghĩa; không cần migration
+- Đường lùi: Bỏ chuẩn hoá trong schema note, sửa bảng optional-fields
+
+### D-150 · 2026-10-30T17:38:34+00:00 · T-191: phạm vi container — chỉ định dạng artefact hay kèm push registry/pipeline promote
+
+- Phương án: (1) Chỉ Dockerfile + compose mẫu + CI build/quét (không push, không chọn registry/hạ tầng); trivy chặn HIGH/CRITICAL đã có bản vá, chưa có bản vá chỉ báo cáo · (2) Thêm push registry + promote theo digest
+- Chọn: Chỉ Dockerfile + compose mẫu + CI build/quét (không push, không chọn registry/hạ tầng); trivy chặn HIGH/CRITICAL đã có bản vá, chưa có bản vá chỉ báo cáo
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi, không cần khoá/tài khoản của chủ dự án (mặc định tự host); (1) quét vẫn chặn lỗ hổng có bản vá; chọn registry/hạ tầng là việc của người (T-060)
+- Đường lùi: Thêm job push GHCR + promote theo digest khi chủ dự án chọn registry
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Chủ dự án chọn registry (GHCR/ECR…) và hạ tầng chạy container
