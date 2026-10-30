@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { check } from "./check-dependabot.mjs";
+import { UnsupportedPatternError, check } from "./check-dependabot.mjs";
 
 const put = (root, rel, text = "") => {
   mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -92,6 +92,15 @@ test("không có workflows -> github-actions là thừa; thiếu dependabot.yml 
     },
   );
   withRepo({}, (root) => assert.deepEqual(check(root), ["thiếu .github/dependabot.yml"]));
+});
+
+test("mẫu workspace không hỗ trợ -> ném UnsupportedPatternError, không bỏ qua im lặng", () => {
+  for (const pat of ["'**'", "apps/**", "a/*/b", "'!apps/x'"]) {
+    withRepo(
+      { "pnpm-workspace.yaml": `packages:\n  - ${pat}\n`, ".github/dependabot.yml": dep(["npm", "/"]) },
+      (root) => assert.throws(() => check(root), UnsupportedPatternError, pat),
+    );
+  }
 });
 
 test("Dockerfile trong node_modules bị bỏ qua", () => {

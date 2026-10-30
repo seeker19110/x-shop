@@ -31,6 +31,8 @@ function subdirs(abs) {
   }
 }
 
+export class UnsupportedPatternError extends Error {}
+
 function workspaceDirs(root) {
   const dirs = new Set([root]);
   const file = join(root, "pnpm-workspace.yaml");
@@ -42,11 +44,15 @@ function workspaceDirs(root) {
   }
   for (const raw of patterns) {
     const p = String(raw).replace(/^\.\//, "").replace(/\/+$/, "");
-    if (p.startsWith("!")) continue;
+    const unsupported = p.startsWith("!") || p.includes("**") || (p.includes("*") && !/^[^*]+\/\*$/.test(p));
+    if (unsupported)
+      throw new UnsupportedPatternError(
+        `mẫu workspace chưa hỗ trợ: '${raw}' (chỉ 'dir/*' hoặc đường dẫn cụ thể)`,
+      );
     if (p.endsWith("/*")) {
       const base = join(root, p.slice(0, -2));
       for (const e of subdirs(base)) dirs.add(join(base, e.name));
-    } else if (!p.includes("*")) dirs.add(join(root, p));
+    } else dirs.add(join(root, p));
   }
   return [...dirs];
 }
@@ -109,7 +115,14 @@ export function check(root) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const i = process.argv.indexOf("--root");
   const root = resolve(i > 0 ? process.argv[i + 1] : ".");
-  const errors = check(root);
+  let errors;
+  try {
+    errors = check(root);
+  } catch (e) {
+    if (!(e instanceof UnsupportedPatternError)) throw e;
+    console.error(`check-dependabot: ${e.message}`);
+    process.exit(2);
+  }
   if (errors.length) {
     for (const e of errors) console.error(`::error::check-dependabot: ${e}`);
     process.exit(1);

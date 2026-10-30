@@ -144,13 +144,13 @@ jobs:
       - name: PR thêm gói trực tiếp phải có mục "Phụ thuộc mới" — `check-new-deps.mjs`
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          if [[ "$PR_AUTHOR" == *"[bot]" ]] || [[ "$PR_TITLE" == 'Revert "'* ]]; then
-            echo "Bỏ qua (bot / revert)."; exit 0
+          # Cổng chuỗi cung ứng: KHÔNG bỏ qua revert (revert thêm lại gói vẫn phải giải trình); chỉ bỏ qua bot.
+          if [[ "$PR_AUTHOR" == *"[bot]" ]]; then
+            echo "Bỏ qua (bot)."; exit 0
           fi
           node --test scripts/check-new-deps.test.mjs
           node scripts/check-new-deps.mjs --base "$BASE_SHA"

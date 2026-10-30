@@ -11,16 +11,26 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const FIELDS = ["dependencies", "devDependencies"];
+const FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 
 const git = (root, args) =>
   execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
-const directDeps = (json) => {
+// Khoá override của pnpm: `foo`, `foo@<2`, `parent>foo`, `@scope/foo@1` -> tên gói đích.
+const overrideName = (key) => {
+  const last = String(key).split(">").pop();
+  const at = last.indexOf("@", 1);
+  return at > 0 ? last.slice(0, at) : last;
+};
+
+export const directDeps = (json, isRoot = false) => {
   const out = new Set();
   for (const f of FIELDS)
     for (const [name, ver] of Object.entries(json?.[f] ?? {}))
       if (!String(ver).startsWith("workspace:")) out.add(name);
+  if (isRoot)
+    for (const [key, ver] of Object.entries(json?.pnpm?.overrides ?? {}))
+      if (!String(ver).startsWith("workspace:")) out.add(overrideName(key));
   return out;
 };
 
@@ -47,34 +57,50 @@ export function newDirectDeps(root, base) {
     if (path.includes("node_modules/") || !existsSync(join(root, path))) continue;
     let before = new Set();
     try {
-      before = directDeps(JSON.parse(git(root, ["show", `${ref}:${path}`])));
+      before = directDeps(JSON.parse(git(root, ["show", `${ref}:${path}`])), path === "package.json");
     } catch {
       /* file mới ở HEAD: mọi gói đều mới */
     }
-    const now = directDeps(JSON.parse(readFileSync(join(root, path), "utf8")));
+    const now = directDeps(JSON.parse(readFileSync(join(root, path), "utf8")), path === "package.json");
     for (const name of [...now].sort()) if (!before.has(name)) result.push({ path, name });
   }
   return result;
 }
 
 const isNameChar = (c) => c !== undefined && /[A-Za-z0-9._~-]/.test(c);
+const TRAIL_PUNCT = new Set([".", ",", ";", ":"]);
 
 export function sectionNewDeps(body) {
-  const text = String(body ?? "").replace(/<!--[\s\S]*?-->/g, "");
+  const text = String(body ?? "")
+    .normalize("NFC")
+    .replace(/<!--[\s\S]*?-->/g, "");
   const lines = text.split(/\r?\n/);
-  const start = lines.findIndex((l) => /^##\s+Phụ thuộc mới\s*$/u.test(l));
+  // Dòng `## ` trong code fence không phải tiêu đề mục.
+  let fenced = false;
+  const isHeading = lines.map((l) => {
+    if (/^\s*(```|~~~)/.test(l)) fenced = !fenced;
+    return !fenced && /^##\s/.test(l);
+  });
+  const start = lines.findIndex((l, i) => isHeading[i] && /^##\s+Phụ thuộc mới\s*:?\s*$/u.test(l));
   if (start < 0) return null;
   const out = [];
-  for (let i = start + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) out.push(lines[i]);
+  for (let i = start + 1; i < lines.length && !isHeading[i]; i++) out.push(lines[i]);
   return out.join("\n");
 }
 
+// Tên gói đúng ranh giới: trước không phải ký tự tên, `/` hay `@` (tránh `b` khớp `@a/b`, `react` khớp `@types/react`);
+// sau không phải ký tự tên, trừ dấu câu cuối (`.,;:`) đứng ngay trước khoảng trắng/hết chuỗi.
 const mentions = (section, name) => {
+  const target = name.normalize("NFC");
   let from = 0;
   for (;;) {
-    const at = section.indexOf(name, from);
+    const at = section.indexOf(target, from);
     if (at < 0) return false;
-    if (!isNameChar(section[at - 1]) && !isNameChar(section[at + name.length])) return true;
+    const before = section[at - 1];
+    const end = at + target.length;
+    let after = section[end];
+    if (TRAIL_PUNCT.has(after) && !isNameChar(section[end + 1])) after = undefined;
+    if (!isNameChar(before) && before !== "/" && before !== "@" && !isNameChar(after)) return true;
     from = at + 1;
   }
 };
