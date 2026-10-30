@@ -1059,3 +1059,10 @@
 - Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi, không cần khoá/tài khoản của chủ dự án (mặc định tự host); (1) quét vẫn chặn lỗ hổng có bản vá; chọn registry/hạ tầng là việc của người (T-060)
 - Đường lùi: Thêm job push GHCR + promote theo digest khi chủ dự án chọn registry
 - Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Chủ dự án chọn registry (GHCR/ECR…) và hạ tầng chạy container
+
+### D-151 · 2026-10-30T19:49:46+00:00 · Quyền cho GET /admin/x/version (T-213)
+
+- Phương án: (1) report.read (không MFA; owner/accountant/catalog_manager và tài khoản smoke chỉ-đọc xem được) · (2) audit.read (chỉ owner) · (3) Quyền mới ops.read (đổi ma trận RBAC trong packages/domain)
+- Chọn: report.read (không MFA; owner/accountant/catalog_manager và tài khoản smoke chỉ-đọc xem được)
+- Lý do (tiêu chí chất lượng cuối): (1) dữ liệu không nhạy cảm (phiên bản/commit đã công khai ở release); vẫn cần xác thực admin; (3) không mở rộng ma trận quyền; tài khoản smoke chỉ-đọc dùng được cho --expect-version
+- Đường lùi: Đổi permissions.ts sang audit.read hoặc thêm ops.read
