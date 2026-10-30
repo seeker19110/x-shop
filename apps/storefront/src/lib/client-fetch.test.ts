@@ -281,7 +281,7 @@ describe("mọi client I/O có timeout (FE-STATE-005, XC-PERF-006)", () => {
   const usesRawFetch = (src: string): boolean =>
     /(?<![\w$.])fetch\s*\(/.test(src) ||
     /\b(?:globalThis|window|self)\s*\??\.\s*fetch\b/.test(src) ||
-    /\b(?:globalThis|window|self)\s*\??\.?\s*\[\s*["'`]fetch["'`]\s*\]/.test(src) ||
+    /\b(?:globalThis|window|self)(?:\s*\??\.)?\s*\[\s*["'`]fetch["'`]\s*\]/.test(src) ||
     [...src.matchAll(/\{[^{}]*\}\s*=\s*(?:globalThis|window|self)\b/g)].some((m) => /\bfetch\b/.test(m[0]));
 
   it("bộ dò fetch trần: bắt các dạng vi phạm, bỏ qua mã vô hại", () => {
