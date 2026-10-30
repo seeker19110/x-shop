@@ -79,9 +79,10 @@ const BAD_BODY_EXCEPTIONS: Record<
  * `importSettlementBatch` (lib/settlement/http.ts): `parseQuery` + `readCsvBody` (≤ 1 MB, UTF-8, CSV có kiểm).
  * `parseStorePage` (lib/http/pagination.ts, T-121): allowlist `limit`/`offset`, chỉ nhận chuỗi số thập phân (mảng/object/
  * số mũ/âm → lỗi), trả danh sách lỗi cho 422 — cùng loại với `parseListingQuery`; có unit test riêng.
+ * `parseCheckoutBody` (lib/checkout/http.ts, T-188): parse bằng schema zod chung `@x-shop/domain/validation`, lỗi → 422.
  */
 const VALIDATOR =
-  /\b(parseBody|parseInput|safeParse|readCsvBody|importSettlementBatch|parseListingQuery|parseStorePage|handleGhnCallback|handleVnpayIpn)\s*\(/;
+  /\b(parseBody|parseCheckoutBody|parseInput|safeParse|readCsvBody|importSettlementBatch|parseListingQuery|parseStorePage|handleGhnCallback|handleVnpayIpn)\s*\(/;
 
 const SRC_DIR = join(__dirname, "../../src");
 
