@@ -492,27 +492,27 @@ rồi diễn tập deploy + rollback (§5) trên staging và ghi `last_drilled`.
 ### 8.2 Các bước (lệnh thật, thứ tự bắt buộc)
 
 ```bash
+set -euo pipefail   # bắt buộc: bước 0 thất bại thì KHÔNG chạy tiếp bước 1
 pnpm install --frozen-lockfile
 pnpm build   # domain → medusa build (backend) và next build (storefront)
-# 0) Cổng backup/PITR TRƯỚC db:migrate (DB-MIG-011) — xem "Điều kiện dừng" ngay dưới khối lệnh này; không qua = KHÔNG chạy bước 1.
+# 0) Cổng backup TRƯỚC db:migrate (DB-MIG-011) — xem "Điều kiện dừng" ngay dưới khối lệnh này; không qua = KHÔNG chạy bước 1.
+#    (PITR: kiểm tay theo khối "Đường B" bên dưới; không dán liền bước 1.)
 #    Đường A (file, scripts/ops/backup.sh): bản gần nhất ≤ N giờ (mặc định 24 = RPO của pg_dump hằng ngày, §4) và sha256 khớp.
 #    $BACKUP_DIR = thư mục nơi cron/job chạy `scripts/ops/backup.sh "$BACKUP_DIR/<tên>.dump"` ghi file (+ .meta). Chưa có bản
 #    đủ mới → tạo ngay: DATABASE_URL="$MIGRATION_DATABASE_URL" scripts/ops/backup.sh "$BACKUP_DIR/pre-migrate-$(date -u +%Y%m%dT%H%M%SZ).dump"
+# >>> gate-backup (scripts/check-runbook.test.mjs trích đúng khối này giữa hai dấu và chạy thử)
 (
-  set -euo pipefail
-  max_h="${XS_BACKUP_MAX_AGE_HOURS:-24}"
+  max_s=$(( ${XS_BACKUP_MAX_AGE_HOURS:-24} * 3600 ))
   meta="$(ls -1t "$BACKUP_DIR"/*.meta | head -n 1)"          # không có file → ls lỗi → dừng
   mark="$(sed -n 's/^snapshot_mark_utc=//p' "$meta")"        # giờ DB (UTC) lấy ngay trước khi pg_dump chụp
   want="$(sed -n 's/^sha256=//p' "$meta")"
-  age_h=$(( ( $(date -u +%s) - $(date -u -d "$mark" +%s) ) / 3600 ))
-  [ "$age_h" -ge 0 ] && [ "$age_h" -le "$max_h" ] || { echo "DỪNG: bản gần nhất $meta cũ ${age_h} giờ (> ${max_h})" >&2; exit 1; }
+  [ -n "$mark" ] && [ -n "$want" ] || { echo "DỪNG: $meta thiếu snapshot_mark_utc/sha256" >&2; exit 1; }
+  age_s=$(( $(date -u +%s) - $(date -u -d "$mark" +%s) ))
+  [ "$age_s" -ge 0 ] && [ "$age_s" -le "$max_s" ] || { echo "DỪNG: bản gần nhất $meta cũ ${age_s} giây (> ${max_s})" >&2; exit 1; }
   [ "$(sha256sum "${meta%.meta}" | cut -d' ' -f1)" = "$want" ] || { echo "DỪNG: sha256 không khớp ${meta%.meta}" >&2; exit 1; }
-  echo "OK: backup $meta mốc $mark (${age_h} giờ trước)"
-)
-#    Đường B (PITR tự host, WAL archiving; PITR của dịch vụ managed: ghi ảnh chụp/ID cấu hình từ console vào log deploy):
-psql "$MIGRATION_DATABASE_URL" -Atc "select current_setting('archive_mode'), coalesce(extract(epoch from now() - last_archived_time)::int, -1), failed_count, coalesce(last_failed_time > last_archived_time, false) from pg_stat_archiver"
-#    → cột 1 phải là on|always, cột 2 (tuổi lần archive cuối, giây) trong [0, 900] (RPO 15 phút, §4.1), cột 4 là `f` (lần archive
-#      gần nhất không lỗi; cột 3 là tổng lỗi tích luỹ, chỉ để tham khảo).
+  echo "OK: backup $meta mốc $mark (${age_s} giây trước)"
+) || { echo "DỪNG trước db:migrate: cổng backup không qua" >&2; exit 1; }
+# <<< gate-backup
 # 1) Migration TRƯỚC khi chạy bản mới (một lần, từ một máy/job duy nhất; bản trước phải chạy được với schema mới).
 #    Vai trò DB (T-184, docs/ops/ENV.md mục "Vai trò DB"): hạ tầng tạo xshop_app + xshop_migrator TRƯỚC lần migrate đầu;
 #    `db:*` kết nối bằng MIGRATION_DATABASE_URL (xshop_migrator), server/worker bằng DATABASE_URL (xshop_app). Không dùng
@@ -526,6 +526,15 @@ MEDUSA_WORKER_MODE=server pnpm --filter @x-shop/backend start   # nhận HTTP (s
 MEDUSA_WORKER_MODE=worker pnpm --filter @x-shop/backend start   # chạy job định kỳ (outbox, reconcile, expire-holds…)
 # 3) Storefront (script `start` cũng bind 127.0.0.1 mặc định: sau LB/container đặt HOST=0.0.0.0)
 pnpm --filter @x-shop/storefront start
+```
+
+**Đường B của bước 0 — kiểm TAY (không nằm trong khối lệnh trên)**: PITR tự host (WAL archiving; PITR của dịch vụ managed: ghi ảnh chụp/ID cấu hình từ console vào log deploy). Chỉ khi đạt mới chạy bước 1.
+
+```bash
+#    Đường B (PITR tự host, WAL archiving; PITR của dịch vụ managed: ghi ảnh chụp/ID cấu hình từ console vào log deploy):
+psql "$MIGRATION_DATABASE_URL" -Atc "select current_setting('archive_mode'), coalesce(extract(epoch from now() - last_archived_time)::int, -1), failed_count, coalesce(last_failed_time > last_archived_time, false) from pg_stat_archiver"
+#    → cột 1 phải là on|always, cột 2 (tuổi lần archive cuối, giây) trong [0, 900] (RPO 15 phút, §4.1), cột 4 là `f` (lần archive
+#      gần nhất không lỗi; cột 3 là tổng lỗi tích luỹ, chỉ để tham khảo).
 ```
 
 **Điều kiện dừng của bước 0 (migrate không đảo ngược được bằng `db:migrate:down` khi có DDL phá dữ liệu — đường lùi thật là khôi phục, §4.2):**

@@ -56,6 +56,7 @@ export async function verifyVersion({ baseUrl, token, expected, fetchImpl = fetc
     res = await fetchImpl(url, {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       signal: AbortSignal.timeout(timeoutMs),
+      redirect: "error", // không theo chuyển hướng: tránh gửi token admin sang nơi khác
     });
   } catch (e) {
     return {

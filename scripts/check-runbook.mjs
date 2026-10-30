@@ -3,7 +3,7 @@
 //
 // ĐỊNH NGHĨA "mục" (máy kiểm được): mọi tiêu đề cấp `## ` có số thứ tự `## N. …` với N ≥ 1 (ngoài khối ``` ). Mục `## 0.`
 // (liên lạc + bảng tổng hợp trạng thái diễn tập) và các tiêu đề `###`/`####` không bị đòi. Tiêu đề `## ` không có số → bỏ qua.
-// Mỗi mục phải có DÒNG ĐẦU TIÊN (ngoài khối ```) bắt đầu bằng `last_drilled:` với một trong hai dạng:
+// Mỗi mục phải có một dòng (ngoài khối ```) bắt đầu bằng `last_drilled:` — lấy dòng ĐẦU TIÊN như vậy ở BẤT KỲ vị trí nào trong mục — dạng:
 //   last_drilled: YYYY-MM-DD            ngày diễn tập thật gần nhất (UTC, lịch hợp lệ, không ở tương lai)
 //   last_drilled: chưa diễn tập <lý do> "chưa diễn tập" + lý do không rỗng (sau nó phải có chữ: `(…)`, `— …`, `: …`, `. …`)
 // Chọn dạng "chưa diễn tập" thay vì bỏ trống/ngày giả: trung thực, và lý do là việc còn treo hiện ra trong output.

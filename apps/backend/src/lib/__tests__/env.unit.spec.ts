@@ -655,3 +655,23 @@ describe("khoá schema ↔ script check-env-doc (BASE-CFG-003)", () => {
     expect(out.backend).toEqual([...ENV_SCHEMA_KEYS].sort());
   });
 });
+
+describe("parseEnv — định danh bản build (D-050)", () => {
+  it("hợp lệ hoặc vắng đều qua; rỗng coi như vắng", () => {
+    const ok = parseEnv({
+      DATABASE_URL: DB,
+      XS_RELEASE_VERSION: "1.2.3-rc.1",
+      XS_RELEASE_COMMIT: "886beed",
+      XS_BUILT_AT: "2026-10-30T08:00:00Z",
+    });
+    expect(ok.ok).toBe(true);
+    expect(parseEnv({ DATABASE_URL: DB, XS_BUILT_AT: "", XS_RELEASE_COMMIT: " " }).ok).toBe(true);
+  });
+
+  it("XS_BUILT_AT sai (không phải UTC, ngày không tồn tại) và commit không hex → lỗi nêu đúng biến", () => {
+    for (const v of ["2026-10-30", "2026-10-30T08:00:00+07:00", "2026-13-40T99:99:99Z"]) {
+      expect(variablesOf({ DATABASE_URL: DB, XS_BUILT_AT: v })).toContain("XS_BUILT_AT");
+    }
+    expect(variablesOf({ DATABASE_URL: DB, XS_RELEASE_COMMIT: "XYZ" })).toContain("XS_RELEASE_COMMIT");
+  });
+});

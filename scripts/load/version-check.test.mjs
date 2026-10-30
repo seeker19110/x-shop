@@ -121,3 +121,22 @@ test("CLI smoke.mjs --expect-version: máy chủ giả khớp → 0, lệch → 
     server.close();
   }
 });
+
+test("verifyVersion: fetch gọi với redirect: error (không theo chuyển hướng mang token); redirect bị từ chối → không ok", async () => {
+  let init;
+  await verifyVersion({
+    ...base,
+    fetchImpl: async (_url, i) => {
+      init = i;
+      return { status: 200, json: async () => ({ version: "1.2.3" }) };
+    },
+  });
+  assert.equal(init.redirect, "error");
+  const r = await verifyVersion({
+    ...base,
+    fetchImpl: async () => {
+      throw new TypeError("fetch failed: unexpected redirect");
+    },
+  });
+  assert.equal(r.ok, false);
+});

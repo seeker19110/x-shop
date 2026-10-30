@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -132,4 +133,79 @@ test("CLI: RUNBOOK thật qua (exit 0); file hỏng exit 1; cảnh báo in ::war
 
 test("TODAY hằng số dùng được (kiểm công cụ test)", () => {
   assert.equal(TODAY.getUTCFullYear(), 2026);
+});
+
+// --- Cổng backup của RUNBOOK §8.2 bước 0 (DB-MIG-011): trích khối shell THẬT giữa hai dấu rồi chạy với dữ liệu giả ---
+const runbookText = readFileSync(RUNBOOK_PATH, "utf8");
+const gateBlock = /^# >>> gate-backup.*\n([\s\S]*?)^# <<< gate-backup$/m.exec(runbookText)?.[1];
+
+test("RUNBOOK: khối gate-backup tồn tại, nằm sau `set -euo pipefail` và trước db:migrate", () => {
+  assert.ok(gateBlock, "mất khối gate-backup");
+  const iSet = runbookText.indexOf("set -euo pipefail   #");
+  const iGate = runbookText.indexOf("# >>> gate-backup");
+  const iMigrate = runbookText.indexOf("cd apps/backend && npx medusa db:migrate\n", iGate);
+  assert.ok(iSet >= 0 && iSet < iGate && iGate < iMigrate);
+});
+
+function runGate(setup, env = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "gate-"));
+  try {
+    setup(dir);
+    // Giữ nguyên ngữ nghĩa khối §8.2: `set -euo pipefail` đầu khối, thay migrate bằng echo.
+    const script = `set -euo pipefail\n${gateBlock}\necho MIGRATED\n`;
+    const r = spawnSync("bash", ["-c", script], {
+      env: { PATH: process.env.PATH, BACKUP_DIR: dir, ...env },
+      encoding: "utf8",
+    });
+    return { status: r.status, out: r.stdout, err: r.stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const isoAgo = (seconds) =>
+  new Date(Date.now() - seconds * 1000).toISOString().replace(/\.\d+Z$/, ".000000Z");
+const sha = (t) => createHash("sha256").update(t).digest("hex");
+const writeBackup = (dir, { agoS = 60, content = "dump", metaSha = sha("dump"), mark = true } = {}) => {
+  writeFileSync(join(dir, "a.dump"), content);
+  const lines = [mark ? `snapshot_mark_utc=${isoAgo(agoS)}` : "", `sha256=${metaSha}`].filter(Boolean);
+  writeFileSync(join(dir, "a.dump.meta"), `${lines.join("\n")}\n`);
+};
+
+test("gate-backup: bản mới + sha khớp → qua, chạy tiếp (MIGRATED)", () => {
+  const r = runGate((d) => writeBackup(d));
+  assert.equal(r.status, 0, r.err);
+  assert.match(r.out, /OK: backup[\s\S]*MIGRATED/);
+});
+
+test("gate-backup: thư mục rỗng / bản cũ 30 giờ / sha lệch / .meta thiếu mốc → exit ≠ 0 và KHÔNG chạy migrate", () => {
+  const bad = {
+    "thư mục rỗng": () => {},
+    "cũ 30 giờ": (d) => writeBackup(d, { agoS: 30 * 3600 }),
+    "sha lệch": (d) => writeBackup(d, { content: "dump bị sửa" }),
+    "thiếu snapshot_mark_utc": (d) => writeBackup(d, { mark: false }),
+    "mốc ở tương lai": (d) => writeBackup(d, { agoS: -3600 }),
+    "file dump không còn": (d) => {
+      writeBackup(d);
+      rmSync(join(d, "a.dump"));
+    },
+  };
+  for (const [name, setup] of Object.entries(bad)) {
+    const r = runGate(setup);
+    assert.notEqual(r.status, 0, name);
+    assert.doesNotMatch(r.out, /MIGRATED/, name);
+    assert.match(r.err, /DỪNG/, name);
+  }
+});
+
+test("gate-backup: so bằng giây, không làm tròn giờ (24 giờ + 30 phút bị chặn; N đổi bằng XS_BACKUP_MAX_AGE_HOURS)", () => {
+  assert.notEqual(runGate((d) => writeBackup(d, { agoS: 24 * 3600 + 1800 })).status, 0);
+  assert.equal(runGate((d) => writeBackup(d, { agoS: 24 * 3600 - 60 })).status, 0);
+  assert.equal(
+    runGate((d) => writeBackup(d, { agoS: 30 * 3600 }), { XS_BACKUP_MAX_AGE_HOURS: "48" }).status,
+    0,
+  );
+  assert.notEqual(
+    runGate((d) => writeBackup(d, { agoS: 2 * 3600 }), { XS_BACKUP_MAX_AGE_HOURS: "1" }).status,
+    0,
+  );
 });

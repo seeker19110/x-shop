@@ -437,6 +437,7 @@ const baseSchema = z.object({
       .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/, {
         message: "phải là thời điểm ISO 8601 UTC (…Z)",
       })
+      .refine((v) => !Number.isNaN(Date.parse(v)), { message: "không phải ngày giờ hợp lệ" })
       .optional(),
   ),
   // Ngưỡng log (T-090): tên mức của Medusa/winston; vắng = info. Log truy cập của dự án ở mức info.
