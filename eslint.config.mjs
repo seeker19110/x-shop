@@ -176,7 +176,7 @@ const URL_ATTRIBUTE_SYNTAX = [
 ];
 
 const RAW_FETCH_MESSAGE =
-  "Không gọi fetch trực tiếp trong component (FE-STATE-001/005, XC-PERF-006): dùng clientFetch ở lib/client-fetch.ts (có timeout, retry lỗi tạm thời, huỷ khi unmount).";
+  "Không gọi fetch trực tiếp trong component/src/lib (FE-STATE-001/005, XC-PERF-006): dùng clientFetch (lib/client-fetch.ts) hoặc fetchWithRetry (lib/http/retry.ts) — có timeout, retry lỗi tạm thời, huỷ khi unmount.";
 
 /**
  * Mọi THAM CHIẾU `fetch` lấy từ global object (không chỉ lời gọi): `window.fetch`, `globalThis?.fetch`, `self["fetch"]`,
@@ -360,6 +360,41 @@ export default tseslint.config(
     },
   },
   {
+    // FE-STATE-005, XC-PERF-006 (T-228): mở rộng cấm fetch trần (gọi + tham chiếu qua globalThis|window|self) sang
+    // apps/storefront/src/lib — I/O chỉ qua lib/http/retry (fetchWithRetry: timeout + retry lỗi tạm thời) hoặc
+    // lib/client-fetch. Ngoại lệ: lib/http/retry.ts (chính là lớp bọc), lib/pwa/** (sw-harness giả lập sự kiện `fetch`
+    // của Service Worker để test — không phải I/O mạng của ứng dụng), và test. Ghi đè no-restricted-syntax nên lặp luật
+    // chung + units + URL; units.ts (không dính units) ở khối riêng bên dưới.
+    files: ["apps/storefront/src/lib/**/*.{ts,tsx}"],
+    ignores: [
+      "**/*.test.{ts,tsx}",
+      "**/__tests__/**",
+      "apps/storefront/src/lib/http/retry.ts",
+      "apps/storefront/src/lib/pwa/**",
+      "apps/storefront/src/lib/units.ts",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...BASE_RESTRICTED_SYNTAX,
+        ...UNITS_RESTRICTED_SYNTAX,
+        ...URL_ATTRIBUTE_SYNTAX,
+        ...RAW_FETCH_REFERENCE_SYNTAX,
+      ],
+    },
+  },
+  {
+    files: ["apps/storefront/src/lib/units.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...BASE_RESTRICTED_SYNTAX,
+        ...URL_ATTRIBUTE_SYNTAX,
+        ...RAW_FETCH_REFERENCE_SYNTAX,
+      ],
+    },
+  },
+  {
     // Test vitest: không .only/.skip, mỗi test có assertion (QA-STRAT-008, QA-COV-004).
     files: ["apps/storefront/**/*.test.{ts,tsx}", "packages/domain/**/*.test.ts"],
     plugins: { vitest },
@@ -408,10 +443,15 @@ export default tseslint.config(
     },
   },
   {
-    // T-189: `fetch(` trần bị cấm trong component (phần `globalThis|window|self.fetch` ở khối no-restricted-syntax phía
+    // T-189/T-228: `fetch(` trần bị cấm trong component và src/lib (trừ retry.ts, pwa/**) (phần `globalThis|window|self.fetch` ở khối no-restricted-syntax phía
     // trên). Đặt SAU khối no-restricted-globals chung vì ghi đè nó (lặp parseFloat).
-    files: ["apps/storefront/src/components/**/*.{ts,tsx}"],
-    ignores: ["**/*.test.{ts,tsx}", "**/__tests__/**"],
+    files: ["apps/storefront/src/components/**/*.{ts,tsx}", "apps/storefront/src/lib/**/*.{ts,tsx}"],
+    ignores: [
+      "**/*.test.{ts,tsx}",
+      "**/__tests__/**",
+      "apps/storefront/src/lib/http/retry.ts",
+      "apps/storefront/src/lib/pwa/**",
+    ],
     rules: {
       "no-restricted-globals": [
         "error",
