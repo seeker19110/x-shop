@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev -H \"${HOST:-127.0.0.1}\"",
-    "build": "pnpm --filter @x-shop/domain build && next build",
-    "start": "next start -H \"${HOST:-127.0.0.1}\"",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev -H \"${HOST:-127.0.0.1}\"",
+    "build": "pnpm --filter @x-shop/domain build && NEXT_TELEMETRY_DISABLED=1 next build",
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start -H \"${HOST:-127.0.0.1}\"",
     "typecheck": "pnpm --filter @x-shop/domain build && tsc --noEmit",
     "test": "node scripts/test.mjs",
     "test:coverage": "node scripts/test.mjs --coverage"

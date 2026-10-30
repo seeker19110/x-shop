@@ -64,7 +64,9 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+        # D-147: ghim 7.2 (BSD-3, EOL 2029-12-01) thay vì 7.4+ (RSALv2/SSPLv1, không OSI). Digest = manifest list, lấy 2026-10-30 từ
+        # https://hub.docker.com/v2/repositories/library/redis/tags/7.2-alpine. Nâng: lấy digest mới của tag; đổi dòng 7.2 phải qua ADR/D-NNN.
+        image: redis:7.2-alpine@sha256:2c933526722b4126a61d5c170f766dc159adf97682f0b1cbbc27b1666ba96d84
         ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
@@ -324,7 +326,9 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+        # D-147: ghim 7.2 (BSD-3, EOL 2029-12-01) thay vì 7.4+ (RSALv2/SSPLv1, không OSI). Digest = manifest list, lấy 2026-10-30 từ
+        # https://hub.docker.com/v2/repositories/library/redis/tags/7.2-alpine. Nâng: lấy digest mới của tag; đổi dòng 7.2 phải qua ADR/D-NNN.
+        image: redis:7.2-alpine@sha256:2c933526722b4126a61d5c170f766dc159adf97682f0b1cbbc27b1666ba96d84
         ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10

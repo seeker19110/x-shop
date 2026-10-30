@@ -96,7 +96,7 @@ test("ci.yml: job n-minus-1 dùng ĐÚNG biểu thức ref gốc của bước c
   assert.match(n1, /fetch-depth: 0/);
   assert.match(n1, /timeout-minutes: \d+/);
   assert.match(n1, /postgres:16-alpine@sha256:/);
-  assert.match(n1, /redis:7-alpine@sha256:/);
+  assert.match(n1, /redis:7\.2-alpine@sha256:/);
   assert.match(n1, /node scripts\/n-minus-1\.mjs --detect-only/);
   assert.match(n1, /steps\.detect\.outputs\.run == 'true'/);
   assert.doesNotMatch(n1, /^\s+needs:/m, "chạy song song với gate, không needs");

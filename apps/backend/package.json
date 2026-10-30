@@ -5,9 +5,9 @@
   "description": "Medusa v2 backend của x-shop (server + worker + Admin).",
   "license": "UNLICENSED",
   "scripts": {
-    "build": "pnpm --filter @x-shop/domain build && medusa build",
-    "start": "medusa start -H \"${HOST:-127.0.0.1}\"",
-    "dev": "medusa develop -H \"${HOST:-127.0.0.1}\"",
+    "build": "pnpm --filter @x-shop/domain build && MEDUSA_DISABLE_TELEMETRY=true medusa build",
+    "start": "MEDUSA_DISABLE_TELEMETRY=true medusa start -H \"${HOST:-127.0.0.1}\"",
+    "dev": "MEDUSA_DISABLE_TELEMETRY=true medusa develop -H \"${HOST:-127.0.0.1}\"",
     "seed": "medusa exec ./src/scripts/seed.ts",
     "seed:catalog": "medusa exec ./src/scripts/seed-catalog.ts",
     "catalog:reindex": "medusa exec ./src/scripts/rebuild-catalog-index.ts",

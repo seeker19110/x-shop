@@ -286,10 +286,11 @@ trường chạy thật (systemd/container/PaaS) và máy dev; CI đã đặt �
 | `MEDUSA_DISABLE_TELEMETRY` | `true` | backend (`medusa start/develop/build`) | Tắt thu thập số liệu ẩn danh của Medusa | https://docs.medusajs.com/learn/resources/usage (bảng env: "Whether to disable analytics data collection"); mã đọc biến: `@medusajs/telemetry` `dist/store.js` |
 | `NEXT_TELEMETRY_DISABLED` | `1` | storefront (`next dev/build/start`) | Tắt telemetry ẩn danh của Next.js | https://nextjs.org/telemetry ("opt-out by setting an environment variable: `NEXT_TELEMETRY_DISABLED=1`") |
 
-Không sửa script `start/dev/build` trong `apps/*/package.json`: chúng đã dùng cú pháp shell POSIX (`${HOST:-127.0.0.1}`), và đặt
-biến ngay trong script cần `cross-env` (phụ thuộc mới, không thêm trong task này). Cách đặt: xuất biến trong môi trường tiến trình
-(`export MEDUSA_DISABLE_TELEMETRY=true NEXT_TELEMETRY_DISABLED=1`) hoặc `.env` cục bộ của từng app (Medusa nạp `.env`; Next đọc
-`.env*` cho biến runtime); tách bạch với `next telemetry disable` (ghi cấu hình vào máy dev, không có tác dụng trên CI/container).
+Script `start/dev/build` của `apps/backend` và `apps/storefront` đã đặt sẵn tiền tố `VAR=giá-trị` (cú pháp POSIX, cùng kiểu
+với `${HOST:-127.0.0.1}` đang dùng; không cần `cross-env`). Cách chắc chắn nhất cho môi trường chạy thật vẫn là xuất biến cho
+tiến trình (`export MEDUSA_DISABLE_TELEMETRY=true NEXT_TELEMETRY_DISABLED=1`): đừng dựa vào `.env` cho telemetry của Next
+(Next nạp `.env*` sau khi khởi động telemetry, không đảm bảo). Gọi thẳng `medusa`/`next` (không qua script) thì phải tự xuất biến.
+`next telemetry disable` chỉ ghi cấu hình vào máy dev, không có tác dụng trên CI/container.
 
 ## Quản trị: vai trò, MFA, phiên (T-023/T-024)
 - Owner đầu tiên: tạo admin (`medusa user -e <email>` hoặc lời mời) rồi chạy trên máy chủ
