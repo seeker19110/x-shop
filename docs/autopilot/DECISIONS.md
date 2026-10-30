@@ -1037,3 +1037,10 @@
 - Lý do (tiêu chí chất lượng cuối): (1) pháp lý: cách hiểu chặt hơn — giấy phép OSI rõ ràng, không phụ thuộc diễn giải 'as a service'; (2) đường lùi: đổi tag; cùng giao thức, cùng EOL 2029-12-01 nên không mất hỗ trợ; (3) thay đổi nhỏ nhất (cùng nhánh 7.x, client ioredis không đổi) — Valkey là bước lớn hơn, để dành khi 7.2 gần EOL
 - Đường lùi: Đổi lại tag redis:7-alpine (7.4) hoặc chuyển Valkey; cập nhật docs/RISKS.md
 - Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Chủ dự án xác nhận dùng Redis 7.2 BSD hoặc chọn Valkey/dịch vụ Redis quản lý cho production
+
+### D-148 · 2026-10-30T13:50:25+00:00 · FE-BUILD-003 yêu cầu build chạy sau typecheck+lint; gate CI chạy song song trong gate-par theo xt.yaml (không sửa được xt.yaml — D-052)
+
+- Phương án: (1) Giữ gate-par song song; FE-BUILD-003 phần thứ tự để chờ người (cùng nhóm T-068/T-128 sửa xt.yaml); tick phần skipLibCheck (PRF-WEB-002) · (2) Tách job build riêng trong ci.yml với needs, bỏ build khỏi gate-par (phải sửa xt.yaml)
+- Chọn: Giữ gate-par song song; FE-BUILD-003 phần thứ tự để chờ người (cùng nhóm T-068/T-128 sửa xt.yaml); tick phần skipLibCheck (PRF-WEB-002)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: không đổi cấu hình cổng ngoài quyền (xt.yaml bị guard/D-052); cả job gate đỏ khi typecheck hoặc lint đỏ nên không có gì merge được — chỉ khác thứ tự chạy; (2) đường lùi rõ: áp khi chủ dự án sửa xt.yaml
+- Đường lùi: Sửa xt.yaml: gate-par chạy typecheck ∥ lint rồi build; tick FE-BUILD-003
