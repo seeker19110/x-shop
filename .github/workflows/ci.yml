@@ -210,6 +210,9 @@ jobs:
       # scripts/units-allowlist.json kèm lý do (XC-UNITS-009, D-110). Không cần DB.
       - name: Cột số có hậu tố đơn vị — `pnpm check:units` (XC-UNITS-009)
         run: pnpm check:units
+      # x-shop (T-217): màu chỉ đến từ token (tokens.css); hex/rgb/hsl cứng ngoài token = đỏ (UX-DS-002). Không cần DB.
+      - name: Không màu cứng ngoài token — `pnpm check:hex` (UX-DS-002)
+        run: pnpm check:hex && pnpm check:hex:test
       # x-shop (T-208): khoá biến môi trường của schema zod (backend + storefront) ↔ docs/ops/ENV.md, hai chiều; lệch = đỏ
       # (BASE-CFG-003, Q-18). Không cần DB. Thêm kiểm, không nới cổng.
       - name: Khoá env schema ↔ docs/ops/ENV.md — `pnpm check:env-doc` (BASE-CFG-003)

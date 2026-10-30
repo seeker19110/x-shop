@@ -7,6 +7,7 @@
 export default function GlobalError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
     <html lang="vi">
+      {/* hex-ok: global-error thay root layout nên không nạp tokens.css; màu chữ phải là literal */}
       <body style={{ fontFamily: "system-ui, sans-serif", margin: 0, padding: "2rem", color: "#1a1a1a" }}>
         <main role="alert" style={{ maxWidth: "32rem", margin: "0 auto" }}>
           <h1>Đã có sự cố</h1>

@@ -9,7 +9,7 @@ export interface SwatchOption {
   value: string;
   /** Tên màu: dùng cho tên truy cập và chữ hiện khi chọn. */
   name: string;
-  /** Mã màu CSS (vd #1a1a1a). */
+  /** Mã màu CSS dạng hex (dữ liệu màu sản phẩm từ catalog). */
   hex?: string;
   /** Ảnh swatch (ưu tiên hơn `hex`). Trang trí — tên màu đã có ở chữ. */
   imageUrl?: string;

@@ -22,7 +22,7 @@ import type {
 /** Kích thước ảnh khi backend không báo (ảnh demo 800×1000): tỷ lệ 4:5 theo DESIGN.md. */
 const FALLBACK_W = 800;
 const FALLBACK_H = 1000;
-const FALLBACK_HEX = "#9ca3af";
+const FALLBACK_HEX = "#9ca3af"; // hex-ok: màu swatch dự phòng của dữ liệu sản phẩm, không phải màu giao diện
 
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
