@@ -334,9 +334,18 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   **Bản N−1 trên schema N** (T-163, `scripts/n-minus-1.mjs`, job CI `n-minus-1`): code của ref gốc (cùng quy tắc với
   `check:migrations`: `--base` > `MIGRATIONS_BASE_REF` > `origin/master`) chạy bộ test tích hợp của CHÍNH nó trên schema do
   migration của HEAD tạo. Chỉ xét migration của module tùy biến (`apps/backend/src/modules/*/migrations`); không có file nào
-  thêm/đổi/xoá so với ref gốc → bỏ qua ngay, exit 0. **Khoảng trống đã biết:** PR nâng `@medusajs/*` (migration lõi đổi) không
-  kích job; PR nâng Medusa kèm migration tùy biến sẽ ra mã 2 "schema lệch" vì cây N−1 chạy migration lõi cũ — tách nâng Medusa ra
-  PR riêng. Cách làm: `git archive` ref gốc vào thư mục tạm → `pnpm install --frozen-lockfile --prefer-offline --filter
+  thêm/đổi/xoá so với ref gốc **và** tập {tên@phiên bản} của `@medusajs/*` trong `pnpm-lock.yaml` (khoá `packages:` + `version:`
+  ở `importers:`) không đổi → bỏ qua ngay, exit 0 (T-195, `medusaLockChange`). Đổi phiên bản/thêm/xoá gói `@medusajs/*` cũng kích
+  job; lockfile hỏng/thiếu một phía → chạy (fail-safe) + `::warning::`. PR nâng Medusa kèm migration tùy biến sẽ ra mã 2 "schema
+  lệch" vì cây N−1 chạy migration lõi cũ — tách nâng Medusa ra PR riêng. **Khoảng trống còn lại (T-195):** (1) phiên bản Medusa đổi
+  mà tập `@medusajs/*` trong lockfile không đổi (không có trường hợp thật: `overrides`/peer cũng sinh khoá mới ở lockfile; nếu pnpm
+  đổi định dạng lockfile → parse hỏng → chạy) — chỉ gói ngoài `@medusajs/*` (vd `@mikro-orm/*`, `pg`) đổi thì KHÔNG kích dù có thể
+  ảnh hưởng schema; (2) job chỉ kiểm cái đo được: sau khi kích do nâng Medusa, N−1 (lõi cũ) so schema `public` với HEAD (lõi mới) —
+  migration lõi thêm/đổi bảng của Medusa hiện ra là "schema lệch", rồi test tích hợp N−1 chạy trên DB do runner dựng bằng mã N−1
+  (không phải trên DB đã migrate bằng lõi mới); KHÔNG kiểm dữ liệu: migration lõi chạy trên dữ liệu production lớn (khoá/thời gian),
+  tương thích dữ liệu hiện có, đường lùi lõi (Medusa không có migration down đáng tin — chưa xác minh) → diễn tập trên staging
+  bằng bản sao dữ liệu (§4.2, §11) trước khi deploy bản nâng Medusa; (3) PR nâng Medusa mà lockfile không đổi do xung đột/merge sai
+  thì không có lớp đỡ ngoài review. Cách làm: `git archive` ref gốc vào thư mục tạm → `pnpm install --frozen-lockfile --prefer-offline --filter
 @x-shop/backend...` (store pnpm dùng chung với cây HEAD làm cache) → phủ file migration thêm/đổi/xoá của HEAD lên thư mục
   `migrations/` của các module có ở bản N−1 → hai DB dùng một lần `xshop_n1_<hex>_head|_base`: `medusa db:migrate` bằng mã
   HEAD và bằng mã N−1 + phần phủ; schema `public` phải trùng trên mọi bảng/đối tượng N−1 biết — cột (kiểu, NULL, DEFAULT,
@@ -360,7 +369,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   - `N−1 TỰ ĐỎ` (mã 2, `base-red`): ca đỏ ngay trên schema N−1 của bản N−1 → merge master mới nhất vào nhánh (nếu ref gốc đã sửa
     test) hoặc sửa test trên nhánh đích, rồi chạy lại.
   - `CHẬP CHỜN` (mã 2, `flaky`): đỏ lần đầu, xanh ở mọi lần chạy lại → chạy lại job; lặp lại thì sửa test chập chờn.
-  - Schema lệch (mã 2, `schema-mismatch`): PR nâng `@medusajs/*` kèm migration → tách nâng Medusa ra PR riêng không kèm migration;
+  - Schema lệch (mã 2, `schema-mismatch`): PR nâng `@medusajs/*` kèm migration (hoặc nâng lõi làm bảng lõi lệch) → tách nâng Medusa ra PR riêng không kèm migration;
     migration của module MỚI chạm bảng/trigger của module cũ → chuyển phần đó vào migration của module cũ.
   - `allow-invalid` (mã 2): mục `N1_ALLOW` nêu migration không còn trong cây / thiếu trường → sửa hoặc xoá mục.
   - `ref-missing`, `step-failed`, `report-unreadable`, `remote-db` (mã 2): clone nông (cần `fetch-depth: 0`), bước

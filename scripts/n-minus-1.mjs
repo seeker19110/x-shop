@@ -56,6 +56,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parse as parseYaml } from "yaml";
 import {
   DEFAULT_BASE,
   MIGRATION_FILE,
@@ -143,6 +144,61 @@ export function migrationChanges(base, head) {
 }
 
 export const hasChanges = (c) => c.added.length + c.changed.length + c.removed.length > 0;
+
+export const LOCKFILE = "pnpm-lock.yaml";
+const MEDUSA_PKG = /^@medusajs\/[^@/]+$/;
+const DEP_FIELDS = ["dependencies", "devDependencies", "optionalDependencies"];
+
+/**
+ * Tập "tên@phiên bản" của mọi gói `@medusajs/*` trong nội dung pnpm-lock.yaml (lockfile v9): khoá `packages:` và
+ * `version:` ở `importers:` (gồm hậu tố peer). Nội dung không phải lockfile (YAML hỏng, thiếu `packages`)
+ * → ném lỗi (người gọi chọn fail-safe).
+ */
+export function medusaPackages(text) {
+  const doc = parseYaml(String(text ?? ""));
+  if (!doc || typeof doc !== "object" || !doc.packages || typeof doc.packages !== "object")
+    throw new Error("không phải pnpm-lock.yaml hợp lệ (thiếu `packages`)");
+  const out = new Set();
+  for (const key of Object.keys(doc.packages)) {
+    const at = key.lastIndexOf("@");
+    if (at > 0 && MEDUSA_PKG.test(key.slice(0, at))) out.add(key);
+  }
+  for (const imp of Object.values(doc.importers ?? {}))
+    for (const field of DEP_FIELDS)
+      for (const [name, v] of Object.entries(imp?.[field] ?? {}))
+        if (MEDUSA_PKG.test(name) && typeof v?.version === "string") out.add(`${name}@${v.version}`);
+  return out;
+}
+
+/**
+ * Lockfile ref gốc ↔ HEAD: tập {tên@phiên bản} của `@medusajs/*` khác nhau (đổi phiên bản, thêm, xoá) → run=true.
+ * Đọc/phân tích hỏng một trong hai (null = không có file) → run=true (fail-safe) kèm `warning`.
+ * → { run: boolean, reason: string, warning?: string }.
+ */
+export function medusaLockChange(baseText, headText) {
+  let base;
+  let head;
+  try {
+    if (baseText == null || headText == null)
+      throw new Error(`thiếu ${LOCKFILE} ở ${baseText == null ? "ref gốc" : "cây làm việc"}`);
+    base = medusaPackages(baseText);
+    head = medusaPackages(headText);
+  } catch (e) {
+    return {
+      run: true,
+      reason: `không phân tích được ${LOCKFILE} — chạy cho chắc`,
+      warning: `không so được @medusajs/* trong ${LOCKFILE} (${e.message}); chạy job (fail-safe)`,
+    };
+  }
+  const added = [...head].filter((x) => !base.has(x)).sort();
+  const removed = [...base].filter((x) => !head.has(x)).sort();
+  if (!added.length && !removed.length) return { run: false, reason: "@medusajs/* trong lockfile không đổi" };
+  const show = (l) => (l.length > 5 ? `${l.slice(0, 5).join(", ")}… (+${l.length - 5})` : l.join(", "));
+  return {
+    run: true,
+    reason: `@medusajs/* trong ${LOCKFILE} đổi: +[${show(added)}] −[${show(removed)}]`,
+  };
+}
 
 /** Tên thư mục module của một đường dẫn migration. */
 export const moduleOf = (p) => p.slice(MODULES_DIR.length + 1).split("/")[0];
@@ -613,6 +669,20 @@ export function realDeps(root) {
       }).trim(),
     baseMigrations: (ref) => baseMigrations(root, ref),
     headMigrations: () => worktreeHashes(root, listMigrations(root)),
+    /** Nội dung pnpm-lock.yaml ở ref gốc (string) hoặc null nếu không có. */
+    baseLockfile: (ref) => {
+      try {
+        return execFileSync("git", ["-C", root, "show", `${ref}:${LOCKFILE}`], {
+          encoding: "utf8",
+          maxBuffer: 256 * 1024 * 1024,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+      } catch {
+        return null;
+      }
+    },
+    headLockfile: () =>
+      existsSync(join(root, LOCKFILE)) ? readFileSync(join(root, LOCKFILE), "utf8") : null,
     mkdtemp: (parent) => {
       mkdirSync(parent, { recursive: true });
       return mkdtempSync(join(parent, "xshop-n1-"));
@@ -704,11 +774,27 @@ export async function run(root, opts, deps = realDeps(root)) {
     for (const e of allowErrors) log.error(`${tag}: ${e}`);
     return inconclusive("allow-invalid", allowErrors.join("; "));
   }
-  const changed = hasChanges(changes);
+  const migChanged = hasChanges(changes);
+  // Điều kiện THÊM (T-195): PR đổi phiên bản/tập gói @medusajs/* trong lockfile cũng chạy (migration lõi có thể đổi).
+  let medusa = { run: false, reason: "" };
+  if (deps.baseLockfile && deps.headLockfile) {
+    try {
+      medusa = medusaLockChange(deps.baseLockfile(opts.base), deps.headLockfile());
+    } catch (e) {
+      medusa = medusaLockChange(null, null);
+      medusa.warning = `${medusa.warning} [${e.message}]`;
+    }
+    if (medusa.warning) {
+      log.error(`${tag}: CẢNH BÁO: ${medusa.warning}`);
+      if (env.GITHUB_ACTIONS === "true") log.log(`::warning title=n-minus-1 (lockfile)::${medusa.warning}`);
+    }
+    if (medusa.run) log.log(`${tag}: ${medusa.reason}`);
+  }
+  const changed = migChanged || medusa.run;
   if (opts.detectOnly && env.GITHUB_OUTPUT) deps.appendFile(env.GITHUB_OUTPUT, `run=${changed}\n`);
   if (!changed) {
     log.log(
-      `${tag}: không có migration tùy biến (apps/backend/src/modules/*/migrations) thêm/đổi/xoá so với ${opts.base} — bỏ qua. Không xét migration lõi khi nâng @medusajs/* (RUNBOOK §5).`,
+      `${tag}: không có migration tùy biến (apps/backend/src/modules/*/migrations) thêm/đổi/xoá so với ${opts.base} — bỏ qua. Lockfile: @medusajs/* không đổi.`,
     );
     return 0;
   }

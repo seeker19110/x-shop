@@ -307,8 +307,9 @@ jobs:
   # của khung xét MỌI check của PR nên job đỏ vẫn CHẶN merge do máy — D-124 chấp nhận: đây là cổng thật cho PR có
   # migration. Mã 1 (không tương thích) và 2 (không kết luận được) đều đỏ, kèm annotation `::error::` nêu hướng xử lý;
   # bảng xử lý theo nguyên nhân ở RUNBOOK §5 "Xử lý job n-minus-1 đỏ".
-  # Chỉ chạy nặng khi có migration thêm/đổi/xoá so với ref gốc (bước detect, không cần cài phụ thuộc); không có → các
-  # bước sau `skipped`, job xanh trong vài giây. Ref gốc: ĐÚNG biểu thức của bước check-migrations trong `gate`.
+  # Chỉ chạy nặng khi có migration thêm/đổi/xoá so với ref gốc HOẶC tập {tên@phiên bản} của `@medusajs/*` trong
+  # pnpm-lock.yaml đổi so với ref gốc (T-195; lockfile hỏng → chạy, fail-safe) — bước detect, không cần cài phụ thuộc;
+  # không có → các bước sau `skipped`, job xanh trong vài giây. Ref gốc: ĐÚNG biểu thức của bước check-migrations trong `gate`.
   n-minus-1:
     name: n-minus-1
     runs-on: ubuntu-latest
@@ -348,7 +349,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       - id: detect
-        name: Có migration thêm/đổi/xoá so với ref gốc? — `n-minus-1.mjs --detect-only`
+        name: Có migration đổi hoặc @medusajs/* trong lockfile đổi so với ref gốc? — `n-minus-1.mjs --detect-only`
         run: node scripts/n-minus-1.mjs --detect-only
       - if: steps.detect.outputs.run == 'true'
         name: setup — khoá `setup:` của xt.yaml (cây HEAD; store pnpm này là cache cho cây N−1)

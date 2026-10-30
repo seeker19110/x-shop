@@ -26,6 +26,8 @@ import {
   failedSuites,
   formatDuration,
   hasChanges,
+  medusaLockChange,
+  medusaPackages,
   migrationChanges,
   moduleOf,
   normalizeDefault,
@@ -172,6 +174,7 @@ test("phát hiện migration trên repo git thật (blob hash cây làm việc, 
   const dir = join(root, "apps/backend/src/modules/a/migrations");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "Migration20260101000000.ts"), "export class Migration20260101000000 {}\n");
+  writeFileSync(join(root, "pnpm-lock.yaml"), lock({ medusa: { framework: "2.22.1" } }));
   g("add", ".");
   g("commit", "-q", "-m", "base");
   writeFileSync(join(dir, "Migration20260202000000.ts"), "export class Migration20260202000000 {}\n");
@@ -1174,4 +1177,178 @@ test("log khi không đổi migration nêu rõ chỉ xét migration tùy biến 
   const f = fake({ head: CHANGES_BASE });
   assert.equal(await run("/repo", OPTS, f.deps), 0);
   assert.ok(f.logs.some((l) => l.includes("không có migration tùy biến") && l.includes("@medusajs")));
+});
+/* ------------------------------------------- lockfile @medusajs/* (T-195) ------------------------------------- */
+
+/** Lockfile v9 tối thiểu: `medusa` = { gói: phiên bản } vào importers + packages; `other` = gói khác. */
+function lock({ medusa = {}, other = {} } = {}) {
+  const deps = {
+    ...Object.fromEntries(Object.entries(medusa).map(([n, v]) => [`@medusajs/${n}`, v])),
+    ...other,
+  };
+  const importerDeps = Object.entries(deps)
+    .map(([n, v]) => `      '${n}':\n        specifier: ${v}\n        version: ${v}`)
+    .join("\n");
+  const pkgs = Object.entries(deps)
+    .map(([n, v]) => `  '${n}@${v}':\n    resolution: {integrity: sha512-x}`)
+    .join("\n");
+  return `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n${importerDeps || "      {}"}\n\npackages:\n\n${pkgs || "  {}"}\n`;
+}
+
+test("medusaPackages: lấy tên@phiên bản của @medusajs/* từ packages và importers, bỏ gói khác", () => {
+  const set = medusaPackages(
+    lock({
+      medusa: { framework: "2.22.1", ui: "4.2.8" },
+      other: { zod: "4.6.7" },
+    }),
+  );
+  assert.deepEqual([...set].sort(), ["@medusajs/framework@2.22.1", "@medusajs/ui@4.2.8"]);
+  assert.equal(medusaPackages(lock()).size, 0);
+});
+
+test("medusaPackages: giữ hậu tố peer ở importers; không nhầm gói tên giống (@medusajs-ext, medusajs-x)", () => {
+  const text = `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      '@medusajs/ui':
+        specifier: 4.2.8
+        version: 4.2.8(react@19.3.1)
+      medusajs-x:
+        specifier: 1.0.0
+        version: 1.0.0
+packages:
+  '@medusajs-ext/a@1.0.0':
+    resolution: {integrity: sha512-x}
+  'medusajs-x@1.0.0':
+    resolution: {integrity: sha512-x}
+  '@medusajs/ui@4.2.8':
+    resolution: {integrity: sha512-x}
+`;
+  assert.deepEqual([...medusaPackages(text)].sort(), [
+    "@medusajs/ui@4.2.8",
+    "@medusajs/ui@4.2.8(react@19.3.1)",
+  ]);
+});
+
+test("medusaLockChange: giống hệt → không chạy", () => {
+  const l = lock({ medusa: { framework: "2.22.1" }, other: { zod: "4.6.7" } });
+  assert.equal(medusaLockChange(l, l).run, false);
+});
+
+test("medusaLockChange: đổi phiên bản @medusajs/* → chạy, lý do nêu gói", () => {
+  const r = medusaLockChange(
+    lock({ medusa: { framework: "2.22.1" } }),
+    lock({ medusa: { framework: "2.23.0" } }),
+  );
+  assert.equal(r.run, true);
+  assert.match(r.reason, /@medusajs\/framework@2\.23\.0/);
+  assert.equal(r.warning, undefined);
+});
+
+test("medusaLockChange: chỉ đổi gói khác → không chạy", () => {
+  const m = { framework: "2.22.1" };
+  const a = lock({ medusa: m, other: { zod: "4.6.6" } });
+  const b = lock({ medusa: m, other: { zod: "4.6.7" } });
+  assert.equal(medusaLockChange(a, b).run, false);
+});
+
+test("medusaLockChange: thêm hoặc xoá gói @medusajs/* → chạy", () => {
+  const a = lock({ medusa: { framework: "2.22.1" } });
+  const b = lock({ medusa: { framework: "2.22.1", utils: "2.22.1" } });
+  assert.equal(medusaLockChange(a, b).run, true);
+  assert.equal(medusaLockChange(b, a).run, true);
+  assert.equal(medusaLockChange(lock(), a).run, true);
+});
+
+test("medusaLockChange: lockfile hỏng/rỗng/thiếu một phía → chạy (fail-safe) + cảnh báo", () => {
+  const ok = lock({ medusa: { framework: "2.22.1" } });
+  for (const bad of ["a: [unclosed", "", "just a string", "importers: {}\n", null, undefined]) {
+    for (const [x, y] of [
+      [bad, ok],
+      [ok, bad],
+    ]) {
+      const r = medusaLockChange(x, y);
+      assert.equal(r.run, true, JSON.stringify(bad));
+      assert.match(r.warning, /fail-safe/);
+    }
+  }
+});
+
+test("medusaLockChange: CRLF + chú thích Unicode không làm hỏng so sánh", () => {
+  const l = `${lock({ medusa: { framework: "2.22.1" } }).replace(/\n/g, "\r\n")}# ghi chú tiếng Việt: đổi trả\r\n`;
+  assert.equal(medusaLockChange(l, l).run, false);
+});
+
+test("run: không đổi migration nhưng đổi @medusajs/* → không bỏ qua; detect ghi run=true + log", async () => {
+  const f = fake({ head: CHANGES_BASE, env: { GITHUB_OUTPUT: "/o" } });
+  f.deps.baseLockfile = (ref) => (
+    assert.equal(ref, "origin/master"),
+    lock({ medusa: { framework: "2.22.1" } })
+  );
+  f.deps.headLockfile = () => lock({ medusa: { framework: "2.23.0" } });
+  assert.equal(await run("/repo", { ...OPTS, detectOnly: true }, f.deps), 0);
+  assert.deepEqual(f.events, ["append /o run=true"]);
+  assert.ok(f.logs.some((l) => /@medusajs\/framework@2\.23\.0/.test(l)));
+  assert.ok(!f.logs.some((l) => /bỏ qua/.test(l)));
+});
+
+test("run: không đổi migration, lockfile chỉ đổi gói khác → bỏ qua (run=false)", async () => {
+  const f = fake({ head: CHANGES_BASE, env: { GITHUB_OUTPUT: "/o" } });
+  f.deps.baseLockfile = () => lock({ medusa: { framework: "2.22.1" }, other: { zod: "1" } });
+  f.deps.headLockfile = () => lock({ medusa: { framework: "2.22.1" }, other: { zod: "2" } });
+  assert.equal(await run("/repo", { ...OPTS, detectOnly: true }, f.deps), 0);
+  assert.deepEqual(f.events, ["append /o run=false"]);
+});
+
+test("run: lockfile hỏng → run=true (fail-safe), ::warning:: trên CI; migration đổi vẫn kích như cũ", async () => {
+  const f = fake({
+    head: CHANGES_BASE,
+    env: { GITHUB_OUTPUT: "/o", GITHUB_ACTIONS: "true" },
+  });
+  f.deps.baseLockfile = () => "a: [unclosed";
+  f.deps.headLockfile = () => "";
+  assert.equal(await run("/repo", { ...OPTS, detectOnly: true }, f.deps), 0);
+  assert.deepEqual(f.events, ["append /o run=true"]);
+  assert.ok(f.logs.some((l) => l.startsWith("::warning") && /fail-safe/.test(l)));
+  const g = fake({ env: { GITHUB_OUTPUT: "/o" } }); // migration đổi, lockfile không đổi → vẫn true
+  g.deps.baseLockfile = () => lock();
+  g.deps.headLockfile = () => lock();
+  assert.equal(await run("/repo", { ...OPTS, detectOnly: true }, g.deps), 0);
+  assert.deepEqual(g.events, ["append /o run=true"]);
+});
+
+test("run: hàm đọc lockfile ném lỗi → fail-safe run=true", async () => {
+  const f = fake({ head: CHANGES_BASE, env: { GITHUB_OUTPUT: "/o" } });
+  f.deps.baseLockfile = () => {
+    throw new Error("EIO");
+  };
+  f.deps.headLockfile = () => lock();
+  assert.equal(await run("/repo", { ...OPTS, detectOnly: true }, f.deps), 0);
+  assert.deepEqual(f.events, ["append /o run=true"]);
+  assert.ok(f.logs.some((l) => l.startsWith("E ") && /EIO/.test(l)));
+});
+
+test("lockfile trên repo git thật: đổi @medusajs/* (kể cả chưa commit) → run=true; đổi gói khác → run=false", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "n1-lock-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const g = (...a) =>
+    execFileSync("git", ["-C", root, "-c", "user.email=t@example.invalid", "-c", "user.name=t", ...a], {
+      stdio: "pipe",
+    });
+  g("init", "-q", "-b", "main");
+  const lockPath = join(root, "pnpm-lock.yaml");
+  writeFileSync(lockPath, lock({ medusa: { framework: "2.22.1" }, other: { zod: "1" } }));
+  g("add", ".");
+  g("commit", "-q", "-m", "base");
+  const out = join(root, "gh-output");
+  const log = { log: () => undefined, error: () => undefined };
+  const opts = { base: "HEAD", detectOnly: true, keep: false, workdir: "", testPatterns: [] };
+  const go = () => run(root, opts, detectDeps(root, { GITHUB_OUTPUT: out }, log));
+  assert.equal(await go(), 0);
+  writeFileSync(lockPath, lock({ medusa: { framework: "2.22.1" }, other: { zod: "2" } }));
+  assert.equal(await go(), 0);
+  writeFileSync(lockPath, lock({ medusa: { framework: "2.23.0" }, other: { zod: "2" } }));
+  assert.equal(await go(), 0);
+  assert.equal(readFileSync(out, "utf8"), "run=false\nrun=false\nrun=true\n");
 });
