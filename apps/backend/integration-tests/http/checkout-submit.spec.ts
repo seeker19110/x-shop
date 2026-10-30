@@ -383,6 +383,7 @@ medusaIntegrationTestRunner({
         expect(res.data).toMatchObject({
           state: "ready",
           cart_id: cartId,
+          cart_version: q.cart_version,
           payment_method: "cod",
           payment_url: null,
           order: { state: "placed", total: 1_330_000, payment_method: "cod", hold_expires_at: null },
@@ -929,6 +930,50 @@ medusaIntegrationTestRunner({
     });
 
     describe("202 — đã nhận, đang xử lý", () => {
+      it("202 luôn kèm body `preparing`: view dựng từ đúng lần đọc quyết định kết quả, không đọc lại attempt đã xong", async () => {
+        // Ép xen kẽ: lần đọc ảnh chụp (vòng chờ của request trùng) thấy `preparing` tới hết hạn chờ, trong khi attempt
+        // trong DB đã `ready`. Đọc lại attempt để dựng view (presentAttempt) sẽ ra 202 kèm state "ready" — mâu thuẫn.
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const key = newKey();
+        const first = await submit(submitBody(q), key);
+        expect({ status: first.status, state: first.data.state }).toEqual({ status: 200, state: "ready" });
+        const attemptId = first.data.checkout_attempt_id;
+
+        const mutableConfig = CHECKOUT_CONFIG as { replayWaitMs: number };
+        const oldWait = mutableConfig.replayWaitMs;
+        mutableConfig.replayWaitMs = 200;
+        const s = service();
+        const original = s.listCheckoutAttempts;
+        // Kiểu khai `readonly` (MedusaService); thay tạm trên chính instance mà route resolve được.
+        const patchable = s as { listCheckoutAttempts: typeof original };
+        // Ghi cờ, assert SAU request (expect ném trong service thay tạm sẽ thành 500 khó hiểu).
+        let snapshotReads = 0;
+        patchable.listCheckoutAttempts = (async (...args: Parameters<typeof original>) => {
+          const [filters, config] = args as [{ id?: unknown } | undefined, { select?: unknown } | undefined];
+          const rows = await original.apply(s, args);
+          // Chỉ lần đọc ảnh chụp có `select` của vòng chờ; lần đọc đầy đủ (presentAttempt/byKey) giữ nguyên DB.
+          if (filters?.id !== attemptId || config?.select === undefined) return rows;
+          snapshotReads++;
+          return rows.map((r) => ({ ...r, state: "preparing" as const }));
+        }) as typeof original;
+        let second: Awaited<ReturnType<typeof submit>>;
+        try {
+          second = await submit(submitBody(q), key);
+        } finally {
+          patchable.listCheckoutAttempts = original;
+          mutableConfig.replayWaitMs = oldWait;
+        }
+        expect(snapshotReads).toBeGreaterThan(0);
+        expect({ status: second.status, state: second.data.state }).toEqual({
+          status: 202,
+          state: "preparing",
+        });
+        expect(second.data.checkout_attempt_id).toBe(attemptId);
+        expect(second.headers["retry-after"]).toBe("1");
+        expect(await countOrders(container)).toBe(1);
+      });
+
       it("request trùng khi attempt còn preparing quá thời gian chờ → 202 + Location; xong thì status trả ready", async () => {
         const cartId = await createCart([["Đen/S", 1]]);
         const q = await quoteOk(cartId);
