@@ -167,6 +167,9 @@ test("isDataComponent: tiêu chí mở rộng — globalThis/window.fetch, impor
   assert.equal(isDataComponent(`"use client";\nawait window.fetch("/x")`), true);
   assert.equal(isDataComponent(`"use client";\nimport { a } from "../../lib/cart/actions";`), true);
   assert.equal(isDataComponent(`"use client";\nimport { f } from "../../lib/http/retry";`), true);
+  assert.equal(isDataComponent(`"use client";\nimport { clientFetch } from "../../lib/client-fetch";`), true);
+  assert.equal(isDataComponent(`"use client";\nawait clientFetch("/x", {});`), true);
+  assert.equal(isDataComponent(`"use client";\nawait myclientFetch("/x");`), false);
   assert.equal(isDataComponent(`"use client";\nconst [s] = useActionState(a, 1);`), true);
   assert.equal(isDataComponent(`"use client";\nconst d = use(promise);`), true);
   assert.equal(

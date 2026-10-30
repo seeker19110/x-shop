@@ -7,7 +7,10 @@
  *  - trần `maxRetries` (mặc định 3 → tối đa 4 lần gọi), backoff luỹ thừa có trần + jitter đầy đủ (không đồng loạt);
  *  - tôn trọng `Retry-After` (giây hoặc ngày HTTP): chờ ít nhất bấy lâu; nếu bắt chờ quá `maxRetryAfterMs` thì dừng,
  *    trả phản hồi lỗi cho người dùng quyết thay vì treo giao diện;
- *  - người dùng huỷ (AbortSignal của người gọi) → dừng ngay, không retry.
+ *  - người dùng huỷ (AbortSignal của người gọi) → dừng ngay, không retry;
+ *  - `timeoutMs` (tuỳ chọn): hạn MỖI LẦN gọi; hết hạn → huỷ lần gọi với `TimeoutError` (tính là lỗi tạm thời, được retry
+ *    nếu còn lượt). Hạn vẫn hiệu lực sau khi có phản hồi tới khi đọc xong thân (huỷ luồng thân treo); bộ hẹn giờ chỉ bị
+ *    gỡ khi lần gọi lỗi/được thử lại hoặc người gọi huỷ, còn lại tự hết hạn (vô hại với phản hồi đã đọc xong).
  */
 
 import { secondsToMs } from "../units";
@@ -21,6 +24,10 @@ export interface RetryOptions {
   maxDelayMs?: number;
   /** Chờ theo `Retry-After` quá mức này (ms) thì không retry nữa. Mặc định 10 000. */
   maxRetryAfterMs?: number;
+  /** Tập mã HTTP được retry (mặc định 408/429/500/502/503/504). Hẹp lại khi retry sẽ nhân tải (vd. không retry 429). */
+  retryStatuses?: ReadonlySet<number>;
+  /** Hạn MỖI lần gọi (ms, > 0, hữu hạn). Bỏ trống = không đặt hạn (người gọi tự chịu). */
+  timeoutMs?: number;
   /** Khai báo yêu cầu idempotent (vd. POST có khóa idempotency ở thân/URL). */
   idempotent?: boolean;
   /** Tiêm để test: ngủ và số ngẫu nhiên [0,1). */
@@ -96,6 +103,32 @@ function defaultSleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   });
 }
 
+interface Timeout {
+  signal: AbortSignal;
+  disarm: () => void;
+}
+
+/** Tín hiệu cho một lần gọi: huỷ khi quá `ms` (lý do `TimeoutError`) hoặc khi `outer` huỷ (giữ nguyên lý do). */
+function armTimeout(outer: AbortSignal | null, ms: number): Timeout {
+  const ctrl = new AbortController();
+  const onOuter = () => ctrl.abort(outer?.reason ?? new DOMException("Aborted", "AbortError"));
+  const disarm = () => {
+    clearTimeout(timer);
+    outer?.removeEventListener("abort", onOuter);
+  };
+  const timer = setTimeout(() => {
+    outer?.removeEventListener("abort", onOuter);
+    ctrl.abort(new DOMException(`Quá ${ms} ms chưa có phản hồi`, "TimeoutError"));
+  }, ms);
+  if (outer?.aborted === true) {
+    onOuter();
+    disarm();
+  } else {
+    outer?.addEventListener("abort", onOuter, { once: true });
+  }
+  return { signal: ctrl.signal, disarm };
+}
+
 /**
  * `fetch` có retry cho lỗi tạm thời. Trả `Response` cuối cùng (kể cả lỗi sau khi hết lượt — người gọi tự xử lý như khi
  * không có retry); ném lỗi mạng cuối cùng khi hết lượt. Không bao giờ retry khi `init.signal` đã huỷ.
@@ -111,6 +144,8 @@ export async function fetchWithRetry(
     maxDelayMs = 4000,
     maxRetryAfterMs = 10_000,
     idempotent = false,
+    timeoutMs,
+    retryStatuses = TRANSIENT_STATUS,
     sleep = defaultSleep,
     random = Math.random,
     now = Date.now,
@@ -120,22 +155,28 @@ export async function fetchWithRetry(
   const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
   const retryable = isRetryableRequest(method, headers, idempotent);
   const signal = init.signal ?? null;
+  if (timeoutMs !== undefined && !(Number.isFinite(timeoutMs) && timeoutMs > 0)) {
+    throw new RangeError("timeoutMs phải là số hữu hạn > 0");
+  }
 
   for (let attempt = 0; ; attempt++) {
     const last = !retryable || attempt >= maxRetries;
     let res: Response;
+    const timeout = timeoutMs === undefined ? null : armTimeout(signal, timeoutMs);
     try {
-      res = await fetch(input, init);
+      res = await fetch(input, timeout === null ? init : { ...init, signal: timeout.signal });
     } catch (err) {
+      timeout?.disarm();
       if (last || signal?.aborted === true || !isTransientError(err)) throw err;
       const delayMs = backoffDelayMs(attempt, baseDelayMs, maxDelayMs, random);
       onRetry?.({ attempt: attempt + 1, delayMs, reason: err instanceof Error ? err.name : "error" });
       await sleep(delayMs, signal);
       continue;
     }
-    if (last || !isTransientStatus(res.status)) return res;
+    if (last || !retryStatuses.has(res.status)) return res;
     const retryAfter = parseRetryAfterMs(res.headers.get("retry-after"), now());
     if (retryAfter !== null && retryAfter > maxRetryAfterMs) return res; // bắt chờ quá lâu: để người dùng quyết
+    timeout?.disarm();
     const delayMs = Math.max(retryAfter ?? 0, backoffDelayMs(attempt, baseDelayMs, maxDelayMs, random));
     onRetry?.({ attempt: attempt + 1, delayMs, reason: `HTTP ${res.status}` });
     // Giải phóng kết nối của phản hồi lỗi (không chờ: huỷ luồng đã tee có thể không trả về).

@@ -4,6 +4,7 @@ import { categoryName, NAV_CATEGORIES } from "../content/navigation";
 import { mapCategories, mapList, mapProduct, mapSearch, type CategoryEntry } from "./backend-map";
 import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
 import { CATALOG_REVALIDATE_S } from "../cache-policy";
+import { clientFetch } from "../client-fetch";
 import { clientIpHeader } from "../security/client-ip";
 import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
@@ -21,6 +22,13 @@ import { LIST_TAGS, productTags } from "./revalidate";
 export const CATALOG_PAGE_SIZE = 12;
 
 const TIMEOUT_MS = 5000;
+/** SSR/ISR nhạy độ trễ: một lần thử lại là đủ (xấu nhất ≈ 2 × 5 s + backoff ≤ 2 s). */
+const RETRIES = 1;
+/**
+ * Chỉ 502/503/504 (cùng lỗi mạng/timeout). KHÔNG 429: backend đang giới hạn tốc độ thì thử lại chỉ nhân tải (route
+ * /api/catalog/* đã chuyển tiếp 429 + Retry-After cho client); 408/500 không chắc là tạm thời ở nguồn này.
+ */
+const RETRY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
 interface ListOptions {
   category?: string | null;
@@ -45,17 +53,21 @@ async function backendGet<T>(
   const qs = params && params.size > 0 ? `?${params.toString()}` : "";
   let res: Response;
   try {
-    res = await fetch(`${base}${path}${qs}`, {
-      headers: {
-        accept: "application/json",
-        "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
-        ...extraHeaders,
+    // GET ⇒ idempotent: lỗi tạm thời (mạng, timeout, 502/503/504, 429…) thử lại tối đa RETRIES lần; hạn mỗi lần TIMEOUT_MS.
+    res = await clientFetch(
+      `${base}${path}${qs}`,
+      {
+        headers: {
+          accept: "application/json",
+          "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
+          ...extraHeaders,
+        },
+        ...(fresh
+          ? { cache: "no-store" as const }
+          : { next: { revalidate: CATALOG_REVALIDATE_S, tags: [...tags] } }),
       },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-      ...(fresh
-        ? { cache: "no-store" as const }
-        : { next: { revalidate: CATALOG_REVALIDATE_S, tags: [...tags] } }),
-    });
+      { timeoutMs: TIMEOUT_MS, maxRetries: RETRIES, maxRetryAfterMs: 2000, retryStatuses: RETRY_STATUSES },
+    );
   } catch {
     throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");
   }

@@ -213,6 +213,27 @@ describe("backend (XS_DATA_SOURCE=backend)", () => {
     expect((err as CatalogError).message).not.toContain("10.0.0.1");
   });
 
+  it("GET có timeout + retry 1 lần cho 502/503/504; không retry 429/404/422", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0); // backoff 0 ms: không chờ thật
+    const calls = { n: 0, signals: 0 };
+    const reply = (first: Response, then: Response) =>
+      vi.stubGlobal("fetch", async (_u: unknown, init?: RequestInit) => {
+        calls.n += 1;
+        if (init?.signal instanceof AbortSignal) calls.signals += 1;
+        return (calls.n === 1 ? first : then).clone();
+      });
+    reply(new Response("x", { status: 503 }), ok({ data: [], count: 0 }));
+    await listProducts(EMPTY_FILTER);
+    expect(calls).toEqual({ n: 2, signals: 2 }); // mỗi lần gọi đều mang tín hiệu hết hạn
+    for (const status of [429, 404, 422]) {
+      calls.n = 0;
+      reply(ok({}, status), ok({ data: [], count: 0 }));
+      await listProducts(EMPTY_FILTER).catch((e: unknown) => e);
+      expect(calls.n).toBe(1);
+    }
+    vi.restoreAllMocks();
+  });
+
   it("getProduct: 404 → null; handle được encode", async () => {
     const fetchMock = vi.fn(async () => ok({ code: "NOT_FOUND" }, 404));
     vi.stubGlobal("fetch", fetchMock);

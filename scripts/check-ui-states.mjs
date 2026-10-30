@@ -3,8 +3,8 @@
 //
 // "Component dữ liệu" (định nghĩa máy kiểm được): file `.tsx` KHÔNG phải test trong apps/storefront/src/components/**
 // mà (a) mở đầu bằng chỉ thị `"use client"` (chú thích đứng trước được bỏ qua) VÀ (b) trong code (đã bỏ chú thích) thỏa
-// MỘT trong: gọi `fetch(`/`fetchWithRetry(` (kể cả tiền tố `globalThis.`/`window.`/`self.`); import từ `lib/**/actions`
-// (Server Action) hoặc `lib/http/retry`; dùng `useActionState(` hoặc `use(` — tức tự lấy/ghi dữ liệu bất đồng bộ từ trình
+// MỘT trong: gọi `fetch(`/`fetchWithRetry(`/`clientFetch(` (kể cả tiền tố `globalThis.`/`window.`/`self.`); import từ `lib/**/actions`
+// (Server Action) hoặc `lib/http/retry`/`lib/client-fetch`; dùng `useActionState(` hoặc `use(` — tức tự lấy/ghi dữ liệu bất đồng bộ từ trình
 // duyệt. Server Component (lấy dữ liệu ở page.tsx) không thuộc phạm vi này — "màn hình" (loading.tsx/error.tsx) là việc khác.
 //
 // Mỗi component dữ liệu `X.tsx` cần test `X.states.test.tsx` (cạnh nó và/hoặc trong `__tests__/`; hợp các file tồn tại)
@@ -106,8 +106,8 @@ export function stripComments(src) {
   return out;
 }
 
-const FETCH_CALL = /(?<![\w$.])(?:(?:globalThis|window|self)\.)?(?:fetch|fetchWithRetry)\s*\(/;
-const IMPORT_DATA = /\bfrom\s*(["'])[^"']*\/lib\/(?:[\w-]+\/)*(?:actions|http\/retry)\1/;
+const FETCH_CALL = /(?<![\w$.])(?:(?:globalThis|window|self)\.)?(?:fetch|fetchWithRetry|clientFetch)\s*\(/;
+const IMPORT_DATA = /\bfrom\s*(["'])[^"']*\/lib\/(?:[\w-]+\/)*(?:actions|http\/retry|client-fetch)\1/;
 const REACT_DATA = /(?<![\w$.])(?:useActionState|use)\s*\(/;
 
 export function isDataComponent(src) {

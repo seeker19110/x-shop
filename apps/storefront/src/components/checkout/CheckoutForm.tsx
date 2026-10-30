@@ -23,7 +23,7 @@ import styles from "./Checkout.module.css";
 import { Field } from "./Field";
 import { OrderLines, type CheckoutLine } from "./OrderLines";
 import { PAYMENT_LABEL, Totals } from "./Totals";
-import { fetchWithRetry } from "../../lib/http/retry";
+import { clientFetch } from "../../lib/client-fetch";
 import { isNonEmpty } from "../../lib/presence";
 import { safePaymentUrl } from "../../lib/safe-url";
 
@@ -132,7 +132,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
   /* ---------------------------------------------------------------- tỉnh → phường/xã */
   const loadWards = useCallback((code: string, signal?: AbortSignal) => {
     // Nguồn lỗi tạm thời (route trả 503, hoặc lỗi mạng) tự thử lại có backoff; 404 (mã tỉnh sai) trả ngay (FE-STATE-005).
-    fetchWithRetry(`/api/address/wards?province=${encodeURIComponent(code)}`, { signal })
+    clientFetch(`/api/address/wards?province=${encodeURIComponent(code)}`, { signal })
       .then((r) => (r.ok ? (r.json() as Promise<{ wards?: { code: string; name: string }[] }>) : null))
       .then((j) => {
         if (signal?.aborted === true) return;

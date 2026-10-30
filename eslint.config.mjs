@@ -175,6 +175,9 @@ const URL_ATTRIBUTE_SYNTAX = [
   },
 ];
 
+const RAW_FETCH_MESSAGE =
+  "Không gọi fetch trực tiếp trong component (FE-STATE-001/005, XC-PERF-006): dùng clientFetch ở lib/client-fetch.ts (có timeout, retry lỗi tạm thời, huỷ khi unmount).";
+
 export default tseslint.config(
   {
     ignores: [
@@ -327,6 +330,26 @@ export default tseslint.config(
     },
   },
   {
+    // FE-STATE-001/005, XC-PERF-006 (T-189): I/O mạng trong component chỉ qua lib/client-fetch (timeout + retry lỗi tạm
+    // thời + huỷ khi unmount). Cấm `fetch(` trần (no-restricted-globals), `globalThis|window|self.fetch` (no-restricted-syntax).
+    // Ghi đè hai luật nên lặp luật chung + units + URL (khối trên) và parseFloat (khối cuối).
+    files: ["apps/storefront/src/components/**/*.{ts,tsx}"],
+    ignores: ["**/*.test.{ts,tsx}", "**/__tests__/**"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...BASE_RESTRICTED_SYNTAX,
+        ...UNITS_RESTRICTED_SYNTAX,
+        ...URL_ATTRIBUTE_SYNTAX,
+        {
+          selector:
+            "CallExpression[callee.type='MemberExpression'][callee.property.name='fetch'][callee.object.name=/^(globalThis|window|self)$/]",
+          message: RAW_FETCH_MESSAGE,
+        },
+      ],
+    },
+  },
+  {
     // Test vitest: không .only/.skip, mỗi test có assertion (QA-STRAT-008, QA-COV-004).
     files: ["apps/storefront/**/*.test.{ts,tsx}", "packages/domain/**/*.test.ts"],
     plugins: { vitest },
@@ -371,6 +394,19 @@ export default tseslint.config(
       "no-restricted-globals": [
         "error",
         { name: "parseFloat", message: "Tiền là số nguyên VND (BASE-DATA-005)." },
+      ],
+    },
+  },
+  {
+    // T-189: `fetch(` trần bị cấm trong component (phần `globalThis|window|self.fetch` ở khối no-restricted-syntax phía
+    // trên). Đặt SAU khối no-restricted-globals chung vì ghi đè nó (lặp parseFloat).
+    files: ["apps/storefront/src/components/**/*.{ts,tsx}"],
+    ignores: ["**/*.test.{ts,tsx}", "**/__tests__/**"],
+    rules: {
+      "no-restricted-globals": [
+        "error",
+        { name: "parseFloat", message: "Tiền là số nguyên VND (BASE-DATA-005)." },
+        { name: "fetch", message: RAW_FETCH_MESSAGE },
       ],
     },
   },

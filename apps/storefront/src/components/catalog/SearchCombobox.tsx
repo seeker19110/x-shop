@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { fetchWithRetry } from "../../lib/http/retry";
+import { CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS, clientFetch } from "../../lib/client-fetch";
 import { Button } from "../ui/Button";
 import styles from "./CatalogView.module.css";
 import {
@@ -62,10 +62,10 @@ export function SearchCombobox({ defaultValue, maxLength }: SearchComboboxProps)
       const ctrl = new AbortController();
       abort.current = ctrl;
       try {
-        const res = await fetchWithRetry(
+        const res = await clientFetch(
           `/api/catalog/suggest?q=${encodeURIComponent(q)}`,
           { signal: ctrl.signal },
-          { maxRetries: 1 },
+          { maxRetries: 1, timeoutMs: CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS },
         );
         if (!res.ok || ctrl.signal.aborted) return;
         const list = sanitizeSuggestions(await res.json());
