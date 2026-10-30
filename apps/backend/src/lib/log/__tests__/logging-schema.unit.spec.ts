@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { schemaErrors as validateSchema } from "../../../../../../scripts/log-schema-validate.cjs";
 import { fatalLogLine } from "../../errors/process";
 import { createLogger } from "../logger";
 
@@ -8,40 +9,10 @@ import { createLogger } from "../logger";
  * — cùng file mà test storefront (`logger.test.ts`) dùng. Validator tối thiểu (không thêm phụ thuộc) cho tập từ khoá của schema.
  */
 type Schema = Record<string, unknown>;
-function check(schema: Schema, value: unknown, path: string, errors: string[]): void {
-  const ok = (cond: boolean, msg: string) => cond || errors.push(`${path}: ${msg}`);
-  if ("const" in schema) ok(value === schema.const, `phải bằng ${JSON.stringify(schema.const)}`);
-  if (Array.isArray(schema.enum))
-    ok(schema.enum.includes(value), `ngoài enum ${JSON.stringify(schema.enum)}`);
-  if (schema.type === "string") ok(typeof value === "string", "phải là chuỗi");
-  if (schema.type === "object")
-    ok(typeof value === "object" && value !== null && !Array.isArray(value), "phải là object");
-  if (typeof value === "string") {
-    if (typeof schema.pattern === "string")
-      ok(new RegExp(schema.pattern).test(value), `không khớp ${schema.pattern}`);
-    if (typeof schema.minLength === "number") ok(value.length >= schema.minLength, "quá ngắn");
-  }
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-    for (const r of (schema.required as string[] | undefined) ?? []) ok(r in obj, `thiếu ${r}`);
-    for (const [k, sub] of Object.entries((schema.properties as Record<string, Schema> | undefined) ?? {})) {
-      if (k in obj) check(sub, obj[k], `${path}.${k}`, errors);
-    }
-  }
-  for (const sub of (schema.allOf as Schema[] | undefined) ?? []) {
-    const cond: string[] = [];
-    check(sub.if as Schema, value, path, cond);
-    if (cond.length === 0) check(sub.then as Schema, value, path, errors);
-  }
-}
 const logSchema = JSON.parse(
   readFileSync(join(__dirname, "../../../../../../docs/ops/log-schema.json"), "utf8"),
 ) as Schema;
-const schemaErrors = (line: unknown): string[] => {
-  const errors: string[] = [];
-  check(logSchema, line, "$", errors);
-  return errors;
-};
+const schemaErrors = (line: unknown): string[] => validateSchema(logSchema, line);
 
 describe("logging: dòng log backend theo schema chung", () => {
   it("validator bắt dòng sai", () => {

@@ -1,53 +1,23 @@
 // @vitest-environment node
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { schemaErrors as validateSchema } from "../../../../../scripts/log-schema-validate.cjs";
 import { onRequestError } from "../../instrumentation";
 import { createLogger, escapeLine, exceptionFields, newTraceId, traceIdFromHeaders } from "./logger";
-import { REDACTED, isSensitiveKey, redactLog, redactText } from "./redact";
-import { logRequestError, pathOnly } from "./request-error";
+import { MAX_ARRAY, REDACTED, isSensitiveKey, redactLog, redactText } from "./redact";
+import { logRequestError, pathOnly, safePath } from "./request-error";
 
 /**
  * T-190 (BASE-ERR-005/006): dòng log JSON của storefront server theo `docs/ops/log-schema.json` (dùng chung với backend),
  * che PII bằng bộ mẫu chung `scripts/fixtures/pii-samples.json` (D-065), chỉ phía server.
  */
 
-// ——— validator tối thiểu cho tập từ khoá của schema (không thêm phụ thuộc): type, required, properties, enum, const,
-// pattern, minLength, allOf, if/then ———
+// Validator dùng chung với backend: scripts/log-schema-validate.cjs (danh sách trắng từ khoá, lạ → ném).
 type Schema = Record<string, unknown>;
-function check(schema: Schema, value: unknown, path: string, errors: string[]): void {
-  const ok = (cond: boolean, msg: string) => cond || errors.push(`${path}: ${msg}`);
-  if ("const" in schema) ok(value === schema.const, `phải bằng ${JSON.stringify(schema.const)}`);
-  if (Array.isArray(schema.enum))
-    ok(schema.enum.includes(value), `ngoài enum ${JSON.stringify(schema.enum)}`);
-  if (schema.type === "string") ok(typeof value === "string", "phải là chuỗi");
-  if (schema.type === "object")
-    ok(typeof value === "object" && value !== null && !Array.isArray(value), "phải là object");
-  if (typeof value === "string") {
-    if (typeof schema.pattern === "string")
-      ok(new RegExp(schema.pattern).test(value), `không khớp ${schema.pattern}`);
-    if (typeof schema.minLength === "number") ok(value.length >= schema.minLength, "quá ngắn");
-  }
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-    for (const r of (schema.required as string[] | undefined) ?? []) ok(r in obj, `thiếu ${r}`);
-    for (const [k, sub] of Object.entries((schema.properties as Record<string, Schema> | undefined) ?? {})) {
-      if (k in obj) check(sub, obj[k], `${path}.${k}`, errors);
-    }
-  }
-  for (const sub of (schema.allOf as Schema[] | undefined) ?? []) {
-    const cond: string[] = [];
-    check(sub.if as Schema, value, path, cond);
-    if (cond.length === 0) check(sub.then as Schema, value, path, errors);
-  }
-}
 const logSchema = JSON.parse(
   readFileSync(resolve(process.cwd(), "../../docs/ops/log-schema.json"), "utf8"),
 ) as Schema;
-function schemaErrors(line: unknown): string[] {
-  const errors: string[] = [];
-  check(logSchema, line, "$", errors);
-  return errors;
-}
+const schemaErrors = (line: unknown): string[] => validateSchema(logSchema, line);
 
 function capture(opts: Parameters<typeof createLogger>[0] = {}) {
   const raw: string[] = [];
@@ -175,6 +145,29 @@ describe("logger: dòng log theo schema chung", () => {
   });
 });
 
+describe("validator schema dùng chung", () => {
+  const throwsFor = (schema: Record<string, unknown>) => () => validateSchema(schema, { a: {} });
+  it.each(["maxLength", "format", "unevaluatedProperties", "minimum", "items", "oneOf", "$ref"])(
+    "từ khoá chưa hỗ trợ %s → ném (không bỏ qua lặng lẽ)",
+    (k) => {
+      expect(throwsFor({ [k]: 1 })).toThrow(/chưa hỗ trợ/);
+      expect(throwsFor({ properties: { a: { [k]: 1 } } })).toThrow(/chưa hỗ trợ/);
+    },
+  );
+  it.each(["integer", "number", "array", "boolean", "null"])("type %s → ném", (t) => {
+    expect(throwsFor({ type: t })).toThrow(/type chưa hỗ trợ/);
+  });
+  it("additionalProperties không phải boolean → ném; false được kiểm", () => {
+    expect(throwsFor({ additionalProperties: { type: "string" } })).toThrow();
+    expect(validateSchema({ properties: { a: {} }, additionalProperties: false }, { a: 1, b: 2 })).toEqual([
+      "$: trường thừa b",
+    ]);
+  });
+  it("schema thật của log chỉ dùng từ khoá được hỗ trợ (không ném)", () => {
+    expect(() => schemaErrors({})).not.toThrow();
+  });
+});
+
 describe("logger: trace_id từ header", () => {
   const TP = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
   it("x-request-id hợp lệ thắng traceparent", () => {
@@ -182,7 +175,7 @@ describe("logger: trace_id từ header", () => {
   });
   it("traceparent → trace-id 32 hex", () => {
     expect(traceIdFromHeaders(new Headers({ traceparent: TP }))).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
-    expect(traceIdFromHeaders({ Traceparent: [TP.toUpperCase()] })).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(traceIdFromHeaders({ Traceparent: [TP] })).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
   });
   it.each([
     ["không có header", undefined],
@@ -194,6 +187,12 @@ describe("logger: trace_id từ header", () => {
       { traceparent: "00-00000000000000000000000000000000-00f067aa0ba902b7-01" },
     ],
     ["traceparent sai khuôn", { traceparent: "garbage" }],
+    ["traceparent viết hoa (W3C: chỉ hex thường)", { traceparent: TP.toUpperCase() }],
+    ["traceparent version ff", { traceparent: TP.replace(/^00/, "ff") }],
+    [
+      "traceparent parent-id toàn 0",
+      { traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01" },
+    ],
   ])("%s → sinh mới (32 hex, mỗi lần khác)", (_n, headers) => {
     const a = traceIdFromHeaders(headers);
     expect(a).toMatch(/^[0-9a-f]{32}$/);
@@ -303,6 +302,34 @@ describe("logger: che PII bằng bộ mẫu chung (D-065)", () => {
     expect(redactText("Error: x\n    at f (a@example.test:1:1)", true)).toContain(REDACTED);
   });
 
+  it("BigInt → chuỗi, Date → ISO (không mất dòng log); Date sai → Invalid Date", () => {
+    const { logger, records } = capture();
+    logger.info("x", {
+      big: 12345678901234567890n,
+      at: new Date("2026-10-30T00:00:00.000Z"),
+      bad: new Date(NaN),
+    });
+    expect(records()[0]).toMatchObject({
+      big: "12345678901234567890",
+      at: "2026-10-30T00:00:00.000Z",
+      bad: "Invalid Date",
+    });
+  });
+
+  it("mảng dài bị cắt ở MAX_ARRAY, phần dư ghi …+N; đúng trần thì giữ nguyên", () => {
+    const out = redactLog({ a: Array.from({ length: MAX_ARRAY + 5 }, (_, i) => i) }) as { a: unknown[] };
+    expect(out.a).toHaveLength(MAX_ARRAY + 1);
+    expect(out.a.at(-1)).toBe("…+5");
+    expect((redactLog(Array.from({ length: MAX_ARRAY }, () => 0)) as unknown[]).length).toBe(MAX_ARRAY);
+    expect(redactLog([])).toEqual([]);
+  });
+
+  it("dòng `at` có /@scope/ không bị che nhầm; email thật trong dòng `at` vẫn bị che", () => {
+    const stack = "Error: x\n    at f (/app/node_modules/@scope/pkg/dist/x.js:1:2)\n    at g (/app/y.ts:3:4)";
+    expect(redactText(stack, true)).toBe(stack);
+    expect(redactText("Error: x\n    at f (khach.hang@example.test:1:1)", true)).toContain(REDACTED);
+  });
+
   it("vòng tham chiếu, quá sâu, null/0/rỗng", () => {
     const o: Record<string, unknown> = { n: null, z: 0, e: "" };
     o.self = o;
@@ -340,6 +367,14 @@ describe("logRequestError / onRequestError (instrumentation)", () => {
     expect(pathOnly("/don-hang/XS-1?email=a@example.test&token=x#frag")).toBe("/don-hang/XS-1");
     expect(pathOnly("/a")).toBe("/a");
     expect(pathOnly("")).toBe("");
+  });
+
+  it("safePath: %40 không giấu email; %XX sai không ném; đường dẫn thường giữ nguyên", () => {
+    expect(safePath("/don-hang/khach.hang%40example.test")).toBe(REDACTED);
+    expect(safePath("/don-hang/khach.hang%2540example.test")).toBe("/don-hang/khach.hang%2540example.test");
+    expect(safePath("/a/%E0%A4%A?x=1")).toBe("/a/%E0%A4%A");
+    expect(safePath("/san-pham/ao-so-mi?email=a@example.test")).toBe("/san-pham/ao-so-mi");
+    expect(safePath("")).toBe("");
   });
 
   it("ghi một dòng error có trace_id, digest, đường dẫn không query; hợp schema", () => {

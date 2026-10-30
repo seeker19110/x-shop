@@ -30,8 +30,10 @@ export const SEVERITY_NUMBER: Record<Severity, number> = {
 export const SERVICE_NAME = "x-shop-storefront";
 /** Cùng mẫu với backend (`REQUEST_ID_PATTERN`). */
 export const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
-const TRACEPARENT = /^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/;
-const ALL_ZERO = /^0{32}$/;
+/** W3C Trace Context: chỉ hex thường; version `ff` cấm; trace-id và parent-id không được toàn 0. */
+const TRACEPARENT = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/;
+const ALL_ZERO_TRACE = /^0{32}$/;
+const ALL_ZERO_PARENT = /^0{16}$/;
 
 /** Trường dành riêng: không cho `fields` ghi đè. */
 const RESERVED = new Set(["timestamp", "level", "severity_number", "message", "service", "version", "env"]);
@@ -62,9 +64,17 @@ export function newTraceId(): string {
 export function traceIdFromHeaders(headers: HeaderBag): string {
   const rid = headerValue(headers, "x-request-id")?.trim();
   if (rid !== undefined && REQUEST_ID_PATTERN.test(rid)) return rid;
-  const tp = headerValue(headers, "traceparent")?.trim().toLowerCase();
+  const tp = headerValue(headers, "traceparent")?.trim();
   const m = tp === undefined ? null : TRACEPARENT.exec(tp);
-  if (m?.[1] !== undefined && !ALL_ZERO.test(m[1])) return m[1];
+  if (
+    m?.[1] !== undefined &&
+    m[1] !== "ff" &&
+    m[2] !== undefined &&
+    m[3] !== undefined &&
+    !ALL_ZERO_TRACE.test(m[2]) &&
+    !ALL_ZERO_PARENT.test(m[3])
+  )
+    return m[2];
   return newTraceId();
 }
 

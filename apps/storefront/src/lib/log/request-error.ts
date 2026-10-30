@@ -1,3 +1,4 @@
+import { REDACTED, redactText } from "./redact";
 import { getLogger, type HeaderBag, type Logger } from "./logger";
 
 /** Phần dùng được của tham số `request`/`context` mà Next truyền cho `onRequestError` (instrumentation). */
@@ -20,6 +21,18 @@ export function pathOnly(path: string): string {
   return cut === -1 ? path : path.slice(0, cut);
 }
 
+/** Đường dẫn an toàn để log: giải mã %XX (thử) rồi che — `%40` không được giấu email khỏi bộ che; có PII → `[REDACTED]`. */
+export function safePath(path: string): string {
+  const p = pathOnly(path);
+  let decoded = p;
+  try {
+    decoded = decodeURIComponent(p);
+  } catch {
+    // %XX sai: quét bản thô
+  }
+  return redactText(decoded) === REDACTED || redactText(p) === REDACTED ? REDACTED : p;
+}
+
 /**
  * Ghi lỗi request-level của Next (render, route handler, server action, proxy) thành một dòng log `error` có `trace_id`
  * theo header của request. `digest` của Next dùng để đối chiếu với trang lỗi phía client. Không ném.
@@ -36,7 +49,7 @@ export function logRequestError(
     const { headers } = request;
     logger.forRequest(headers).error("Lỗi xử lý request", error, {
       "http.request.method": request.method,
-      "url.path": pathOnly(String(request.path)),
+      "url.path": safePath(String(request.path)),
       ...(context.routerKind !== undefined && { "next.router_kind": context.routerKind }),
       ...(context.routePath !== undefined && { "next.route_path": context.routePath }),
       ...(context.routeType !== undefined && { "next.route_type": context.routeType }),

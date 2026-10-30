@@ -17,6 +17,8 @@ import { looksLikePii } from "../analytics/schema";
 export const REDACTED = "[REDACTED]";
 export const MAX_DEPTH = 8;
 export const MAX_TEXT = 16_384;
+/** Trần số phần tử mảng được ghi (phần dư thành một phần tử `…+N`). */
+export const MAX_ARRAY = 1000;
 
 const norm = (key: string) =>
   key
@@ -107,7 +109,8 @@ const SECRET_TEXT_RES: readonly RegExp[] = [
   /(?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|signature|vnp_securehash|otp|sessionid|mat[ _-]?khau)["']?[ \t]{0,3}[=:]/i,
   /:\/\/[^\s/:@]{1,128}:[^\s/@]{1,128}@/,
 ];
-const EMAIL_RE = /[^\s@]{1,64}@[^\s@]{1,253}\.[^\s@]{1,63}/;
+/** Email trong dòng `at`: không chứa `/ ( )` (tránh `node_modules/@scope/pkg/x.js`, `(a@b.c:1:1)` vẫn bắt). */
+const EMAIL_RE = /[^\s@/()]{1,64}@[^\s@/()]{1,253}\.[^\s@/()]{1,63}/;
 
 const hasSecretText = (s: string) => SECRET_TEXT_RES.some((re) => re.test(s));
 
@@ -130,12 +133,18 @@ export function redactText(raw: string, isStack = false): string {
 /** Che đệ quy mọi giá trị theo tên trường và nội dung; trả bản sao. */
 export function redactLog(value: unknown, depth = 0, seen: WeakSet<object> = new WeakSet()): unknown {
   if (typeof value === "string") return redactText(value);
+  if (typeof value === "bigint") return value.toString();
   if (value === null || typeof value !== "object") return value;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
   if (seen.has(value)) return "[Circular]";
   if (depth >= MAX_DEPTH) return "[Truncated]";
   seen.add(value);
   try {
-    if (Array.isArray(value)) return value.map((v) => redactLog(v, depth + 1, seen));
+    if (Array.isArray(value)) {
+      const out = value.slice(0, MAX_ARRAY).map((v) => redactLog(v, depth + 1, seen));
+      if (value.length > MAX_ARRAY) out.push(`…+${value.length - MAX_ARRAY}`);
+      return out;
+    }
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       out[redactText(k) === REDACTED ? REDACTED : k] = isSensitiveKey(k)
