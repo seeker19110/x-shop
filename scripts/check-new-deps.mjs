@@ -16,9 +16,13 @@ const FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peer
 const git = (root, args) =>
   execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
-// Khoá override của pnpm: `foo`, `foo@<2`, `parent>foo`, `@scope/foo@1` -> tên gói đích.
-const overrideName = (key) => {
-  const last = String(key).split(">").pop();
+// Khoá override của pnpm: `foo`, `foo@<2`, `parent>foo`, `@scope/foo@1`, `zod@>=4 <5` -> tên gói đích.
+// Chỉ tách ở `>` đứng ngay trước tên gói (chữ hoặc `@`) và không đứng sau `@`/khoảng trắng/`<>=` — `>` trong khoảng
+// phiên bản (`@>=4`, `@>2`, `>=1 <2`) không phải dấu cha>con.
+export const overrideName = (key) => {
+  const last = String(key)
+    .split(/(?<![@\s<>=])>(?=[@a-z])/i)
+    .pop();
   const at = last.indexOf("@", 1);
   return at > 0 ? last.slice(0, at) : last;
 };

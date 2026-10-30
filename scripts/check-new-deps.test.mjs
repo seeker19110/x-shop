@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { check, directDeps, newDirectDeps, sectionNewDeps } from "./check-new-deps.mjs";
+import { check, directDeps, newDirectDeps, overrideName, sectionNewDeps } from "./check-new-deps.mjs";
 
 const sh = (root, ...a) => execFileSync("git", a, { cwd: root, stdio: "pipe" });
 const pkg = (root, rel, json) => {
@@ -120,4 +120,14 @@ test("newDirectDeps: override mới ở gốc được tính", () => {
       ["ov"],
     );
   });
+});
+
+test("overrideName: `>` trong khoảng phiên bản không phải dấu cha>con", () => {
+  assert.equal(overrideName("zod@>=4.0.0 <4.6.6"), "zod");
+  assert.equal(overrideName("@graphql-tools/utils@<12.0.2"), "@graphql-tools/utils");
+  assert.equal(overrideName("@graphql-codegen/plugin-helpers>lodash"), "lodash");
+  assert.equal(overrideName("bullmq>uuid"), "uuid");
+  assert.equal(overrideName("a@1>b@>2"), "b");
+  assert.equal(overrideName("a>@s/y"), "@s/y");
+  assert.equal(overrideName("@s/x@1"), "@s/x");
 });
