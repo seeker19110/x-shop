@@ -53,5 +53,15 @@ updates:
     labels: [dependencies]
     groups:
       domain-minor-patch: { update-types: [minor, patch] }
-  # Chưa khai `docker`: repo chưa có Dockerfile/compose (image service CI nằm trong `services:` của workflow — Dependabot không
-  # quét; digest ghim tay ở T-106). Có Dockerfile thì thêm khối `package-ecosystem: docker` cùng PR đó.
+  # Base image của `Dockerfile` gốc (T-191, ghim tag + digest manifest list): Dependabot nâng cả tag lẫn digest. Node phải
+  # khớp `.nvmrc` — PR nâng image đi kèm đổi `.nvmrc` trong cùng PR (xem ghi chú đầu Dockerfile). Image service CI nằm trong
+  # `services:` của workflow — Dependabot không quét (digest ghim tay ở T-106). `scripts/check-dependabot.mjs` giữ khối này
+  # khớp với Dockerfile thật (thêm/xoá Dockerfile → sửa file này cùng PR).
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 2
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      docker-minor-patch: { update-types: [minor, patch] }

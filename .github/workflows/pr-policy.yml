@@ -138,3 +138,27 @@ jobs:
           pnpm install --frozen-lockfile --ignore-scripts --filter .
           node --test scripts/check-api-breaking.test.mjs
           node scripts/check-api-breaking.mjs --base "$BASE_SHA"
+      # OPS-MAINT-001, BASE-DEP-006 (T-202): gói phụ thuộc TRỰC TIẾP mới (dependencies/devDependencies của mọi package.json so với
+      # base) phải được nêu tên trong mục `## Phụ thuộc mới` của thân PR. Logic + test ở scripts/check-new-deps.mjs; thân PR đi
+      # qua env, base đọc từ lịch sử (fetch-depth 0). Chỉ module có sẵn của Node.
+      - name: PR thêm gói trực tiếp phải có mục "Phụ thuộc mới" — `check-new-deps.mjs`
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$PR_AUTHOR" == *"[bot]" ]] || [[ "$PR_TITLE" == 'Revert "'* ]]; then
+            echo "Bỏ qua (bot / revert)."; exit 0
+          fi
+          node --test scripts/check-new-deps.test.mjs
+          node scripts/check-new-deps.mjs --base "$BASE_SHA"
+      # BASE-DEP-007, OPS-MAINT-001 (T-202): `.github/dependabot.yml` khớp manifest thật (npm theo workspace, github-actions,
+      # docker). Đặt ở pr-policy (không ở ci.yml job `quality`): chạy vài giây, không phụ thuộc kết quả build, và dùng chung
+      # bước cài phụ thuộc gốc ngay trước (thư viện `yaml`). Chỉ THÊM bước; ci.yml không đổi.
+      - name: dependabot.yml khớp manifest — `check-dependabot.mjs`
+        run: |
+          set -euo pipefail
+          node --test scripts/check-dependabot.test.mjs
+          node scripts/check-dependabot.mjs
