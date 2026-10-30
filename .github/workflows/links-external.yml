@@ -1,0 +1,47 @@
+# Kiểm liên kết ngoài (http/https) trong tài liệu theo lịch tuần (BASE-DOC-006, WF-DOC-002). Chỉ cảnh báo: không chạy trên PR,
+# không làm đỏ workflow (link chết = `::warning::` + step summary). python3 có sẵn trên ubuntu-latest, script chỉ dùng stdlib.
+name: links-external
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # thứ Hai 03:17 UTC hằng tuần
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  links-external:
+    name: links-external
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Kiểm link ngoài (chỉ cảnh báo)
+        run: |
+          set +e
+          python3 .xtemplates/scripts/check-links.py --external > links-external.txt 2>&1
+          code=$?
+          cat links-external.txt
+          {
+            echo "## Liên kết ngoài"
+            echo
+            echo "Mã thoát của script: \`$code\` (workflow luôn xanh; chỉ cảnh báo)."
+            echo
+            echo '```'
+            cat links-external.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -ne 0 ]; then
+            grep '^✗' links-external.txt | while IFS= read -r line; do
+              echo "::warning title=Liên kết ngoài chết::${line}"
+            done
+            echo "::warning title=links-external::check-links --external thoát mã ${code}; xem step summary"
+          fi
+          exit 0
