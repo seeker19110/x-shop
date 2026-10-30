@@ -1,11 +1,12 @@
 {
-  "//": "Bundle Admin chạy ở trình duyệt (vite do `medusa build` dựng): cần lib DOM + JSX, tách khỏi tsconfig của backend (Node) để DOM không lọt vào mã server. Kiểm bằng `pnpm typecheck` của apps/backend.",
+  "//": "Bundle Admin chạy ở trình duyệt (vite do `medusa build` dựng): cần lib DOM + JSX, tách khỏi tsconfig của backend (Node) để DOM không lọt vào mã server. Kiểm bằng `pnpm typecheck` của apps/backend. skipLibCheck true: ngoại lệ ADR-0007 (d.ts `@tanstack/react-table` do Medusa admin kéo vào lỗi TS2503 namespace JSX).",
   "extends": "../../../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
+    "skipLibCheck": true,
     "noEmit": true,
     "declaration": false,
     "sourceMap": false,
