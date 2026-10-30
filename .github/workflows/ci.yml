@@ -27,6 +27,12 @@ on:
 permissions:
   contents: read
 
+# Tắt telemetry của công cụ build/chạy trên CI (PM-RISK-006, T-218): CI không được gửi số liệu ra ngoài; chỉ THÊM biến, không đổi bước nào.
+# Tên biến xác minh 2026-10-30 — Medusa: docs.medusajs.com/learn/resources/usage; Next.js: nextjs.org/telemetry. Xem docs/ops/ENV.md §Telemetry.
+env:
+  MEDUSA_DISABLE_TELEMETRY: "true"
+  NEXT_TELEMETRY_DISABLED: "1"
+
 # PR: push mới hủy run cũ cùng PR. `main`: mỗi commit một group riêng (run_id), không hủy — giữ bằng chứng CI từng commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

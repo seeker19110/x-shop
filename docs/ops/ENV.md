@@ -276,6 +276,21 @@ Bảo mật HTTP (T-034, không phải biến môi trường): ngưỡng rate li
 (`UPLOAD_LIMITS`); CSP storefront ở `apps/storefront/src/lib/security/csp.ts` (nonce mỗi request qua `src/proxy.ts`).
 Chỉ tiền tố `NEXT_PUBLIC_` vào bundle client; bí mật không bao giờ có tiền tố này (BASE-CFG-008).
 
+## Telemetry của công cụ (PM-RISK-006, T-218)
+
+Biến của Medusa/Next.js, không thuộc schema zod của app (nên không nằm trong khối `dotenv` mà `pnpm check:env-doc` khoá). Đặt ở môi
+trường chạy thật (systemd/container/PaaS) và máy dev; CI đã đặt ở `env:` cấp workflow của `.github/workflows/ci.yml`.
+
+| Biến | Giá trị | Áp dụng | Tác dụng | Nguồn xác minh (2026-10-30) |
+| --- | --- | --- | --- | --- |
+| `MEDUSA_DISABLE_TELEMETRY` | `true` | backend (`medusa start/develop/build`) | Tắt thu thập số liệu ẩn danh của Medusa | https://docs.medusajs.com/learn/resources/usage (bảng env: "Whether to disable analytics data collection"); mã đọc biến: `@medusajs/telemetry` `dist/store.js` |
+| `NEXT_TELEMETRY_DISABLED` | `1` | storefront (`next dev/build/start`) | Tắt telemetry ẩn danh của Next.js | https://nextjs.org/telemetry ("opt-out by setting an environment variable: `NEXT_TELEMETRY_DISABLED=1`") |
+
+Không sửa script `start/dev/build` trong `apps/*/package.json`: chúng đã dùng cú pháp shell POSIX (`${HOST:-127.0.0.1}`), và đặt
+biến ngay trong script cần `cross-env` (phụ thuộc mới, không thêm trong task này). Cách đặt: xuất biến trong môi trường tiến trình
+(`export MEDUSA_DISABLE_TELEMETRY=true NEXT_TELEMETRY_DISABLED=1`) hoặc `.env` cục bộ của từng app (Medusa nạp `.env`; Next đọc
+`.env*` cho biến runtime); tách bạch với `next telemetry disable` (ghi cấu hình vào máy dev, không có tác dụng trên CI/container).
+
 ## Quản trị: vai trò, MFA, phiên (T-023/T-024)
 - Owner đầu tiên: tạo admin (`medusa user -e <email>` hoặc lời mời) rồi chạy trên máy chủ
   `pnpm --filter @x-shop/backend rbac:grant-owner <email>` — không có route công khai để tự cấp owner.
