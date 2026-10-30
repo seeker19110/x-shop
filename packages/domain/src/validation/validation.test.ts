@@ -156,7 +156,7 @@ describe("validation: schema theo trường (ca biên)", () => {
     for (const none of [undefined, null, "", "   "])
       expect(optionalEmailSchema.safeParse(none).data).toBeNull();
     expect(optionalEmailSchema.safeParse(" An@Example.Test ").data).toBe("an@example.test");
-    for (const bad of ["a@b", "a b@c.d", `${"a".repeat(250)}@b.vn`, 5]) {
+    for (const bad of ["a@b", "a b@c.d", `${"a".repeat(250)}@x.test`, 5]) {
       expect(optionalEmailSchema.safeParse(bad).error?.issues[0]?.message).toBe(M.email);
     }
   });
