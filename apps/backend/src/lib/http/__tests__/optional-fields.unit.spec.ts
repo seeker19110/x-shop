@@ -239,7 +239,7 @@ describe("optional-fields — contact.email (POST /store/x/checkout/submit)", ()
       ["null", null, { ok: null }, "null = không email"],
       ['""', "", { ok: null }, "ô email để trống = không email"],
       ['"  "', "  ", { ok: null }, "toàn khoảng trắng = không email"],
-      ['" A@B.VN "', " A@B.VN ", { ok: "a@b.vn" }, "chuẩn hoá chữ thường, bỏ khoảng trắng"],
+      ['" A@X.TEST "', " A@X.TEST ", { ok: "a@x.test" }, "chuẩn hoá chữ thường, bỏ khoảng trắng"],
       ['"0"', "0", "reject", "có giá trị thì phải đúng dạng email"],
       ["[]", [], "reject", "mảng"],
       ["0", 0, "reject", "số"],
