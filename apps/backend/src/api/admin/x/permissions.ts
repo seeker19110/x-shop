@@ -97,6 +97,9 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   },
   { method: "GET", path: "/admin/x/reports/summary", permission: "report.read" },
   { method: "GET", path: "/admin/x/reports/exceptions", permission: "exception.read" },
+  // D-050 (WF-REL-007): phiên bản/commit build — chỉ sau đăng nhập, để smoke sau deploy so với tag mà không lộ cho người lạ
+  // (/x/health công khai cố ý không trả). Quyền không nhạy cảm (không đòi MFA) để tài khoản smoke chỉ-đọc dùng được.
+  { method: "GET", path: "/admin/x/version", permission: "report.read" },
   // Audit + điều chỉnh tồn (T-025)
   { method: "GET", path: "/admin/x/audit", permission: "audit.read" },
   { method: "POST", path: "/admin/x/inventory/adjustments", permission: "inventory.adjust" },

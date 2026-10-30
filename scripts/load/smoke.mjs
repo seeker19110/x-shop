@@ -6,7 +6,8 @@
  *   3. stress 50 lượt đặt đồng thời cho SKU còn 1 đơn vị
  *   4. kiểm tính đúng trong DB (verify.mjs): không âm tồn, không đơn trùng idempotency, không mất đơn
  *   5. ghi docs/ops/perf/load-smoke-latest.md (+ .json không commit); dừng backend; thoát ≠ 0 nếu vượt ngưỡng/sai
- * Biến: xem env.mjs (LOAD_*). Kịch bản đầy đủ chạy bằng k6: scripts/load/k6/xshop-load.js.
+ * `--expect-version <v>`: chế độ riêng, chỉ kiểm phiên bản sau deploy (xem version-check.mjs), không chạy các bước trên.
+ * Biến: xem env.mjs (LOAD_*).Kịch bản đầy đủ chạy bằng k6: scripts/load/k6/xshop-load.js.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -15,6 +16,7 @@ import { BASE_URL, LOAD } from "./env.mjs";
 import { evaluatePhase, groupSamples, summarizeByOp, THRESHOLDS } from "./lib.mjs";
 import { connectDb, log, prepare, root, startBackend } from "./prepare.mjs";
 import { currentCommit, renderReport } from "./report.mjs";
+import { parseExpectVersion, verifyVersion } from "./version-check.mjs";
 import { pgCacheStats, snapshotBefore, verifyAfter } from "./verify.mjs";
 import { createContext, runContention, runPhase } from "./workload.mjs";
 
@@ -162,7 +164,38 @@ async function main() {
   }
 }
 
-main()
+/**
+ * `--expect-version <v>` (D-050, WF-REL-007): CHỈ kiểm phiên bản đang chạy ở XS_SMOKE_BASE_URL qua GET /admin/x/version
+ * (Bearer XS_SMOKE_ADMIN_TOKEN), không dựng môi trường tải. Lệch/lỗi → 1; thiếu cấu hình → 2. Xem version-check.mjs.
+ */
+async function expectVersionMode(expected) {
+  const baseUrl = process.env.XS_SMOKE_BASE_URL;
+  const token = process.env.XS_SMOKE_ADMIN_TOKEN;
+  if (!baseUrl || !token) {
+    console.error(
+      "[smoke] --expect-version cần biến XS_SMOKE_BASE_URL và XS_SMOKE_ADMIN_TOKEN (token không đặt trên dòng lệnh)",
+    );
+    return 2;
+  }
+  try {
+    const r = await verifyVersion({ baseUrl, token, expected });
+    (r.ok ? console.log : console.error)(`[smoke] ${r.ok ? "OK" : "LỖI"}: ${r.detail}`);
+    return r.ok ? 0 : 1;
+  } catch (e) {
+    console.error(`[smoke] cấu hình sai: ${e instanceof Error ? e.message : e}`);
+    return 2;
+  }
+}
+
+let expectVersion;
+try {
+  expectVersion = parseExpectVersion(process.argv.slice(2));
+} catch (e) {
+  console.error(`[smoke] ${e instanceof Error ? e.message : e}`);
+  process.exit(2);
+}
+
+(expectVersion !== undefined ? expectVersionMode(expectVersion) : main())
   .then((code) => process.exit(code))
   .catch((e) => {
     console.error(`[load] LỖI: ${e instanceof Error ? (e.stack ?? e.message) : e}`);

@@ -44,6 +44,8 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
 
 ## 1. Cổng thanh toán lỗi (VNPAY không phản hồi, IPN không về)
 
+last_drilled: chưa diễn tập (chưa có tài khoản merchant VNPAY/sandbox thật; chỉ chạy qua mock trong test tích hợp).
+
 - Dấu hiệu: `payment_attempt` ở `pending`/`unknown` tăng; cảnh báo "đã nhận dấu hiệu thanh toán nhưng chưa xử lý > 5 phút".
 - Kiểm tra: log `webhook_inbox` (verified, result); job `expire-holds` có chạy; gọi `querydr` thủ công cho vài `txn_ref`.
 - Breaker `vnpay.querydr` (T-161, §14): VNPAY lỗi tạm liên tiếp → job `expire-holds` ngừng gọi querydr, mở ngoại lệ `job_circuit_open`
@@ -136,10 +138,14 @@ merchant, RK-006). Attempt tạo trước T-170, hoặc do bản N−1 tạo tro
 
 ## 2. Hãng vận chuyển lỗi (GHN)
 
+last_drilled: chưa diễn tập (chưa có tài khoản/khoá GHN thật; chỉ chạy qua mock trong test tích hợp).
+
 - Tạo vận đơn timeout → hệ thống tra theo `client_order_code` trước khi tạo lại (không tạo tay vận đơn mới khi chưa tra).
 - Callback ngừng: chạy job đồng bộ trạng thái bằng API; không tự đánh dấu "đã giao".
 
 ## 3. Redis / worker lỗi
+
+last_drilled: 2026-10-25 (`bash scripts/ops/restore-drill.sh` bước 5, máy dev).
 
 Trong Redis chỉ có thứ **tạo lại được**: khóa phân tán (Locking Module), hàng đợi event bus, trạng thái workflow engine, cache.
 Nguồn sự thật là Postgres: `checkout_attempt` (lease), `outbox_event` (`pending`/`failed` + `next_attempt_at`), `payment_attempt`,
@@ -218,6 +224,8 @@ Truy vấn ở 3.3.3 trả rỗng (hoặc chỉ còn việc chưa đến hạn);
   của provider locking-redis — event bus/cache/workflow engine vẫn chạy, nên đây không phải diễn tập mất cả Redis).
 
 ## 4. Database outage / khôi phục
+
+last_drilled: 2026-10-25 (`bash scripts/ops/restore-drill.sh`, DB cỡ nhỏ, máy dev; chưa diễn tập PITR production — xem 4.5).
 
 ### 4.1 Sao lưu
 
@@ -400,6 +408,8 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
 
 ## 6. Ảnh lỗi / CDN
 
+last_drilled: chưa diễn tập (chưa có CDN/kho ảnh thật — §8.2b chờ chủ dự án dựng).
+
 - Ảnh hỏng: storefront vẫn hiển thị alt + khung tỷ lệ cố định (không CLS); thay ảnh tạo URL mới (hash), không ghi đè URL cũ.
 - Header file tĩnh (D-024): Medusa phục vụ `/static` bằng `express.static` trước middleware dự án nên backend không gắn
   được `X-Content-Type-Options: nosniff` cho đường này. Checklist triển khai: reverse proxy/CDN đặt `nosniff` cho
@@ -409,6 +419,8 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   `X-Content-Type-Options: nosniff` và `Content-Type` đúng ở kho/CDN đó; `static/` của backend không còn nhận file mới.
 
 ## 7. Tiền đến sau khi hủy / thu dư
+
+last_drilled: chưa diễn tập (chỉ chạy trong test tích hợp `late-payment`; chưa có cổng thanh toán thật).
 
 - `ops_exception late_payment|overpayment`: kế toán xác minh trên cổng → tạo refund (một refund, retry cùng id) → ghi chú khách. Không phục hồi đơn, không giao thay thế khi chưa có xác nhận mới của khách.
 - Gồm cả đơn đã hủy chưa xác minh (§1.1) và đơn hết hạn mà tiền về sau. Khoản thu đến sau được gắn vào attempt (attempt
@@ -482,6 +494,25 @@ rồi diễn tập deploy + rollback (§5) trên staging và ghi `last_drilled`.
 ```bash
 pnpm install --frozen-lockfile
 pnpm build   # domain → medusa build (backend) và next build (storefront)
+# 0) Cổng backup/PITR TRƯỚC db:migrate (DB-MIG-011) — xem "Điều kiện dừng" ngay dưới khối lệnh này; không qua = KHÔNG chạy bước 1.
+#    Đường A (file, scripts/ops/backup.sh): bản gần nhất ≤ N giờ (mặc định 24 = RPO của pg_dump hằng ngày, §4) và sha256 khớp.
+#    $BACKUP_DIR = thư mục nơi cron/job chạy `scripts/ops/backup.sh "$BACKUP_DIR/<tên>.dump"` ghi file (+ .meta). Chưa có bản
+#    đủ mới → tạo ngay: DATABASE_URL="$MIGRATION_DATABASE_URL" scripts/ops/backup.sh "$BACKUP_DIR/pre-migrate-$(date -u +%Y%m%dT%H%M%SZ).dump"
+(
+  set -euo pipefail
+  max_h="${XS_BACKUP_MAX_AGE_HOURS:-24}"
+  meta="$(ls -1t "$BACKUP_DIR"/*.meta | head -n 1)"          # không có file → ls lỗi → dừng
+  mark="$(sed -n 's/^snapshot_mark_utc=//p' "$meta")"        # giờ DB (UTC) lấy ngay trước khi pg_dump chụp
+  want="$(sed -n 's/^sha256=//p' "$meta")"
+  age_h=$(( ( $(date -u +%s) - $(date -u -d "$mark" +%s) ) / 3600 ))
+  [ "$age_h" -ge 0 ] && [ "$age_h" -le "$max_h" ] || { echo "DỪNG: bản gần nhất $meta cũ ${age_h} giờ (> ${max_h})" >&2; exit 1; }
+  [ "$(sha256sum "${meta%.meta}" | cut -d' ' -f1)" = "$want" ] || { echo "DỪNG: sha256 không khớp ${meta%.meta}" >&2; exit 1; }
+  echo "OK: backup $meta mốc $mark (${age_h} giờ trước)"
+)
+#    Đường B (PITR tự host, WAL archiving; PITR của dịch vụ managed: ghi ảnh chụp/ID cấu hình từ console vào log deploy):
+psql "$MIGRATION_DATABASE_URL" -Atc "select current_setting('archive_mode'), coalesce(extract(epoch from now() - last_archived_time)::int, -1), failed_count, coalesce(last_failed_time > last_archived_time, false) from pg_stat_archiver"
+#    → cột 1 phải là on|always, cột 2 (tuổi lần archive cuối, giây) trong [0, 900] (RPO 15 phút, §4.1), cột 4 là `f` (lần archive
+#      gần nhất không lỗi; cột 3 là tổng lỗi tích luỹ, chỉ để tham khảo).
 # 1) Migration TRƯỚC khi chạy bản mới (một lần, từ một máy/job duy nhất; bản trước phải chạy được với schema mới).
 #    Vai trò DB (T-184, docs/ops/ENV.md mục "Vai trò DB"): hạ tầng tạo xshop_app + xshop_migrator TRƯỚC lần migrate đầu;
 #    `db:*` kết nối bằng MIGRATION_DATABASE_URL (xshop_migrator), server/worker bằng DATABASE_URL (xshop_app). Không dùng
@@ -496,6 +527,13 @@ MEDUSA_WORKER_MODE=worker pnpm --filter @x-shop/backend start   # chạy job đ�
 # 3) Storefront (script `start` cũng bind 127.0.0.1 mặc định: sau LB/container đặt HOST=0.0.0.0)
 pnpm --filter @x-shop/storefront start
 ```
+
+**Điều kiện dừng của bước 0 (migrate không đảo ngược được bằng `db:migrate:down` khi có DDL phá dữ liệu — đường lùi thật là khôi phục, §4.2):**
+đạt khi Đường A in `OK` HOẶC Đường B thoả đủ ba điều kiện. DỪNG, không chạy `db:migrate`, báo trực kỹ thuật (§0) khi: không có file `.meta`
+nào / bản gần nhất cũ hơn N giờ / sha256 lệch (backup hỏng); `archive_mode=off` hoặc `last_archived_time` rỗng (`-1`) hoặc quá 900 giây hoặc
+lần archive gần nhất lỗi; không đọc được cả hai (không kết nối được DB, thiếu quyền) — coi là chưa chứng minh được, không đoán. Chỉ với migration
+chỉ thêm (thêm bảng/cột nullable, không DROP/ALTER kiểu/UPDATE hàng loạt) mà người quyết định rollback (§0) ghi lý do vào log deploy mới được
+bỏ qua bước 0; mọi trường hợp khác không có ngoại lệ. Ghi kết quả bước 0 (dòng `OK` hoặc đầu ra psql, giờ UTC) vào log deploy.
 
 Production thiếu/sai biến → backend thoát mã 1 và in TÊN biến (không in giá trị): đọc log khởi động trước khi chuyển lưu lượng. Chạy ≥ 2
 instance server thì `REDIS_URL` bắt buộc (§3.2.1). File upload/xuất: `FILE_STORAGE=s3` bắt buộc (§8.2b). Không deploy khi đang có sự cố
@@ -578,7 +616,11 @@ Link mời admin mở dashboard ở `/app` với `invite_token` trong query; tra
 ### 8.3 Kiểm sau deploy (smoke) và theo dõi
 
 - Tay (chưa có job tự động — WF-REL-007 còn mở): `curl -fsS "$MEDUSA_BACKEND_URL/x/health"`; mở trang chủ và một trang sản phẩm; tạo giỏ và gọi
-  báo giá; log khởi động không có lỗi biến môi trường. "Phiên bản trả về khớp tag": **chưa có** — `/x/health` cố ý không lộ phiên bản.
+  báo giá; log khởi động không có lỗi biến môi trường.
+- Phiên bản khớp tag (D-050): `/x/health` cố ý không lộ phiên bản; dùng `GET /admin/x/version` (cần admin có `report.read`; trả
+  `{version, commit?, built_at?}` từ `XS_RELEASE_VERSION`/`XS_RELEASE_COMMIT`/`XS_BUILT_AT`, vắng thì version trong package.json — ENV.md):
+  `XS_SMOKE_BASE_URL=https://… XS_SMOKE_ADMIN_TOKEN=<từ kho bí mật> node scripts/load/smoke.mjs --expect-version <tag>` (exit 0 khớp,
+  1 lệch/401/403, 2 thiếu cấu hình). Chỉ đọc, không tạo tải; token không đặt trên dòng lệnh. Pipeline đặt `XS_RELEASE_*` lúc chạy image.
 - Kịch bản có sẵn, chạy tay trên môi trường tải riêng: `pnpm load:smoke` (T-036) — không chạy lên production.
 - Cửa sổ theo dõi 30 phút theo ngưỡng §5; chưa có dashboard/cảnh báo thật cho tới khi chọn hạ tầng.
 
@@ -622,6 +664,8 @@ Sau xử lý: ghi post-mortem vào `docs/ops/incidents/` (sổ sự cố; quy tr
 (vd quét bí mật bổ sung). Đầu mối pháp lý: [chủ dự án điền].
 
 ## 11. Dữ liệu staging / preview
+
+last_drilled: chưa diễn tập (chưa có môi trường staging/preview).
 
 Chính sách: staging, preview và máy dev CHỈ dùng dữ liệu tổng hợp. **Cấm** copy, dump hoặc khôi phục dữ liệu production (PII khách, đơn, vận
 đơn, log) vào staging/preview/dev — kể cả "tạm thời để tái hiện lỗi" (Luật 91/2025/QH15 — chưa xác minh điều khoản). Nguồn dữ liệu cho phép:

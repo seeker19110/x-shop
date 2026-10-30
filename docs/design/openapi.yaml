@@ -1562,6 +1562,31 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Validation" }
+  /admin/x/version:
+    get:
+      tags: [Ops]
+      operationId: adminVersion
+      summary: "Phiên bản build đang chạy (cần đăng nhập; smoke sau deploy so với tag)"
+      description: "Không công khai (D-050): /x/health và /x/readyz cố ý không trả phiên bản. Không trả cấu hình/bí mật."
+      security:
+        - adminSession: []
+        - adminBearer: []
+      x-permission: report.read
+      responses:
+        "200":
+          description: "Phiên bản."
+          headers: { Cache-Control: { $ref: "#/components/headers/NoStore" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version]
+                properties:
+                  version: { type: string }
+                  commit: { type: string, description: "Có khi XS_RELEASE_COMMIT được đặt." }
+                  built_at: { type: string, format: date-time, description: "Có khi XS_BUILT_AT được đặt." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /admin/x/reports/exceptions:
     get:
       tags: [Admin settlement]

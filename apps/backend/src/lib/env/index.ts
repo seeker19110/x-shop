@@ -415,6 +415,30 @@ const baseSchema = z.object({
       .optional(),
   ),
   SHUTDOWN_TIMEOUT_MS: intInRange(secondsToMs(25), secondsToMs(1), minutesToMs(5), "mili giây"),
+  // Định danh bản build (D-050, WF-REL-007): chỉ GET /admin/x/version (có xác thực) trả ra. Vắng = bản trong package.json,
+  // không commit/built_at. Pipeline đặt lúc build/chạy image (SHA hex thường; thời điểm ISO 8601 UTC).
+  XS_RELEASE_VERSION: optionalText.pipe(
+    z
+      .string()
+      .regex(/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/, {
+        message: "phải là chuỗi phiên bản ≤ 64 ký tự [0-9A-Za-z._+-]",
+      })
+      .optional(),
+  ),
+  XS_RELEASE_COMMIT: optionalText.pipe(
+    z
+      .string()
+      .regex(/^[0-9a-f]{7,64}$/, { message: "phải là mã commit git 7–64 ký tự hex thường" })
+      .optional(),
+  ),
+  XS_BUILT_AT: optionalText.pipe(
+    z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/, {
+        message: "phải là thời điểm ISO 8601 UTC (…Z)",
+      })
+      .optional(),
+  ),
   // Ngưỡng log (T-090): tên mức của Medusa/winston; vắng = info. Log truy cập của dự án ở mức info.
   LOG_LEVEL: z.preprocess(
     (v) => (v === undefined || (typeof v === "string" && v.trim() === "") ? "info" : v),

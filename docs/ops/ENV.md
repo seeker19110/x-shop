@@ -128,6 +128,10 @@ MEDUSA_BACKEND_URL=https://api.shop.example.vn
 # (Kubernetes terminationGracePeriodSeconds mặc định 30 s); DRAIN_DELAY < TIMEOUT.
 # SHUTDOWN_DRAIN_DELAY_MS=5000   # vắng: 5000 ở production, 0 ở dev/test; [0, 60000]
 # SHUTDOWN_TIMEOUT_MS=25000      # [1000, 300000]
+# Định danh bản build (D-050): chỉ GET /admin/x/version (cần đăng nhập admin + quyền report.read) trả ra; smoke sau deploy so với tag.
+# XS_RELEASE_VERSION=0.1.0       # vắng: version trong apps/backend/package.json
+# XS_RELEASE_COMMIT=886beed      # SHA git hex thường 7–64 ký tự; vắng: không trả commit
+# XS_BUILT_AT=2026-10-30T08:00:00Z   # ISO 8601 UTC; vắng: không trả built_at
 # Pool Postgres MỖI tiến trình (T-092, DB-PERF-004; docs/db/connections.md): tổng DB_POOL_MAX × số tiến trình + dự phòng ≤
 # max_connections của Postgres. statement_timeout của phiên ứng dụng (mili giây); migration dài → nâng tạm cho lệnh migrate.
 # DB_POOL_MAX=10                 # kết nối; [1, 100]
