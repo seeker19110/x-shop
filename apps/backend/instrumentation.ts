@@ -1,7 +1,7 @@
 import { loadEnvOrExit } from "./src/lib/env";
 import { installProcessErrorHandlers } from "./src/lib/errors/process";
 import { installGracefulShutdown } from "./src/lib/lifecycle/shutdown";
-import { appLoggerFromEnv } from "./src/lib/log/app-logger";
+import { appLoggerFromEnv, serviceVersion } from "./src/lib/log/app-logger";
 import { installAccessLogServerHook } from "./src/lib/log/http";
 
 /**
@@ -15,7 +15,7 @@ import { installAccessLogServerHook } from "./src/lib/log/http";
  * Không cài trong test tích hợp (test runner không nạp file này) — Jest tự quản lỗi của nó.
  */
 export function register(): void {
-  installProcessErrorHandlers();
+  installProcessErrorHandlers({ version: serviceVersion() });
   const env = loadEnvOrExit(process.env);
   const logger = appLoggerFromEnv(env);
   installGracefulShutdown(env.shutdown, {

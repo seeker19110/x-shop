@@ -1,3 +1,4 @@
+import { getLogger } from "../log/logger";
 import { isNonEmpty } from "../presence";
 const LOG_EVERY = 100;
 
@@ -10,8 +11,7 @@ export function recordEvent(event: string | null): void {
   seen += 1;
   if (isNonEmpty(event)) counts.set(event, (counts.get(event) ?? 0) + 1);
   else rejected += 1;
-  // eslint-disable-next-line no-console -- bộ đếm thống kê định kỳ có chủ đích, không phải log debug
-  if (seen % LOG_EVERY === 0) console.info("[analytics]", JSON.stringify(analyticsStats()));
+  if (seen % LOG_EVERY === 0) getLogger().info("analytics stats", { ...analyticsStats() });
 }
 
 export function analyticsStats() {

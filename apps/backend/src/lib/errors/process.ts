@@ -24,6 +24,25 @@ export interface ProcessHandlerOptions {
   exit?: (code: number) => void;
   now?: () => Date;
   service?: string;
+  /** Trường `version` của dòng log (mặc định: `npm_package_version` hoặc "unknown"). */
+  version?: string;
+  /** Trường `env` của dòng log (mặc định: `NODE_ENV` hoặc "unknown"). */
+  env?: string;
+}
+
+/** Siêu dữ liệu dịch vụ của dòng fatal (cùng khoá với logger ứng dụng — docs/ops/log-schema.json). */
+export interface FatalMeta {
+  service: string;
+  version: string;
+  env: string;
+}
+
+/** OTel: `fatal` = 21 (khớp SEVERITY_NUMBER của log/logger.ts; file này không import module khác nên lặp lại hằng). */
+export const FATAL_SEVERITY_NUMBER = 21;
+
+const SAFE_META = /^[0-9A-Za-z.+_-]{1,64}$/;
+function metaValue(v: string | undefined): string {
+  return typeof v === "string" && SAFE_META.test(v) ? v : "unknown";
 }
 
 const INSTALLED = Symbol.for("x-shop.process-error-handlers");
@@ -48,11 +67,20 @@ function exceptionFields(reason: unknown): Record<string, string> {
 }
 
 /** Một dòng log JSON (không CR/LF thô — JSON.stringify thoát mọi ký tự điều khiển). */
-export function fatalLogLine(event: FatalEvent, reason: unknown, now: Date, service: string): string {
+export function fatalLogLine(
+  event: FatalEvent,
+  reason: unknown,
+  now: Date,
+  service: string,
+  meta: Partial<Omit<FatalMeta, "service">> = {},
+): string {
   return JSON.stringify({
     timestamp: now.toISOString(),
     level: "fatal",
+    severity_number: FATAL_SEVERITY_NUMBER,
     service,
+    version: metaValue(meta.version ?? process.env.npm_package_version),
+    env: metaValue(meta.env ?? process.env.NODE_ENV),
     event,
     message:
       event === "uncaughtException"
@@ -83,10 +111,11 @@ export function installProcessErrorHandlers(opts: ProcessHandlerOptions = {}): b
   const exit = opts.exit ?? ((code: number) => process.exit(code));
   const now = opts.now ?? (() => new Date());
   const service = opts.service ?? "x-shop-backend";
+  const meta = { version: opts.version, env: opts.env };
   let exiting = false;
   const onFatal = (event: FatalEvent) => (reason: unknown) => {
     try {
-      write(fatalLogLine(event, reason, now(), service));
+      write(fatalLogLine(event, reason, now(), service, meta));
     } finally {
       if (!exiting) {
         exiting = true;

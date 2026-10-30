@@ -14,6 +14,8 @@ function fakeProc() {
     write: (l) => lines.push(l),
     exit: (c) => exits.push(c),
     now: () => new Date("2026-10-26T01:02:03.004Z"),
+    version: "9.8.7",
+    env: "test",
   });
   return { emitter, lines, exits, installed };
 }
@@ -29,7 +31,10 @@ describe("installProcessErrorHandlers (tiến trình giả)", () => {
     expect(JSON.parse(lines[0]!)).toEqual({
       timestamp: "2026-10-26T01:02:03.004Z",
       level: "fatal",
+      severity_number: 21,
       service: "x-shop-backend",
+      version: "9.8.7",
+      env: "test",
       event: "unhandledRejection",
       message: expect.any(String),
       "exception.type": "Error",
