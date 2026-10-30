@@ -2,6 +2,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
 import { updateProductsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import { rebuildCatalogIndex } from "../../src/lib/catalog/indexer";
 import { DEMO_CATEGORIES, DEMO_PRODUCTS } from "../../src/scripts/catalog-demo-data";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
@@ -18,7 +19,7 @@ function expectedCounts(published: (handle: string) => boolean): Map<string, num
   for (const p of DEMO_PRODUCTS) {
     if (!published(p.handle)) continue;
     let h: string | null = p.category;
-    while (h) {
+    while (isNonEmpty(h)) {
       out.set(h, (out.get(h) ?? 0) + 1);
       const cur: string = h;
       h = DEMO_CATEGORIES.find((c) => c.handle === cur)?.parent ?? null;

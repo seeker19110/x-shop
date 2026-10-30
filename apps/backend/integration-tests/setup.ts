@@ -14,8 +14,9 @@ process.env.XS_TRUSTED_PROXIES ??= "loopback";
 
 // T-146: test tích hợp phải chạy trên Redis DB do globalSetup giành độc quyền (hoặc DB index người gọi ghi sẵn trong
 // REDIS_URL). URL không có DB index tức là globalSetup không chạy → chặn sớm thay vì lặng lẽ chạy chung DB 0.
-if (process.env.TEST_TYPE?.startsWith("integration") && process.env.REDIS_URL) {
-  const path = new URL(process.env.REDIS_URL).pathname;
+const redisUrl = process.env.REDIS_URL;
+if (process.env.TEST_TYPE?.startsWith("integration") === true && redisUrl !== undefined && redisUrl !== "") {
+  const path = new URL(redisUrl).pathname;
   if (path === "" || path === "/") {
     throw new Error(
       "REDIS_URL chưa có DB index — globalSetup (integration-tests/global-setup.ts) chưa giành Redis DB test",

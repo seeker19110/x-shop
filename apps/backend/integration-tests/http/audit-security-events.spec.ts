@@ -6,6 +6,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, generateJwtToken, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import Redis from "ioredis";
+import { isNonEmpty } from "@x-shop/domain";
 import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
 import { KEY_PREFIX } from "../../src/lib/admin-security/store";
 import { DENY_AUDIT_THROTTLE } from "../../src/lib/audit/deny-throttle";
@@ -73,7 +74,11 @@ medusaIntegrationTestRunner({
     });
     // Xuất native (`POST /admin/customers/export`) ghi file private qua file provider cục bộ vào PRIVATE_UPLOAD_DIR (T-141;
     // vắng → `<cwd>/private-uploads`) — dọn file do suite tạo để test không để lại dữ liệu xuất trên máy.
-    const privateDir = process.env.PRIVATE_UPLOAD_DIR || join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME);
+    // "" = không đặt (cùng hợp đồng optionalText của src/lib/env).
+    const privateDirEnv = process.env.PRIVATE_UPLOAD_DIR;
+    const privateDir = isNonEmpty(privateDirEnv)
+      ? privateDirEnv
+      : join(process.cwd(), DEV_PRIVATE_UPLOAD_DIRNAME);
     const exportFiles = () =>
       existsSync(privateDir) ? readdirSync(privateDir).filter((f) => /^private-.*\.json$/.test(f)) : [];
     const before = new Set(exportFiles());

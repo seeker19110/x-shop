@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
-import { IMPORT_COLUMNS } from "@x-shop/domain";
+import { isNonEmpty, IMPORT_COLUMNS } from "@x-shop/domain";
 import catalogIndexDrainJob from "../../src/jobs/catalog-index-drain";
 import catalogIndexRebuildJob from "../../src/jobs/catalog-index-rebuild";
 import codConfirmTimeoutJob from "../../src/jobs/cod-confirm-timeout";
@@ -92,7 +92,8 @@ medusaIntegrationTestRunner({
     };
     const statusOf = (r: Res<J>) =>
       r.status < 300 ? String(r.status) : `${r.status}:${String(r.data.code)}`;
-    const withKey = (k: string | null): Record<string, string> => (k ? { "Idempotency-Key": k } : {});
+    const withKey = (k: string | null): Record<string, string> =>
+      isNonEmpty(k) ? { "Idempotency-Key": k } : {};
     /** Route đòi xác thực lại ≤ 5 phút (map quyền `reauth`): owner đăng nhập lại (mật khẩu + TOTP), giữ tối đa 3 phút. */
     let freshOwner: { at: number; headers: { authorization: string } } | null = null;
     const ownerFresh = async () => {
@@ -382,7 +383,7 @@ medusaIntegrationTestRunner({
         // Bảng có thể kèm schema (`public.x_return`, `"public"."x_return"`).
         const table = `(?:"?public"?\\.)?"?(?:${tables})\\b`;
         const ident = idents.length ? `\\$\\{\\s*(?:${idents.join("|")})\\s*\\}` : null;
-        const target = ident ? `(?:${table}|${ident})` : table;
+        const target = ident !== null ? `(?:${table}|${ident})` : table;
         const names = [
           ...KEY_TABLES.map((t) => `["'\`](?:public\\.)?${t}["'\`]`),
           ...idents.map((i) => `${i}\\b`),

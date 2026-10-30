@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import { directRequestInputAccess, projectSources } from "../helpers/request-input-scan";
 import seedXShop from "../../src/scripts/seed";
 import { createAdmin, createMfaAdmin, noThrow, storeHeaders, type AdminAccount } from "../helpers/auth";
@@ -309,7 +310,7 @@ medusaIntegrationTestRunner({
         expect(files.size).toBeGreaterThan(100);
         const problems: string[] = [];
         for (const [name, src] of files) {
-          if (DIRECT_INPUT_ALLOWLIST[name]) continue;
+          if (isNonEmpty(DIRECT_INPUT_ALLOWLIST[name])) continue;
           for (const hit of directRequestInputAccess(src, name)) problems.push(`${name}: ${hit}`);
         }
         expect(problems).toEqual([]);
@@ -452,7 +453,11 @@ medusaIntegrationTestRunner({
               failures.push(`${r} [${b.name}] → ${res.status} (không token phải 404)`);
             else if (res.status !== 413 && kind(r) !== "public") {
               // Lỗi của handler/route: problem+json có trace_id.
-              if (!String(res.headers["content-type"]).includes("problem+json") || !res.data.trace_id)
+              if (
+                !String(res.headers["content-type"]).includes("problem+json") ||
+                typeof res.data.trace_id !== "string" ||
+                res.data.trace_id === ""
+              )
                 failures.push(`${r} [${b.name}] → ${res.status} không phải problem+json có trace_id`);
             }
           }

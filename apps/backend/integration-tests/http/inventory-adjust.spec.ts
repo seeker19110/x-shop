@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import { lockKeys } from "../../src/lib/checkout/locks";
 import { AUDIT_MODULE } from "../../src/modules/audit";
 import type AuditModuleService from "../../src/modules/audit/service";
@@ -51,7 +52,7 @@ medusaIntegrationTestRunner({
         method: "POST",
         url: URL,
         data: body,
-        headers: { ...who.headers, ...(key ? { "idempotency-key": key } : {}) },
+        headers: { ...who.headers, ...(isNonEmpty(key) ? { "idempotency-key": key } : {}) },
         ...noThrow,
       });
 

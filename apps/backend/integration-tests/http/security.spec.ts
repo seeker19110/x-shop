@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import seedXShop from "../../src/scripts/seed";
 import { API_CSP } from "../../src/lib/security/headers";
 import { resetHttpSecurityConfigForTests } from "../../src/lib/security/config";
@@ -85,13 +86,13 @@ medusaIntegrationTestRunner({
               // không phải JSON
             }
             resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text, json });
-            if (opts.expectEarlyClose) req.destroy();
+            if (opts.expectEarlyClose === true) req.destroy();
           });
         });
         req.on("error", reject);
         if (body !== undefined) req.write(body);
         // Máy chủ trả lời sớm khi thân còn chưa gửi (như client đang tải lên): giữ request mở, chỉ gửi header.
-        if (opts.expectEarlyClose) req.flushHeaders();
+        if (opts.expectEarlyClose === true) req.flushHeaders();
         else req.end();
       });
     }
@@ -102,7 +103,7 @@ medusaIntegrationTestRunner({
     };
 
     const search = (ip?: string) =>
-      raw("GET", "/store/x/search?q=ao", { ...store, ...(ip && { "x-forwarded-for": ip }) });
+      raw("GET", "/store/x/search?q=ao", { ...store, ...(isNonEmpty(ip) ? { "x-forwarded-for": ip } : {}) });
 
     beforeAll(async () => {
       base = new URL(String((api as unknown as { defaults: { baseURL: string } }).defaults.baseURL));

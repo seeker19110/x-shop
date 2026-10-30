@@ -1,7 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
-import { vnpay } from "@x-shop/domain";
+import { isNonEmpty, vnpay } from "@x-shop/domain";
 import {
   getVnpayGateway,
   MockModeVnpayGateway,
@@ -57,7 +57,7 @@ medusaIntegrationTestRunner({
     const ledger = (orderId: string) => service().listPaymentLedgers({ order_id: orderId });
     const exceptions = (orderId: string | null, kind: string) =>
       service().listOpsExceptions(
-        orderId ? { order_id: orderId, kind: kind as never } : { kind: kind as never },
+        isNonEmpty(orderId) ? { order_id: orderId, kind: kind as never } : { kind: kind as never },
       );
 
     async function nativePaymentStatuses(orderId: string): Promise<string[]> {

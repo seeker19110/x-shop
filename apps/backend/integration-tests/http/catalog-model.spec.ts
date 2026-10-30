@@ -4,6 +4,7 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import Redis from "ioredis";
+import { isNonEmpty } from "@x-shop/domain";
 import { kindLabel } from "../../src/admin/lib/labels";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "../../src/lib/catalog/constants";
 import { loadProductSources } from "../../src/lib/catalog/product-source";
@@ -73,9 +74,11 @@ medusaIntegrationTestRunner({
         expect(shirt.attributes).toMatchObject({ kind: "apparel", material: "lua", materialLabel: "Lụa" });
         expect(shirt.sizeChart).toMatchObject({ code: "ao-nu", version: 1, unit: "cm" });
         expect(shirt.attributes?.modelMeasurements[0]).toMatchObject({ imageSet: "den", heightCm: 168 });
-        expect(shirt.images.every((i) => i.alt && i.color && i.width === 800 && i.height === 1000)).toBe(
-          true,
-        );
+        expect(
+          shirt.images.every(
+            (i) => isNonEmpty(i.alt) && isNonEmpty(i.color) && i.width === 800 && i.height === 1000,
+          ),
+        ).toBe(true);
 
         const tee = products.find((p) => p.handle === "ao-thun-gan-tam")!;
         expect(tee.variants.map((v) => `${v.color}-${v.size}`).sort()).toEqual(["den-s", "trang-m"]);

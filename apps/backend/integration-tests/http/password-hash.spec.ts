@@ -120,8 +120,8 @@ medusaIntegrationTestRunner({
       const config = container.resolve(ContainerRegistrationKeys.CONFIG_MODULE) as {
         modules?: Record<string, { options?: { providers?: { id?: string; options?: unknown }[] } }>;
       };
-      const auth = Object.values(config.modules ?? {}).find((m) =>
-        m.options?.providers?.some((p) => p.id === "emailpass"),
+      const auth = Object.values(config.modules ?? {}).find(
+        (m) => m.options?.providers?.some((p) => p.id === "emailpass") === true,
       );
       const emailpass = auth?.options?.providers?.find((p) => p.id === "emailpass");
       expect(emailpass?.options).toEqual({ hashConfig: { logN: 17, r: 8, p: 1 } });

@@ -141,7 +141,7 @@ medusaIntegrationTestRunner({
     async function vnpayOrder(variant: string, opts: { unknown?: boolean } = {}) {
       const o = await client.placeOrder([[variant, 1]], "vnpay");
       const [pa] = await service().listPaymentAttempts({ order_id: o.orderId });
-      if (opts.unknown) {
+      if (opts.unknown === true) {
         gateway.results.set(pa!.txn_ref, { outcome: "unknown", transactionNo: null, reason: "status_91" });
         expect((await expireHolds(container, { now: future(16 * MIN) })).unknown).toContain(o.orderId);
         expect((await service().listPaymentAttempts({ order_id: o.orderId }))[0]!.state).toBe("unknown");

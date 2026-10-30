@@ -428,10 +428,23 @@ export default tseslint.config(
       project: ["apps/backend/tsconfig.typecheck.json", "apps/backend/src/admin/tsconfig.json"],
     },
     {
+      // T-200: mã TS ngoài src/ của backend — test tích hợp và file chạy production (cấu hình Medusa, OTel).
+      // tsconfig.typecheck.json include "**/*" nên đã phủ các file này.
+      files: [
+        "apps/backend/integration-tests/**/*.ts",
+        "apps/backend/medusa-config.ts",
+        "apps/backend/instrumentation.ts",
+      ],
+      project: ["apps/backend/tsconfig.typecheck.json"],
+    },
+    {
       // tsconfig.eslint.json = tsconfig.json + điều kiện @x-shop/source: lint không cần build domain trước.
-      files: ["apps/storefront/src/**/*.{ts,tsx}"],
+      // T-200: next.config.ts (cấu hình build/runtime) — tsconfig.eslint.json include thêm file này.
+      files: ["apps/storefront/src/**/*.{ts,tsx}", "apps/storefront/next.config.ts"],
       project: ["apps/storefront/tsconfig.eslint.json"],
     },
+    // T-200: kịch bản e2e (Playwright) — e2e/tsconfig.json phủ *.ts và *.d.mts.
+    { files: ["e2e/**/*.ts"], project: ["e2e/tsconfig.json"] },
   ]),
   {
     rules: {

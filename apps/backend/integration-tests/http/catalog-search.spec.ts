@@ -8,6 +8,7 @@ import {
 } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import {
+  isNonEmpty,
   EMPTY_FILTER,
   facetCounts,
   filterProducts,
@@ -246,7 +247,7 @@ medusaIntegrationTestRunner({
           if (rand() < 0.2) params.set("page", "2");
           const category = rand() < 0.3 ? pick(categories) : null;
           const f = parseFilter(params).filter;
-          const qs = `${serializeFilter(f)}&page_size=6${category ? `&category=${category}` : ""}`;
+          const qs = `${serializeFilter(f)}&page_size=6${isNonEmpty(category) ? `&category=${category}` : ""}`;
           const res = await list(qs);
           expectMatchesOracle(res, f, category, 6);
           if (res.total > 0) nonEmpty++;

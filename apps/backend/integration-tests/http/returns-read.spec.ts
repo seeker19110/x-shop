@@ -1,6 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
 import { MockVnpayRefundGateway, setRefundGatewayForTest } from "../../src/workflows/returns/refund-gateway";
@@ -84,7 +85,7 @@ medusaIntegrationTestRunner({
       const body = {
         kind: "return",
         reason: "changed_mind",
-        ...(note && { note }),
+        ...(isNonEmpty(note) ? { note } : {}),
         lines: await Promise.all(
           lines.map(async ([k, quantity]) => ({ line_id: await lineOf(o.orderId, k), quantity })),
         ),

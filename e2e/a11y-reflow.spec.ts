@@ -80,7 +80,7 @@ test.describe.serial("AT25 — axe + reflow 320 px trên 6 màn cốt lõi", () 
     await context?.close().catch(() => undefined);
     await cleanupBuyer(
       buyer,
-      cookies.filter((c) => c.name === "xs_cart" && c.value).map((c) => c.value),
+      cookies.filter((c) => c.name === "xs_cart" && c.value !== "").map((c) => c.value),
     );
   });
 

@@ -1,6 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
@@ -80,7 +81,7 @@ medusaIntegrationTestRunner({
       flow.admin(
         `/admin/x/refunds/${id}/execute`,
         A("accountant"),
-        evidence ? { evidence_ref: evidence } : {},
+        isNonEmpty(evidence) ? { evidence_ref: evidence } : {},
       );
     const cancel = (id: string) =>
       flow.admin(`/admin/x/refunds/${id}/cancel`, A("accountant"), { reason: "Cổng tắt — chuyển hoàn tay" });

@@ -23,7 +23,7 @@ function runbookRedriveSql(): string {
   const blocks = [...section.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]!);
   // Chọn theo dấu mốc riêng của bước 3 (không lấy UPDATE đầu tiên).
   const block = blocks.find((b) => b.includes("-- redrive-one"));
-  if (!block) throw new Error("RUNBOOK §12 không còn khối redrive (dấu `-- redrive-one`)");
+  if (block === undefined) throw new Error("RUNBOOK §12 không còn khối redrive (dấu `-- redrive-one`)");
   // Bỏ meta-lệnh psql (`\set k '…'`) và dòng chú thích; `:'k'` (psql tự quote) → tham số bind `?`.
   const sql = block
     .split("\n")

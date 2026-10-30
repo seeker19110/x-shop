@@ -5,6 +5,7 @@ import type { Readable } from "node:stream";
 import type { Logger, MedusaContainer } from "@medusajs/framework/types";
 import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import { parseEnv } from "../../src/lib/env";
 import { fileProviderEntry } from "../../src/lib/upload/config";
 import { isPrivateFileKey, isPublicFileKey } from "../../src/lib/upload/key";
@@ -30,11 +31,15 @@ jest.setTimeout(300 * 1000);
  * Đối chứng: provider local trên hai máy (hai thư mục) KHÔNG thấy file của nhau — đúng lỗi T-154 sửa.
  */
 
-const EXTERNAL = process.env.XS_TEST_S3_ENDPOINT?.trim() || undefined;
-const ACCESS_KEY_ID = EXTERNAL ? (process.env.XS_TEST_S3_ACCESS_KEY_ID ?? "") : "XSHOPFAKES3TESTKEY";
-const SECRET_ACCESS_KEY = EXTERNAL
-  ? (process.env.XS_TEST_S3_SECRET_ACCESS_KEY ?? "")
-  : "x-shop-fake-s3-chi-dung-cho-test-tich-hop";
+// Rỗng/toàn khoảng trắng = không đặt → dùng fake S3 trong tiến trình.
+const endpointEnv = process.env.XS_TEST_S3_ENDPOINT?.trim();
+const EXTERNAL = isNonEmpty(endpointEnv) ? endpointEnv : undefined;
+const ACCESS_KEY_ID =
+  EXTERNAL !== undefined ? (process.env.XS_TEST_S3_ACCESS_KEY_ID ?? "") : "XSHOPFAKES3TESTKEY";
+const SECRET_ACCESS_KEY =
+  EXTERNAL !== undefined
+    ? (process.env.XS_TEST_S3_SECRET_ACCESS_KEY ?? "")
+    : "x-shop-fake-s3-chi-dung-cho-test-tich-hop";
 const REGION = process.env.XS_TEST_S3_REGION ?? "us-east-1";
 const PUBLIC_BUCKET = process.env.XS_TEST_S3_BUCKET ?? "xshop-it-public";
 const PRIVATE_BUCKET = process.env.XS_TEST_S3_PRIVATE_BUCKET ?? "xshop-it-private";

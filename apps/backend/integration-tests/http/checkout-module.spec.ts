@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
-import { ORDER_STATES } from "@x-shop/domain";
+import { isNonEmpty, ORDER_STATES } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { Migration20261024173210 } from "../../src/modules/checkout/migrations/Migration20261024173210";
@@ -594,7 +594,7 @@ medusaIntegrationTestRunner({
           await knex
             .transaction(async (trx) => {
               const sql = fill[i.table];
-              if (!sql) throw new Error(`thiếu câu sinh dữ liệu cho ${i.table}`);
+              if (!isNonEmpty(sql)) throw new Error(`thiếu câu sinh dữ liệu cho ${i.table}`);
               await trx.raw(sql);
               await trx.raw(`ANALYZE ${i.table}`);
               const r = await trx.raw(

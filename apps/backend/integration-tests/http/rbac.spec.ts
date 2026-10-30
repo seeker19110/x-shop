@@ -7,7 +7,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { MedusaModule } from "@medusajs/framework/modules-sdk";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
-import { can, ROLES, type Role } from "@x-shop/domain";
+import { isNonEmpty, can, ROLES, type Role } from "@x-shop/domain";
 import {
   ADMIN_X_PERMISSIONS,
   requiredPermissions,
@@ -119,7 +119,7 @@ function dashboardNativeCalls(): {
   for (const f of readdirSync(sdkAdmin).filter((n) => n.endsWith(".js") && n !== "index.js")) {
     const src = readFileSync(join(sdkAdmin, f), "utf8");
     const prop = propOf.get(/^(?:export (?:default )?)?class (\w+)/m.exec(src)?.[1] ?? "");
-    if (!prop) continue;
+    if (!isNonEmpty(prop)) continue;
     const consts = new Map([...src.matchAll(/const (\w+) = "(\/admin[^"]*)"/g)].map((m) => [m[1]!, m[2]!]));
     for (const m of src.matchAll(/\n {4}(\w+)\([^)]*\) \{([\s\S]*?)\n {4}\}/g)) {
       const key = `${prop}.${m[1]}`;
@@ -187,7 +187,7 @@ function staticLinkDefs(): LinkDef[] {
   return [
     ...Object.values(load("./definitions/index.js") as Record<string, LinkDef>),
     ...Object.values(load("./definitions/readonly/index.js") as Record<string, LinkDef>),
-  ].filter((d) => d?.isLink);
+  ].filter((d) => d?.isLink === true);
 }
 
 /**
@@ -257,7 +257,9 @@ function sensitiveModuleRelations(): { relations: string[]; entities: number } {
     const isSensitive = (name: string) =>
       SENSITIVE_ENTITIES.has(name) ||
       (SENSITIVE_MODULES.has(moduleName) && !NON_SENSITIVE_IN_SENSITIVE_MODULES.has(name));
-    for (const ent of Object.values(createRequire(index)(index) as Record<string, DmlEntity>)) {
+    for (const ent of Object.values(
+      createRequire(index)(index) as Record<string, Partial<DmlEntity> | undefined>,
+    )) {
       if (!ent?.schema || typeof ent.name !== "string") continue;
       entities++;
       for (const [prop, def] of Object.entries(ent.schema)) {

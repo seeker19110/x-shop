@@ -993,7 +993,7 @@ medusaIntegrationTestRunner({
         // Chỉ lời đọc của applyStock thấy số cũ (stocked 9, reserved 8) → kiểm của ứng dụng cho qua, trừ về 8 < 9 đang giữ.
         const spy = jest.spyOn(inventory, "listInventoryLevels").mockImplementation(async (...args) => {
           const rows = await real(...(args as Parameters<typeof real>));
-          if (!new Error().stack?.includes("applyStock")) return rows;
+          if (new Error().stack?.includes("applyStock") !== true) return rows;
           return rows.map((r) => ({ ...r, stocked_quantity: 9, reserved_quantity: 8 })) as typeof rows;
         });
         try {

@@ -3,7 +3,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { createCustomerAccountWorkflow, createPromotionsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
-import { listWards, vnpay } from "@x-shop/domain";
+import { isNonEmpty, listWards, vnpay } from "@x-shop/domain";
 import { CHECKOUT_MESSAGES } from "@x-shop/domain/validation";
 import Redis from "ioredis";
 import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
@@ -129,7 +129,7 @@ const slowBeforeFinalize = new Map<string, number>();
 submitCheckoutWorkflow.hooks.orderPrepared(async ({ cart_id }) => {
   if (failBeforeFinalize.has(cart_id)) throw new Error("lỗi giả lập trước khi chốt đơn");
   const delay = slowBeforeFinalize.get(cart_id);
-  if (delay) await new Promise((r) => setTimeout(r, delay));
+  if (delay !== undefined && delay !== 0) await new Promise((r) => setTimeout(r, delay));
 });
 
 medusaIntegrationTestRunner({
@@ -154,7 +154,7 @@ medusaIntegrationTestRunner({
           region_id: fx.regionId,
           items: items.map(([key, quantity]) => ({ variant_id: fx.variants[key]!.id, quantity })),
         },
-        cfg(auth ? { authorization: `Bearer ${auth}` } : {}),
+        cfg(isNonEmpty(auth) ? { authorization: `Bearer ${auth}` } : {}),
       );
       expect({ status: res.status, data: res.status === 200 ? null : res.data }).toEqual({
         status: 200,
@@ -167,7 +167,7 @@ medusaIntegrationTestRunner({
       return api.post(
         "/store/x/checkout/quote",
         { cart_id: cartId, payment_method: "cod", address: HANOI_ADDRESS, ...extra },
-        cfg(auth ? { authorization: `Bearer ${auth}` } : {}),
+        cfg(isNonEmpty(auth) ? { authorization: `Bearer ${auth}` } : {}),
       );
     }
 
@@ -187,7 +187,7 @@ medusaIntegrationTestRunner({
       return api.post(
         "/store/x/checkout/submit",
         body,
-        cfg({ "Idempotency-Key": key, ...(auth ? { authorization: `Bearer ${auth}` } : {}) }),
+        cfg({ "Idempotency-Key": key, ...(isNonEmpty(auth) ? { authorization: `Bearer ${auth}` } : {}) }),
       );
     }
 

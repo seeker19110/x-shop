@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
-import { vnpay } from "@x-shop/domain";
+import { isNonEmpty, vnpay } from "@x-shop/domain";
 import { expireHolds } from "../../src/lib/checkout/jobs";
 import {
   setVnpayGatewayForTest,
@@ -114,7 +114,7 @@ medusaIntegrationTestRunner({
       const exec = await post(
         `/admin/x/refunds/${id}/execute`,
         A("accountant"),
-        evidence ? { evidence_ref: evidence } : {},
+        isNonEmpty(evidence) ? { evidence_ref: evidence } : {},
       );
       return { created: created.data.refund as J, exec };
     }

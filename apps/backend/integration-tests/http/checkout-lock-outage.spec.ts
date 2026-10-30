@@ -130,7 +130,8 @@ medusaIntegrationTestRunner({
       if (pong !== "PONG") throw new Error(`Redis khóa trả "${String(pong)}" thay vì PONG`);
     };
     const restoreRedis = async () => {
-      if (!redis) return;
+      // Kiểu nói `redis` luôn có, nhưng beforeAll hỏng trước khi gán thì vẫn là undefined.
+      if ((redis as typeof redis | undefined) === undefined) return;
       redis.acquireLock = originalAcquireLock;
       hungCalls.splice(0).forEach((reject) => reject(new Error("Connection is closed.")));
       await waitRedisReady();

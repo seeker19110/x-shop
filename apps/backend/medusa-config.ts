@@ -7,7 +7,9 @@ import { databaseConfig, redisQueueOptions, redisRequestOptions } from "./src/li
 import { appLoggerFromEnv } from "./src/lib/log/app-logger";
 import { fileProviderEntry } from "./src/lib/upload/config";
 
-loadEnv(process.env.NODE_ENV || "development", process.cwd());
+// NODE_ENV vắng hoặc rỗng → "development" (cùng hợp đồng với schema env ở src/lib/env).
+const nodeEnv = process.env.NODE_ENV;
+loadEnv(nodeEnv === undefined || nodeEnv === "" ? "development" : nodeEnv, process.cwd());
 
 // int8 (cột tiền bigint) → number có kiểm Number.isSafeInteger, trước mọi truy vấn (T-186, src/lib/db/int8.ts).
 installInt8Parser();
@@ -22,48 +24,49 @@ const env = loadEnvOrExit(process.env);
  * Timeout ioredis tường minh (T-092): connectTimeout mọi kết nối; commandTimeout trừ kết nối BullMQ (lệnh chặn) —
  * src/lib/infra/timeouts.ts.
  */
-const redisModules = env.REDIS_URL
-  ? [
-      {
-        resolve: "@medusajs/medusa/cache-redis",
-        options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
-      },
-      {
-        resolve: "@medusajs/medusa/caching",
-        options: {
-          providers: [
-            {
-              resolve: "@medusajs/medusa/caching-redis",
-              id: "caching-redis",
-              is_default: true,
-              options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
-            },
-          ],
+const redisModules =
+  env.REDIS_URL !== undefined
+    ? [
+        {
+          resolve: "@medusajs/medusa/cache-redis",
+          options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
         },
-      },
-      {
-        resolve: "@medusajs/medusa/event-bus-redis",
-        options: { redisUrl: env.REDIS_URL, redisOptions: redisQueueOptions() },
-      },
-      {
-        resolve: "@medusajs/medusa/workflow-engine-redis",
-        options: { redis: { redisUrl: env.REDIS_URL, redisOptions: redisQueueOptions() } },
-      },
-      {
-        resolve: "@medusajs/medusa/locking",
-        options: {
-          providers: [
-            {
-              resolve: "@medusajs/medusa/locking-redis",
-              id: "locking-redis",
-              is_default: true,
-              options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
-            },
-          ],
+        {
+          resolve: "@medusajs/medusa/caching",
+          options: {
+            providers: [
+              {
+                resolve: "@medusajs/medusa/caching-redis",
+                id: "caching-redis",
+                is_default: true,
+                options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
+              },
+            ],
+          },
         },
-      },
-    ]
-  : [];
+        {
+          resolve: "@medusajs/medusa/event-bus-redis",
+          options: { redisUrl: env.REDIS_URL, redisOptions: redisQueueOptions() },
+        },
+        {
+          resolve: "@medusajs/medusa/workflow-engine-redis",
+          options: { redis: { redisUrl: env.REDIS_URL, redisOptions: redisQueueOptions() } },
+        },
+        {
+          resolve: "@medusajs/medusa/locking",
+          options: {
+            providers: [
+              {
+                resolve: "@medusajs/medusa/locking-redis",
+                id: "locking-redis",
+                is_default: true,
+                options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
+              },
+            ],
+          },
+        },
+      ]
+    : [];
 
 // Bí mật: chỉ truyền khi đã đặt — khoá `undefined` sẽ đè mặc định dev của Medusa (defineConfig gộp nông).
 const http = {

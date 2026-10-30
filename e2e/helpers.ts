@@ -111,7 +111,7 @@ export async function placeCodOrder(page: Page): Promise<string> {
   await page.getByRole("button", { name: "Đặt hàng", exact: true }).click();
   await expect(page).toHaveURL(/\/don-hang\/XS-/);
   const ref = ORDER_REF.exec(new URL(page.url()).pathname)?.[0];
-  if (!ref) throw new Error(`Không đọc được mã đơn từ ${page.url()}`);
+  if (ref === undefined) throw new Error(`Không đọc được mã đơn từ ${page.url()}`);
   return ref;
 }
 

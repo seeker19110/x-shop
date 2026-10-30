@@ -4,6 +4,7 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import Redis from "ioredis";
+import { isNonEmpty } from "@x-shop/domain";
 import seedXShop, { SEED } from "../../src/scripts/seed";
 import { READINESS_PROBE_TIMEOUT_MS } from "../../src/lib/health/readiness";
 import { RBAC_MODULE } from "../../src/modules/rbac";
@@ -25,7 +26,10 @@ type LocationRow = WithSalesChannels & { name: string };
 type ApiKeyRow = WithSalesChannels & { title: string; type: string };
 
 const channelIds = (row: WithSalesChannels): string[] =>
-  (row.sales_channels ?? []).flatMap((sc) => (sc?.id ? [sc.id] : []));
+  (row.sales_channels ?? []).flatMap((sc) => {
+    const id = sc?.id;
+    return isNonEmpty(id) ? [id] : [];
+  });
 
 async function snapshot(container: MedusaContainer) {
   const query = container.resolve(ContainerRegistrationKeys.QUERY);

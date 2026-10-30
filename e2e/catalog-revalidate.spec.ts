@@ -19,7 +19,7 @@ const vnd = (n: number) => new Intl.NumberFormat("vi-VN").format(n);
 
 const publishableKey = () => {
   const key = process.env.E2E_PUBLISHABLE_KEY;
-  if (!key) throw new Error("Thiếu E2E_PUBLISHABLE_KEY — chạy bằng `pnpm e2e`");
+  if (key === undefined || key === "") throw new Error("Thiếu E2E_PUBLISHABLE_KEY — chạy bằng `pnpm e2e`");
   return key;
 };
 

@@ -3,6 +3,7 @@ import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { MigrationScriptsMigrator } from "@medusajs/framework/migrations";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import appRoleBookkeepingReadonly from "../../src/migration-scripts/app-role-bookkeeping-readonly";
 import { MIGRATION_BOOKKEEPING_TABLES } from "../../src/lib/db/app-role";
 import { parseEnv } from "../../src/lib/env";
@@ -36,8 +37,10 @@ const { Client } = createRequire(require.resolve("@medusajs/framework"))("pg") a
 
 const APP = "xshop_app";
 const MIGRATOR = "xshop_migrator";
-const APP_PASSWORD = process.env.XS_PG_APP_PASSWORD || "xshop-app-dev-SENTINEL";
-const MIGRATOR_PASSWORD = process.env.XS_PG_MIGRATOR_PASSWORD || "xshop-migrator-dev-SENTINEL";
+// Biến đặt rỗng ("") = không đặt → mật khẩu dev mặc định.
+const envOr = (value: string | undefined, fallback: string) => (isNonEmpty(value) ? value : fallback);
+const APP_PASSWORD = envOr(process.env.XS_PG_APP_PASSWORD, "xshop-app-dev-SENTINEL");
+const MIGRATOR_PASSWORD = envOr(process.env.XS_PG_MIGRATOR_PASSWORD, "xshop-migrator-dev-SENTINEL");
 const TIMEOUT_PARAMS = ["statement_timeout", "idle_in_transaction_session_timeout"] as const;
 const BOOKKEEPING = new Set<string>(MIGRATION_BOOKKEEPING_TABLES);
 const ROLE_SETTINGS = ["statement_timeout=30s", "idle_in_transaction_session_timeout=60s"];
@@ -213,7 +216,12 @@ medusaIntegrationTestRunner({
         const wrong = rows.filter(
           (r: Record<string, unknown>) =>
             !BOOKKEEPING.has(String(r.name)) &&
-            (!(r.sel && r.ins && r.upd && r.del) || r.trunc || r.refs || r.trig || r.owner === APP),
+            // has_table_privilege trả boolean (null nếu bảng biến mất giữa chừng — tính như không có quyền).
+            (!(r.sel === true && r.ins === true && r.upd === true && r.del === true) ||
+              r.trunc === true ||
+              r.refs === true ||
+              r.trig === true ||
+              r.owner === APP),
         );
         expect(wrong).toEqual([]);
       });
@@ -258,7 +266,11 @@ medusaIntegrationTestRunner({
             where n.nspname = 'public' and c.relkind = 'S'`,
           [APP, APP, APP],
         );
-        expect(seq.rows.filter((r: Record<string, unknown>) => !r.usage || !r.sel || r.upd)).toEqual([]);
+        expect(
+          seq.rows.filter(
+            (r: Record<string, unknown>) => r.usage !== true || r.sel !== true || r.upd === true,
+          ),
+        ).toEqual([]);
         const misc = await pg.raw(
           `select has_schema_privilege(?, 'public', 'CREATE') as schema_create,
                   has_schema_privilege(?, 'public', 'USAGE') as schema_usage,
