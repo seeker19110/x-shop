@@ -9,8 +9,11 @@ import {
   getMenuCategories,
   getProduct,
   listProducts,
+  PROXY_BACKEND_TIMEOUT_MS,
+  proxyNet,
   search,
 } from "./client";
+import { CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS } from "../client-fetch";
 import { FIXTURE_PRODUCTS } from "./fixtures";
 import { CatalogError } from "./types";
 
@@ -234,12 +237,37 @@ describe("backend (XS_DATA_SOURCE=backend)", () => {
     // Route proxy đặt maxRetries 0 (client đã retry): 503 → đúng 1 lần gọi backend, không retry lồng.
     calls.n = 0;
     reply(new Response("x", { status: 503 }), ok({ data: [], count: 0 }));
-    await listProducts(EMPTY_FILTER, { maxRetries: 0 }).catch((e: unknown) => e);
+    await listProducts(EMPTY_FILTER, { net: { maxRetries: 0 } }).catch((e: unknown) => e);
     expect(calls.n).toBe(1);
     calls.n = 0;
-    await search(EMPTY_FILTER, { maxRetries: 0 }).catch((e: unknown) => e);
+    await search(EMPTY_FILTER, { net: { maxRetries: 0 } }).catch((e: unknown) => e);
     expect(calls.n).toBe(1);
     vi.restoreAllMocks();
+  });
+
+  it("proxyNet: không retry, hạn server < hạn client, signal của request tới tận fetch; huỷ → dừng, không retry", async () => {
+    expect(PROXY_BACKEND_TIMEOUT_MS).toBeLessThan(CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS);
+    const ctrl = new AbortController();
+    expect(proxyNet(ctrl.signal)).toEqual({
+      maxRetries: 0,
+      timeoutMs: PROXY_BACKEND_TIMEOUT_MS,
+      signal: ctrl.signal,
+    });
+    let n = 0;
+    let seen: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", async (_u: unknown, init?: RequestInit) => {
+      n += 1;
+      seen = init?.signal;
+      return new Promise<Response>((_res, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    const p = listProducts(EMPTY_FILTER, { net: proxyNet(ctrl.signal) }).catch((e: unknown) => e);
+    await Promise.resolve();
+    ctrl.abort(); // client bỏ đi (request.signal huỷ)
+    expect(await p).toMatchObject({ code: "UNAVAILABLE" });
+    expect(n).toBe(1);
+    expect(seen?.aborted).toBe(true);
   });
 
   it("getProduct: 404 → null; handle được encode", async () => {

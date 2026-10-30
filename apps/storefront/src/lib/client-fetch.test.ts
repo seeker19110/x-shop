@@ -147,6 +147,54 @@ describe("clientFetch — retry", () => {
   });
 });
 
+/** Phản hồi 200 có thân treo tới khi signal huỷ (luồng lỗi với lý do huỷ, như fetch thật). */
+function stubHangingBody() {
+  vi.stubGlobal("fetch", async (_u: unknown, init?: RequestInit) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true });
+      },
+    });
+    return new Response(body, { status: 200 });
+  });
+}
+
+describe("clientFetch — hết hạn khi đọc thân", () => {
+  it("r.json() treo quá hạn → ClientFetchError TIMEOUT (không phải DOMException thô)", async () => {
+    stubHangingBody();
+    const r = await clientFetch("/x", {}, { timeoutMs: 1000 });
+    expect(r.status).toBe(200);
+    const p = r.json();
+    const assertion = expect(p).rejects.toMatchObject({ name: "ClientFetchError", code: "TIMEOUT" });
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+  });
+
+  it("clone() cũng được bọc; signal ngoài huỷ khi đang đọc thân → ABORTED", async () => {
+    stubHangingBody();
+    const ctrl = new AbortController();
+    const r = await clientFetch("/x", { signal: ctrl.signal }, { timeoutMs: 1000 });
+    const p = r.clone().text();
+    const assertion = expect(p).rejects.toMatchObject({ code: "ABORTED" });
+    ctrl.abort();
+    await assertion;
+  });
+
+  it("JSON hỏng → giữ nguyên SyntaxError; thân tốt đọc bình thường; header/status không đổi", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () => new Response("không phải json", { status: 200, headers: { "x-a": "1" } }),
+    );
+    const bad = await clientFetch("/x");
+    expect(bad.headers.get("x-a")).toBe("1");
+    await expect(bad.json()).rejects.toBeInstanceOf(SyntaxError);
+    vi.stubGlobal("fetch", async () => new Response('{"a":1}', { status: 200 }));
+    const good = await clientFetch("/x");
+    expect(await good.json()).toEqual({ a: 1 });
+    expect(good.ok).toBe(true);
+  });
+});
+
 describe("clientFetch — Retry-After", () => {
   it("429 + Retry-After 3 s → chờ ≥ 3 s mới gọi lại", async () => {
     const f = stubFetch(res(429, { "retry-after": "3" }), res(200));
@@ -229,10 +277,37 @@ describe("mọi client I/O có timeout (FE-STATE-005, XC-PERF-006)", () => {
     });
   const files = sources(COMPONENTS);
 
-  it("không component nào gọi fetch trần (bổ sung cho ESLint, bắt cả khi ai đó tắt luật)", () => {
-    const offenders = files.filter((f) =>
-      /(?<![\w$.])(?:(?:globalThis|window|self)\.)?fetch\s*\(/.test(readFileSync(f, "utf8")),
-    );
+  /** Tham chiếu fetch trần hoặc qua global object (gọi, tham chiếu, computed, destructuring). Regex tuyến tính. */
+  const usesRawFetch = (src: string): boolean =>
+    /(?<![\w$.])fetch\s*\(/.test(src) ||
+    /\b(?:globalThis|window|self)\s*\??\.\s*fetch\b/.test(src) ||
+    /\b(?:globalThis|window|self)\s*\??\.?\s*\[\s*["'`]fetch["'`]\s*\]/.test(src) ||
+    [...src.matchAll(/\{[^{}]*\}\s*=\s*(?:globalThis|window|self)\b/g)].some((m) => /\bfetch\b/.test(m[0]));
+
+  it("bộ dò fetch trần: bắt các dạng vi phạm, bỏ qua mã vô hại", () => {
+    for (const bad of [
+      'fetch("/x")',
+      'window.fetch("/x")',
+      "const f = globalThis?.fetch;",
+      'self["fetch"]("/x")',
+      "window[`fetch`]",
+      "const { fetch } = window;",
+      "const { a, fetch: f } = globalThis;",
+    ]) {
+      expect(usesRawFetch(bad), bad).toBe(true);
+    }
+    for (const good of [
+      "clientFetch('/x')",
+      "prefetch={false}",
+      "window.location",
+      "const { a } = window;",
+    ]) {
+      expect(usesRawFetch(good), good).toBe(false);
+    }
+  });
+
+  it("không component nào dùng fetch trần (bổ sung cho ESLint, bắt cả khi ai đó tắt luật)", () => {
+    const offenders = files.filter((f) => usesRawFetch(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
   });
 

@@ -75,6 +75,33 @@ describe("retry × giới hạn tốc độ của backend", () => {
   });
 });
 
+describe("proxy count/suggest: một tầng retry, hạn server < hạn client, nối signal của request", () => {
+  it.each([
+    ["count", countRoute, "http://storefront.test/api/catalog/count"],
+    ["suggest", suggestRoute, "http://storefront.test/api/catalog/suggest?q=ao"],
+  ])(
+    "%s: request.signal tới fetch backend; request huỷ → backend không bị gọi lại",
+    async (_n, route, url) => {
+      const seen: AbortSignal[] = [];
+      vi.stubGlobal("fetch", (_u: unknown, init?: RequestInit) => {
+        backendCalls += 1;
+        if (init?.signal) seen.push(init.signal);
+        return new Promise<Response>((_res, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        });
+      });
+      const ctrl = new AbortController();
+      const p = route(new Request(url, { signal: ctrl.signal }));
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      expect(seen[0]!.aborted).toBe(false);
+      ctrl.abort();
+      expect((await p).status).toBe(503);
+      expect(seen[0]!.aborted).toBe(true);
+      expect(backendCalls).toBe(1); // không retry lồng sau khi huỷ
+    },
+  );
+});
+
 describe("retry × phường/xã", () => {
   it("mã tỉnh sai (backend 404) → route 404, client không retry; nguồn lỗi (500) → route 503, retry tới trần", async () => {
     backendReply = () => new Response("{}", { status: 404 });

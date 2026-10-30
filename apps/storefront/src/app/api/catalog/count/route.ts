@@ -1,7 +1,7 @@
 import { parseFilter } from "@x-shop/domain";
 import { CATALOG_API_CACHE_CONTROL } from "../../../../lib/cache-policy";
 import { rateLimitedResponse } from "../../../../lib/catalog/rate-limited";
-import { getCategoryName, listProducts } from "../../../../lib/catalog/client";
+import { getCategoryName, listProducts, proxyNet } from "../../../../lib/catalog/client";
 
 /**
  * Đếm kết quả cho nút "Xem N sản phẩm" của drawer lọc (nháp chưa áp dụng). Công khai, chỉ trả `{ total }`.
@@ -15,7 +15,10 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ total: null }, { status: 422 });
   }
   try {
-    const r = await listProducts({ ...filter, page: 1 }, { category, pageSize: 1, maxRetries: 0 });
+    const r = await listProducts(
+      { ...filter, page: 1 },
+      { category, pageSize: 1, net: proxyNet(request.signal) },
+    );
     return Response.json({ total: r.total }, { headers: { "Cache-Control": CATALOG_API_CACHE_CONTROL } });
   } catch (e) {
     return rateLimitedResponse(e, { total: null }) ?? Response.json({ total: null }, { status: 503 });

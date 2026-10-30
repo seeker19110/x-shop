@@ -30,14 +30,28 @@ const RETRIES = 1;
  */
 const RETRY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
+/** Tuỳ chỉnh I/O của một lần `backendGet`. */
+export interface BackendNet {
+  maxRetries?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Cho route proxy `/api/catalog/*` (count/suggest): chỉ MỘT tầng retry cho mỗi chuỗi gọi (client đã có clientFetch retry)
+ * nên server không retry, và hạn server 3500 ms < hạn client 4000 ms (CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS) — server
+ * bỏ cuộc trước khi client hết hạn/thử lại, không để hai lời gọi backend chồng nhau. Truyền thêm `signal` của request.
+ */
+export const PROXY_BACKEND_TIMEOUT_MS = 3500;
+export function proxyNet(signal: AbortSignal): BackendNet {
+  return { maxRetries: 0, timeoutMs: PROXY_BACKEND_TIMEOUT_MS, signal };
+}
+
 interface ListOptions {
   category?: string | null;
   pageSize?: number;
-  /**
-   * Số lần thử lại phía server (mặc định RETRIES). Route proxy `/api/catalog/*` đặt 0: đầu bên kia (clientFetch) đã
-   * retry — chỉ MỘT tầng retry cho mỗi chuỗi gọi, tránh nhân tải lồng.
-   */
-  maxRetries?: number;
+  /** Tuỳ chỉnh I/O tới backend (mặc định: retry 1 lần, hạn TIMEOUT_MS, không signal). */
+  net?: BackendNet;
 }
 
 /** Chỉ http(s) (env đã qua zod khi khởi động — kiểm lại tại điểm gửi). */
@@ -53,13 +67,14 @@ async function backendGet<T>(
   fresh = false,
   extraHeaders: Record<string, string> = {},
   tags: readonly string[] = LIST_TAGS,
-  maxRetries: number = RETRIES,
+  net: BackendNet = {},
 ): Promise<T> {
   const base = assertHttpBase(getServerEnv().MEDUSA_BACKEND_URL);
   const qs = params && params.size > 0 ? `?${params.toString()}` : "";
   let res: Response;
   try {
-    // GET ⇒ idempotent: lỗi tạm thời (mạng, timeout, 502/503/504, 429…) thử lại tối đa RETRIES lần; hạn mỗi lần TIMEOUT_MS.
+    // GET ⇒ idempotent: lỗi tạm thời (mạng, timeout, 502/503/504) thử lại tối đa `net.maxRetries ?? RETRIES` lần; hạn
+    // mỗi lần `net.timeoutMs ?? TIMEOUT_MS`; 429/408/500 KHÔNG retry (xem RETRY_STATUSES); `net.signal` huỷ → dừng ngay.
     res = await clientFetch(
       `${base}${path}${qs}`,
       {
@@ -68,11 +83,17 @@ async function backendGet<T>(
           "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
           ...extraHeaders,
         },
+        ...(net.signal === undefined ? {} : { signal: net.signal }),
         ...(fresh
           ? { cache: "no-store" as const }
           : { next: { revalidate: CATALOG_REVALIDATE_S, tags: [...tags] } }),
       },
-      { timeoutMs: TIMEOUT_MS, maxRetries, maxRetryAfterMs: 2000, retryStatuses: RETRY_STATUSES },
+      {
+        timeoutMs: net.timeoutMs ?? TIMEOUT_MS,
+        maxRetries: net.maxRetries ?? RETRIES,
+        maxRetryAfterMs: 2000,
+        retryStatuses: RETRY_STATUSES,
+      },
     );
   } catch {
     throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");
@@ -125,21 +146,14 @@ export async function listProducts(
     return fixtureList(filter, { category: opts.category, pageSize: opts.pageSize ?? CATALOG_PAGE_SIZE });
   }
   return mapList(
-    await backendGet<unknown>(
-      "/store/x/products",
-      listParams(filter, opts),
-      false,
-      {},
-      LIST_TAGS,
-      opts.maxRetries,
-    ),
+    await backendGet<unknown>("/store/x/products", listParams(filter, opts), false, {}, LIST_TAGS, opts.net),
     backendBase(),
   );
 }
 
 export async function search(
   filter: CatalogFilter,
-  opts: { pageSize?: number; maxRetries?: number } = {},
+  opts: { pageSize?: number; net?: BackendNet } = {},
 ): Promise<SearchResponse> {
   if (resolveDataSource() === "fixtures") {
     if (filter.priceMin !== null && filter.priceMax !== null && filter.priceMin > filter.priceMax) {
@@ -156,7 +170,7 @@ export async function search(
       false,
       await clientIpHeader(),
       LIST_TAGS,
-      opts.maxRetries,
+      opts.net,
     ),
     backendBase(),
   );

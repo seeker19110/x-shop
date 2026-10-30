@@ -47,6 +47,38 @@ function classify(err: unknown, signal: AbortSignal | null | undefined, timeoutM
   return new ClientFetchError("NETWORK", "Không kết nối được máy chủ.", { cause: err });
 }
 
+const BODY_READERS = new Set(["json", "text", "arrayBuffer", "blob", "formData", "bytes"]);
+
+/**
+ * Hết hạn/huỷ KHI ĐANG ĐỌC THÂN (`r.json()`…) cũng phải ra `ClientFetchError` như lúc chờ header: bọc các hàm đọc thân
+ * (và `clone()`) để lỗi từ luồng bị huỷ được phân loại cùng một cách. Phản hồi vẫn dùng như `Response` thường.
+ */
+function wrapBodyErrors(res: Response, signal: AbortSignal | null | undefined, timeoutMs: number): Response {
+  return new Proxy(res, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop, target);
+      if (typeof value !== "function") return value;
+      const fn = value as (...args: unknown[]) => unknown;
+      if (prop === "clone") return () => wrapBodyErrors(target.clone(), signal, timeoutMs);
+      if (typeof prop === "string" && BODY_READERS.has(prop)) {
+        return async (...args: unknown[]) => {
+          try {
+            return await fn.apply(target, args);
+          } catch (err) {
+            // Chỉ hết hạn/huỷ mới đổi kiểu; lỗi khác (vd. JSON hỏng → SyntaxError) giữ nguyên cho người gọi.
+            const name = errorName(err);
+            if (signal?.aborted === true || name === "TimeoutError" || name === "AbortError") {
+              throw classify(err, signal, timeoutMs);
+            }
+            throw err;
+          }
+        };
+      }
+      return fn.bind(target);
+    },
+  });
+}
+
 export async function clientFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
@@ -54,13 +86,14 @@ export async function clientFetch(
 ): Promise<Response> {
   const timeoutMs = options.timeoutMs ?? CLIENT_FETCH_TIMEOUT_MS;
   try {
-    return await fetchWithRetry(input, init, {
+    const res = await fetchWithRetry(input, init, {
       maxRetries: CLIENT_FETCH_MAX_RETRIES,
       maxDelayMs: CLIENT_FETCH_MAX_DELAY_MS,
       maxRetryAfterMs: CLIENT_FETCH_MAX_RETRY_AFTER_MS,
       ...options,
       timeoutMs,
     });
+    return wrapBodyErrors(res, init.signal, timeoutMs);
   } catch (err) {
     if (err instanceof RangeError) throw err; // lỗi cấu hình của người gọi, không phải I/O
     throw classify(err, init.signal, timeoutMs);

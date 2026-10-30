@@ -178,6 +178,20 @@ const URL_ATTRIBUTE_SYNTAX = [
 const RAW_FETCH_MESSAGE =
   "Không gọi fetch trực tiếp trong component (FE-STATE-001/005, XC-PERF-006): dùng clientFetch ở lib/client-fetch.ts (có timeout, retry lỗi tạm thời, huỷ khi unmount).";
 
+/**
+ * Mọi THAM CHIẾU `fetch` lấy từ global object (không chỉ lời gọi): `window.fetch`, `globalThis?.fetch`, `self["fetch"]`,
+ * `` window[`fetch`] ``, và destructuring `const { fetch } = window` / `({ fetch: f } = globalThis)`. Giới hạn: bí danh
+ * (`const w = window; w.fetch`) và ép kiểu (`(window as X).fetch`) không bắt — review tay.
+ */
+const GLOBAL_OBJECTS = "/^(globalThis|window|self)$/";
+const FETCH_KEY = "[key.name='fetch'], [key.value='fetch']";
+const RAW_FETCH_REFERENCE_SYNTAX = [
+  `MemberExpression[object.name=${GLOBAL_OBJECTS}][computed=false][property.name='fetch']`,
+  `MemberExpression[object.name=${GLOBAL_OBJECTS}][computed=true]:matches([property.value='fetch'], [property.type='TemplateLiteral'][property.expressions.length=0][property.quasis.0.value.cooked='fetch'])`,
+  `VariableDeclarator[init.name=${GLOBAL_OBJECTS}] > ObjectPattern.id > Property:matches(${FETCH_KEY})`,
+  `AssignmentExpression[right.name=${GLOBAL_OBJECTS}] > ObjectPattern.left > Property:matches(${FETCH_KEY})`,
+].map((selector) => ({ selector, message: RAW_FETCH_MESSAGE }));
+
 export default tseslint.config(
   {
     ignores: [
@@ -341,11 +355,7 @@ export default tseslint.config(
         ...BASE_RESTRICTED_SYNTAX,
         ...UNITS_RESTRICTED_SYNTAX,
         ...URL_ATTRIBUTE_SYNTAX,
-        {
-          selector:
-            "CallExpression[callee.type='MemberExpression'][callee.property.name='fetch'][callee.object.name=/^(globalThis|window|self)$/]",
-          message: RAW_FETCH_MESSAGE,
-        },
+        ...RAW_FETCH_REFERENCE_SYNTAX,
       ],
     },
   },

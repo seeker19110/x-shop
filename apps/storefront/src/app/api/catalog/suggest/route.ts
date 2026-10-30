@@ -1,7 +1,7 @@
 import { EMPTY_FILTER, normalizeQuery } from "@x-shop/domain";
 import { CATALOG_API_CACHE_CONTROL } from "../../../../lib/cache-policy";
 import { rateLimitedResponse } from "../../../../lib/catalog/rate-limited";
-import { search } from "../../../../lib/catalog/client";
+import { proxyNet, search } from "../../../../lib/catalog/client";
 
 /** Tối đa gợi ý trả về và tối thiểu ký tự để gợi ý (CAT01). */
 const MAX_SUGGESTIONS = 8;
@@ -18,7 +18,10 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ suggestions: [] }, { headers: { "Cache-Control": CATALOG_API_CACHE_CONTROL } });
   }
   try {
-    const r = await search({ ...EMPTY_FILTER, q }, { pageSize: MAX_SUGGESTIONS, maxRetries: 0 });
+    const r = await search(
+      { ...EMPTY_FILTER, q },
+      { pageSize: MAX_SUGGESTIONS, net: proxyNet(request.signal) },
+    );
     const titles = [...new Set(r.items.map((i) => i.title))].slice(0, MAX_SUGGESTIONS);
     return Response.json(
       { suggestions: titles },
