@@ -81,7 +81,8 @@ describe("logger: dòng log theo schema chung", () => {
       order_total: 0,
     });
     expect(schemaErrors(r)).toEqual([]);
-    expect(String(r?.trace_id)).toMatch(/^[0-9a-f]{32}$/);
+    expect(r).not.toHaveProperty("trace_id");
+    expect(r).not.toHaveProperty("span_id");
   });
 
   it("lỗi: exception.* theo OTel + cause, hợp schema", () => {
@@ -132,7 +133,8 @@ describe("logger: dòng log theo schema chung", () => {
       severity_number: 9,
       trace_id: "req-1.a:b",
     });
-    expect(String(b?.trace_id)).toMatch(/^[0-9a-f]{32}$/);
+    expect(b).not.toHaveProperty("trace_id");
+    expect(b).not.toHaveProperty("span_id");
   });
 
   it("CR/LF, U+2028 và ký tự bidi không phá dòng (chống log injection)", () => {
@@ -516,15 +518,30 @@ describe("logger: span_id (BASE-ERR-006)", () => {
     expect(schemaErrors(b)).toEqual([]);
   });
 
-  it("dòng không gắn request (fatal/khởi động) vẫn hợp schema và có span_id; span_id giả bị thay", () => {
+  it("dòng không gắn request (fatal/khởi động): không có trace_id/span_id/parent_span_id, kể cả giả; hợp schema", () => {
     const { logger, records } = capture();
     logger.fatal("khởi động hỏng", new Error("x"));
-    logger.info("a", { span_id: "0000000000000000" });
-    logger.info("b", { span_id: "ABCDEF0123456789" });
+    logger.info("a", { span_id: "00f067aa0ba902b7", parent_span_id: "00f067aa0ba902b7" });
+    logger.info("b", { trace_id: "bad id\n", span_id: "ABCDEF0123456789" });
     for (const r of records()) {
-      expect(String(r.span_id)).toMatch(SPAN);
+      for (const k of ["trace_id", "span_id", "parent_span_id"]) expect(r).not.toHaveProperty(k);
       expect(schemaErrors(r)).toEqual([]);
     }
+  });
+
+  it("dòng gắn request: span_id/parent_span_id sai khuôn trong fields bị thay/bỏ", () => {
+    const { logger, records } = capture();
+    const req = logger.child({ trace_id: "t-1" });
+    req.info("a", { span_id: "0000000000000000", parent_span_id: "ZZ" });
+    req.info("b", { span_id: "ABCDEF0123456789", parent_span_id: "0000000000000000" });
+    req.info("c", { span_id: "00f067aa0ba902b7", parent_span_id: "1111111111111111" });
+    const [a, b, c] = records();
+    for (const r of [a, b]) {
+      expect(String(r?.span_id)).toMatch(SPAN);
+      expect(r).not.toHaveProperty("parent_span_id");
+    }
+    expect(c).toMatchObject({ span_id: "00f067aa0ba902b7", parent_span_id: "1111111111111111" });
+    for (const r of [a, b, c]) expect(schemaErrors(r)).toEqual([]);
   });
 
   it("parentSpanIdFromHeaders: chỉ nhận traceparent hợp lệ", () => {

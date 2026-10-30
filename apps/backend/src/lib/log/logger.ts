@@ -74,9 +74,11 @@ export function currentLogContext(): LogContext | undefined {
   return storage().getStore();
 }
 
-/** span_id W3C: 8 byte ngẫu nhiên, hex. */
-export function newSpanId(): string {
-  return randomBytes(8).toString("hex");
+/** span_id W3C: 8 byte ngẫu nhiên, hex thường, không toàn 0 (W3C: toàn 0 là không hợp lệ). */
+export function newSpanId(random: (n: number) => Buffer = randomBytes): string {
+  const b = random(8);
+  if (b.every((x) => x === 0)) b[7] = 1;
+  return b.toString("hex");
 }
 
 export type ExceptionFields = Record<"exception.type" | "exception.message", string> & {
@@ -150,7 +152,19 @@ export interface LoggerOptions {
   exit?: (code: number) => void;
 }
 
-const RESERVED = new Set(["timestamp", "level", "severity_number", "message", "service", "version", "env"]);
+const RESERVED = new Set([
+  "timestamp",
+  "level",
+  "severity_number",
+  "message",
+  "service",
+  "version",
+  "env",
+  // Ngữ cảnh trace chỉ đến từ runWithLogContext, `fields` không được đè/giả.
+  "trace_id",
+  "span_id",
+  "parent_span_id",
+]);
 
 /** Logger tương thích interface `Logger` của Medusa 2.22.1 + `emit()` có trường cấu trúc. */
 export class AppLogger {

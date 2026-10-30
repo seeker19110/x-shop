@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { schemaErrors as validateSchema } from "../../../../../../scripts/log-schema-validate.cjs";
 import { fatalLogLine } from "../../errors/process";
-import { createLogger, runWithLogContext } from "../logger";
+import { createLogger, newSpanId, runWithLogContext } from "../logger";
 
 /**
  * T-190 (BASE-ERR-005/006): dòng log của backend (logger ứng dụng + dòng fatal của process.ts) hợp `docs/ops/log-schema.json`
@@ -127,6 +127,31 @@ describe("logging: span_id bắt buộc khi có trace_id (BASE-ERR-006)", () => 
     expect(rec()[0]).not.toHaveProperty("trace_id");
     expect(rec()[0]).not.toHaveProperty("span_id");
     expect(schemaErrors(rec()[0])).toEqual([]);
+  });
+
+  it("fields không đè/giả trace_id, span_id, parent_span_id của ngữ cảnh", () => {
+    const { logger, rec } = make();
+    runWithLogContext({ trace_id: "req-3", span_id: "00f067aa0ba902b7" }, () =>
+      logger.emit("info", "a", {
+        trace_id: "kẻ-giả",
+        span_id: "1111111111111111",
+        parent_span_id: "2222222222222222",
+      }),
+    );
+    logger.emit("info", "ngoài", {
+      trace_id: "kẻ-giả",
+      span_id: "1111111111111111",
+      parent_span_id: "2222222222222222",
+    });
+    const [a, o] = rec();
+    expect(a).toMatchObject({ trace_id: "req-3", span_id: "00f067aa0ba902b7" });
+    expect(a).not.toHaveProperty("parent_span_id");
+    for (const k of ["trace_id", "span_id", "parent_span_id"]) expect(o).not.toHaveProperty(k);
+  });
+
+  it("newSpanId: 16 hex thường, không toàn 0 (kể cả khi nguồn ngẫu nhiên trả toàn 0)", () => {
+    expect(newSpanId()).toMatch(SPAN);
+    expect(newSpanId(() => Buffer.alloc(8))).toBe("0000000000000001");
   });
 
   it("schema bắt: trace_id thiếu span_id, span_id toàn 0 hoặc viết hoa", () => {

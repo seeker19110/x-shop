@@ -5,7 +5,7 @@ import { redactLog, redactText } from "./redact";
  * Logger JSON có cấu trúc của storefront SERVER (BASE-ERR-005/006, T-190) — cùng hợp đồng với backend
  * (`docs/ops/log-schema.json`): mỗi bản ghi MỘT dòng JSON ra stdout, không ghi file, không gửi đi đâu (việc của Collector):
  *   `timestamp` RFC 3339 UTC ms (`…Z`) · `level` + `severity_number` (OTel: debug 5, info 9, warn 13, error 17, fatal 21) ·
- *   `message` · `service` · `version` · `env` · `trace_id` · `span_id` · ngoại lệ `exception.type/message/stacktrace` (OTel semconv).
+ *   `message` · `service` · `version` · `env` · `trace_id` · `span_id` (chỉ khi gắn request) · ngoại lệ `exception.type/message/stacktrace` (OTel semconv).
  * `trace_id`: `x-request-id` hợp lệ → trace-id của `traceparent` (W3C) → sinh mới (32 hex). `span_id` (16 hex thường, không toàn 0) là span HIỆN TẠI
  * của storefront: luôn sinh mới (crypto); parent-id của `traceparent` hợp lệ (nếu có) KHÔNG dùng làm span_id (đó là span của
  * phía gọi — W3C/OTel) mà ghi ở `parent_span_id`. Schema: có `trace_id` thì bắt buộc `span_id`. Header là dữ liệu không tin
@@ -227,12 +227,24 @@ export class Logger {
       const merged: Record<string, unknown> = {};
       for (const [k, v] of Object.entries({ ...this.bound, ...fields })) if (!RESERVED.has(k)) merged[k] = v;
       const rawTrace = merged.trace_id;
-      delete merged.trace_id;
       const rawSpan = merged.span_id;
+      const rawParent = merged.parent_span_id;
+      delete merged.trace_id;
       delete merged.span_id;
+      delete merged.parent_span_id;
+      // Dòng KHÔNG gắn request (fatal/khởi động): không bịa trace_id/span_id (như backend; schema cho phép thiếu cả hai).
       const trace_id =
-        typeof rawTrace === "string" && REQUEST_ID_PATTERN.test(rawTrace) ? rawTrace : newTraceId();
-      const span_id = typeof rawSpan === "string" && SPAN_ID.test(rawSpan) ? rawSpan : newSpanId();
+        typeof rawTrace === "string" && REQUEST_ID_PATTERN.test(rawTrace) ? rawTrace : undefined;
+      const span_id =
+        trace_id === undefined
+          ? undefined
+          : typeof rawSpan === "string" && SPAN_ID.test(rawSpan)
+            ? rawSpan
+            : newSpanId();
+      const parent_span_id =
+        span_id !== undefined && typeof rawParent === "string" && SPAN_ID.test(rawParent)
+          ? rawParent
+          : undefined;
       const record = {
         timestamp: this.now().toISOString(),
         level: severity,
@@ -241,8 +253,8 @@ export class Logger {
         service: this.service,
         version: this.version,
         env: this.env,
-        trace_id,
-        span_id,
+        ...(trace_id !== undefined && { trace_id, span_id }),
+        ...(parent_span_id !== undefined && { parent_span_id }),
         ...(redactLog(merged) as Record<string, unknown>),
         ...(error !== undefined && redactException(exceptionFields(error))),
       };
