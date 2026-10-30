@@ -583,6 +583,11 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
             name="ward"
             label="Phường/xã"
             required
+            hint={
+              wardsView.status === "ready" && wardsView.list.length === 0
+                ? "Chưa có danh sách phường/xã cho tỉnh/thành này. Vui lòng chọn tỉnh/thành khác."
+                : undefined
+            }
             error={
               errors.ward ??
               (wardsView.status === "error" ? "Không tải được danh sách phường/xã." : undefined)
