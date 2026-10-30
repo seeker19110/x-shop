@@ -45,12 +45,18 @@ test("rgb/hsl cứng bị bắt, dựng từ var thì không", () => {
 test("comment được quét", () => {
   assert.deepEqual(bad("// vd #1a1a1a"), ["1:7"]);
 });
-test("ngoại lệ hex-ok cần lý do", () => {
-  assert.deepEqual(bad('x = "#fff"; // hex-ok: manifest không đọc được CSS var'), []);
-  assert.deepEqual(bad('// hex-ok: meta theme-color là chuỗi\nx = "#fff";'), []);
-  assert.deepEqual(bad('x = "#fff"; // hex-ok: '), ["1:6"]);
-  assert.deepEqual(bad('x = "#fff"; // hex-ok: ngắn'), ["1:6"]);
-  assert.deepEqual(bad('// hex-ok-file: dữ liệu màu sản phẩm, không phải giao diện\nx = "#fff";'), []);
+test("hex ngay sau dấu hai chấm không dấu cách vẫn bị bắt", () => {
+  assert.deepEqual(bad("a{background:#fff}", "a.css"), ["1:14"]);
+  assert.deepEqual(bad('el.style.cssText = "color:#e11d48"'), ["1:27"]);
+  assert.deepEqual(bad('<p style="color:#000">'), ["1:17"]);
+  assert.deepEqual(bad("const C = styled.div`color:#fff;`"), ["1:28"]);
+  assert.deepEqual(bad(":root{--x:#fff;}", "a.css"), ["1:11"]);
+  assert.deepEqual(bad("$c:#fff;", "a.scss"), ["1:4"]);
+  assert.deepEqual(bad("a{color:#111}", "a.css"), ["1:9"]);
+  assert.deepEqual(bad('<a href="/x#fade">y</a> https://e.com/p#cafe'), []);
+});
+test("comment `hex-ok` không còn miễn trừ", () => {
+  assert.deepEqual(bad('x = "#fff"; // hex-ok: lý do dài đến đâu cũng không có tác dụng'), ["1:6"]);
 });
 test("rỗng và CRLF", () => {
   assert.deepEqual(bad(""), []);
@@ -60,15 +66,39 @@ test("Unicode: cột tính theo đơn vị UTF-16 của chuỗi, dòng đúng", 
   assert.deepEqual(bad('"Đỏ đô" #abc'.replace("#abc", '"#abc"')), ["1:10"]);
 });
 
-function run(files) {
+function run(files, list = []) {
   const dir = mkdtempSync(join(tmpdir(), "hex-"));
   for (const [name, body] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, name)), { recursive: true });
     writeFileSync(join(dir, name), body);
   }
+  const allowFile = join(mkdtempSync(join(tmpdir(), "hexal-")), "a.json");
+  writeFileSync(allowFile, typeof list === "string" ? list : JSON.stringify(list));
   const script = join(dirname(fileURLToPath(import.meta.url)), "check-hex.mjs");
-  return spawnSync(process.execPath, [script, dir], { encoding: "utf8" });
+  return spawnSync(process.execPath, [script, dir, allowFile], { encoding: "utf8" });
 }
+const REASON = "Lý do đủ dài để qua ngưỡng hai mươi ký tự.";
+test("CLI allowlist: khớp file+pattern thì qua", () => {
+  const r = run({ "app/m.ts": 'export const A = "#abc";' }, [
+    { file: "app/m.ts", pattern: 'A = "#', reason: REASON },
+  ]);
+  assert.equal(r.status, 0, r.stderr);
+});
+test("CLI allowlist: mục thừa (không còn khớp) → 1", () => {
+  const r = run({ "app/m.ts": "x = 1" }, [{ file: "app/m.ts", pattern: "#abc", reason: REASON }]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /mục allowlist thừa/);
+});
+test("CLI allowlist: sai file hoặc pattern thì vẫn là vi phạm", () => {
+  const r = run({ "app/m.ts": 'x = "#abc"' }, [{ file: "app/khac.ts", pattern: "#abc", reason: REASON }]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /m\.ts:1:6/);
+});
+test("CLI allowlist: reason ngắn / thiếu trường → 1; JSON hỏng → 2", () => {
+  assert.equal(run({ "a.ts": "x" }, [{ file: "a.ts", pattern: "x", reason: "ngắn" }]).status, 1);
+  assert.equal(run({ "a.ts": "x" }, [{ file: "a.ts", reason: REASON }]).status, 1);
+  assert.equal(run({ "a.ts": "x" }, "{hỏng").status, 2);
+});
 test("CLI: sạch → 0; tokens/test/fixtures bỏ qua", () => {
   const r = run({
     "styles/tokens.css": ":root{--a:#fff}",

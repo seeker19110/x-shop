@@ -1,8 +1,7 @@
 import type { MetadataRoute } from "next";
 
 /** Giá trị màu khớp token `--background` / `--accent` ở src/styles/tokens.css (test pwa kiểm khớp). */
-export const MANIFEST_BACKGROUND = "#faf8f4"; // hex-ok: manifest JSON không đọc được CSS var; test pwa kiểm khớp token
-
+export const MANIFEST_BACKGROUND = "#faf8f4";
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "X-Shop — Thời trang Việt Nam",

@@ -1,4 +1,3 @@
-// hex-ok-file: dữ liệu màu sản phẩm demo (không phải màu giao diện) — swatch hiển thị đúng màu hàng
 import type {
   ColorOption,
   ModelMeasurement,

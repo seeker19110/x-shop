@@ -1,0 +1,27 @@
+[
+  {
+    "file": "app/manifest.ts",
+    "pattern": "MANIFEST_BACKGROUND = \"#",
+    "reason": "Web app manifest là JSON phục vụ cho trình duyệt, không đọc được CSS var; giá trị phải trùng --background (pwa.test kiểm khớp token)."
+  },
+  {
+    "file": "app/layout.tsx",
+    "pattern": "themeColor: \"#",
+    "reason": "Thẻ meta theme-color là chuỗi do Next sinh ra, không đọc được CSS var; giá trị phải trùng --background (pwa.test kiểm khớp token)."
+  },
+  {
+    "file": "app/global-error.tsx",
+    "pattern": "color: \"#",
+    "reason": "global-error thay root layout nên không nạp tokens.css; màu chữ phải là literal trùng --foreground (global-error.test kiểm khớp token)."
+  },
+  {
+    "file": "lib/catalog/fixtures.ts",
+    "pattern": "hex: \"#",
+    "reason": "Dữ liệu màu sản phẩm demo (swatch hiển thị đúng màu hàng), không phải màu giao diện."
+  },
+  {
+    "file": "lib/catalog/backend-map.ts",
+    "pattern": "FALLBACK_HEX = \"#",
+    "reason": "Màu swatch dự phòng khi backend không báo màu: dữ liệu sản phẩm, không phải màu giao diện."
+  }
+]
