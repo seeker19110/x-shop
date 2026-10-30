@@ -14,9 +14,9 @@
 #                     tạo xshop_app/xshop_migrator bằng scripts/db-roles.sql + db-app-grants.sql trước lần migrate đầu).
 #   redis.env       — REDIS_PASSWORD (≥ 32 ký tự ngẫu nhiên, nên hex: `openssl rand -hex 32`; cùng giá trị trong REDIS_URL
 #                     của backend.env — ký tự đặc biệt trong URL phải percent-encode).
-#   Đường dẫn file đổi được qua biến XSHOP_*_ENV_FILE. Image ghim theo DIGEST (build một lần, đẩy cùng digest qua staging →
-#   production — OPS-DEPLOY-001): XSHOP_BACKEND_IMAGE=<registry>/x-shop-backend@sha256:…,
-#   XSHOP_STOREFRONT_IMAGE=<registry>/x-shop-storefront@sha256:….
+#   Đường dẫn file đổi được qua biến XSHOP_*_ENV_FILE. Image ghim theo DIGEST. Backend: build một lần, đẩy cùng digest qua
+#   staging → production (OPS-DEPLOY-001): XSHOP_BACKEND_IMAGE=<registry>/x-shop-backend@sha256:…. Storefront: MỘT digest
+#   MỖI môi trường (NEXT_PUBLIC_* nhúng lúc build — ngoại lệ D-150, RUNBOOK §8.2c): XSHOP_STOREFRONT_IMAGE=<registry>/x-shop-storefront@sha256:….
 #
 # Chạy: docker compose -f compose.prod.example.yml up -d postgres redis
 #       docker compose -f compose.prod.example.yml run --rm backend-migrate      # migrate TRƯỚC khi chạy bản mới (một lần)

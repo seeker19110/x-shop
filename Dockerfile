@@ -8,7 +8,7 @@
 #   storefront — Next.js `next start` (next.config.ts CHƯA có `output: "standalone"` — xem ghi chú ở stage storefront).
 #
 # Build:  docker build --target backend    -t x-shop-backend:<sha> .
-#         docker build --target storefront -t x-shop-storefront:<sha> \
+#         docker build --target storefront -t x-shop-storefront:<sha>-<môi-trường> \
 #           --build-arg NEXT_PUBLIC_SITE_URL=https://shop.example.vn --build-arg NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=pk_… \
 #           --build-arg XS_MEDIA_URL=https://media.shop.example.vn …   (SITE_URL + PUBLISHABLE_KEY bắt buộc)
 #
@@ -71,7 +71,7 @@ RUN DATABASE_URL=postgres://localhost:5432/build-only pnpm --filter @x-shop/back
 
 # Build domain → storefront (`next build`). NEXT_PUBLIC_* được Next NHÚNG vào bundle lúc build, XS_MEDIA_URL đóng vào
 # images.remotePatterns (docs/ops/ENV.md) → các biến này là tham số build (đều CÔNG KHAI, không phải bí mật). Hệ quả:
-# image storefront gắn với MỘT bộ giá trị này (staging và production khác SITE_URL → hai image) — xem câu hỏi mở T-191.
+# image storefront gắn với MỘT bộ giá trị này (staging và production khác SITE_URL → hai image) — ngoại lệ D-150, RUNBOOK §8.2c.
 # Thiếu SITE_URL/PUBLISHABLE_KEY thì bản production từ chối phục vụ mọi trang (getClientEnv ném lỗi) → dừng ngay lúc build.
 FROM deps AS storefront-build
 ARG NEXT_PUBLIC_SITE_URL
