@@ -1066,3 +1066,17 @@
 - Chọn: report.read (không MFA; owner/accountant/catalog_manager và tài khoản smoke chỉ-đọc xem được)
 - Lý do (tiêu chí chất lượng cuối): (1) dữ liệu không nhạy cảm (phiên bản/commit đã công khai ở release); vẫn cần xác thực admin; (3) không mở rộng ma trận quyền; tài khoản smoke chỉ-đọc dùng được cho --expect-version
 - Đường lùi: Đổi permissions.ts sang audit.read hoặc thêm ops.read
+
+### D-152 · 2026-10-30T21:26:30+00:00 · T-209 job regression: phạm vi test và cách nhận diện PR fix
+
+- Phương án: (1) Bỏ qua test tích hợp/E2E (chỉ cảnh báo, gate đã chạy trên HEAD); nhận diện fix chỉ theo TIÊU ĐỀ PR (squash-merge: tiêu đề = commit cuối) · (2) Job riêng có service Postgres/Redis cho test tích hợp; nhận diện fix theo tiêu đề hoặc bất kỳ subject commit
+- Chọn: Bỏ qua test tích hợp/E2E (chỉ cảnh báo, gate đã chạy trên HEAD); nhận diện fix chỉ theo TIÊU ĐỀ PR (squash-merge: tiêu đề = commit cuối)
+- Lý do (tiêu chí chất lượng cuối): (3) đơn giản, rẻ: không khởi service cho mọi sự kiện pr-policy; tiêu đề là đơn vị merge (squash) nên đúng ngữ nghĩa — PR feat lớn có commit fix: nội bộ không bị bắt chạy lại hàng trăm test trên base; (1) test tích hợp vẫn chạy ở gate trên HEAD, phần đỏ-trước dựa dòng Đỏ trước: của PR
+- Đường lùi: Thêm job regression-integration có service; mở rộng isFixPr sang subject commit
+
+### D-153 · 2026-10-30T22:07:21+00:00 · T-209: base đỏ vì lỗi nạp module (0 test case chạy) có được tính là tái hiện lỗi không?
+
+- Phương án: (1) Chỉ xét exit code, ghi cảnh báo trong summary · (2) Reporter máy đọc được (vitest json, jest --json, node junit): base đạt khi ≥1 test case cùng file+tên fail trên base và pass trên HEAD; chỉ đỏ do nạp → đỏ trừ ngoại lệ fix-no-test
+- Chọn: Reporter máy đọc được (vitest json, jest --json, node junit): base đạt khi ≥1 test case cùng file+tên fail trên base và pass trên HEAD; chỉ đỏ do nạp → đỏ trừ ngoại lệ fix-no-test
+- Lý do (tiêu chí chất lượng cuối): Đúng và chặt hơn (tiêu chí 1): lỗi nạp không chứng minh tái hiện bug (FE-TEST-006); ca hay gặp khi fix thêm export nên không phải lách hiếm; có ngoại lệ có giải trình làm đường thoát
+- Đường lùi: Hạ về so exit code: bỏ bước đối chiếu case trong regressionVerdict, giữ ngoại lệ
