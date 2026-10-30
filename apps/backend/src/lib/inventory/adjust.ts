@@ -10,6 +10,7 @@ import { isUniqueViolation, type InventoryAdjustment } from "../../modules/audit
 import type { AuditEntryInput } from "../../modules/audit/service";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
+import { optionalNote } from "../http/request-input";
 import { INVENTORY_CONFLICT_RETRY, inventoryGuardKind } from "./guard";
 
 /**
@@ -49,7 +50,8 @@ export const AdjustmentBody = z
     reason: z.enum(Object.keys(ADJUST_REASONS) as [AdjustReason, ...AdjustReason[]], {
       message: `phải là một trong ${Object.keys(ADJUST_REASONS).join("|")}`,
     }),
-    note: z.string().trim().max(500).optional(),
+    // D-149: rỗng/toàn khoảng trắng → null (không ghi chú).
+    note: optionalNote(500),
   })
   .strict()
   .superRefine((b, ctx) => {

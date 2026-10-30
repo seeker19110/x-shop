@@ -3,7 +3,7 @@ import { isValidIdempotencyKey, type Permission, isNonEmpty } from "@x-shop/doma
 import { z } from "zod";
 import { requirePermission } from "../../lib/access/require-permission";
 import { adminAccessOf } from "../../lib/admin-security/guard";
-import { readQuery } from "../../lib/http/request-input";
+import { optionalNote, readQuery } from "../../lib/http/request-input";
 import { RETURN_KINDS, RETURN_REASONS, REFUND_METHODS } from "../../modules/returns/constants";
 import { ReturnsError } from "./errors";
 import type { Actor } from "./refunds";
@@ -46,7 +46,9 @@ export function parseQuery<T extends z.ZodType>(req: MedusaRequest, schema: T): 
 }
 
 const id = z.string().trim().min(1).max(128);
-const note = z.string().trim().max(500);
+const NOTE_MAX = 500;
+/** Lý do/ghi chú BẮT BUỘC (từ chối, hủy) — `.min(n)` ở chỗ dùng; ghi chú tuỳ chọn dùng `optionalNote` (D-149). */
+const note = z.string().trim().max(NOTE_MAX);
 
 export const ReturnLinesSchema = z
   .array(
@@ -65,14 +67,14 @@ export const ReturnRequestBody = z
   .object({
     kind: z.enum(RETURN_KINDS),
     reason: z.enum(RETURN_REASONS),
-    note: note.optional(),
+    note: optionalNote(NOTE_MAX),
     lines: ReturnLinesSchema,
   })
   .strict();
 
 export const AdminReturnRequestBody = ReturnRequestBody.extend({ order_id: id }).strict();
 
-export const DecisionBody = z.object({ note: note.optional() }).strict();
+export const DecisionBody = z.object({ note: optionalNote(NOTE_MAX) }).strict();
 export const RejectBody = z.object({ reason: note.min(3) }).strict();
 /** Hủy (yêu cầu hoàn `failed`, đơn bởi nhân viên — T-044): lý do bắt buộc, ghi audit. */
 export const CancelBody = RejectBody;
@@ -113,7 +115,7 @@ export const InspectBody = z
             line_id: id,
             restock_quantity: z.number().int().min(0).max(99),
             damaged_quantity: z.number().int().min(0).max(99),
-            note: note.optional(),
+            note: optionalNote(NOTE_MAX),
           })
           .strict(),
       )
@@ -130,7 +132,7 @@ export const RefundCreateBody = z
     return_id: id.optional(),
     amount: z.number().int().positive().max(2_147_483_647).optional(),
     method: z.enum([...REFUND_METHODS, "auto"]).optional(),
-    note: note.optional(),
+    note: optionalNote(NOTE_MAX),
   })
   .strict()
   .superRefine((b, ctx) => {

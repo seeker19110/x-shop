@@ -1186,7 +1186,7 @@ paths:
                       line_id: { type: string, minLength: 1, maxLength: 128 }
                       restock_quantity: { type: integer, minimum: 0, maximum: 99 }
                       damaged_quantity: { type: integer, minimum: 0, maximum: 99 }
-                      note: { type: string, maxLength: 500 }
+                      note: { type: string, maxLength: 500, description: "Tuỳ chọn; khoảng trắng hai đầu bị cắt; rỗng/toàn khoảng trắng = không ghi chú (lưu null, D-149)." }
       responses:
         "200":
           description: "Kết quả kiểm định."
@@ -2335,7 +2335,7 @@ components:
       properties:
         kind: { type: string, enum: [return, exchange] }
         reason: { type: string, enum: [wrong_size, defective, not_as_described, changed_mind, other] }
-        note: { type: string, maxLength: 500 }
+        note: { type: string, maxLength: 500, description: "Tuỳ chọn; khoảng trắng hai đầu bị cắt; rỗng/toàn khoảng trắng = không ghi chú (lưu null, D-149)." }
         lines:
           type: array
           minItems: 1
@@ -2380,19 +2380,19 @@ components:
       required: [order_id, reason]
       description: |
         `reason=return` bắt buộc `return_id` và cấm `amount` (lấy theo kiểm định). `reason` khác `cancellation` bắt buộc `amount`.
-        `other`/`overpayment` bắt buộc `note`.
+        `other`/`overpayment` bắt buộc `note` có nội dung (rỗng/toàn khoảng trắng → 422).
       properties:
         order_id: { type: string, minLength: 1, maxLength: 128 }
         reason: { type: string, enum: [return, cancellation, overpayment, late_payment, other] }
         return_id: { type: string, minLength: 1, maxLength: 128 }
         amount: { type: integer, exclusiveMinimum: 0, maximum: 2147483647 }
         method: { type: string, enum: [provider, manual, auto] }
-        note: { type: string, maxLength: 500 }
+        note: { type: string, maxLength: 500, description: "Tuỳ chọn; khoảng trắng hai đầu bị cắt; rỗng/toàn khoảng trắng = không ghi chú (lưu null, D-149)." }
     DecisionRequest:
       type: object
       additionalProperties: false
       properties:
-        note: { type: string, maxLength: 500 }
+        note: { type: string, maxLength: 500, description: "Tuỳ chọn; khoảng trắng hai đầu bị cắt; rỗng/toàn khoảng trắng = không ghi chú (lưu null, D-149)." }
     ReasonRequest:
       type: object
       additionalProperties: false
@@ -2427,7 +2427,7 @@ components:
           maximum: 1000000
           not: { const: 0 }
         reason: { type: string, description: "Một khóa lý do điều chỉnh; hướng (tăng/giảm) kiểm cùng `delta`." }
-        note: { type: string, maxLength: 500 }
+        note: { type: string, maxLength: 500, description: "Tuỳ chọn; khoảng trắng hai đầu bị cắt; rỗng/toàn khoảng trắng = không ghi chú (lưu null, D-149)." }
     AdjustmentEnvelope:
       type: object
       properties:

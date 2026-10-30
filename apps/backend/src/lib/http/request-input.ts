@@ -34,6 +34,20 @@ export const readQuery = <T extends z.ZodType>(req: { query?: unknown }, schema:
 export const QueryBag = z.record(z.string(), z.unknown());
 export const readQueryBag = (req: { query?: unknown }) => run(QueryBag, req.query);
 
+/**
+ * Ghi chú tự do TUỲ CHỌN trong thân request (D-149, BASE-DATA-003): cắt khoảng trắng hai đầu; rỗng/toàn khoảng trắng
+ * → `null` (= không ghi chú, giống email/mã giảm giá rỗng); vắng → `undefined` (route lưu `?? null`); `null` gửi lên
+ * vẫn bị từ chối (chỉ chuỗi). Ghi chú BẮT BUỘC có nội dung thì kiểm thêm ở schema gọi (`isNonEmpty`) hoặc dùng
+ * `z.string().trim().min(n)` thay cho hàm này.
+ */
+export const optionalNote = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .transform((s) => (s === "" ? null : s))
+    .optional();
+
 /** Chuỗi đơn (không nhận mảng/object), không rỗng, tối đa `max` ký tự — mẫu cho `:id`. */
 export const pathId = (max = 128) => z.string().min(1).max(max);
 

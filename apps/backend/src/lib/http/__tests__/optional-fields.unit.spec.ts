@@ -250,13 +250,13 @@ describe("optional-fields — contact.email (POST /store/x/checkout/submit)", ()
 });
 
 /**
- * Ghi chú tự do: `.optional()` không `.nullable()` — vắng → undefined (route lưu null bằng `?? null`), `""` giữ nguyên là
- * chuỗi rỗng (đã gửi nhưng trống — khác vắng), `null` bị từ chối (client bỏ trường thay vì gửi null).
+ * Ghi chú tự do tuỳ chọn (`optionalNote`, D-149): vắng → undefined (route lưu null bằng `?? null`); `""`/toàn khoảng
+ * trắng → null (= không ghi chú, như email/mã giảm giá rỗng); `null` gửi lên bị từ chối (chỉ chuỗi).
  */
 const NOTE_ROWS: Row[] = [
   ["vắng", ABSENT, { ok: undefined }, "không ghi chú"],
-  ['""', "", { ok: "" }, "đã gửi nhưng trống — giữ nguyên, khác vắng"],
-  ['"   "', "   ", { ok: "" }, "trim → rỗng"],
+  ['""', "", { ok: null }, "rỗng = không ghi chú (D-149)"],
+  ['"   "', "   ", { ok: null }, "toàn khoảng trắng = không ghi chú (D-149)"],
   ['"0"', "0", { ok: "0" }, '"0" là nội dung, không bị coi là vắng'],
   ['" ok "', " ok ", { ok: "ok" }, "trim"],
   ["null", null, "reject", "không nullable"],
@@ -279,6 +279,17 @@ describe("optional-fields — note", () => {
   describe("DecisionBody.note (duyệt yêu cầu)", () => {
     table(NOTE_ROWS, zodParse(DecisionBody, {}, "note"), field("note"));
   });
+  describe("InspectBody.lines[].note (ghi chú kiểm định từng dòng)", () => {
+    table(
+      NOTE_ROWS,
+      (value) => {
+        const line = withField({ line_id: "l1", restock_quantity: 1, damaged_quantity: 0 }, "note", value);
+        const r = InspectBody.safeParse({ lines: [line] });
+        return r.success ? { ok: true, data: r.data.lines[0] } : { ok: false };
+      },
+      field("note"),
+    );
+  });
   describe("AdjustmentBody.note (điều chỉnh tồn)", () => {
     table(
       NOTE_ROWS,
@@ -294,12 +305,24 @@ describe("optional-fields — note", () => {
     table(
       [
         ["vắng", ABSENT, "reject", "cần ghi chú lý do"],
-        ['""', "", "reject", "rỗng = thiếu ghi chú"],
-        ['"   "', "   ", "reject", "trim → rỗng = thiếu"],
+        ['""', "", "reject", "rỗng → null = thiếu ghi chú → 422, không lưu null"],
+        ['"   "', "   ", "reject", "toàn khoảng trắng = thiếu → 422"],
         ['"0"', "0", { ok: "0" }, '"0" là nội dung'],
         ["null", null, "reject", "không nullable"],
       ],
       zodParse(RefundCreateBody, { order_id: "order_1", reason: "other", amount: 1000 }, "note"),
+      field("note"),
+    );
+    it('reason=overpayment cũng bắt buộc: "" → 422', () => {
+      const base = { order_id: "order_1", reason: "overpayment", amount: 1000 };
+      expect(RefundCreateBody.safeParse({ ...base, note: "" }).success).toBe(false);
+      expect(RefundCreateBody.safeParse({ ...base, note: "thu thừa" }).success).toBe(true);
+    });
+  });
+  describe("RefundCreateBody.note với reason=late_payment (ghi chú tuỳ chọn)", () => {
+    table(
+      NOTE_ROWS,
+      zodParse(RefundCreateBody, { order_id: "order_1", reason: "late_payment", amount: 1000 }, "note"),
       field("note"),
     );
   });
