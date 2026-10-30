@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import {
   ALLOWLIST_PATH,
+  DECISIONS_PATH,
   diffDetailed,
   diffSpecs,
   hasBreakingMarker,
@@ -378,6 +379,27 @@ test("allowlist: thiếu/ngắn reason, thiếu/sai evidence, thiếu trường,
       assert.equal(runIn(dir).code, 2);
     }
     writeFileSync(join(dir, ALLOWLIST_PATH), "{hỏng");
+    assert.equal(runIn(dir).code, 2);
+  });
+});
+
+test("allowlist: evidence decision:D-NNN hợp lệ khi D-NNN có trong DECISIONS.md; không có → exit 2", () => {
+  withRepo(BROKEN_N, {}, (dir) => {
+    mkdirSync(join(dir, dirname(DECISIONS_PATH)), { recursive: true });
+    writeFileSync(join(dir, DECISIONS_PATH), "### D-146 · 2026-10-30 · quyết định mẫu\n\n- Chọn: x\n");
+    writeAllow(dir, [{ ...ENTRY, evidence: "decision:D-146" }]);
+    assert.equal(runIn(dir).code, 0);
+    writeAllow(dir, [{ ...ENTRY, evidence: "decision:D-999" }]);
+    const r = runIn(dir);
+    assert.equal(r.code, 2);
+    assert.match(r.lines.join("\n"), /D-999/);
+    // D-14 không được khớp nhầm tiền tố của D-146.
+    writeAllow(dir, [{ ...ENTRY, evidence: "decision:D-14" }]);
+    assert.equal(runIn(dir).code, 2);
+  });
+  withRepo(BROKEN_N, {}, (dir) => {
+    // Không có DECISIONS.md → exit 2.
+    writeAllow(dir, [{ ...ENTRY, evidence: "decision:D-146" }]);
     assert.equal(runIn(dir).code, 2);
   });
 });

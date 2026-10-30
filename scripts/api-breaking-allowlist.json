@@ -17,6 +17,15 @@
       "name": "page",
       "reason": "Spec chỉ ghi lại giới hạn đã được server ép: page chỉ nhận 1-4 chữ số nên tối đa 9999, ngoài đó 422.",
       "evidence": "packages/domain/src/catalog/filter.ts:79 (parseFilter, regex ^\\d{1,4}$, dùng bởi parseListingQuery ở apps/backend/src/lib/catalog/listing.ts:43; route apps/backend/src/api/store/x/search/route.ts:14) — có ở origin/master"
+    },
+    {
+      "rule": "Q6",
+      "method": "GET",
+      "path": "/admin/x/size-charts",
+      "location": "param",
+      "name": "code",
+      "reason": "Route admin có RBAC, chưa có production (T-060) và không có client ngoài; sau phát hành (G7) siết ràng buộc phải theo nhãn breaking.",
+      "evidence": "decision:D-146"
     }
   ]
 }

@@ -343,8 +343,9 @@ const entryKey = (e) => `${e.rule} ${String(e.method).toUpperCase()} ${e.path} $
 
 /**
  * Đọc allowlist `{ "entries": [{ rule, method, path, location, name, reason, evidence }] }`. Không có tệp = rỗng.
- * Mục thiếu trường / `reason` < 20 ký tự / `evidence` không dạng file:dòng → lỗi (exit 2). `evidence` = `file:dòng` của
- * code server đã ép giới hạn đó TRƯỚC PR (kiểm lại bằng lệnh đọc file ở base); `location` = param|body|response|path|operation.
+ * Mục thiếu trường / `reason` < 20 ký tự / `evidence` sai dạng → lỗi (exit 2). `evidence` = `file:dòng` của code server đã
+ * ép giới hạn đó TRƯỚC PR (kiểm lại bằng lệnh đọc file ở base), HOẶC `decision:D-NNN` (quyết định có thật trong
+ * docs/autopilot/DECISIONS.md, cho thay đổi phá vỡ có chủ đích đã duyệt — D-146); `location` = param|body|response|path|operation.
  */
 export function loadAllowlist(root) {
   let raw;
@@ -367,10 +368,32 @@ export function loadAllowlist(root) {
         return { entries: [], error: `${ALLOWLIST_PATH}[${i}]: thiếu trường "${f}"` };
     if (typeof e.reason !== "string" || e.reason.trim().length < 20)
       return { entries: [], error: `${ALLOWLIST_PATH}[${i}]: "reason" phải ≥ 20 ký tự` };
-    if (typeof e.evidence !== "string" || !/\S+:\d+/.test(e.evidence))
-      return { entries: [], error: `${ALLOWLIST_PATH}[${i}]: "evidence" phải dạng file:dòng` };
+    if (typeof e.evidence !== "string")
+      return { entries: [], error: `${ALLOWLIST_PATH}[${i}]: thiếu "evidence"` };
+    const decision = /^decision:(D-\d+)\b/.exec(e.evidence);
+    if (decision) {
+      if (!hasDecision(root, decision[1]))
+        return {
+          entries: [],
+          error: `${ALLOWLIST_PATH}[${i}]: "evidence" ${decision[1]} không có trong ${DECISIONS_PATH}`,
+        };
+    } else if (!/\S+:\d+/.test(e.evidence))
+      return {
+        entries: [],
+        error: `${ALLOWLIST_PATH}[${i}]: "evidence" phải dạng file:dòng hoặc decision:D-NNN`,
+      };
   }
   return { entries };
+}
+
+export const DECISIONS_PATH = "docs/autopilot/DECISIONS.md";
+/** D-NNN có tiêu đề `### D-NNN` trong DECISIONS.md (đọc working tree). Không đọc được → false. */
+function hasDecision(root, id) {
+  try {
+    return new RegExp(`^### ${id}\\b`, "m").test(readFileSync(join(root, DECISIONS_PATH), "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 const git = (root, args) =>
