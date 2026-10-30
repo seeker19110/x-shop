@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { schemaErrors as validateSchema } from "../../../../../scripts/log-schema-validate.cjs";
 import { onRequestError } from "../../instrumentation";
@@ -464,10 +464,12 @@ describe("logger: chỉ phía server", () => {
     const src = resolve(process.cwd(), "src");
     const offenders: string[] = [];
     const walk = (dir: string) => {
-      for (const name of readdirSync(dir)) {
+      // Dirent (không stat rồi đọc riêng) — tránh race kiểm-rồi-dùng (CodeQL js/file-system-race).
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const name = entry.name;
         const p = join(dir, name);
-        if (statSync(p).isDirectory()) walk(p);
-        else if (/\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name)) {
+        if (entry.isDirectory()) walk(p);
+        else if (entry.isFile() && /\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name)) {
           const body = readFileSync(p, "utf8");
           const client = /^\s*(?:\/\*[\s\S]{0,2000}?\*\/\s*)?["']use client["']/.test(body);
           if (client && /from\s+["'][^"']*\/lib\/log\/|from\s+["']\.\/log\//.test(body)) offenders.push(p);
