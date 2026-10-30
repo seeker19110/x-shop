@@ -24,6 +24,17 @@ const fail = (code: CartErrorCode, message: string): CartActionResult => ({ ok: 
 
 const DISABLED = fail("CART_DISABLED", "Giỏ hàng chưa khả dụng ở môi trường này. Vui lòng quay lại sau.");
 const UNAVAILABLE = fail("UNAVAILABLE", "Không kết nối được máy chủ. Vui lòng thử lại sau ít phút.");
+const CART_UNCONFIRMED = fail(
+  "CART_UNKNOWN",
+  "Chưa xác nhận được thao tác với giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
+);
+const CART_HALF_ADD = fail(
+  "CART_UNKNOWN",
+  "Đã thêm phân loại mới nhưng chưa gỡ dòng cũ, vui lòng kiểm tra giỏ.",
+);
+const CART_HALF_REFRESH = fail("CART_UNKNOWN", "Đã gỡ dòng cũ nhưng chưa thêm lại, vui lòng kiểm tra giỏ.");
+/** Chờ trước khi đọc lại lần 2: request ghi bị client bỏ (8 s) có thể còn chạy và commit muộn ở server. */
+const SETTLE_MS = 1500;
 const CART_UNKNOWN = fail(
   "CART_UNKNOWN",
   "Không xác định được giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
@@ -158,30 +169,68 @@ const variantQty = (cart: RawCart | null, variantId: string): number =>
  * Ghi giỏ (POST/DELETE) KHÔNG retry vì Medusa không có Idempotency-Key (medusa.ts): hết hạn chờ (NETWORK) có thể đã ghi.
  * Chỉ khi NETWORK mới đọc lại giỏ (GET có retry) và hỏi `applied` (trạng thái đích đã đạt?). Đường thành công/lỗi khác
  * không tốn request thừa.
- *  - đã đạt → `{ applied: cart }` (coi như thành công, tái dùng giỏ vừa đọc);
- *  - chưa đạt → `{ result: UNAVAILABLE }` (an toàn để thử lại);
- *  - đọc lại lỗi/giỏ không còn → CART_UNKNOWN (không đoán — yêu cầu người dùng kiểm giỏ).
+ * `judge` so số lượng đọc lại với trước/đích: "done" (đã ghi đúng) · "none" (y nguyên) · "other" (khác cả hai, vd tab khác
+ * sửa đồng thời → không đoán, CART_UNKNOWN).
+ *  - done → `{ applied: cart }` (thành công, tái dùng giỏ vừa đọc);
+ *  - none, thao tác idempotent (đặt số lượng/xóa) → UNAVAILABLE (thử lại an toàn);
+ *  - none, thao tác KHÔNG idempotent (thêm: `settle`) → chờ `SETTLE_MS` rồi đọc lại lần 2 (ghi muộn?); vẫn "none" →
+ *    CART_UNCONFIRMED (không hứa thử lại an toàn);
+ *  - đọc lại lỗi/giỏ không còn/other → CART_UNKNOWN.
  */
+type Judge = "done" | "none" | "other";
+type Written = { applied: RawCart | null } | { result: CartActionResult };
+
+async function readBack(cartId: string): Promise<RawCart | null> {
+  try {
+    return await fetchRawCart(cartId);
+  } catch {
+    return null;
+  }
+}
+
 async function writeConfirmed(
   cartId: string,
   write: () => Promise<unknown>,
-  applied: (cart: RawCart) => boolean,
-): Promise<{ applied: RawCart | null } | { result: CartActionResult }> {
+  judge: (cart: RawCart) => Judge,
+  opts: { settle?: boolean } = {},
+): Promise<Written> {
   try {
     await write();
     return { applied: null };
   } catch (e) {
     if (!(e instanceof StoreApiError && e.code === "NETWORK")) throw e;
   }
-  let after: RawCart | null;
-  try {
-    after = await fetchRawCart(cartId);
-  } catch {
-    return { result: CART_UNKNOWN };
-  }
-  if (!after) return { result: CART_UNKNOWN };
-  return applied(after) ? { applied: after } : { result: UNAVAILABLE };
+  const first = await readBack(cartId);
+  if (!first) return { result: CART_UNKNOWN };
+  const j1 = judge(first);
+  if (j1 === "done") return { applied: first };
+  if (j1 === "other") return { result: CART_UNKNOWN };
+  if (!opts.settle) return { result: UNAVAILABLE };
+  await new Promise((r) => setTimeout(r, SETTLE_MS));
+  const second = await readBack(cartId);
+  if (!second) return { result: CART_UNKNOWN };
+  const j2 = judge(second);
+  if (j2 === "done") return { applied: second };
+  return { result: j2 === "none" ? CART_UNCONFIRMED : CART_UNKNOWN };
 }
+
+/** Bước 2 của thao tác 2 bước: bước 1 đã đổi giỏ nên MỌI thất bại ở đây = giỏ đổi một nửa, không bao giờ "thử lại". */
+async function secondStep(run: () => Promise<Written>, half: CartActionResult): Promise<Written> {
+  try {
+    const w = await run();
+    return "result" in w ? { result: half } : w;
+  } catch {
+    return { result: half };
+  }
+}
+
+/** Phân loại theo số lượng variant: before+q = done; before = none; khác = other. */
+const judgeAdd =
+  (variantId: string, before: number, q: number) =>
+  (after: RawCart): Judge => {
+    const n = variantQty(after, variantId);
+    return n === before + q ? "done" : n === before ? "none" : "other";
+  };
 
 const labelOf = (p: ProductDetail, variantId: string): string => {
   const v = p.variants.find((x) => x.variant_id === variantId);
@@ -256,7 +305,8 @@ export async function addItem(input: {
           method: "POST",
           body: { variant_id: variantId, quantity },
         }),
-      (after) => variantQty(after, variantId) >= before + quantity,
+      judgeAdd(variantId, before, quantity),
+      { settle: true },
     );
     if ("result" in w) return w.result;
     return await ok(
@@ -299,7 +349,10 @@ export function setQuantity(lineId: string, quantity: number): Promise<CartActio
           method: "POST",
           body: { quantity },
         }),
-      (after) => qtyOf(findLine(after, line.id)) === quantity,
+      (after) => {
+        const n = qtyOf(findLine(after, line.id));
+        return n === quantity ? "done" : n === qtyOf(line) ? "none" : "other";
+      },
     );
     if ("result" in w) return w.result;
     return ok(cartId, "Đã cập nhật số lượng.", w.applied ?? undefined);
@@ -310,7 +363,7 @@ const deleteLine = (cartId: string, lineId: string) =>
   writeConfirmed(
     cartId,
     () => storeApi(`/store/carts/${cartId}/line-items/${encodeURIComponent(lineId)}`, { method: "DELETE" }),
-    (after) => !findLine(after, lineId),
+    (after) => (findLine(after, lineId) ? "none" : "done"),
   );
 
 /** Xóa luôn được phép — kể cả dòng lỗi (SKU ẩn/hết hàng) để người dùng gỡ được. */
@@ -345,10 +398,11 @@ export function changeVariant(lineId: string, variantId: string): Promise<CartAc
           method: "POST",
           body: { variant_id: variantId, quantity: qtyOf(line) },
         }),
-      (after) => variantQty(after, variantId) >= targetBefore + qtyOf(line),
+      judgeAdd(variantId, targetBefore, qtyOf(line)),
+      { settle: true },
     );
     if ("result" in add) return add.result;
-    const del = await deleteLine(cartId, line.id);
+    const del = await secondStep(() => deleteLine(cartId, line.id), CART_HALF_ADD);
     if ("result" in del) return del.result;
     return ok(cartId, `Đã đổi sang ${labelOf(checked.product, variantId)}.`, del.applied ?? undefined);
   });
@@ -366,14 +420,19 @@ export function refreshLinePrice(lineId: string): Promise<CartActionResult> {
     // Sau khi gỡ, số lượng biến thể trong giỏ = phần còn lại của các dòng khác (đọc lại nếu NETWORK ở bước gỡ).
     const variantId = line.variant_id;
     const base = variantQty(del.applied ?? cart, variantId) - (del.applied ? 0 : qtyOf(line));
-    const add = await writeConfirmed(
-      cartId,
+    const add = await secondStep(
       () =>
-        storeApi(`/store/carts/${cartId}/line-items`, {
-          method: "POST",
-          body: { variant_id: variantId, quantity: qtyOf(line) },
-        }),
-      (after) => variantQty(after, variantId) >= base + qtyOf(line),
+        writeConfirmed(
+          cartId,
+          () =>
+            storeApi(`/store/carts/${cartId}/line-items`, {
+              method: "POST",
+              body: { variant_id: variantId, quantity: qtyOf(line) },
+            }),
+          judgeAdd(variantId, base, qtyOf(line)),
+          { settle: true },
+        ),
+      CART_HALF_REFRESH,
     );
     if ("result" in add) return add.result;
     return ok(cartId, "Đã cập nhật giá.", add.applied ?? undefined);
