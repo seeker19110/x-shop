@@ -8,13 +8,17 @@ import styles from "./PageLoading.module.css";
  */
 export function PageLoading({ hero = false }: { hero?: boolean }) {
   return (
-    <div className={styles.page} aria-busy="true" role="status">
-      <VisuallyHidden>Đang tải nội dung…</VisuallyHidden>
-      {hero ? <Skeleton aspectRatio="16 / 9" /> : <Skeleton width="50%" height="2rem" />}
-      <div className={styles.grid}>
-        {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} aspectRatio="4 / 5" />
-        ))}
+    <div className={styles.page}>
+      <div role="status">
+        <VisuallyHidden>Đang tải nội dung…</VisuallyHidden>
+      </div>
+      <div className={styles.body} aria-busy="true" aria-hidden="true">
+        {hero ? <Skeleton aspectRatio="16 / 9" /> : <Skeleton width="50%" height="2rem" />}
+        <div className={styles.grid}>
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={i} aspectRatio="4 / 5" />
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -6,6 +6,11 @@
   align-content: start;
 }
 
+.body {
+  display: grid;
+  gap: var(--space-6);
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

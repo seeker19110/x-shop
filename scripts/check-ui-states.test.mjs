@@ -251,6 +251,10 @@ test("isAsyncPage: async mặc định, arrow, tên tham chiếu; đồng bộ/c
   assert.equal(isAsyncPage("export default async () => null;"), true);
   assert.equal(isAsyncPage("async function Pg() {}\nexport default Pg;"), true);
   assert.equal(isAsyncPage("const Pg = async () => null;\nexport default Pg;"), true);
+  assert.equal(isAsyncPage("async function P() {}\nexport { P as default };"), true);
+  assert.equal(isAsyncPage("async function P() {}\nexport { X, P as default, Y };"), true);
+  assert.equal(isAsyncPage("const P: Page = async () => null;\nexport default P;"), true);
+  assert.equal(isAsyncPage("function P() {}\nexport { P as default };"), false);
   assert.equal(isAsyncPage(SYNC), false);
   assert.equal(isAsyncPage("// export default async function X() {}\n" + SYNC), false);
   assert.equal(isAsyncPage("export async function generateMetadata() {}\n" + SYNC), false);

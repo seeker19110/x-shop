@@ -21,7 +21,8 @@
 // `async` arrow, hoặc xuất tên đã khai báo async) cần `loading.tsx` ở chính segment hoặc tổ tiên bất kỳ tới `app/` (route
 // group `(x)` cũng là tổ tiên — loading.tsx của group phủ mọi trang con) và `error.tsx` ở segment hoặc tổ tiên tới `app/`
 // (`global-error.tsx` KHÔNG thay `error.tsx`). Giới hạn: chỉ nhận diện `async` ở khai báo mặc định (không dò `await` lồng
-// trong component đồng bộ — loại đó không hợp lệ ở Server Component). Ngoại lệ màn hình: mục allowlist có thêm
+// trong component đồng bộ — loại đó không hợp lệ ở Server Component); nhận `export { P as default }` và `const P: T = async`,
+// KHÔNG nhận bọc HOC (`export default withX(async …)`) — âm tính giả đã biết, tránh dùng mẫu đó cho page. Ngoại lệ màn hình: mục allowlist có thêm
 // `"rule": "loading" | "error"` và `file` = đường dẫn page.tsx; mục không còn vi phạm → thoát 1.
 //
 // Thoát 0 = đạt; 1 = thiếu test/ca hoặc ngoại lệ mục; 2 = đầu vào/allowlist sai.
@@ -182,12 +183,14 @@ export function statesIn(src) {
 export function isAsyncPage(src) {
   const code = stripComments(src);
   if (/\bexport\s+default\s+async\b/.test(code)) return true;
-  const ref = /\bexport\s+default\s+(?:function\s+)?([A-Za-z_$][\w$]*)\s*(?:;|$|\()/m.exec(code);
+  const ref =
+    /\bexport\s+default\s+(?:function\s+)?([A-Za-z_$][\w$]*)\s*(?:;|$|\()/m.exec(code) ??
+    /\bexport\s*\{[^}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b[^}]*\}/.exec(code);
   if (ref && ref[1] !== "async") {
     const n = ref[1].replace(/\$/g, "\\$");
-    return new RegExp(`\\basync\\s+function\\s+${n}\\b|\\b(?:const|let|var)\\s+${n}\\s*=\\s*async\\b`).test(
-      code,
-    );
+    return new RegExp(
+      `\\basync\\s+function\\s+${n}\\b|\\b(?:const|let|var)\\s+${n}\\s*(?::[^=]+)?=\\s*async\\b`,
+    ).test(code);
   }
   return false;
 }
