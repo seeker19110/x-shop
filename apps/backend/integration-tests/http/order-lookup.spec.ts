@@ -498,6 +498,8 @@ medusaIntegrationTestRunner({
         // chính đơn vừa đặt) chạy chồng lên request thì đếm lẫn → CI 24d227c nhận `find: 2`. Chỉ đếm lời gọi nằm TRONG
         // ngữ cảnh của request đang đo: middleware `requestLogContext` mở AsyncLocalStorage với `trace_id` = `x-request-id`
         // (lib/log/http.ts); lời gọi ngoài request (job, test) không mang `trace_id` đó. Ngữ cảnh mất → đếm 0 → `find: 1` đỏ.
+        // Giới hạn: việc của request mà chạy trong ngữ cảnh tạo NGOÀI request (worker/queue/singleflight dùng chung) sẽ bị
+        // tính vào `outside` → rò kiểu đó lọt. Đường tra cứu hiện không có mẫu này; đưa vào thì phải đổi cách đo.
         let traceSeq = 0;
         let measuring: string | null = null;
         const scopedCounter = <T extends object>(target: T, method: keyof T & string) => {
