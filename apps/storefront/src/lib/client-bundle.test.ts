@@ -39,7 +39,7 @@ function resolveImport(from: string, spec: string): string | null {
  * `import "…"` không tên, `import()` động, `require()`; chuỗi nháy đơn/kép/backtick. `import type`/`export type` được phép.
  */
 const VALUE_IMPORT_FROM_DOMAIN =
-  /(?:\b(?:import|export)\s+(?!type\s)[^;]*?from\s*|\bimport\s*(?:\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)?|\brequire\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)["'`]@x-shop\/domain(?!\/validation["'`])[^"'`]*["'`]/;
+  /(?:\b(?:import|export)\s+(?!type\s)[^;]*?from\s*|\bimport\s*(?:\(\s*(?:\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/\s*)*)?|\brequire\s*\(\s*(?:\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/\s*)*)["'`]@x-shop\/domain(?!\/validation["'`])[^"'`]*["'`]/;
 const DOMAIN_VALIDATION = resolve(SRC, "../../../packages/domain/src/validation");
 /**
  * Mọi chỗ nạp module: `… from "x"` (import/export, kể cả `import type`), `import "x"` (không tên), `import("x")` động,
@@ -47,7 +47,7 @@ const DOMAIN_VALIDATION = resolve(SRC, "../../../packages/domain/src/validation"
  * `import(/* webpackChunkName: "a" *\/ "./a")`). Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
  */
 const SPEC_RE =
-  /(?:\bfrom\s*|\bimport\s*(?:\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)?|\brequire\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)["'`]([^"'`]+)["'`]/g;
+  /(?:\bfrom\s*|\bimport\s*(?:\(\s*(?:\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/\s*)*)?|\brequire\s*\(\s*(?:\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/\s*)*)["'`]([^"'`]+)["'`]/g;
 const importSpecs = (src: string): string[] => [...src.matchAll(SPEC_RE)].map((m) => m[1]!);
 
 /**

@@ -48,7 +48,7 @@ const FORM_CONTACT = { name: "An", phone: "0912345678", email: "" };
  * `import("x")` động, `require("x")`. Bắt thừa (vd chuỗi trong chú thích) chỉ làm test đỏ — an toàn.
  */
 const SPEC_RE =
-  /(?:\bfrom\s*|\bimport\s*(?:\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)?|\brequire\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*)["'`]([^"'`]+)["'`]/g;
+  /(?:\bfrom\s*|\bimport\s*(?:\(\s*(?:\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/\s*)*)?|\brequire\s*\(\s*(?:\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/\s*)*)["'`]([^"'`]+)["'`]/g;
 const importSpecs = (src: string): string[] => [...src.matchAll(SPEC_RE)].map((m) => m[1]!);
 
 describe("validation: subpath thuần (không kéo phần khác của domain vào bundle client)", () => {
