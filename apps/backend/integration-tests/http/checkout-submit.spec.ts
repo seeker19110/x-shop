@@ -864,6 +864,61 @@ medusaIntegrationTestRunner({
         expect(await countOrders(container)).toBe(1);
       });
 
+      it("replay cùng key (cả đồng thời) của attempt failed vì lỗi KHÔNG tạm → đúng lỗi gốc kèm field/detail/thông điệp, không chạy lại", async () => {
+        // Kết quả replay dựng từ error_code + error_detail đã lưu của attempt (ảnh chụp trong outcomeOf).
+        const problem = (r: { data: unknown }) =>
+          Object.fromEntries(
+            Object.entries(r.data as Record<string, unknown>).filter(([k]) => k !== "trace_id"),
+          );
+        const ordersBefore = await countOrders(container);
+
+        // INSUFFICIENT_STOCK: detail `lines` (số yêu cầu/còn lại) phải còn nguyên khi replay.
+        const cartId = await createCart([["Trắng/M", 2]]);
+        const q = await quoteOk(cartId);
+        await setStock(container, fx, "Trắng/M", 1);
+        const key = newKey();
+        const first = await submit(submitBody(q), key);
+        expect({ status: first.status, code: first.data.code }).toEqual({
+          status: 409,
+          code: "INSUFFICIENT_STOCK",
+        });
+        expect(first.data.lines).toEqual([
+          expect.objectContaining({ variant_id: fx.variants["Trắng/M"]!.id, requested: 2, available: 1 }),
+        ]);
+        const attemptId = first.headers["x-checkout-attempt-id"];
+        expect(attemptId).toBeTruthy();
+        const replays = await Promise.all([submit(submitBody(q), key), submit(submitBody(q), key)]);
+        for (const r of replays) {
+          expect(r.status).toBe(409);
+          expect(problem(r)).toEqual(problem(first));
+          expect(r.headers["x-checkout-attempt-id"]).toBe(attemptId);
+        }
+
+        // VALIDATION: `field` + thông điệp riêng (không phải thông điệp mặc định của mã) phải còn nguyên khi replay.
+        const mine = await createCart([["Đen/M", 1]]);
+        const other = await createCart([["Đen/M", 1]]);
+        const qOther = await quoteOk(other);
+        const qMine = await quoteOk(mine);
+        const key2 = newKey();
+        const body2 = { ...submitBody(qMine), quote_id: qOther.id };
+        const denied = await submit(body2, key2);
+        expect(denied.status).toBe(422);
+        expect(denied.data).toMatchObject({
+          code: "VALIDATION",
+          field: "quote_id",
+          detail: "Báo giá không hợp lệ cho giỏ này",
+        });
+        const replay2 = await submit(body2, key2);
+        expect(replay2.status).toBe(422);
+        expect(problem(replay2)).toEqual(problem(denied));
+
+        expect(await countOrders(container)).toBe(ordersBefore);
+        expect(await reservationsOf(container, fx, "Trắng/M")).toHaveLength(0);
+        // Replay không mở lại/chạy lại: mỗi key đúng một attempt, vẫn `failed`.
+        const attempts = await service().listCheckoutAttempts({ idempotency_key: [key, key2] });
+        expect(attempts.map((a) => a.state)).toEqual(["failed", "failed"]);
+      });
+
       it("thiếu/sai Idempotency-Key → 422 VALIDATION", async () => {
         const cartId = await createCart([["Trắng/S", 1]]);
         const q = await quoteOk(cartId);

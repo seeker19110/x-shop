@@ -260,15 +260,17 @@ medusaIntegrationTestRunner({
       const original = s.listCheckoutAttempts;
       // Kiểu khai `readonly` (MedusaService); thay tạm trên chính instance mà route resolve được.
       const patchable = s as { listCheckoutAttempts: typeof original };
-      let interleaved = false;
+      // Ghi cờ, assert SAU request: expect ném trong service thay tạm sẽ thành 500 khó hiểu ở phía route.
+      const interleave = { called: false, failed: false, seenState: "", reopened: false };
       patchable.listCheckoutAttempts = (async (...args: Parameters<typeof original>) => {
         const [filters] = args as [{ id?: unknown } | undefined];
-        if (interleaved || filters?.id !== attemptId) return original.apply(s, args);
-        interleaved = true;
+        if (interleave.called || filters?.id !== attemptId) return original.apply(s, args);
+        interleave.called = true;
         // C₁ kết thúc (failed) → B đọc thấy failed → C₂ mở lại ngay sau lời đọc của B.
-        expect(await s.failAttempt(attemptId, "LOCK_UNAVAILABLE", stored)).toBe(true);
+        interleave.failed = await s.failAttempt(attemptId, "LOCK_UNAVAILABLE", stored);
         const seen = await original.apply(s, args);
-        expect(await s.reopenRetryableAttempt(attemptId, RETRYABLE_CODES, lease())).toBe(true);
+        interleave.seenState = String(seen[0]?.state);
+        interleave.reopened = await s.reopenRetryableAttempt(attemptId, RETRYABLE_CODES, lease());
         return seen;
       }) as typeof original;
       let res: Res;
@@ -278,7 +280,7 @@ medusaIntegrationTestRunner({
       } finally {
         patchable.listCheckoutAttempts = original;
       }
-      expect(interleaved).toBe(true);
+      expect(interleave).toEqual({ called: true, failed: true, seenState: "failed", reopened: true });
       // B trả đúng trạng thái kết thúc nó đã quan sát, không 202 tức thì cho một lượt chạy khác vừa bắt đầu.
       expectLockUnavailable(res, "submit trùng (B)");
       expect(res.headers["x-checkout-attempt-id"]).toBe(attemptId);

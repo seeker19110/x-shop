@@ -76,13 +76,33 @@ export function submitPayloadHash(r: SubmitRequest): string {
 
 const iso = (d: Date | string | null | undefined) => (isNonEmpty(d) ? new Date(d).toISOString() : null);
 
+/** Cột attempt đủ để quyết định kết quả (outcomeOf) VÀ dựng view — một lần đọc cho cả hai. */
+const ATTEMPT_SNAPSHOT_FIELDS = [
+  "id",
+  "state",
+  "cart_id",
+  "cart_version",
+  "payment_method",
+  "order_id",
+  "error_code",
+  "error_detail",
+] as const;
+type AttemptSnapshot = Pick<
+  Awaited<ReturnType<CheckoutModuleService["listCheckoutAttempts"]>>[number],
+  (typeof ATTEMPT_SNAPSHOT_FIELDS)[number]
+>;
+
 export async function presentAttempt(
   container: MedusaContainer,
   attemptId: string,
 ): Promise<AttemptView | null> {
+  const [a] = await service(container).listCheckoutAttempts({ id: attemptId });
+  return a ? presentSnapshot(container, a) : null;
+}
+
+/** View từ đúng một ảnh chụp attempt (state/error của view khớp ảnh chụp đã dùng để quyết định). */
+async function presentSnapshot(container: MedusaContainer, a: AttemptSnapshot): Promise<AttemptView> {
   const s = service(container);
-  const [a] = await s.listCheckoutAttempts({ id: attemptId });
-  if (!a) return null;
   let order: AttemptView["order"] = null;
   let paymentUrl: string | null = null;
   if (isNonEmpty(a.order_id)) {
@@ -121,11 +141,6 @@ function storedError(code: string | null, detail: unknown): CheckoutError {
   return known ?? new CheckoutError("INTERNAL");
 }
 
-type AttemptSnapshot = Pick<
-  Awaited<ReturnType<CheckoutModuleService["listCheckoutAttempts"]>>[number],
-  "id" | "state" | "error_code" | "error_detail"
->;
-
 /**
  * Chờ attempt rời `preparing` (≤ replayWaitMs) và trả ĐÚNG lần đọc đã kết thúc việc chờ — quyết định kết quả trên chính
  * ảnh chụp đó. Đọc lại lần nữa thì có thể gặp attempt vừa được request khác mở lại (failed → preparing, retry cùng key)
@@ -139,7 +154,7 @@ async function waitWhilePreparing(
   for (;;) {
     const [a] = await service(container).listCheckoutAttempts(
       { id: attemptId },
-      { select: ["id", "state", "error_code", "error_detail"] },
+      { select: [...ATTEMPT_SNAPSHOT_FIELDS] },
     );
     if (!a || a.state !== "preparing" || Date.now() >= deadline) return a;
     await new Promise((r) => setTimeout(r, CHECKOUT_CONFIG.replayPollMs));
@@ -154,7 +169,7 @@ async function outcomeOf(container: MedusaContainer, attemptId: string): Promise
     return { kind: "error", error: storedError(a.error_code, a.error_detail), attemptId };
   if (a.state === "compensated")
     return { kind: "error", error: new CheckoutError("ATTEMPT_ABORTED"), attemptId };
-  const view = (await presentAttempt(container, attemptId)) as AttemptView;
+  const view = await presentSnapshot(container, a);
   return a.state === "ready" ? { kind: "ok", view } : { kind: "pending", view };
 }
 
