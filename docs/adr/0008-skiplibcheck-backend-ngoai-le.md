@@ -2,7 +2,7 @@
 
 ## Trạng thái
 
-Accepted (2026-10-30), theo Q-05 của `docs/autopilot/PLAN-2.md` (phương án A theo từng gói); task T-199. Đóng FE-BUILD-003, PRF-WEB-002 cho `packages/domain` và `apps/storefront`.
+Accepted (2026-10-30), theo Q-05 của `docs/autopilot/PLAN-2.md` (phương án A theo từng gói); task T-199. Đóng PRF-WEB-002 (skipLibCheck tắt ở `packages/domain` và `apps/storefront`). FE-BUILD-003 phần thứ tự job (build chờ typecheck và lint) chờ sửa xt.yaml (D-148: `gate-par` giữ song song).
 
 ## Ngày
 
