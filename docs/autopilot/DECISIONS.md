@@ -1008,3 +1008,10 @@
 - Chọn: Chỉ nối dialog vào hành động đã có UI (thực thi hoàn tiền, từ chối hoàn tiền); spec+test sẵn cho hai loại còn lại
 - Lý do (tiêu chí chất lượng cuối): (1) đúng: UX-STATE-008 áp cho hành động có trên giao diện — hành động chỉ có qua API không có điểm bấm cần xác nhận; (2) đường lùi: thêm nút sau dùng ngay confirmSpec đã test; (3) không phình phạm vi task
 - Đường lùi: Lát mới thêm nút ở trang đơn/exceptions, nối ConfirmDialog với spec order-cancel-unverified/return-reject
+
+### D-144 · 2026-10-30T03:59:39+00:00 · UX-STATE-001 Kiểm yêu cầu Storybook 4 story; T-206 dùng vitest *.states.test.tsx + script check-ui-states
+
+- Phương án: (1) Vitest 4 ca có assert hành vi + script đếm (đã có, chạy trong gate) · (2) Thêm Storybook chỉ để có 4 story mỗi component
+- Chọn: Vitest 4 ca có assert hành vi + script đếm (đã có, chạy trong gate)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: vitest kiểm hành vi thật (assert nội dung, aria) còn story chỉ hiển thị; (3) đơn giản: không thêm phụ thuộc lớn (Storybook ~ hàng trăm gói), test chạy sẵn trong gate; (5) chi phí CI thấp
+- Đường lùi: Thêm Storybook + story Loading/Empty/Error/Default, script đếm story thay check-ui-states
