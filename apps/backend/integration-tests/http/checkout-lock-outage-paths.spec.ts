@@ -360,7 +360,7 @@ medusaIntegrationTestRunner({
         expect(created.status).toBe(201);
         silentAcquire();
         const { value: res } = await timed("revise bảng size", () =>
-          adminPost(`/admin/x/size-charts/${code}/revise`, TEST_CHART),
+          adminPost(`/admin/x/size-charts/${code}/revise`, { ...TEST_CHART, name: `${TEST_CHART.name} v2` }),
         );
         expectLockUnavailable(res, "revise bảng size");
         restoreRedis();
@@ -368,7 +368,10 @@ medusaIntegrationTestRunner({
         const charts = (await fashion.listSizeCharts({ code })) as unknown as Array<{ version: number }>;
         expect(charts.map((c) => c.version)).toEqual([1]);
 
-        const ok = await adminPost(`/admin/x/size-charts/${code}/revise`, TEST_CHART);
+        const ok = await adminPost(`/admin/x/size-charts/${code}/revise`, {
+          ...TEST_CHART,
+          name: `${TEST_CHART.name} v2`,
+        });
         expect(ok.status).toBe(201);
       });
     });

@@ -123,7 +123,9 @@ medusaIntegrationTestRunner({
         const chartCode = before.size_chart_code as string;
         expect(chartCode).toMatch(/^ao-thun-/);
 
-        await reviseSizeChartWorkflow(container).run({ input: { code: chartCode, ...TEST_CHART } });
+        await reviseSizeChartWorkflow(container).run({
+          input: { code: chartCode, ...TEST_CHART, name: `${TEST_CHART.name} v2` },
+        });
         const second = await flow.place([["Đen/M", 1]], "cod");
         const after = (await itemsOf(second.orderId)).items[0]!.metadata;
         expect(after).toMatchObject({ size_chart_code: chartCode, size_chart_version: 2 });

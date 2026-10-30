@@ -604,6 +604,8 @@ paths:
       responses:
         "200":
           description: "Nội dung trùng bản hiện hành — trả bản hiện hành, không tạo phiên bản."
+          headers:
+            Idempotent-Replayed: { description: "Luôn `true`.", schema: { type: string, enum: ["true"] } }
           content:
             application/json:
               schema:

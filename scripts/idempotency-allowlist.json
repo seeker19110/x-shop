@@ -223,6 +223,10 @@
         {
           "file": "apps/backend/integration-tests/http/size-chart-revise.spec.ts",
           "name": "revise cùng nội dung đồng thời ×4 → đúng một phiên bản mới"
+        },
+        {
+          "file": "apps/backend/integration-tests/http/catalog-model.spec.ts",
+          "name": "hai lần revise đồng thời → phiên bản không trùng, đúng một bản hiện hành, sản phẩm trỏ bản hiện hành"
         }
       ]
     },

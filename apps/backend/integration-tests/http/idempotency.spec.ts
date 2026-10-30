@@ -764,8 +764,7 @@ medusaIntegrationTestRunner({
           [1, 2].map(() => flow.admin(`/admin/x/size-charts/${code}/revise`, A("owner"), body)),
         );
         const ok = both.filter((r) => r.status < 300);
-        expect(ok.map((r) => r.status).sort()).toEqual(expect.arrayContaining([201]));
-        expect(ok.every((r) => r.status === 200 || r.status === 201)).toBe(true);
+        expect(ok.map((r) => r.status).sort()).toEqual([200, 201]);
         expect(await rowsOf("size_chart", { code })).toBe(2);
       });
 

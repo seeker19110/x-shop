@@ -1836,9 +1836,11 @@ medusaIntegrationTestRunner({
         await setProductFashionWorkflow(container).run({
           input: { product_id: p.id, attributes: { kind: "apparel" }, size_chart_id: v1.id },
         });
+        // Nội dung khác bản hiện hành để vào nhánh tạo bản mới + relink (cùng nội dung chỉ là no-op, D-139).
+        const changed = { ...TEST_CHART, name: `${TEST_CHART.name} (song song)` };
         const results = await Promise.allSettled([
-          api.post("/admin/x/size-charts/song-song/revise", TEST_CHART, { headers: admin }),
-          api.post("/admin/x/size-charts/song-song/revise", TEST_CHART, { headers: admin }),
+          api.post("/admin/x/size-charts/song-song/revise", changed, { headers: admin }),
+          api.post("/admin/x/size-charts/song-song/revise", changed, { headers: admin }),
         ]);
         expect(results.some((r) => r.status === "fulfilled")).toBe(true);
         const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
