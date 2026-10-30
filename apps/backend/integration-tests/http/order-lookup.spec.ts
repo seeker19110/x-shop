@@ -566,7 +566,7 @@ medusaIntegrationTestRunner({
             nodeCrypto.timingSafeEqual(Buffer.alloc(4), Buffer.alloc(4));
             nodeCrypto.createHmac("sha256", "noise").update("x").digest();
           };
-          const underNoise = await counted({ display_ref: "XS-YYYYYY", phone: "0911222333" }, noise);
+          const underNoise = await counted({ display_ref: "XS-YYYYYY", phone: "0933222111" }, noise);
           expect(underNoise).toEqual(notFound);
           expect(outsideCalls()).toBeGreaterThanOrEqual(4); // việc chồng thật sự đã chạy trong cửa sổ đo
         } finally {
