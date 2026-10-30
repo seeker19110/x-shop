@@ -15,6 +15,8 @@ import { clientIpHeader } from "../security/client-ip";
  */
 const TIMEOUT_MS = 8000;
 const MAX_RETRIES = 1;
+/** Hạn TỔNG cho cả chuỗi (lần đầu + retry + backoff): SSR xấu nhất 10 s thay vì 2 × 8 s + backoff. */
+const TOTAL_DEADLINE_MS = 10_000;
 const MAX_DELAY_MS = 500;
 
 export class StoreApiError extends Error {
@@ -42,6 +44,10 @@ export async function storeApi<T>(
 ): Promise<{ status: number; data: T }> {
   const base = getServerEnv().MEDUSA_BACKEND_URL;
   let res: Response;
+  const deadline = new AbortController();
+  const deadlineTimer = setTimeout(() => {
+    deadline.abort(new DOMException("Quá hạn tổng", "TimeoutError"));
+  }, TOTAL_DEADLINE_MS);
   try {
     res = await fetchWithRetry(
       `${base}${path}`,
@@ -57,11 +63,14 @@ export async function storeApi<T>(
         },
         body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
         cache: "no-store",
+        signal: deadline.signal,
       },
       { timeoutMs: TIMEOUT_MS, maxRetries: MAX_RETRIES, maxDelayMs: MAX_DELAY_MS },
     );
   } catch {
     throw new StoreApiError(0, "Không kết nối được máy chủ.", "NETWORK");
+  } finally {
+    clearTimeout(deadlineTimer);
   }
   let json: Record<string, unknown> = {};
   try {

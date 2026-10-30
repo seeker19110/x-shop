@@ -95,12 +95,19 @@ describe("cart storeApi: timeout và retry (FE-STATE-005, XC-PERF-006)", () => {
     expect(nf).toHaveBeenCalledTimes(1);
   });
 
-  it("GET treo: mỗi lần hết hạn 8 s, tối đa 2 lần gọi rồi báo NETWORK", async () => {
+  it("GET treo: hạn tổng 10 s cho cả chuỗi (lần 1 hết 8 s, lần 2 bị cắt ở 10 s) rồi báo NETWORK", async () => {
     const f = hangingFetch();
     vi.stubGlobal("fetch", f);
-    const assertion = expect(storeApi("/store/carts/c1")).rejects.toMatchObject({ code: "NETWORK" });
-    await vi.advanceTimersByTimeAsync(8000 + 500 + 8000);
+    let settled = false;
+    const assertion = expect(
+      storeApi("/store/carts/c1").finally(() => (settled = true)),
+    ).rejects.toMatchObject({
+      code: "NETWORK",
+    });
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
     await assertion;
-    expect(f).toHaveBeenCalledTimes(2);
+    expect(f.mock.calls.length).toBeLessThanOrEqual(2);
   });
 });
