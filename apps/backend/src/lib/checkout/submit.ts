@@ -121,19 +121,34 @@ function storedError(code: string | null, detail: unknown): CheckoutError {
   return known ?? new CheckoutError("INTERNAL");
 }
 
-async function waitWhilePreparing(container: MedusaContainer, attemptId: string): Promise<void> {
+type AttemptSnapshot = Pick<
+  Awaited<ReturnType<CheckoutModuleService["listCheckoutAttempts"]>>[number],
+  "id" | "state" | "error_code" | "error_detail"
+>;
+
+/**
+ * Chờ attempt rời `preparing` (≤ replayWaitMs) và trả ĐÚNG lần đọc đã kết thúc việc chờ — quyết định kết quả trên chính
+ * ảnh chụp đó. Đọc lại lần nữa thì có thể gặp attempt vừa được request khác mở lại (failed → preparing, retry cùng key)
+ * và trả 202 ngay, không chờ (ca đỏ CI 09fd83d: 3 submit đồng thời khi Redis khóa mất).
+ */
+async function waitWhilePreparing(
+  container: MedusaContainer,
+  attemptId: string,
+): Promise<AttemptSnapshot | undefined> {
   const deadline = Date.now() + CHECKOUT_CONFIG.replayWaitMs;
-  while (Date.now() < deadline) {
-    const [a] = await service(container).listCheckoutAttempts({ id: attemptId }, { select: ["id", "state"] });
-    if (!a || a.state !== "preparing") return;
+  for (;;) {
+    const [a] = await service(container).listCheckoutAttempts(
+      { id: attemptId },
+      { select: ["id", "state", "error_code", "error_detail"] },
+    );
+    if (!a || a.state !== "preparing" || Date.now() >= deadline) return a;
     await new Promise((r) => setTimeout(r, CHECKOUT_CONFIG.replayPollMs));
   }
 }
 
 /** Trả kết quả của một attempt đã có (replay/hai tab): chờ ngắn nếu đang chạy. */
 async function outcomeOf(container: MedusaContainer, attemptId: string): Promise<SubmitOutcome> {
-  await waitWhilePreparing(container, attemptId);
-  const [a] = await service(container).listCheckoutAttempts({ id: attemptId });
+  const a = await waitWhilePreparing(container, attemptId);
   if (!a) return { kind: "error", error: new CheckoutError("INTERNAL"), attemptId };
   if (a.state === "failed")
     return { kind: "error", error: storedError(a.error_code, a.error_detail), attemptId };
