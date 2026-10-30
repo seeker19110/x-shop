@@ -44,6 +44,8 @@
     "check:domains:test": "node --test scripts/check-domains.test.mjs",
     "check:hex": "node scripts/check-hex.mjs",
     "check:hex:test": "node --test scripts/check-hex.test.mjs",
+    "check:ui-states": "node scripts/check-ui-states.mjs",
+    "check:ui-states:test": "node --test scripts/check-ui-states.test.mjs",
     "check:units": "node scripts/check-units.mjs",
     "check:units:test": "node --test scripts/check-units.test.mjs",
     "check:specs": "node scripts/check-specs.mjs",

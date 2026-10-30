@@ -213,6 +213,10 @@ jobs:
       # x-shop (T-217): màu chỉ đến từ token (tokens.css); hex/rgb/hsl cứng ngoài token = đỏ (UX-DS-002). Không cần DB.
       - name: Không màu cứng ngoài token — `pnpm check:hex` (UX-DS-002)
         run: pnpm check:hex && pnpm check:hex:test
+      # x-shop (T-227, đề xuất từ T-206): component dữ liệu ("use client" tự lấy/ghi dữ liệu) cần test 4 trạng thái
+      # loading/empty/error/success (UX-STATE-001). Không cần DB. Chỉ thêm bước, không nới cổng.
+      - name: Component dữ liệu đủ test 4 trạng thái — `pnpm check:ui-states` (UX-STATE-001)
+        run: pnpm check:ui-states && pnpm check:ui-states:test
       # x-shop (T-208): khoá biến môi trường của schema zod (backend + storefront) ↔ docs/ops/ENV.md, hai chiều; lệch = đỏ
       # (BASE-CFG-003, Q-18). Không cần DB. Thêm kiểm, không nới cổng.
       - name: Khoá env schema ↔ docs/ops/ENV.md — `pnpm check:env-doc` (BASE-CFG-003)

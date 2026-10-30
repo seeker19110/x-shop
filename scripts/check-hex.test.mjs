@@ -117,3 +117,56 @@ test("CLI: thư mục không tồn tại → 2", () => {
   const script = join(dirname(fileURLToPath(import.meta.url)), "check-hex.mjs");
   assert.equal(spawnSync(process.execPath, [script, "/không/có/thư/mục"]).status, 2);
 });
+// T-227: tên màu CSS + color-mix khi là giá trị màu (CSS và inline style JS).
+test("T-227 CSS: bắt tên màu ở vế phải thuộc tính màu, báo đúng dòng/cột", () => {
+  assert.deepEqual(
+    bad(".a {\n  color: red;\n  background: linear-gradient(white, Black);\n}", "a.module.css"),
+    ["2:10", "3:31", "3:38"],
+  );
+  assert.deepEqual(bad(".a { border: 1px solid grey; outline-color: rebeccapurple; --x: tomato }", "a.css"), [
+    "1:24",
+    "1:45",
+    "1:65",
+  ]);
+});
+test("T-227 CSS: giá trị nhiều dòng (box-shadow) và color-mix", () => {
+  assert.equal(bad(".a { box-shadow: 0 0 1px var(--c),\n    0 1px 2px black; }", "a.css").join(), "2:15");
+  assert.equal(bad(".a { color: color-mix(in srgb, var(--a), var(--b)); }", "a.css").join(), "1:13");
+});
+test("T-227 CSS: không bắt transparent/currentColor/inherit/var(--red)/url/chuỗi/chú thích/thuộc tính khác", () => {
+  const css = [
+    ".a { background: transparent; color: currentColor; border-color: inherit; fill: var(--red); }",
+    ".b { background: url(red.png); content: 'red'; font-family: Tahoma, Gray; white-space: nowrap; }",
+    "/* color: red; */ .c { display: block; grid-area: red; --font: x; }",
+    ".red { margin: 0 } .black::before { content: none }",
+  ].join("\n");
+  assert.deepEqual(bad(css, "a.css"), []);
+});
+test("T-227 JS: bắt inline style, cssText, el.style.x", () => {
+  assert.equal(bad('const a = <p style={{ color: "red", margin: 0 }} />;', "A.tsx").length, 1);
+  assert.equal(
+    bad("<p style={{ backgroundColor: 'white', border: '1px solid black' }} />", "A.tsx").length,
+    2,
+  );
+  assert.equal(bad('el.style.cssText = "color: red; margin: 0";', "a.ts").length, 1);
+  assert.equal(bad('el.style.background = "silver";', "a.ts").length, 1);
+  assert.equal(bad('<p style={{ color: "color-mix(in srgb, red, blue)" }} />', "A.tsx").length, 3);
+});
+test("T-227 JS: không bắt chữ thường trong code/chuỗi UI/dữ liệu/class", () => {
+  const js = [
+    'const red = 1; const label = "Đen"; const t = "Màu red của áo"; const c = "text-white bg-black";',
+    'const p = { name: "black", color: "Đen" }; <p style={{ margin: 0, color: "var(--foreground)" }} />;',
+    '<p style={{ color: "transparent", background: "currentColor" }} />;',
+  ].join("\n");
+  assert.deepEqual(bad(js, "A.tsx"), []);
+  assert.deepEqual(bad('x = { color: "red" }', "A.tsx"), []); // ngoài style={{…}}: dữ liệu
+});
+test("T-227 CLI: color: red trong CSS module → 1; allowlist theo pattern vẫn dùng được", () => {
+  const r = run({ "c/B.module.css": ".a {\n  color: red;\n}" });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /B\.module\.css:2:10:/);
+  const ok = run({ "c/B.module.css": ".a {\n  color: red;\n}" }, [
+    { file: "c/B.module.css", pattern: "color: red", reason: REASON },
+  ]);
+  assert.equal(ok.status, 0, ok.stderr);
+});
