@@ -170,3 +170,23 @@ test("T-227 CLI: color: red trong CSS module → 1; allowlist theo pattern vẫn
   ]);
   assert.equal(ok.status, 0, ok.stderr);
 });
+// T-227 (review): chống backtracking mũ / bậc hai và selector không bị coi là khai báo.
+const fast = (name, fn, ms = 100) =>
+  test(`T-227 hiệu năng: ${name} < ${ms}ms`, () => {
+    const t = process.hrtime.bigint();
+    fn();
+    assert.ok(Number(process.hrtime.bigint() - t) / 1e6 < ms);
+  });
+const BS = "\\".repeat(10000);
+fast("CSS chuỗi dở dang nhiều `\\`", () => findViolations(`.a { color: "${BS}x }`, "a.css"));
+fast("cssText nhiều `\\`", () => findViolations(`el.style.cssText = "${BS}`, "a.ts"));
+fast("style.x nhiều `\\`", () => findViolations(`el.style.color = "${BS}`, "a.ts"));
+fast("style={{ chuỗi nhiều `\\`", () => findViolations(`<p style={{ color: "${BS}`, "A.tsx"));
+fast("url( lặp", () => findViolations(`.a { background: ${"url(".repeat(20000)}`, "a.css"));
+fast("style={{ lặp 8000 lần", () => findViolations("style={{".repeat(8000), "A.tsx"));
+fast("chú thích mở lặp", () => findViolations(`.a { color: ${"/*".repeat(20000)}`, "a.css"));
+test("T-227 selector chứa tên thuộc tính/màu không bị coi là khai báo", () => {
+  assert.deepEqual(bad(".fill:not(.red) { margin: 0 }", "a.css"), []);
+  assert.deepEqual(bad(".a,\n.border:hover .white { margin: 0 }", "a.css"), []);
+  assert.equal(bad(".a{color:red}.b{fill:blue}", "a.css").length, 2);
+});

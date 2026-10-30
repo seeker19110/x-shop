@@ -17,6 +17,10 @@
 //     nhiều dòng; bỏ qua chú thích, `url(…)`, chuỗi); (b) inline style JS/TSX: `style={{ color: "red" }}`, `cssText = "…"`,
 //     `el.style.color = "red"`. KHÔNG bắt chữ thường trong code/chuỗi UI/dữ liệu (biến `red`, "Đen", `text-white`), `var(--red)`.
 //     Cho phép (không phải màu cứng): `transparent`, `currentColor`, `inherit`, `initial`, `unset`, `revert`.
+//     Mọi `--*` (biến tùy chỉnh) luôn được coi là thuộc tính màu: `--x: red` bị bắt dù biến không chứa màu (dùng allowlist nếu cần).
+//     Ngoài phạm vi (không bắt): toán tử ba ngôi trong style (`color: ok ? "red" : "x"`), `setProperty("color","red")`, biến
+//     SCSS (`$c: red`), `style={s}` truyền biến, template literal dựng động. Chỉ nhận khai báo đứng sau `{`/`;`/`}`/đầu file
+//     (selector như `.fill:not(.red)` không bị coi là khai báo). Regex chuỗi/chú thích/url đã khử backtracking mũ (có test thời gian).
 //   - Ngoại lệ: CHỈ ở scripts/hex-allowlist.json (`{file, pattern, reason ≥ 20 ký tự}`; `file` tương đối so với src, `pattern` là
 //     chuỗi con của dòng vi phạm). Mục không còn khớp vi phạm nào → đỏ (không để danh sách mục nát). Dùng cho nơi KHÔNG đọc được
 //     CSS var (manifest, meta theme-color, global-error thay root layout, dữ liệu màu sản phẩm).
@@ -93,9 +97,9 @@ const blank = (m) => m.replace(/[^\n]/g, " ");
 /** Tên màu / color-mix trong một giá trị CSS → [{index, text}] (index tương đối `value`). */
 function colorWords(value) {
   const v = value
-    .replace(/\/\*[\s\S]*?\*\//g, blank)
-    .replace(/url\([^)]*\)/gi, blank)
-    .replace(/(["'])(?:\\.|(?!\1).)*\1/g, blank);
+    .replace(/\/\*[\s\S]*?(?:\*\/|$)/g, blank)
+    .replace(/url\([^()\n]*\)/gi, blank)
+    .replace(/(["'])(?:\\.|(?!\1)[^\\\n])*\1/g, blank);
   const out = [];
   for (const m of v.matchAll(WORD)) {
     const w = m[1].toLowerCase();
@@ -107,9 +111,9 @@ function colorWords(value) {
 
 /** CSS: khai báo `prop: value` (value tới `;`/`}`, có thể nhiều dòng) với prop là thuộc tính màu. */
 function cssNameHits(text, base = 0) {
-  const clean = text.replace(/\/\*[\s\S]*?\*\//g, blank);
+  const clean = text.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, blank);
   const out = [];
-  for (const m of clean.matchAll(/(?<![\w-])(-{0,2}[a-zA-Z][\w-]*)\s*:(?!:)([^;{}]*)/g)) {
+  for (const m of clean.matchAll(/(?:^|[;{}])\s*(-{0,2}[a-zA-Z][\w-]*)\s*:(?!:)([^;{}]*)/g)) {
     if (!COLOR_PROP.test(m[1])) continue;
     const start = m.index + m[0].length - m[2].length;
     for (const w of colorWords(m[2])) out.push({ offset: base + start + w.index, text: w.text });
@@ -130,6 +134,7 @@ function jsNameHits(text) {
     let i = m.index + m[0].length;
     const from = i;
     for (; i < text.length && depth > 0; i++) {
+      if (text.startsWith("style={{", i)) break;
       if (text[i] === "{") depth++;
       else if (text[i] === "}") depth--;
     }
