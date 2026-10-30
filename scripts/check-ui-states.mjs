@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 // Kiểm "component dữ liệu" có đủ test 4 trạng thái (`node scripts/check-ui-states.mjs [gốc]`) — T-206, UX-STATE-001.
 //
-// "Component dữ liệu" (định nghĩa máy kiểm được, chặt để ít dương tính giả): file `.tsx` KHÔNG phải test trong
-// apps/storefront/src/components/** mà (a) mở đầu bằng chỉ thị `"use client"` VÀ (b) trong code (đã bỏ chú thích) có
-// lời gọi `fetch(` hoặc `fetchWithRetry(` — tức tự tải dữ liệu bất đồng bộ từ trình duyệt. Server Component lấy dữ
-// liệu ở trang (page.tsx) và Server Action (mutation) không thuộc phạm vi này.
+// "Component dữ liệu" (định nghĩa máy kiểm được): file `.tsx` KHÔNG phải test trong apps/storefront/src/components/**
+// mà (a) mở đầu bằng chỉ thị `"use client"` (chú thích đứng trước được bỏ qua) VÀ (b) trong code (đã bỏ chú thích) thỏa
+// MỘT trong: gọi `fetch(`/`fetchWithRetry(` (kể cả tiền tố `globalThis.`/`window.`/`self.`); import từ `lib/**/actions`
+// (Server Action) hoặc `lib/http/retry`; dùng `useActionState(` hoặc `use(` — tức tự lấy/ghi dữ liệu bất đồng bộ từ trình
+// duyệt. Server Component (lấy dữ liệu ở page.tsx) không thuộc phạm vi này — "màn hình" (loading.tsx/error.tsx) là việc khác.
 //
-// Mỗi component dữ liệu `X.tsx` cần một file test `X.states.test.tsx` (cạnh nó hoặc trong `__tests__/`) có đủ 4 ca,
-// nhận diện bằng tên `it/test("…")` chứa từ khoá (không phân biệt hoa/thường, nguyên từ): `loading`, `empty`, `error`,
-// `success`. `it.skip`/`it.todo` không được tính.
+// Mỗi component dữ liệu `X.tsx` cần test `X.states.test.tsx` (cạnh nó và/hoặc trong `__tests__/`; hợp các file tồn tại)
+// có đủ 4 ca, nhận diện bằng tên `it/test("…")` chứa từ khoá (không phân biệt hoa/thường, nguyên từ): `loading`, `empty`,
+// `error`, `success`. Ca chỉ được tính khi THÂN callback có `expect(` và một matcher `.toXxx(` (tên rỗng `it("loading",()=>{})`
+// không qua); `.only/.concurrent/.each/.for` tính, `.skip/.skipIf/.todo` không. Giới hạn: không chứng minh assert có ý nghĩa
+// (review lo việc đó) và assert phải nằm trực tiếp trong thân ca (helper ngoài thân không tính). Bộ tách chỉ hiểu chuỗi
+// '"` và regex literal thông dụng — không phải trình phân tích đầy đủ.
 //
 // Ngoại lệ: scripts/ui-states-allowlist.json — mảng `{ "file": "<đường dẫn từ gốc>", "reason": "<≥ 20 ký tự>" }`.
 // Mục không lý do/lý do quá ngắn → thoát 2; mục trỏ file không còn là component dữ liệu → thoát 1 (không để danh sách mục).
@@ -24,11 +28,38 @@ export const ALLOWLIST_FILE = "scripts/ui-states-allowlist.json";
 export const MIN_REASON = 20;
 export const STATES = ["loading", "empty", "error", "success"];
 
-/** Bỏ chú thích dòng và chú thích khối (giữ nguyên chuỗi/ký tự khác; đủ cho việc dò lời gọi). */
+// Ký tự cuối (có nghĩa) trước một `/` mà SAU ĐÓ là regex literal chứ không phải phép chia.
+const REGEX_PREV = new Set([
+  "",
+  "(",
+  ",",
+  "=",
+  ":",
+  "[",
+  "!",
+  "&",
+  "|",
+  "?",
+  "{",
+  "}",
+  ";",
+  "+",
+  "-",
+  "*",
+  "%",
+  "<",
+  ">",
+  "~",
+  "^",
+]);
+const REGEX_AFTER_KEYWORD = /(?:^|[^\w$])(?:return|typeof|case|in|of|void|delete|throw|new)$/;
+
+/** Bỏ chú thích dòng và chú thích khối; chuỗi và regex literal được giữ nguyên (chứa `//` không bị cắt). */
 export function stripComments(src) {
   let out = "";
   let i = 0;
   let q = null;
+  let last = ""; // ký tự có nghĩa gần nhất (không tính khoảng trắng) ngoài chuỗi
   while (i < src.length) {
     const c = src[i];
     const n = src[i + 1];
@@ -42,19 +73,38 @@ export function stripComments(src) {
     } else if (c === "/" && n === "*") {
       const e = src.indexOf("*" + "/", i + 2);
       i = e < 0 ? src.length : e + 2;
+    } else if (c === "/" && (REGEX_PREV.has(last) || REGEX_AFTER_KEYWORD.test(out.trimEnd().slice(-12)))) {
+      // regex literal: chép tới `/` đóng (bỏ qua escape và lớp `[...]`)
+      let j = i + 1;
+      let cls = false;
+      while (j < src.length && src[j] !== "\n") {
+        if (src[j] === "\\") j++;
+        else if (src[j] === "[") cls = true;
+        else if (src[j] === "]") cls = false;
+        else if (src[j] === "/" && !cls) break;
+        j++;
+      }
+      out += src.slice(i, j + 1);
+      i = j + 1;
+      last = "/";
     } else {
       if (c === '"' || c === "'" || c === "`") q = c;
       out += c;
+      if (!/\s/.test(c)) last = c;
       i++;
     }
   }
   return out;
 }
 
+const FETCH_CALL = /(?<![\w$.])(?:(?:globalThis|window|self)\.)?(?:fetch|fetchWithRetry)\s*\(/;
+const IMPORT_DATA = /\bfrom\s*(["'])[^"']*\/lib\/(?:[\w-]+\/)*(?:actions|http\/retry)\1/;
+const REACT_DATA = /(?<![\w$.])(?:useActionState|use)\s*\(/;
+
 export function isDataComponent(src) {
   const code = stripComments(src);
-  const client = /^(["'])use client\1/.test(code.trimStart());
-  return client && /(?<![\w.$])(fetch|fetchWithRetry)\s*\(/.test(code);
+  if (!/^(["'])use client\1/.test(code.trimStart())) return false;
+  return FETCH_CALL.test(code) || IMPORT_DATA.test(code) || REACT_DATA.test(code);
 }
 
 function walk(dir, acc = []) {
@@ -66,13 +116,55 @@ function walk(dir, acc = []) {
   return acc;
 }
 
-/** Các trạng thái có test trong một file test (theo tên it/test). */
+/** Vị trí `)` khớp với `(` ở `open` (bỏ qua chuỗi); -1 nếu không khớp. */
+function matchParen(code, open) {
+  let depth = 0;
+  let q = null;
+  for (let i = open; i < code.length; i++) {
+    const c = code[i];
+    if (q) {
+      if (c === "\\") i++;
+      else if (c === q) q = null;
+    } else if (c === '"' || c === "'" || c === "`") q = c;
+    else if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+const SKIP_MODS = new Set(["skip", "skipIf", "todo"]);
+const CALL_MODS = new Set(["each", "for", "runIf", "skipIf"]);
+const TITLE_RE = /^\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/;
+const HAS_ASSERT = /(?<![\w$.])expect(?:\.soft)?\s*\(/;
+const HAS_MATCHER = /\.\s*to[A-Z]\w*\s*\(/;
+
+/** Các trạng thái có ca test hợp lệ (tên chứa từ khoá + thân có expect/matcher) trong một file test. */
 export function statesIn(src) {
+  const code = stripComments(src);
   const found = new Set();
-  const re = /(?<![\w.$])(?:it|test)\s*\(\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
-  for (const m of stripComments(src).matchAll(re)) {
+  const head = /(?<![\w$.])(?:it|test)((?:\.\w+)*)\s*\(/g;
+  let m;
+  while ((m = head.exec(code)) !== null) {
+    const mods = m[1].split(".").filter(Boolean);
+    if (mods.some((x) => SKIP_MODS.has(x))) continue;
+    let open = m.index + m[0].length - 1; // vị trí `(`
+    // it.each(bảng)("tên", fn): bỏ nhóm ngoặc đầu, lấy nhóm ngoặc sau
+    if (mods.some((x) => CALL_MODS.has(x))) {
+      const close = matchParen(code, open);
+      if (close < 0) continue;
+      const nx = /^\s*\(/.exec(code.slice(close + 1));
+      if (!nx) continue;
+      open = close + nx[0].length;
+    }
+    const close = matchParen(code, open);
+    if (close < 0) continue;
+    const args = code.slice(open + 1, close);
+    const t = TITLE_RE.exec(args);
+    if (!t) continue;
+    const body = args.slice(t[0].length);
+    if (!HAS_ASSERT.test(body) || !HAS_MATCHER.test(body)) continue;
     for (const s of STATES) {
-      if (new RegExp(`(?<![\\p{L}\\d])${s}(?![\\p{L}\\d])`, "iu").test(m[2])) found.add(s);
+      if (new RegExp(`(?<![\\p{L}\\d])${s}(?![\\p{L}\\d])`, "iu").test(t[2])) found.add(s);
     }
   }
   return found;
@@ -125,9 +217,14 @@ export function check(root) {
       problems.push(`${f}: thiếu ${name}.states.test.tsx (loading/empty/error/success)`);
       continue;
     }
-    const have = statesIn(readFileSync(join(root, cands[0]), "utf8"));
+    const have = new Set();
+    for (const c of cands) for (const s of statesIn(readFileSync(join(root, c), "utf8"))) have.add(s);
     const miss = STATES.filter((s) => !have.has(s));
-    if (miss.length > 0) problems.push(`${f}: ${cands[0]} thiếu ca ${miss.join("/")}`);
+    if (miss.length > 0) {
+      problems.push(
+        `${f}: ${cands.join(" + ")} thiếu ca ${miss.join("/")} (tên chứa từ khoá + thân có expect/matcher)`,
+      );
+    }
   }
   const lines = [...problems, `${comps.length} component dữ liệu, ${problems.length} vấn đề`];
   return { code: problems.length > 0 ? 1 : 0, lines };

@@ -39,7 +39,9 @@ describe("CheckoutForm — 4 trạng thái tải phường/xã", () => {
     vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ wards: [] })));
     ui();
     pickProvince();
-    expect(await screen.findByText(/Chưa có danh sách phường\/xã cho tỉnh\/thành này/)).toBeInTheDocument();
+    const hint = await screen.findByText(/Chưa có danh sách phường\/xã cho tỉnh\/thành này/);
+    expect(hint).toBeInTheDocument();
+    expect(ward().getAttribute("aria-describedby")?.split(" ")).toContain(hint.id);
     expect(screen.queryByRole("button", { name: "Thử tải lại" })).toBeNull();
     expect(ward()).not.toBeDisabled();
   });
