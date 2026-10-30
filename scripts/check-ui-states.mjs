@@ -187,7 +187,7 @@ export function isAsyncPage(src) {
     /\bexport\s+default\s+(?:function\s+)?([A-Za-z_$][\w$]*)\s*(?:;|$|\()/m.exec(code) ??
     /\bexport\s*\{[^}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b[^}]*\}/.exec(code);
   if (ref && ref[1] !== "async") {
-    const n = ref[1].replace(/\$/g, "\\$");
+    const n = ref[1].replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
     return new RegExp(
       `\\basync\\s+function\\s+${n}\\b|\\b(?:const|let|var)\\s+${n}\\s*(?::[^=]+)?=\\s*async\\b`,
     ).test(code);

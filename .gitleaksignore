@@ -13,3 +13,5 @@ a53b585313629aabf1eead4a2f13ef943bffd14e:scripts/fixtures/pii-samples.json:strip
 # redact.unit.spec.ts — mẫu JWT {"sub":"1"} chữ ký "signature" và khoá giả sk_live_51HxYzAbCdEfGh123456 cho test bộ che log.
 a66705e77a7346dbc2a9fc781df88566f5766532:apps/backend/src/lib/log/__tests__/redact.unit.spec.ts:jwt:152
 d117390fc40c953acaf34e2982facf5a5985cf9e:apps/backend/src/lib/log/__tests__/redact.unit.spec.ts:stripe-access-token:73
+# cancel-unverified.spec.ts:144 — mật khẩu test giả "MatKhau-ThuNghiem-123" cho khách đăng ký trong test (T-165).
+7bd656be099225a293375484ebd2c411adca9b58:apps/backend/integration-tests/http/cancel-unverified.spec.ts:generic-api-key:144

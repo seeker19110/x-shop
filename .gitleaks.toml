@@ -1,6 +1,7 @@
 # D-135: dùng toàn bộ luật mặc định của gitleaks, chỉ bỏ qua GIÁ TRỊ mang dấu hiệu giả của test.
 # Không allowlist theo đường dẫn: bí mật thật lỡ dán vào file test vẫn bị bắt.
-# Quy ước test: giá trị bí mật giả chứa `SENTINEL` hoặc dãy `0123456789` (không bí mật thật nào có dãy này).
+# Quy ước test: giá trị bí mật giả chứa `SENTINEL` hoặc dãy `0123456789` (không bí mật thật nào có dãy này), hoặc là
+# mật khẩu test cố định `MatKhau-ThuNghiem-123` (dùng ở nhiều spec tích hợp; khớp nguyên văn, không mở rộng).
 # Giá trị giả khác (không theo quy ước) thêm theo fingerprint ở .gitleaksignore sau khi đọc giá trị.
 title = "x-shop"
 
@@ -10,4 +11,4 @@ useDefault = true
 [allowlist]
 description = "Giá trị bí mật giả trong test (D-135)"
 regexTarget = "secret"
-regexes = ['''SENTINEL''', '''0123456789''']
+regexes = ['''SENTINEL''', '''0123456789''', '''MatKhau-ThuNghiem-123''']
