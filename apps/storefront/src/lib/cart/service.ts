@@ -205,7 +205,7 @@ async function writeConfirmed(
   const j1 = judge(first);
   if (j1 === "done") return { applied: first };
   if (j1 === "other") return { result: CART_UNKNOWN };
-  if (!opts.settle) return { result: UNAVAILABLE };
+  if (opts.settle !== true) return { result: UNAVAILABLE };
   await new Promise((r) => setTimeout(r, SETTLE_MS));
   const second = await readBack(cartId);
   if (!second) return { result: CART_UNKNOWN };
