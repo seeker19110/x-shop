@@ -364,6 +364,143 @@ jobs:
           N1_WORKDIR: ${{ runner.temp }}
         run: node scripts/n-minus-1.mjs
 
+  # x-shop (T-198, QA-COV-001; mở lại đường lùi D-119): coverage test tích hợp backend, chia shard để mỗi job ≤ 20 phút
+  # (cả bộ một job: 36–58 phút, D-064). Mỗi shard chạy nhóm suite do `scripts/test-shards/list.mjs --http-shard I/N` chia
+  # cân theo thời lượng (scripts/test-shards/http-durations.json), bằng ĐÚNG script `test:integration:coverage` của
+  # apps/backend (TEST_TYPE=integration:http, `--coverage`, provider v8) — chỉ thêm `--runTestsByPath` và reporter `json`
+  # (coverage-final.json để gộp). Job gộp `integration-coverage-merge` kiểm đủ shard, gộp rồi ratchet `--suite integration`.
+  # Cả hai nằm trong `quality.needs` (không thêm required check). Số shard: tổng ≈ 3 940 s (đo không coverage, máy dev tải)
+  # / 8 ≈ 490 s mỗi shard; + overhead v8 10–35 % + cài/dựng ≈ 15 phút < trần 20. Đổi số shard: sửa matrix bên dưới
+  # (shards.test.mjs kiểm độ cân với N này); suite dài thêm: cập nhật http-durations.json từ step summary của job.
+  # Song song với `gate` (không `needs`); `gate` vẫn chạy cả bộ tích hợp không coverage qua `test` của xt.yaml.
+  integration-coverage:
+    name: integration-coverage ${{ matrix.shard }}/${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false # shard khác vẫn chạy hết để thấy mọi suite đỏ; kết quả gộp của job vẫn là `failure`
+      matrix:
+        # integration-coverage-shards
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    services:
+      postgres:
+        # Cùng digest với job `gate` (BASE-DEP-008).
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_USER: xshop
+          POSTGRES_PASSWORD: xshop
+          POSTGRES_DB: xshop
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        # Cùng digest với job `gate` (D-147, BSD-3).
+        image: redis:7.2-alpine@sha256:2c933526722b4126a61d5c170f766dc159adf97682f0b1cbbc27b1666ba96d84
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://xshop:xshop@localhost:5432/xshop
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      # Như `gate`: db-roles.spec kiểm vai trò xshop_app/xshop_migrator (DB-SEC-002) — mật khẩu GIẢ mặc định của script.
+      - name: Vai trò DB tách quyền — `scripts/db-roles.sh` (DB-SEC-002)
+        env:
+          XS_PG_ADMIN_URL: postgres://xshop:xshop@localhost:5432/xshop
+        run: bash scripts/db-roles.sh
+      # shutdown.spec chạy `medusa start` thật (không điều kiện export @x-shop/source) nên cần dist của @x-shop/domain; `gate`
+      # có nhờ `pnpm build` trong gate-par. Chỉ dựng gói domain (tsc, vài giây), không dựng cả app.
+      - name: Dựng @x-shop/domain (dist cho shutdown.spec)
+        run: pnpm --filter @x-shop/domain build
+      - name: Test tích hợp shard I/N kèm coverage — `list.mjs --http-shard` → `test:integration:coverage`
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ strategy.job-total }}
+        run: |
+          set -euo pipefail
+          out="$(node scripts/test-shards/list.mjs --http-shard "$SHARD/$TOTAL")"
+          mapfile -t ids <<<"$out"
+          [ -n "$out" ] && [ "${#ids[@]}" -gt 0 ] || { echo "::error::shard $SHARD/$TOTAL không có suite nào"; exit 1; }
+          specs=()
+          for id in "${ids[@]}"; do specs+=("integration-tests/http/${id#http:}.spec.ts"); done
+          printf '%s\n' "${specs[@]}"
+          start=$SECONDS
+          rc=0
+          pnpm --dir apps/backend run test:integration:coverage --runTestsByPath "${specs[@]}" \
+            --coverageReporters=json --coverageReporters=json-summary --coverageReporters=text-summary || rc=$?
+          echo "integration-coverage $SHARD/$TOTAL: ${#ids[@]} suite, $((SECONDS - start)) giây, exit $rc" | tee -a "$GITHUB_STEP_SUMMARY"
+          mkdir -p apps/backend/coverage-integration
+          node -e 'const [s, t, ...ids] = process.argv.slice(1);
+          require("node:fs").writeFileSync("apps/backend/coverage-integration/shard.json", JSON.stringify({ shard: +s, total: +t, ids }));' \
+            "$SHARD" "$TOTAL" "${ids[@]}"
+          exit "$rc"
+      # upload-artifact v7.0.2 — cùng SHA với bước coverage của `gate`.
+      - name: Lưu coverage của shard (artifact cho job gộp)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-integration-${{ matrix.shard }}
+          path: |
+            apps/backend/coverage-integration/coverage-final.json
+            apps/backend/coverage-integration/coverage-summary.json
+            apps/backend/coverage-integration/shard.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # Gộp coverage các shard (T-198): đủ bộ shard + hợp các suite = danh sách đủ của `list.mjs` (thiếu/trùng → exit 2, đo thiếu
+  # ≠ đạt), gộp bằng istanbul-lib-coverage/-report/-reports của chính jest (scripts/coverage-merge.mjs, không thêm phụ
+  # thuộc), rồi ratchet so mục `integration` của coverage-baseline.json (tụt → đỏ; `--against` của bước coverage trong
+  # `gate` đã chặn PR hạ baseline cả hai mục). Shard đỏ → job này `skipped` → `quality` đỏ.
+  integration-coverage-merge:
+    name: integration-coverage-merge
+    needs: [integration-coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      # Cần node_modules: coverage-merge.mjs nạp istanbul-lib-* qua jest của apps/backend.
+      - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      - name: Test của script chia shard/gộp/ratchet
+        run: node --test scripts/test-shards/shards.test.mjs scripts/coverage-merge.test.mjs && pnpm coverage:ratchet:test
+      # download-artifact v8.0.2 — SHA lấy bằng `git ls-remote` ngày 2026-10-31 (tag nhẹ, trỏ thẳng commit); đọc artifact
+      # của upload-artifact v4+ (cùng backend artifact v2).
+      - name: Tải coverage các shard
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-integration-*
+          path: ${{ runner.temp }}/cov-shards
+      - name: Gộp coverage shard — `scripts/coverage-merge.mjs`
+        run: |
+          set -euo pipefail
+          node scripts/test-shards/list.mjs | grep '^http:' > "$RUNNER_TEMP/http-ids.txt"
+          node scripts/coverage-merge.mjs --out apps/backend/coverage-integration \
+            --expect-ids "$RUNNER_TEMP/http-ids.txt" "$RUNNER_TEMP"/cov-shards/coverage-integration-*
+      - name: Ratchet coverage tích hợp — `node scripts/coverage-ratchet.mjs --suite integration`
+        run: node scripts/coverage-ratchet.mjs --suite integration
+      - name: Lưu báo cáo coverage tích hợp đã gộp (artifact 14 ngày)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-integration
+          path: apps/backend/coverage-integration/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Required check `quality` (ruleset `.github/rulesets/main.json`): TỔNG HỢP mọi job con (WF-CI-001). `always()` — không
   # phải `!cancelled()`: run bị huỷ thì `quality` vẫn chạy và ĐỎ (job con `cancelled`/`skipped` ≠ `success`). Với
   # `!cancelled()`, run bị huỷ làm `quality` thành `skipped`, mà required check `skipped` được GitHub tính là ĐẠT →
@@ -374,7 +511,7 @@ jobs:
   # `rules/branches` chỉ cần quyền đọc metadata mà GITHUB_TOKEN luôn có — `contents: read` của workflow là đủ.
   quality:
     name: quality
-    needs: [gate, e2e, onboarding-smoke]
+    needs: [gate, e2e, onboarding-smoke, integration-coverage, integration-coverage-merge]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
