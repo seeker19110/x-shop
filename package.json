@@ -94,7 +94,8 @@
       "zod@>=4.0.0 <4.6.6": "4.6.7",
       "@graphql-codegen/plugin-helpers>lodash": "4.18.1",
       "bullmq>uuid": "11.1.1",
-      "@graphql-tools/utils@<12.0.2": "12.1.0"
+      "@graphql-tools/utils@<12.0.2": "12.1.0",
+      "follow-redirects@>=1.16.0 <1.16.2": "1.16.2"
     }
   }
 }
