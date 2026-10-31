@@ -195,7 +195,7 @@ jobs:
       - name: Fixture không PII thật — `node scripts/check-fixtures.mjs` (QA-DATA-002)
         run: node scripts/check-fixtures.mjs
       - name: Test của các script kiểm kiến trúc/dữ liệu
-        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs scripts/n-minus-1.test.mjs e2e/smoke-tags.test.mjs e2e/lb.test.mjs e2e/args.test.mjs&& pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test && pnpm check:migrations:test && pnpm check:units:test && pnpm check:env-doc:test && pnpm check:domains:test
+        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs scripts/n-minus-1.test.mjs e2e/smoke-tags.test.mjs e2e/lb.test.mjs e2e/args.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test && pnpm check:migrations:test && pnpm check:units:test && pnpm check:env-doc:test && pnpm check:domains:test
       - name: Schema module tuỳ biến (FK ON DELETE/index, NOT NULL, CHECK) — `pnpm check:schema` (DB-MODEL-004)
         run: pnpm check:schema
       # x-shop (T-102): migration đã có trên nhánh đích giữ nguyên byte (blob hash git) + migration mới không phá huỷ trong

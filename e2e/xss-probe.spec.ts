@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test, XSS_PAYLOADS, type XssContent } from "./fixtures";
+import { expect, test, XSS_BAD_THUMBNAILS, XSS_PAYLOADS, type XssContent } from "./fixtures";
 
 /**
  * T-180 (SEC-WEB-004) — DAST XSS bằng E2E trên hệ thật. Nội dung catalog (tên, mô tả, handle sản phẩm; tên danh mục) được
@@ -18,6 +18,9 @@ declare global {
 }
 
 const q = encodeURIComponent;
+
+/** PDP render đúng 2 thẻ JSON-LD: ProductGroup + BreadcrumbList. */
+const PDP_JSONLD_COUNT = 2;
 
 /** Trang hiện tại không có dấu hiệu XSS: cờ, phần tử `on*`, URL nguy hiểm trong thuộc tính điều hướng/nguồn. */
 async function expectClean(page: Page, dialogs: string[], where: string): Promise<void> {
@@ -76,6 +79,7 @@ test.describe("DAST XSS (T-180, SEC-WEB-004)", () => {
   test("payload trong query string, ô tìm kiếm, tham số lọc và đường dẫn không chạy script", async ({
     page,
   }) => {
+    test.slow(); // 6 payload × 9 URL tuần tự: ~56 s khi máy tải cao, sát hạn 60 s mặc định.
     const dialogs = trackDialogs(page);
     const { img, link, svg } = XSS_PAYLOADS;
     const all = `${img}${svg}`;
@@ -135,7 +139,8 @@ test.describe("DAST XSS (T-180, SEC-WEB-004)", () => {
     expect(href!.toLowerCase()).not.toContain("javascript:");
     await visit(page, dialogs, `/san-pham/${q(xssContent.productHandle)}`);
     await expect(page.getByRole("heading", { level: 1 })).toContainText("XSSPROBE");
-    await expect(page.locator("body")).toContainText("javascript:alert(1)");
+    // Mô tả hiển thị như văn bản (vùng mô tả của PDP, không lẫn nội dung script JSON-LD).
+    await expect(page.locator("main p", { hasText: "javascript:alert(1)" }).first()).toBeVisible();
 
     // Trang danh mục có tên độc hại, danh sách lọc/tìm trong danh mục, tìm theo tên danh mục.
     await visit(page, dialogs, `/danh-muc/${xssContent.categoryHandle}`);
@@ -145,12 +150,30 @@ test.describe("DAST XSS (T-180, SEC-WEB-004)", () => {
     await visit(page, dialogs, "/");
     await visit(page, dialogs, "/gio-hang");
 
-    // JSON-LD của PDP: không thể đóng thẻ script sớm trong dữ liệu; vẫn là JSON hợp lệ.
+    // JSON-LD của PDP (sản phẩm + breadcrumb): payload `</script>` trong mô tả không thể đóng thẻ sớm; mỗi thẻ vẫn là
+    // JSON hợp lệ và số thẻ đúng bằng số trang render.
     await page.goto(`/san-pham/${q(xssContent.productHandle)}`);
     const ld = await page.locator('script[type="application/ld+json"]').allTextContents();
-    expect(ld.length).toBeGreaterThan(0);
-    for (const text of ld) expect(() => JSON.parse(text) as unknown).not.toThrow();
+    expect(ld.length, "số thẻ JSON-LD của PDP").toBe(PDP_JSONLD_COUNT);
+    for (const text of ld) {
+      expect(text.toLowerCase(), "JSON-LD không chứa </script").not.toContain("</script");
+      expect(() => JSON.parse(text) as unknown).not.toThrow();
+    }
+    expect(
+      ld.some((t) => t.includes("\\u003c/script")),
+      "payload </script đã được thoát",
+    ).toBe(true);
     expect(await page.evaluate(() => window.__xss)).toBeUndefined();
+
+    // Thumbnail `javascript:` / `data:text/html`: Admin API từ chối (400) hoặc storefront vẫn không render scheme nguy hiểm.
+    for (const bad of XSS_BAD_THUMBNAILS) {
+      const status = await xssContent.setThumbnail(bad);
+      expect([200, 400], `thumbnail ${bad.slice(0, 20)}`).toContain(status);
+      if (status === 200) {
+        await visit(page, dialogs, `/san-pham/${q(xssContent.productHandle)}`);
+        await visit(page, dialogs, `/tim-kiem?q=${q("XSSPROBE")}`);
+      }
+    }
     expect(dialogs).toEqual([]);
   });
 

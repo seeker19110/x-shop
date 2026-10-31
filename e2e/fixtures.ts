@@ -44,7 +44,15 @@ export const XSS_PAYLOADS = {
   img: '<img src=x onerror="window.__xss=1;alert(1)">',
   link: '<a href="javascript:window.__xss=1;alert(1)">bấm</a> javascript:alert(1)',
   svg: '"><svg onload="window.__xss=1;alert(1)">',
+  /** Đóng thẻ script sớm trong JSON-LD (nhúng trong `<script type="application/ld+json">`). */
+  script: '</script><img src=x onerror="window.__xss=1">',
 } as const;
+
+/** URL ảnh nguy hiểm cho thumbnail (nhánh safeImgSrc của storefront). */
+export const XSS_BAD_THUMBNAILS = [
+  "javascript:window.__xss=1;alert(1)",
+  "data:text/html,<script>window.__xss=1</script>",
+] as const;
 
 /** Admin API từ chối handle chứa payload (kiểm ở xss-probe.spec.ts): handle seed phải là slug hợp lệ. */
 export const XSS_BAD_HANDLE = `x${XSS_PAYLOADS.svg}`;
@@ -63,6 +71,8 @@ export interface XssContent {
   categoryHandle: string;
   /** Mã trạng thái Admin API trả khi đặt handle chứa payload (kỳ vọng 400: nhập liệu bị chặn từ gốc). */
   badHandleStatus: number;
+  /** Đặt thumbnail sản phẩm = `url` qua Admin API; trả mã trạng thái (400 = bị chặn từ gốc, 200 = đã lưu, được trả lại ở teardown). */
+  setThumbnail: (url: string) => Promise<number>;
 }
 
 const publishableKey = (): string => {
@@ -91,17 +101,22 @@ export async function seedXssContent(
   expect(pdp.status()).toBe(200);
   const productId = ((await pdp.json()) as { product_id: string }).product_id;
   const prodRes = await request.get(
-    `${URLS.backendLb}/admin/products/${productId}?fields=id,title,handle,description`,
+    `${URLS.backendLb}/admin/products/${productId}?fields=id,title,handle,description,thumbnail`,
     { headers: admin },
   );
-  const orig = ((await prodRes.json()) as { product: { title: string; handle: string; description: string } })
-    .product;
+  const orig = (
+    (await prodRes.json()) as {
+      product: { title: string; handle: string; description: string | null; thumbnail: string | null };
+    }
+  ).product;
   const catRes = await request.get(
     `${URLS.backendLb}/admin/product-categories?handle=${XSS_CATEGORY_HANDLE}&fields=id,name,description`,
     { headers: admin },
   );
   const cat = (
-    (await catRes.json()) as { product_categories: { id: string; name: string; description: string }[] }
+    (await catRes.json()) as {
+      product_categories: { id: string; name: string; description: string | null }[];
+    }
   ).product_categories[0];
   if (cat === undefined) throw new Error(`Không thấy danh mục ${XSS_CATEGORY_HANDLE}`);
 
@@ -116,23 +131,41 @@ export async function seedXssContent(
         data: { handle: XSS_BAD_HANDLE },
       })
     ).status(),
+    setThumbnail: async (url) =>
+      (
+        await request.post(`${URLS.backendLb}/admin/products/${productId}`, {
+          headers: admin,
+          data: { thumbnail: url },
+        })
+      ).status(),
   };
-  const description = `${XSS_PAYLOADS.link} ${XSS_PAYLOADS.svg} ${XSS_PAYLOADS.img}`;
+  const description = `${XSS_PAYLOADS.link} ${XSS_PAYLOADS.svg} ${XSS_PAYLOADS.img} ${XSS_PAYLOADS.script}`;
   const put = async (url: string, data: object, what: string) => {
     const r = await request.post(`${URLS.backendLb}${url}`, { headers: admin, data });
     expect(r.status(), `${what}: ${await r.text()}`).toBe(200);
   };
   const restore = async () => {
-    await put(
-      `/admin/products/${productId}`,
-      { title: orig.title, handle: orig.handle, description: orig.description },
-      "trả sản phẩm",
-    );
-    await put(
-      `/admin/product-categories/${cat.id}`,
-      { name: cat.name, description: cat.description ?? "" },
-      "trả danh mục",
-    );
+    const errors: unknown[] = [];
+    try {
+      await put(
+        `/admin/products/${productId}`,
+        { title: orig.title, handle: orig.handle, description: orig.description, thumbnail: orig.thumbnail },
+        "trả sản phẩm",
+      );
+    } catch (e) {
+      errors.push(e);
+    }
+    try {
+      // Giữ null gốc của description (không đổi thành "").
+      await put(
+        `/admin/product-categories/${cat.id}`,
+        { name: cat.name, description: cat.description },
+        "trả danh mục",
+      );
+    } catch (e) {
+      errors.push(e);
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "Trả nội dung catalog sau probe XSS thất bại");
   };
   try {
     await put(
