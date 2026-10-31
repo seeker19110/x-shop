@@ -8,8 +8,9 @@
 //
 // Chế độ `--regression` (T-209, FE-TEST-006; job `regression` của pr-policy) CHẠY LẠI test mới/sửa của PR fix: trên HEAD
 // phải xanh; trên commit base (mã nguồn base + file test của HEAD) phải ĐỎ Ở MỨC TEST CASE (D-153): ít nhất một test case
-// (cùng file + tên đầy đủ) fail trên base và pass trên HEAD. Base đỏ chỉ do nạp (0 case chạy, "Test suite failed to run",
-// case mang tên file, không đọc được report) không chứng minh tái hiện → đỏ.
+// (cùng file + tên đầy đủ) fail trên base và pass trên HEAD. Base đỏ không ở mức case (0 case chạy, "Test suite failed to
+// run", case mang tên file, case gọi export/binding import chưa có trên base, hook cha lỗi, không đọc được report/quá hạn)
+// không chứng minh tái hiện → đỏ.
 //   node scripts/check-fix-pr.mjs --regression --base <sha> --head <sha> [--dry-run]
 //   - PR fix = tiêu đề PR dạng `fix:`/`fix(...)` (D-152: squash-merge — subject commit trong PR không xét).
 //   - File test = thêm/đổi/đổi tên trong `git diff base...head`; runner theo vị trí (xem `classifyTest`). Giữ thêm từ HEAD
@@ -270,10 +271,67 @@ export function formatCommand(group) {
 
 // ───────────────────────────── Report máy đọc được → test case (hàm thuần, D-153) ─────────────────────────────
 
-/** @typedef {{file: string, name: string, status: "passed" | "failed" | "skipped"}} TestCase */
+/**
+ * `status: "broken"` = case đỏ KHÔNG ở mức case (`why`: "nạp" — export/binding import chưa có trên base; "hook" — hook
+ * cha như beforeAll lỗi): không tính là tái hiện (D-153).
+ * @typedef {{file: string, name: string, status: "passed" | "failed" | "skipped" | "broken", why?: "nạp" | "hook"}} TestCase
+ */
 
 const SEP = " > ";
 const statusOf = (s) => (s === "passed" ? "passed" : s === "failed" ? "failed" : "skipped");
+
+// Lời gọi named import đã biên dịch: vitest `(0 , __vite_ssr_import_0__.f)`, @swc/jest/babel `(0 , _src.f)` — chỉ trình biên
+// dịch sinh dạng `(0 , X.Y)` nên khớp là đủ. Neo `^`, các lớp ký tự liền kề rời nhau → tuyến tính.
+const COMPILED_IMPORT_CALL_RE = /^TypeError: \(0 , [\w$]+\.[\w$]+\) is not a (?:function|constructor)/;
+// `X.Y` / `X.default.Y` không phải hàm/lớp: chỉ coi là "nạp" khi X là binding import (xem `isImportBinding`).
+const MEMBER_NOT_CALLABLE_RE = /^TypeError: ([\w$]+)(?:\.default)?\.[\w$]+ is not a (?:function|constructor)/;
+const VITE_IMPORT_RE = /^__vi(?:te_ssr)?_import_\d+__$/;
+
+/**
+ * Tên binding import của một file test (nguồn bản HEAD — có mặt ở cả hai lượt chạy): namespace/default/`await import()`/
+ * `require()`, và tên @swc/jest sinh cho mỗi nguồn import (`_` + tên đoạn cuối, bỏ đuôi và ký tự không phải định danh:
+ * "./src" → `_src`, "../money-round.js" → `_moneyround`). Regex có tiền tố cố định, không lặp lồng → tuyến tính.
+ * @param {string} source @returns {Set<string>}
+ */
+export function importBindings(source) {
+  const out = new Set();
+  const src = typeof source === "string" ? source : "";
+  for (const m of src.matchAll(/\bimport\s+\*\s+as\s+([\w$]+)/g)) out.add(m[1]);
+  for (const m of src.matchAll(/\bimport\s+([\w$]+)(?:\s*,|\s+from\b)/g)) if (m[1] !== "type") out.add(m[1]);
+  for (const m of src.matchAll(
+    /\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:await\s+)?(?:import|require)\s*\(/g,
+  )) {
+    out.add(m[1]);
+  }
+  const sources = [
+    ...src.matchAll(/\bfrom\s*["']([^"'\n]+)["']/g),
+    ...src.matchAll(/\b(?:import|require)\s*\(\s*["']([^"'\n]+)["']/g),
+  ];
+  for (const m of sources) {
+    const last = m[1].slice(m[1].lastIndexOf("/") + 1).replace(/\.(?:[cm]?[jt]sx?|json)$/, "");
+    const id = last.replace(/[^\w$]/g, "");
+    if (id !== "") out.add(`_${id}`);
+  }
+  return out;
+}
+
+/**
+ * Case đỏ vì binding import chưa có trên base ("nạp") hay vì lỗi thật (null). `message` = dòng đầu lỗi của case
+ * (`TypeError: ...`); `bindings` = `importBindings` của file test.
+ * @param {string} message @param {Set<string>} [bindings]
+ * @returns {"nạp" | null}
+ */
+export function classifyFailure(message, bindings = new Set()) {
+  const msg = String(message ?? "");
+  if (COMPILED_IMPORT_CALL_RE.test(msg)) return "nạp";
+  const m = MEMBER_NOT_CALLABLE_RE.exec(msg);
+  if (m !== null && (VITE_IMPORT_RE.test(m[1]) || bindings.has(m[1]))) return "nạp";
+  return null;
+}
+
+/** Bindings của `file` từ tham số `bindings` (Map file → Set, hoặc bỏ trống). */
+const bindingsOf = (bindings, file) =>
+  bindings instanceof Map ? (bindings.get(file) ?? new Set()) : new Set();
 
 /** Đường dẫn tương đối gốc repo `top` (report vitest/jest ghi đường dẫn tuyệt đối). */
 function relToTop(top, path) {
@@ -285,10 +343,11 @@ function relToTop(top, path) {
 /**
  * Report JSON của vitest (`--reporter=json`) hoặc jest (`--json`) — cùng khung `testResults[].assertionResults[]`.
  * File đỏ mà không case nào đỏ (lỗi nạp/biên dịch: vitest `assertionResults: []` + `message`; jest "Test suite failed to
- * run") → `loadErrors`. Sai khung → ném lỗi (người gọi coi là "không đọc được report").
+ * run") → `loadErrors`. Case đỏ do binding import chưa có (`classifyFailure`) hoặc do hook cha lỗi (jest-circus: stack có
+ * `_callCircusHook`; vitest đánh dấu skipped sẵn) → `broken`. Sai khung → ném lỗi ("không đọc được report").
  * @returns {{cases: TestCase[], loadErrors: string[]}}
  */
-export function parseJestLikeJson(text, top = "") {
+export function parseJestLikeJson(text, top = "", bindings = new Map()) {
   const data = JSON.parse(text);
   if (data === null || typeof data !== "object" || !Array.isArray(data.testResults)) {
     throw new Error("report JSON thiếu testResults");
@@ -307,7 +366,15 @@ export function parseJestLikeJson(text, top = "") {
       loadErrors.push(file);
     for (const a of asserts) {
       const titles = Array.isArray(a?.ancestorTitles) ? a.ancestorTitles.map(String) : [];
-      cases.push({ file, name: [...titles, String(a?.title ?? "")].join(SEP), status: statusOf(a?.status) });
+      const c = { file, name: [...titles, String(a?.title ?? "")].join(SEP), status: statusOf(a?.status) };
+      if (c.status === "failed") {
+        const first = String((Array.isArray(a.failureMessages) ? a.failureMessages[0] : "") ?? "");
+        const why = first.includes("_callCircusHook")
+          ? "hook"
+          : classifyFailure(first, bindingsOf(bindings, file));
+        if (why !== null) Object.assign(c, { status: "broken", why });
+      }
+      cases.push(c);
     }
   }
   return { cases, loadErrors };
@@ -321,8 +388,11 @@ function decodeXml(s) {
   for (;;) {
     const amp = s.indexOf("&", i);
     if (amp < 0) return out + s.slice(i);
-    const semi = s.indexOf(";", amp);
-    const ent = semi < 0 || semi - amp > 10 ? null : s.slice(amp + 1, semi);
+    // Tên thực thể ngắn: chỉ tìm `;` trong 11 ký tự sau `&` (không quét tới cuối chuỗi mỗi lần → tuyến tính).
+    const win = s.slice(amp + 1, amp + 12);
+    const k = win.indexOf(";");
+    const semi = k < 0 ? -1 : amp + 1 + k;
+    const ent = k < 0 ? null : win.slice(0, k);
     let ch = null;
     if (ent !== null && Object.hasOwn(ENTITIES, ent)) ch = ENTITIES[ent];
     else if (ent !== null && ent.startsWith("#")) {
@@ -372,6 +442,19 @@ function readTag(xml, lt) {
   }
 }
 
+const HOOK_FAILURE_TYPES = new Set(["cancelledByParent", "hookFailure"]);
+
+/**
+ * Dòng lỗi đầu của failure JUnit node: `cause: <Loại>: <thông điệp>` trong thân (thông điệp thuộc tính không có tên loại
+ * lỗi); không có → thuộc tính `message`. Quét bằng indexOf.
+ */
+function firstError(body, message) {
+  const at = body.indexOf("cause: ");
+  if (at < 0) return message;
+  const end = body.indexOf("\n", at);
+  return body.slice(at + "cause: ".length, end < 0 ? body.length : end).trim();
+}
+
 /** Case lỗi cấp file của node --test: tên case = đường dẫn file đã truyền (tương đối hay tuyệt đối). */
 function namesFile(name, file) {
   const n = norm(name);
@@ -382,10 +465,12 @@ function namesFile(name, file) {
 /**
  * Report JUnit của `node --test --test-reporter=junit` cho MỘT file (`file` — tương đối gốc repo). Tên đầy đủ = tên các
  * `testsuite` (describe) lồng nhau + tên `testcase`. Case cấp cao nhất mang tên file và đỏ = lỗi nạp file → `loadErrors`.
+ * Case đỏ với `failure type="cancelledByParent"|"hookFailure"` (hook cha lỗi) → `broken`/"hook"; lỗi `cause: TypeError:` do
+ * binding import chưa có (`classifyFailure`, `bindings` của file) → `broken`/"nạp".
  * Quét tay, tuyến tính. Không có `<testsuites>`, thẻ hỏng, `testcase` không đóng → ném lỗi.
  * @returns {{cases: TestCase[], loadErrors: string[]}}
  */
-export function parseJunit(xml, file) {
+export function parseJunit(xml, file, bindings = new Set()) {
   if (typeof xml !== "string" || !xml.includes("<testsuites"))
     throw new Error("report JUnit thiếu <testsuites>");
   const cases = [];
@@ -394,7 +479,14 @@ export function parseJunit(xml, file) {
   let current = null;
   const finish = (c) => {
     if (c.depth === 0 && c.status === "failed" && namesFile(c.title, file)) loadErrors.push(norm(file));
-    else cases.push({ file: norm(file), name: c.name, status: c.status });
+    else {
+      const tc = { file: norm(file), name: c.name, status: c.status };
+      if (c.status === "failed") {
+        const why = HOOK_FAILURE_TYPES.has(c.type) ? "hook" : classifyFailure(c.first, bindings);
+        if (why !== null) Object.assign(tc, { status: "broken", why });
+      }
+      cases.push(tc);
+    }
   };
   let i = 0;
   for (;;) {
@@ -432,18 +524,33 @@ export function parseJunit(xml, file) {
         }
       }
     } else if (current !== null && !tag.closing) {
-      if (tag.name === "failure" || tag.name === "error") current.status = "failed";
-      else if (tag.name === "skipped" && current.status !== "failed") current.status = "skipped";
+      if (tag.name === "failure" || tag.name === "error") {
+        if (current.status !== "failed") {
+          current.status = "failed";
+          current.type = tag.attrs.type ?? "";
+          let body = "";
+          if (!tag.selfClosing) {
+            const close = xml.indexOf(`</${tag.name}>`, i);
+            if (close < 0) throw new Error("report JUnit: failure không đóng");
+            body = decodeXml(xml.slice(i, close));
+            i = close;
+          }
+          current.first = firstError(body, tag.attrs.message ?? "");
+        }
+      } else if (tag.name === "skipped" && current.status !== "failed") current.status = "skipped";
     }
   }
   if (current !== null) throw new Error("report JUnit: testcase không đóng (report bị cắt?)");
   return { cases, loadErrors };
 }
 
-/** Phân tích report theo loại runner. `file` chỉ dùng cho JUnit (một file mỗi lần chạy). */
-export function parseReport(kind, text, { top = "", file = "" } = {}) {
-  if (kind === "vitest-json" || kind === "jest-json") return parseJestLikeJson(text, top);
-  if (kind === "junit") return parseJunit(text, file);
+/**
+ * Phân tích report theo loại runner. `file` chỉ dùng cho JUnit (một file mỗi lần chạy); `bindings` = Map file (tương đối
+ * gốc repo) → `importBindings` của file test.
+ */
+export function parseReport(kind, text, { top = "", file = "", bindings = new Map() } = {}) {
+  if (kind === "vitest-json" || kind === "jest-json") return parseJestLikeJson(text, top, bindings);
+  if (kind === "junit") return parseJunit(text, file, bindingsOf(bindings, norm(file)));
   throw new Error(`loại report không biết: ${kind}`);
 }
 
@@ -471,7 +578,8 @@ export function reproducedCases(head, base) {
  * 1. Không có lệnh nào: chỉ có test tích hợp/E2E → đạt + cảnh báo; không có test → đỏ (ngoại lệ → cảnh báo).
  * 2. Một lệnh đỏ trên HEAD, hoặc không đọc được report HEAD → đỏ (không xét base, ngoại lệ không áp).
  * 3. Base: ≥ 1 test case fail trên base và pass trên HEAD → đạt. Không có → đỏ (ngoại lệ hợp lệ → cảnh báo), lý do:
- *    mọi lệnh xanh ("test không tái hiện lỗi") · chỉ đỏ do nạp/không có case đỏ ("đỏ do nạp, không chứng minh tái hiện")
+ *    mọi lệnh xanh ("test không tái hiện lỗi") · đỏ mà không case nào đỏ ở mức case — lỗi nạp file, case `broken`
+ *    (export/binding import chưa có, hook cha lỗi), 0 case, không đọc được report/quá hạn ("đỏ không ở mức case")
  *    · có case đỏ nhưng không case nào xanh trên HEAD cùng file + tên.
  * @returns {{ok: boolean, errors: string[], warnings: string[]}}
  */
@@ -546,12 +654,19 @@ export function regressionVerdict({ plan, exempt = false, head = null, base = nu
         const parts = [];
         if (r.readError) parts.push(`không đọc được report: ${r.readError}`);
         if ((r.loadErrors ?? []).length > 0) parts.push(`lỗi nạp ${r.loadErrors.join(", ")}`);
+        const broken = (r.cases ?? []).filter((c) => c.status === "broken");
+        for (const why of ["nạp", "hook"]) {
+          const n = broken.filter((c) => c.why === why).length;
+          if (n > 0)
+            parts.push(`${n} case đỏ do ${why === "nạp" ? "export/binding import chưa có" : "hook cha lỗi"}`);
+        }
         if ((r.cases ?? []).length === 0) parts.push("0 test case chạy");
         return `${r.runner}: ${parts.join("; ") || "không test case nào đỏ"}`;
       });
     fail(
-      `base đỏ do nạp, không chứng minh tái hiện (${why.join(" · ")}) — test phải chạy được trên mã base và có ` +
-        "assertion đỏ (vd thêm export mới mà test import thì base đỏ vì nạp, không phải vì lỗi)",
+      `base đỏ không ở mức case (nạp/hook/quá hạn), không chứng minh tái hiện (${why.join(" · ")}) — test phải chạy ` +
+        "được trên mã base và đỏ ở assertion; test gọi export mới, hook beforeAll lỗi hay quá hạn chỉ cho thấy mã base " +
+        "thiếu API/không chạy được, không cho thấy lỗi",
     );
     return done();
   }
@@ -601,6 +716,18 @@ function runGroups(groups, top, phase, tmp) {
     const cases = [];
     const loadErrors = [];
     const readErrors = [];
+    // File test là bản HEAD ở cả hai lượt (base giữ file test của head) → bindings import như nhau.
+    const bindings = new Map(
+      g.files.map((f) => {
+        let src = "";
+        try {
+          src = readFileSync(`${top}/${f}`, "utf8");
+        } catch {
+          // không đọc được nguồn → không có binding (chỉ dạng `(0 , X.Y)` được nhận ra)
+        }
+        return [f, importBindings(src)];
+      }),
+    );
     batches.forEach((rels, bi) => {
       const out = join(tmp, `${phase}-${gi}-${bi}.${r.report === "junit" ? "xml" : "json"}`);
       const argv = runArgv(g.runner, out, rels);
@@ -620,7 +747,7 @@ function runGroups(groups, top, phase, tmp) {
       notes.push(res.error ? `quá hạn ${GROUP_TIMEOUT_MS / 60000} phút` : `exit ${res.status ?? res.signal}`);
       const file = g.cwd === "." ? rels[0] : `${g.cwd}/${rels[0]}`;
       try {
-        const parsed = parseReport(r.report, readFileSync(out, "utf8"), { top, file });
+        const parsed = parseReport(r.report, readFileSync(out, "utf8"), { top, file, bindings });
         cases.push(...parsed.cases);
         loadErrors.push(...parsed.loadErrors);
       } catch (e) {
@@ -629,8 +756,10 @@ function runGroups(groups, top, phase, tmp) {
     });
     const note = [...new Set(notes)].join(", ");
     const failed = cases.filter((c) => c.status === "failed").length;
+    const broken = cases.filter((c) => c.status === "broken").length;
     console.log(
       `[${phase}] ${r.label}: ${ok ? "XANH" : "ĐỎ"} (${note}; ${cases.length} case, ${failed} đỏ` +
+        `${broken > 0 ? `, ${broken} đỏ không ở mức case (nạp/hook)` : ""}` +
         `${loadErrors.length > 0 ? `, lỗi nạp ${loadErrors.join(", ")}` : ""}` +
         `${readErrors.length > 0 ? `, không đọc được report: ${readErrors.join("; ")}` : ""})`,
     );

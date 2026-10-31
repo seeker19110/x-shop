@@ -26,6 +26,8 @@ import {
   isFixPr,
   isFixTitle,
   isTestFile,
+  classifyFailure,
+  importBindings,
   parseJestLikeJson,
   parseJunit,
   parseRegressionArgs,
@@ -646,7 +648,7 @@ test("reproducedCases: chỉ case fail trên base VÀ pass trên HEAD, cùng fil
   assert.deepEqual(reproducedCases([], []), []);
 });
 
-test("regressionVerdict: base đỏ chỉ do nạp (0 case / lỗi nạp / không đọc được report) → đỏ 'đỏ do nạp'; ngoại lệ → cảnh báo", () => {
+test("regressionVerdict: base đỏ không ở mức case (0 case / lỗi nạp / case broken / không đọc được report) → đỏ; ngoại lệ → cảnh báo", () => {
   const head = res(true, true);
   const variants = [
     { cases: [], loadErrors: [PLAN2.groups[1].files[0]], readError: null },
@@ -654,15 +656,22 @@ test("regressionVerdict: base đỏ chỉ do nạp (0 case / lỗi nạp / khôn
     { cases: [], loadErrors: [], readError: "ENOENT" },
     // file khác đỏ do nạp, case còn lại xanh
     { cases: [caseOf(1, "passed")], loadErrors: [PLAN2.groups[1].files[0]], readError: null },
+    // case đỏ vì export mới chưa có trên base / vì hook cha lỗi
+    { cases: [{ ...caseOf(1, "broken"), why: "nạp" }], loadErrors: [], readError: null },
+    { cases: [{ ...caseOf(1, "broken"), why: "hook" }], loadErrors: [], readError: null },
   ];
   for (const v of variants) {
     const base = [res(true, true)[0], { runner: PLAN2.groups[1].runner, ok: false, note: "exit 1", ...v }];
     const r = regressionVerdict({ plan: PLAN2, head, base });
     assert.equal(r.ok, false, JSON.stringify(v));
-    assert.match(r.errors[0], /đỏ do nạp, không chứng minh tái hiện/, JSON.stringify(v));
+    assert.match(
+      r.errors[0],
+      /base đỏ không ở mức case \(nạp\/hook\/quá hạn\), không chứng minh tái hiện/,
+      JSON.stringify(v),
+    );
     const ex = regressionVerdict({ plan: PLAN2, exempt: true, head, base });
     assert.equal(ex.ok, true);
-    assert.match(ex.warnings[0], /đỏ do nạp.*fix-no-test/);
+    assert.match(ex.warnings[0], /đỏ không ở mức case.*fix-no-test/);
   }
 });
 
@@ -698,8 +707,20 @@ const GIT_ID = [
   "commit.gpgsign=false",
 ];
 
+/** Env con không mang `GIT_*` của tiến trình ngoài (GIT_DIR, GIT_INDEX_FILE… khi chạy trong hook) — git chỉ thấy repo tạm. */
+function cleanEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const k of Object.keys(env)) if (k.startsWith("GIT_")) delete env[k];
+  return env;
+}
+
 function g(cwd, ...args) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+    cwd,
+    env: cleanEnv(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
 }
 
 function write(dir, rel, text) {
@@ -732,7 +753,7 @@ function fixtureRepo(t, baseLib, headLib, testSrc) {
 }
 
 function runRegression(dir, base, head, extraEnv = {}) {
-  const env = { ...process.env, PR_TITLE: "fix(lib): sửa cộng", PR_BODY: "", PR_LABELS: "[]", ...extraEnv };
+  const env = cleanEnv({ PR_TITLE: "fix(lib): sửa cộng", PR_BODY: "", PR_LABELS: "[]", ...extraEnv });
   for (const k of ["NODE_TEST_CONTEXT", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"]) delete env[k];
   return spawnSync(process.execPath, [SCRIPT, "--regression", "--base", base, "--head", head], {
     cwd: dir,
@@ -764,7 +785,7 @@ test("--regression I/O: base đỏ ở assertion, HEAD xanh → exit 0; trả l�
   assertBackOnWork(dir);
 });
 
-test("--regression I/O: base đỏ do nạp (test import export mới) → exit 1 'đỏ do nạp'", (t) => {
+test("--regression I/O: base đỏ do nạp file (named import export mới) → exit 1 'đỏ không ở mức case'", (t) => {
   const testSum = TEST_ADD.replace("{ add }", "{ add, sum }").replace("add(1, 2), 3", "sum([1, 2]), 3");
   const { dir, base, head } = fixtureRepo(
     t,
@@ -774,7 +795,26 @@ test("--regression I/O: base đỏ do nạp (test import export mới) → exit 
   );
   const r = runRegression(dir, base, head);
   assert.equal(r.status, 1, r.stdout + r.stderr);
-  assert.match(r.stderr, /đỏ do nạp, không chứng minh tái hiện/);
+  assert.match(r.stderr, /đỏ không ở mức case \(nạp\/hook\/quá hạn\)/);
+  assert.match(r.stderr, /lỗi nạp scripts\/lib\.test\.mjs/);
+  assertBackOnWork(dir);
+});
+
+test("--regression I/O: base đỏ vì gọi export mới qua namespace import (case chạy, TypeError) → exit 1", (t) => {
+  const testNs = `import assert from "node:assert/strict";
+import { test } from "node:test";
+import * as lib from "./lib.mjs";
+test("tổng", () => assert.equal(lib.sum([1, 2]), 3));
+`;
+  const { dir, base, head } = fixtureRepo(
+    t,
+    FIXED,
+    `${FIXED}export const sum = (xs) => xs.reduce(add, 0);\n`,
+    testNs,
+  );
+  const r = runRegression(dir, base, head);
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /đỏ không ở mức case.*1 case đỏ do export\/binding import chưa có/);
   assertBackOnWork(dir);
 });
 
@@ -818,4 +858,268 @@ test("--regression I/O: lỗi giữa chừng (không chạy được runner) →
   assert.equal(r.status, 2, r.stdout + r.stderr);
   assert.match(r.stderr, /không chạy được node/);
   assertBackOnWork(dir);
+});
+
+// ───────────────── case đỏ không ở mức case: export mới chưa có trên base, hook cha lỗi (report thật, rút gọn) ─────────────────
+
+// vitest 5.0.5 (`--reporter=json`): test gọi export mới → case chạy và fail với TypeError, file không lỗi nạp.
+const VITEST_NEW_EXPORT = JSON.stringify({
+  success: false,
+  testResults: [
+    {
+      name: "/repo/packages/domain/src/zz.test.ts",
+      status: "failed",
+      message: "",
+      assertionResults: [
+        {
+          ancestorTitles: ["zz"],
+          fullName: "zz newFn nhân đôi",
+          status: "failed",
+          title: "newFn nhân đôi",
+          failureMessages: [
+            "TypeError: (0 , __vite_ssr_import_0__.newFn) is not a function\n    at /repo/packages/domain/src/zz.test.ts:3:39\n" +
+              "    at file:///repo/node_modules/.pnpm/vitest@5.0.5/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:1632:35",
+          ],
+        },
+        {
+          ancestorTitles: ["zz"],
+          fullName: "zz lớp mới",
+          status: "failed",
+          title: "lớp mới",
+          failureMessages: [
+            "TypeError: __vite_ssr_import_1__.default.Money is not a constructor\n    at /repo/x:1:1",
+          ],
+        },
+        {
+          ancestorTitles: ["hook"],
+          fullName: "hook under failing beforeAll",
+          status: "skipped",
+          title: "under failing beforeAll",
+          failureMessages: [],
+        },
+      ],
+    },
+  ],
+});
+
+// jest 29.7.0 + @swc/jest (`--json`): cùng ca; hook beforeAll lỗi → case failed, stack có `_callCircusHook`.
+const JEST_NEW_EXPORT = JSON.stringify({
+  success: false,
+  testResults: [
+    {
+      name: "/repo/apps/backend/src/lib/__tests__/zz.unit.spec.ts",
+      status: "failed",
+      message:
+        '  ● zz › newFn nhân đôi\n\n    TypeError: (0 , _src.newFn) is not a function\n\n      1 | import { newFn } from "./src";\n',
+      assertionResults: [
+        {
+          ancestorTitles: ["zz"],
+          fullName: "zz newFn nhân đôi",
+          status: "failed",
+          title: "newFn nhân đôi",
+          failureMessages: [
+            "TypeError: (0 , _src.newFn) is not a function\n    at Object.<anonymous> (/repo/apps/backend/src/lib/__tests__/zz.unit.spec.ts:3:44)\n" +
+              "    at Promise.then.completed (/repo/node_modules/.pnpm/jest-circus@29.7.0/node_modules/jest-circus/build/utils.js:298:28)",
+          ],
+        },
+        {
+          ancestorTitles: ["zz"],
+          fullName: "zz namespace",
+          status: "failed",
+          title: "namespace",
+          failureMessages: [
+            "TypeError: _money.round is not a function\n    at Object.<anonymous> (/repo/x:5:1)",
+          ],
+        },
+        {
+          ancestorTitles: ["hook"],
+          fullName: "hook under failing beforeAll",
+          status: "failed",
+          title: "under failing beforeAll",
+          failureMessages: [
+            "Error: boom in beforeAll\n    at Object.<anonymous> (/repo/apps/backend/src/lib/__tests__/zz.unit.spec.ts:13:27)\n" +
+              "    at Promise.then.completed (/repo/node_modules/.pnpm/jest-circus@29.7.0/node_modules/jest-circus/build/utils.js:298:28)\n" +
+              "    at _callCircusHook (/repo/node_modules/.pnpm/jest-circus@29.7.0/node_modules/jest-circus/build/run.js:281:40)",
+          ],
+        },
+        {
+          ancestorTitles: ["thật"],
+          fullName: "thật lỗi",
+          status: "failed",
+          title: "lỗi",
+          failureMessages: [
+            "TypeError: cart.items is not a function\n    at Object.<anonymous> (/repo/x:9:1)",
+          ],
+        },
+      ],
+    },
+  ],
+});
+
+// node 22.22.0 junit: hook `before` lỗi → case `cancelledByParent`; `await import()` rồi gọi export mới → cause TypeError.
+const JUNIT_HOOK_DYN = `<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testsuite name="hook" time="0.0002" disabled="0" errors="0" tests="1" failures="1" skipped="0" hostname="vm">
+		<testcase name="under failing before" time="0.000000" classname="test" failure="test did not finish before its parent and was cancelled">
+			<failure type="cancelledByParent" message="test did not finish before its parent and was cancelled">
+[Error [ERR_TEST_FAILURE]: test did not finish before its parent and was cancelled] { code: 'ERR_TEST_FAILURE', failureType: 'cancelledByParent', cause: 'test did not finish before its parent and was cancelled' }
+			</failure>
+		</testcase>
+	</testsuite>
+	<testcase name="dyn missing export" time="0.0006" classname="test" failure="m.newFn is not a function">
+		<failure type="testCodeFailure" message="m.newFn is not a function">
+[Error [ERR_TEST_FAILURE]: m.newFn is not a function] {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: TypeError: m.newFn is not a function
+      at TestContext.&lt;anonymous> (file:///repo/scripts/dyn.test.mjs:4:49)
+}
+		</failure>
+	</testcase>
+	<testcase name="lỗi thật" time="0.0006" classname="test" failure="x.y is not a function">
+		<failure type="testCodeFailure" message="x.y is not a function">
+[Error [ERR_TEST_FAILURE]: x.y is not a function] {
+  cause: TypeError: x.y is not a function
+}
+		</failure>
+	</testcase>
+</testsuites>
+`;
+
+test("importBindings: namespace/default/await import/require + tên @swc/jest theo nguồn; không lấy named import", () => {
+  const src = `import * as lib from "./lib.mjs";
+import def, { a } from "../lib/money-round.js";
+import type T from "./t";
+import { b } from "@x-shop/domain/validation";
+const m = await import("./src.mjs");
+let r = require('2fa');
+`;
+  const b = importBindings(src);
+  for (const n of ["lib", "def", "m", "r", "_lib", "_moneyround", "_validation", "_src", "_2fa"])
+    assert.ok(b.has(n), n);
+  for (const n of ["a", "b", "type", "T_"]) assert.ok(!b.has(n), n);
+  assert.deepEqual([...importBindings("")], []);
+  assert.deepEqual([...importBindings(undefined)], []);
+  // Đầu vào bệnh lý lớn: tuyến tính (chống ReDoS).
+  const t0 = Date.now();
+  for (const x of [
+    `import ${" ".repeat(100_000)}`,
+    `import ${"a".repeat(100_000)}`,
+    `const ${"a".repeat(50_000)} ${" ".repeat(50_000)}=`,
+    `from "${"a".repeat(100_000)}`,
+    `${"import * as ".repeat(20_000)}`,
+    `${"require(".repeat(20_000)}`,
+  ]) {
+    importBindings(x);
+    classifyFailure(`TypeError: ${"a".repeat(100_000)}`);
+    classifyFailure(`TypeError: (0 , ${"a.".repeat(50_000)}`);
+  }
+  assert.ok(Date.now() - t0 < 2000, `quá chậm: ${Date.now() - t0} ms`);
+});
+
+test("classifyFailure: `(0 , X.Y)` biên dịch → nạp; `X.Y`/`X.default.Y` chỉ khi X là binding import; lỗi khác → null", () => {
+  assert.equal(
+    classifyFailure("TypeError: (0 , __vite_ssr_import_0__.newFn) is not a function\n at x"),
+    "nạp",
+  );
+  assert.equal(classifyFailure("TypeError: (0 , _src.Money) is not a constructor"), "nạp");
+  assert.equal(classifyFailure("TypeError: __vite_ssr_import_3__.default.f is not a function"), "nạp");
+  assert.equal(classifyFailure("TypeError: m.newFn is not a function"), null);
+  assert.equal(classifyFailure("TypeError: m.newFn is not a function", new Set(["m"])), "nạp");
+  assert.equal(
+    classifyFailure("TypeError: _money.default.K is not a constructor", new Set(["_money"])),
+    "nạp",
+  );
+  for (const msg of [
+    "AssertionError: expected 1 to be 2",
+    "TypeError: cart.items is not a function",
+    "TypeError: Cannot read properties of undefined (reading 'x')",
+    "Error: TypeError: (0 , _src.f) is not a function", // không ở đầu
+    "",
+    undefined,
+  ]) {
+    assert.equal(classifyFailure(msg, new Set(["_src"])), null, String(msg));
+  }
+});
+
+test("parseJestLikeJson (vitest thật): case gọi export mới → broken/nạp; hook beforeAll lỗi đã là skipped", () => {
+  const r = parseJestLikeJson(VITEST_NEW_EXPORT, TOP);
+  assert.deepEqual(
+    r.cases.map((c) => [c.name, c.status, c.why]),
+    [
+      ["zz > newFn nhân đôi", "broken", "nạp"],
+      ["zz > lớp mới", "broken", "nạp"],
+      ["hook > under failing beforeAll", "skipped", undefined],
+    ],
+  );
+  assert.deepEqual(r.loadErrors, []);
+});
+
+test("parseJestLikeJson (jest thật): export mới → nạp; namespace swc khi biết binding; hook → broken/hook; lỗi thật giữ failed", () => {
+  const file = "apps/backend/src/lib/__tests__/zz.unit.spec.ts";
+  const bindings = new Map([[file, importBindings('import * as money from "../money";')]]);
+  const r = parseReport("jest-json", JEST_NEW_EXPORT, { top: TOP, bindings });
+  assert.deepEqual(
+    r.cases.map((c) => [c.name, c.status, c.why]),
+    [
+      ["zz > newFn nhân đôi", "broken", "nạp"],
+      ["zz > namespace", "broken", "nạp"],
+      ["hook > under failing beforeAll", "broken", "hook"],
+      ["thật > lỗi", "failed", undefined],
+    ],
+  );
+  // Không có nguồn file test → chỉ dạng `(0 , X.Y)` nhận ra được.
+  assert.equal(parseJestLikeJson(JEST_NEW_EXPORT, TOP).cases[1].status, "failed");
+});
+
+test("parseJunit (node thật): cancelledByParent → broken/hook; cause TypeError trên binding import → broken/nạp", () => {
+  const b = importBindings('const m = await import("./src.mjs");');
+  const r = parseReport("junit", JUNIT_HOOK_DYN, {
+    file: "scripts/dyn.test.mjs",
+    bindings: new Map([["scripts/dyn.test.mjs", b]]),
+  });
+  assert.deepEqual(
+    r.cases.map((c) => [c.name, c.status, c.why]),
+    [
+      ["hook > under failing before", "broken", "hook"],
+      ["dyn missing export", "broken", "nạp"],
+      ["lỗi thật", "failed", undefined],
+    ],
+  );
+  const hook = JUNIT_HOOK_DYN.replace('type="cancelledByParent"', 'type="hookFailure"');
+  assert.equal(parseJunit(hook, "scripts/dyn.test.mjs").cases[0].why, "hook");
+  assert.equal(parseJunit(JUNIT_HOOK_DYN, "scripts/dyn.test.mjs").cases[1].status, "failed");
+  assert.throws(() => parseJunit('<testsuites><testcase name="a"><failure>x', "a"), /failure không đóng/);
+});
+
+test("regressionVerdict: case đỏ trên base chỉ vì export mới (report thật) → đỏ, không tính là tái hiện", () => {
+  const plan = planRegression(["packages/domain/src/zz.test.ts"]);
+  const base = [
+    { runner: "vitest-domain", ok: false, note: "exit 1", ...parseJestLikeJson(VITEST_NEW_EXPORT, TOP) },
+  ];
+  const head = [
+    {
+      runner: "vitest-domain",
+      ok: true,
+      note: "exit 0",
+      loadErrors: [],
+      cases: base[0].cases.map((c) => ({ file: c.file, name: c.name, status: "passed" })),
+    },
+  ];
+  assert.deepEqual(reproducedCases(head, base), []);
+  const r = regressionVerdict({ plan, head, base });
+  assert.equal(r.ok, false);
+  assert.match(
+    r.errors[0],
+    /đỏ không ở mức case \(nạp\/hook\/quá hạn\).*2 case đỏ do export\/binding import chưa có/,
+  );
+});
+
+test("parseJunit: `&` không có `;` gần → giữ nguyên; `;` xa hơn 11 ký tự không làm thành thực thể", () => {
+  const far = `<testsuites><testcase name="a &amp ${"x".repeat(20)};b &lt;"/></testsuites>`;
+  assert.equal(parseJunit(far, "a").cases[0].name, `a &amp ${"x".repeat(20)};b <`);
+  const big = `<testsuites><testcase name="${"&x".repeat(200_000)};"/></testsuites>`;
+  const t0 = Date.now();
+  assert.equal(parseJunit(big, "a").cases[0].name.length, 400_001);
+  assert.ok(Date.now() - t0 < 1000, `quá chậm: ${Date.now() - t0} ms`);
 });
