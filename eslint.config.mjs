@@ -193,8 +193,8 @@ const RAW_FETCH_REFERENCE_SYNTAX = [
 ].map((selector) => ({ selector, message: RAW_FETCH_MESSAGE }));
 
 /**
- * XC-I18N-001 (T-219): chuỗi hiển thị phải đi qua `t()` (lib/i18n) — chế độ ALLOWLIST: luật chỉ áp cho file/thư mục đã
- * chuyển (danh sách dưới). Lát T-220/T-221 mở rộng danh sách; T-221 bỏ allowlist (áp toàn bộ storefront/src).
+ * XC-I18N-001 (T-219): chuỗi hiển thị phải đi qua `t()` (lib/i18n) — áp cho TOÀN BỘ `.tsx` của storefront (trừ test);
+ * T-221 đã bỏ allowlist theo từng lát.
  * - `react/jsx-no-literals` (mặc định): cấm chữ trần làm con của JSX (`<p>Chữ</p>`). Không bật `noStrings` vì ở bản đã cài
  *   (7.37) nó cấm cả giá trị thuộc tính kỹ thuật (className, href, id, d=…). Chuỗi bọc `{"chữ"}` bắt bằng selector riêng.
  * - Thuộc tính: `jsx-no-literals` không có chế độ "chỉ thuộc tính hiển thị" (noAttributeStrings cấm cả className/href), nên
@@ -202,19 +202,6 @@ const RAW_FETCH_REFERENCE_SYNTAX = [
  *   closeLabel…) hoặc bất kỳ thuộc tính nào chứa ký tự ngoài ASCII (chữ Việt có dấu).
  * Ghi đè no-restricted-syntax nên lặp luật chung + units + URL (+ fetch ở components) như các khối trên.
  */
-const I18N_ALLOWLIST_FILES = [
-  "apps/storefront/src/components/layout/**/*.tsx",
-  "apps/storefront/src/app/layout.tsx",
-  "apps/storefront/src/app/not-found.tsx",
-  "apps/storefront/src/app/error.tsx",
-  "apps/storefront/src/app/global-error.tsx",
-  "apps/storefront/src/app/offline/**/*.tsx",
-  "apps/storefront/src/app/(shop)/{bao-mat,giao-hang,doi-tra-hoan-tien}/**/*.tsx",
-  // T-220 (lát 2): danh mục, tìm kiếm, PDP.
-  "apps/storefront/src/app/(shop)/{danh-muc,tim-kiem,san-pham}/**/*.tsx",
-  "apps/storefront/src/components/catalog/**/*.tsx",
-  "apps/storefront/src/components/product/**/*.tsx",
-];
 const I18N_TEXT_ATTRS =
   "/^(aria-(label|description|placeholder|roledescription|valuetext)|title|alt|placeholder|label|description|closeLabel)$/";
 const I18N_MESSAGE =
@@ -518,9 +505,9 @@ export default tseslint.config(
     },
   },
   {
-    // XC-I18N-001 (T-219): chặn chuỗi literal ở file đã chuyển sang t() — xem I18N_ALLOWLIST_FILES. Đặt CUỐI để thắng
-    // các khối no-restricted-syntax phía trên (lặp luật chung/units/URL; file trong components/ còn lặp luật fetch).
-    files: I18N_ALLOWLIST_FILES,
+    // XC-I18N-001 (T-219): chặn chuỗi literal trong mọi .tsx của storefront (trừ test). Đặt CUỐI để thắng
+    // các khối no-restricted-syntax phía trên (lặp luật chung/units/URL/fetch).
+    files: ["apps/storefront/src/**/*.tsx"],
     ignores: ["**/*.test.{ts,tsx}", "**/__tests__/**"],
     plugins: { react },
     rules: {
