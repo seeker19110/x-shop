@@ -32,7 +32,8 @@ export default defineConfig({
     baseURL: URLS.storefront,
     locale: "vi-VN",
     timezoneId: "Asia/Ho_Chi_Minh",
-    trace: "on-first-retry",
+    // CI có retry → trace ở lần thử lại; local không retry → giữ trace khi fail.
+    trace: process.env.CI ? "on-first-retry" : "retain-on-failure",
     screenshot: "only-on-failure",
   },
   // UX-RESP-008 / FE-TEST-002: hai project. `desktop` chạy toàn bộ spec; `mobile` (Pixel 7: viewport 412×915, cảm ứng,

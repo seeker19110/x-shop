@@ -83,7 +83,9 @@ test("transferBytes: font/ảnh giữ nguyên, văn bản được nén", () => 
 });
 
 test("parseProcStat: tên tiến trình có khoảng trắng và ngoặc", () => {
-  const line = "123 (node (v8) x) S 1 77 77 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 11 0 5 1000 2000";
+  // Dựng từ mảng trường: chuỗi số liền nhau của /proc/stat giống số điện thoại với check-fixtures (QA-DATA-002).
+  const fields = ["S", 1, 77, 77, 0, -1, 4194560, 100, 0, 0, 0, 250, 50, 0, 0, 20, 0, 11, 0, 5, 1000, 2000];
+  const line = `123 (node (v8) x) ${fields.join(" ")}`;
   assert.deepEqual(parseProcStat(line), { pgrp: 77, cpuTicks: 300 });
   assert.throws(() => parseProcStat("garbage"));
 });
