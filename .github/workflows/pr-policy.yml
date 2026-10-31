@@ -169,13 +169,15 @@ jobs:
 
   # FE-TEST-006, QA-STRAT-005 (T-209): test tái hiện lỗi phải TỰ CHỨNG MINH "đỏ trước, xanh sau", không chỉ khai trong mô tả.
   # PR fix (CHỈ tiêu đề PR `fix:`/`fix(...)` — squash-merge, D-152): test mới/sửa của PR (`git diff base...head`) trên HEAD xanh,
-  # chạy trên mã base + file test của HEAD phải đỏ (≥ 1 lệnh fail; mọi lệnh xanh → "test không tái hiện lỗi"). Runner theo
-  # vị trí file: vitest (storefront, domain), jest unit (backend), node --test (scripts/, e2e/*.test.mjs). Test tích hợp backend
+  # chạy trên mã base + file test của HEAD phải đỏ Ở MỨC TEST CASE (D-153: ≥ 1 case cùng file + tên fail trên base, pass trên
+  # HEAD; chỉ đỏ do nạp module → đỏ). Runner theo vị trí file: vitest (storefront, domain), jest unit (backend), node --test
+  # (scripts/, e2e/*.test.mjs); file test không runner nào/không job CI nào chạy → đỏ "không chạy ở đâu". Test tích hợp backend
   # và E2E KHÔNG chạy ở đây (cảnh báo): mỗi suite dựng app Medusa trên Postgres/Redis + vai trò DB — thêm service vào job này
   # thì mọi sự kiện pr-policy (cả `edited`) đều khởi động service; job `gate` của ci.yml đã chạy chúng trên HEAD. Không có test
   # → đỏ, trừ ngoại lệ chung của check-fix-pr: nhãn `fix-no-test` + 'Ngoại lệ test: <lý do>'. Logic + test:
   # scripts/check-fix-pr.mjs `--regression`. Job riêng (không gộp `policy`) để kiểm thân PR vẫn báo trong vài giây.
-  # HEAD = `GITHUB_SHA` (merge commit của PR — đúng mã sẽ vào master); base = tip nhánh đích (fetch-depth 0, không cần fetch).
+  # HEAD = `GITHUB_SHA` (merge commit của PR — đúng mã sẽ vào master); base = `GITHUB_SHA^1` (tip nhánh đích mà merge commit
+  # dựng trên — `base.sha` của payload có thể cũ hơn khi master đã tiến); không phải merge commit → `base.sha`.
   # Điều kiện job (biểu thức, không qua shell — tiêu đề không nội suy vào lệnh): tiêu đề bắt đầu `fix` (lọc thô; regex chặt
   # `fix(...)?!?:` ở script) và không phải bot. Không lọc loại sự kiện (D-152): sửa thân/nhãn của PR fix cũng chạy lại.
   regression:
@@ -203,7 +205,9 @@ jobs:
         run: |
           set -euo pipefail
           node --test scripts/check-fix-pr.test.mjs
-          node scripts/check-fix-pr.mjs --regression --dry-run --base "$BASE_SHA" --head "$GITHUB_SHA"
+          base="$BASE_SHA"
+          if git rev-parse --verify --quiet "$GITHUB_SHA^2" > /dev/null; then base="$GITHUB_SHA^1"; fi
+          node scripts/check-fix-pr.mjs --regression --dry-run --base "$base" --head "$GITHUB_SHA"
       - if: steps.plan.outputs.run == 'true'
         name: Cài phụ thuộc — đúng khoá `setup:` của xt.yaml
         run: |
@@ -219,4 +223,6 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          node scripts/check-fix-pr.mjs --regression --base "$BASE_SHA" --head "$GITHUB_SHA"
+          base="$BASE_SHA"
+          if git rev-parse --verify --quiet "$GITHUB_SHA^2" > /dev/null; then base="$GITHUB_SHA^1"; fi
+          node scripts/check-fix-pr.mjs --regression --base "$base" --head "$GITHUB_SHA"
