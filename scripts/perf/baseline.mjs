@@ -40,7 +40,10 @@ export function baselineFileName(date) {
   return `baseline-${date}.json`;
 }
 
-/** URL tài nguyên tĩnh trong HTML (script src, link stylesheet/preload/icon, img src), bỏ trùng, giữ thứ tự xuất hiện. */
+/**
+ * URL tài nguyên tĩnh trong HTML (script src, link stylesheet/preload/icon, img src), bỏ trùng, giữ thứ tự xuất hiện.
+ * Bỏ script nomodule, img loading=lazy, rel apple-touch-icon (token rel phải đúng bằng `icon`).
+ */
 export function extractAssets(html) {
   const out = [];
   const add = (u) => {
@@ -48,14 +51,25 @@ export function extractAssets(html) {
     if (!out.includes(u)) out.push(u);
   };
   const decode = (u) => u.replace(/&amp;/g, "&");
-  for (const m of html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)) add(decode(m[1]));
+  // Chỉ tính thứ trình duyệt hiện đại tải ở lần đầu: bỏ script nomodule (polyfill) và img loading="lazy".
+  for (const m of html.matchAll(/<script\b[^>]*>/gi)) {
+    const tag = m[0];
+    if (/\snomodule(?=[\s=/>])/i.test(tag)) continue;
+    const src = /\bsrc="([^"]+)"/i.exec(tag)?.[1];
+    if (src) add(decode(src));
+  }
   for (const m of html.matchAll(/<link\b[^>]*>/g)) {
     const tag = m[0];
     const rel = /\brel="([^"]+)"/.exec(tag)?.[1] ?? "";
     const href = /\bhref="([^"]+)"/.exec(tag)?.[1];
-    if (href && /\b(stylesheet|preload|modulepreload|icon)\b/.test(rel)) add(decode(href));
+    if (href && /(?:^|\s)(?:stylesheet|preload|modulepreload|icon)(?=\s|$)/i.test(rel)) add(decode(href));
   }
-  for (const m of html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"/g)) add(decode(m[1]));
+  for (const m of html.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = m[0];
+    if (/\sloading="lazy"/i.test(tag)) continue;
+    const src = /\bsrc="([^"]+)"/i.exec(tag)?.[1];
+    if (src) add(decode(src));
+  }
   return out;
 }
 

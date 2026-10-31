@@ -43,6 +43,23 @@ test("extractAssets: script/link/img, bỏ trùng, giải &amp;, bỏ data:", ()
   assert.deepEqual(extractAssets(""), []);
 });
 
+test("extractAssets: bỏ script nomodule (mọi kiểu viết), giữ script thường", () => {
+  const html = `<script src="/p1.js" noModule=""></script><script src="/p2.js" nomodule></script>
+    <script nomodule src="/p3.js"></script><script src="/ok.js" async></script><script src="/m.js" type="module"></script>`;
+  assert.deepEqual(extractAssets(html), ["/ok.js", "/m.js"]);
+});
+
+test("extractAssets: bỏ img loading=lazy, giữ img không lazy", () => {
+  const html = `<img loading="lazy" src="/i.jpg"/><img src="/l2.jpg" loading="lazy"/><img src="/eager.jpg" loading="eager"/><img src="/n.jpg"/>`;
+  assert.deepEqual(extractAssets(html), ["/eager.jpg", "/n.jpg"]);
+});
+
+test("extractAssets: rel chỉ nhận token đúng `icon`, không nhận apple-touch-icon", () => {
+  const html = `<link rel="apple-touch-icon" href="/a.png"/><link rel="icon" href="/f.ico"/>
+    <link rel="shortcut icon" href="/s.ico"/><link rel="mask-icon" href="/m.svg"/>`;
+  assert.deepEqual(extractAssets(html), ["/f.ico", "/s.ico"]);
+});
+
 test("summarizePage: rỗng = 0 request; loại lạ gộp vào other", () => {
   assert.deepEqual(summarizePage([]).requests, 0);
   assert.equal(summarizePage([]).totalBytes, 0);
