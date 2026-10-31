@@ -64,6 +64,13 @@ Mỗi gói mới tick đủ (BASE-DEP-006); không thêm gói thì ghi "không c
 - [ ] Phiên bản ghim chính xác; lockfile cập nhật cùng PR
 - [ ] Nâng MAJOR một phụ thuộc có sẵn: dùng mẫu `major-upgrade` (`?template=major-upgrade.md`), PR riêng
 
+## Dark pattern (PR đổi giao diện/luồng mua; không đổi UI ghi "không áp dụng — lý do")
+<!-- UX-CONTENT-005: mỗi dòng tick kèm bằng chứng (ảnh, test, đường dẫn). -->
+- [ ] Không có ô tick/tuỳ chọn chọn sẵn có lợi cho cửa hàng (đồng ý nhận tin, bảo hiểm, quà tặng…)
+- [ ] Không ẩn phí: tổng tiền gồm phí ship/phụ phí hiện trước bước đặt, không thêm khoản ở bước cuối
+- [ ] Hủy/rút lui dễ như đăng ký: số bước hủy ≤ số bước đặt (`e2e/cancel-order.spec.ts`), không bắt gọi điện/gửi thư
+- [ ] Không đếm ngược/khan hiếm giả: mọi đồng hồ, "chỉ còn N" đến từ dữ liệu thật của server
+
 ## Hỗ trợ AI
 <!-- WF-REVIEW-019: phần nào do AI sinh, phần nào người đã tự kiểm và kiểm thế nào, phần nào chỉ máy/AI kiểm. Không ghi tên model/phiên. -->
 
