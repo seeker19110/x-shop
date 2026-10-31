@@ -1080,3 +1080,10 @@
 - Chọn: Reporter máy đọc được (vitest json, jest --json, node junit): base đạt khi ≥1 test case cùng file+tên fail trên base và pass trên HEAD; chỉ đỏ do nạp → đỏ trừ ngoại lệ fix-no-test
 - Lý do (tiêu chí chất lượng cuối): Đúng và chặt hơn (tiêu chí 1): lỗi nạp không chứng minh tái hiện bug (FE-TEST-006); ca hay gặp khi fix thêm export nên không phải lách hiếm; có ngoại lệ có giải trình làm đường thoát
 - Đường lùi: Hạ về so exit code: bỏ bước đối chiếu case trong regressionVerdict, giữ ngoại lệ
+
+### D-154 · 2026-10-30T23:44:37+00:00 · T-209 regression: case đỏ do beforeEach/afterEach lỗi có tính là tái hiện không (jest/node đang coi là hook → không tính, vitest coi là failed)?
+
+- Phương án: (1) Giữ chặt: mọi hook lỗi không tính; vitest làm nhất quán, sửa lời nhắn 'hook' · (2) Chỉ beforeAll không tính; beforeEach tính là tái hiện
+- Chọn: Giữ chặt: mọi hook lỗi không tính; vitest làm nhất quán, sửa lời nhắn 'hook'
+- Lý do (tiêu chí chất lượng cuối): Chặt hơn (tiêu chí 1) và nhất quán giữa runner; jest không phân biệt beforeAll/beforeEach tin cậy từ stack; có ngoại lệ fix-no-test làm đường thoát
+- Đường lùi: Đổi classifyFailure chỉ coi cancelledByParent/beforeAll là hook
