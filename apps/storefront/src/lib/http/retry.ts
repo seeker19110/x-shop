@@ -165,7 +165,8 @@ export async function fetchWithRetry(
     const timeout = timeoutMs === undefined ? null : armTimeout(signal, timeoutMs);
     try {
       // CodeQL js/file-access-to-http: báo nhầm. Đây là wrapper chung, không đọc file; `input`/`init` do người gọi truyền.
-      // Dữ liệu "từ file" duy nhất phía storefront là bộ địa giới đóng gói trong repo (tin cậy, người dùng không sửa được).
+      // Storefront không đọc file ở đường chạy thật (địa giới lấy qua HTTP từ backend — checkout/address.ts); chỉ
+      // sw-harness (test) đọc file.
       res = await fetch(input, timeout === null ? init : { ...init, signal: timeout.signal });
     } catch (err) {
       timeout?.disarm();

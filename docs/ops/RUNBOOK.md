@@ -42,15 +42,13 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
 | Hãng vận chuyển lỗi (§2) | chưa diễn tập | chưa có tài khoản/khoá GHN thật |
 | Ảnh lỗi / CDN (§6) | chưa diễn tập | chưa có CDN/kho ảnh thật |
 | Tiền đến sau khi hủy (§7) | chưa diễn tập | chỉ chạy trong test tích hợp `late-payment` |
-| Xoay secret (§9) | chưa diễn tập | chưa có kho bí mật production |
-| Lộ bí mật (§10) | chưa diễn tập | chưa diễn tập sự cố bảo mật |
 | Staging / preview (§11) | chưa diễn tập | chưa có môi trường staging/preview |
-| Outbox `dead` (§12) | chưa diễn tập | chỉ chạy trong test tích hợp `outbox-redrive` |
 | Catalog lệch (§13) | chưa diễn tập | chỉ chạy trong test tích hợp `catalog-model` |
 | Circuit breaker job (§14) | chưa diễn tập | test đơn vị `breaker` + test tích hợp `outbox-breaker` |
 | Xoay secret (§9)       | chưa diễn tập | cần môi trường staging                                               |
 | Lộ bí mật (§10)        | chưa diễn tập | tập bàn giấy khi có staging                                          |
-| Redrive outbox (§12)   | chưa diễn tập | lệnh SQL chưa chạy trên DB thật                                      |
+| Outbox `dead` / redrive (§12) | chưa diễn tập | lệnh SQL chỉ chạy trong test tích hợp `outbox-redrive`, chưa chạy trên DB thật |
+| Autovacuum / check-vacuum (§15) | chưa diễn tập | `check-vacuum.mjs` mới chạy trên Postgres cục bộ, chưa trên DB vận hành |
 
 ## 1. Cổng thanh toán lỗi (VNPAY không phản hồi, IPN không về)
 

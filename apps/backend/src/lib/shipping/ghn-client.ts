@@ -161,9 +161,9 @@ export class HttpGhnClient implements GhnClient {
           Token: this.cfg.token,
           ShopId: this.cfg.shopId,
         },
-        // CodeQL js/file-access-to-http: báo nhầm. "File data" duy nhất trong luồng là bộ dữ liệu hành chính đóng gói trong
-        // repo (packages/domain/data/vn-admin-units.json, readFileSync lúc nạp module) — nguồn tin cậy, không do người dùng
-        // kiểm soát. Điểm đến là GHN_BASE_URL đã qua zod khi khởi động, không lấy từ file.
+        // CodeQL js/file-access-to-http: báo nhầm. Backend chỉ đọc file đóng gói trong repo (packages/domain/data/
+        // vn-admin-units.json lúc nạp module; package.json cho version/log) — nguồn tin cậy, người dùng không kiểm soát.
+        // Điểm đến là GHN_BASE_URL đã qua zod khi khởi động, không lấy từ file.
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
