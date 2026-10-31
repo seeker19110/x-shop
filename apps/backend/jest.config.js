@@ -64,6 +64,9 @@ if (process.env.TEST_TYPE === "integration:http") {
   // Mỗi suite dựng một app Medusa đầy đủ; chạy chung một process thì heap tăng dần tới OOM khi số suite lớn.
   // Một worker (vẫn tuần tự) + giới hạn bộ nhớ → Jest dựng lại worker khi vượt ngưỡng giữa các suite.
   module.exports.workerIdleMemoryLimit = "1536MB";
+  // D-157 (T-198): coverage tích hợp không đo src/admin/** — UI Admin chạy trong trình duyệt, test HTTP không chạm tới
+  // (0 %); src/admin vẫn đo + ratchet ở coverage unit (jsdom, TEST_TYPE=unit giữ collectCoverageFrom gốc).
+  module.exports.collectCoverageFrom = [...module.exports.collectCoverageFrom, "!src/admin/**"];
 } else if (process.env.TEST_TYPE === "integration:modules") {
   module.exports.testMatch = ["**/src/modules/*/__tests__/**/*.[jt]s"];
 } else if (process.env.TEST_TYPE === "unit") {

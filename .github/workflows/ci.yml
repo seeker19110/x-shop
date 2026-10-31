@@ -373,6 +373,7 @@ jobs:
   # / 8 ≈ 490 s mỗi shard; + overhead v8 10–35 % + cài/dựng ≈ 15 phút < trần 20. Đổi số shard: sửa matrix bên dưới
   # (shards.test.mjs kiểm độ cân với N này); suite dài thêm: cập nhật http-durations.json từ step summary của job.
   # Song song với `gate` (không `needs`); `gate` vẫn chạy cả bộ tích hợp không coverage qua `test` của xt.yaml.
+  # D-157: phạm vi đo tích hợp bỏ src/admin/** (UI trình duyệt; vẫn đo + ratchet ở coverage unit) — jest.config.js.
   integration-coverage:
     name: integration-coverage ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
