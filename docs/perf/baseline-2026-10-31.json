@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "task": "T-216",
+  "commit": "9c6bfb77aa4a8b4a864c23752d1eac691f688125",
+  "dateUtc": "2026-10-31",
+  "generatedAtUtc": "2026-10-31T16:19:55.785Z",
+  "environment": {
+    "node": "v22.22.0",
+    "platform": "linux-x64",
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+    "cpuCores": 4,
+    "memTotalGiB": 15.7
+  },
+  "storefront": {
+    "measured": true,
+    "method": "HTTP: HTML + tài nguyên tĩnh tham chiếu trong HTML, gzip-9 (font/ảnh byte thật); next start, XS_DATA_SOURCE=fixtures; không gồm chunk động/RSC prefetch/ảnh lazy",
+    "command": "XS_DATA_SOURCE=fixtures pnpm --filter @x-shop/storefront build && PORT=3198 pnpm --filter @x-shop/storefront start",
+    "pages": [
+      {
+        "route": "/",
+        "name": "trang-chu",
+        "requests": 27,
+        "totalBytes": 214007,
+        "totalKiB": 209,
+        "bytes": {
+          "html": 10014,
+          "js": 190863,
+          "css": 7828,
+          "font": 0,
+          "image": 5302,
+          "rsc": 0,
+          "other": 0
+        }
+      },
+      {
+        "route": "/danh-muc/ao",
+        "name": "danh-muc",
+        "requests": 18,
+        "totalBytes": 213697,
+        "totalKiB": 208.7,
+        "bytes": {
+          "html": 9790,
+          "js": 193921,
+          "css": 7828,
+          "font": 0,
+          "image": 2158,
+          "rsc": 0,
+          "other": 0
+        }
+      },
+      {
+        "route": "/san-pham/ao-so-mi-lua",
+        "name": "pdp",
+        "requests": 19,
+        "totalBytes": 217730,
+        "totalKiB": 212.6,
+        "bytes": {
+          "html": 8232,
+          "js": 196813,
+          "css": 7220,
+          "font": 0,
+          "image": 5465,
+          "rsc": 0,
+          "other": 0
+        }
+      },
+      {
+        "route": "/gio-hang",
+        "name": "gio-hang",
+        "requests": 14,
+        "totalBytes": 205393,
+        "totalKiB": 200.6,
+        "bytes": {
+          "html": 4314,
+          "js": 192685,
+          "css": 7013,
+          "font": 0,
+          "image": 1381,
+          "rsc": 0,
+          "other": 0
+        }
+      }
+    ]
+  },
+  "backend": {
+    "measured": true,
+    "method": "N request GET /store/x/products/:handle (PDP) qua scripts/load/serve.mjs; CPU = utime+stime, RSS = VmRSS cộng cả nhóm tiến trình backend, đọc /proc trước/sau (sau 50 request khởi động nóng)",
+    "command": "LOAD_PRODUCTS=2000 node scripts/perf/baseline.mjs --requests 1000 --concurrency 8",
+    "dataset": {
+      "products": 2000,
+      "db": "xshop_load"
+    },
+    "concurrency": 8,
+    "requests": 1000,
+    "wallMs": 93582,
+    "requestsPerSecond": 10.7,
+    "cpuMs": 75710,
+    "cpuMsPerRequest": 75.71,
+    "cpuUtilizationPercentOfOneCore": 80.9,
+    "rssBeforeMiB": 569.7,
+    "rssAfterMiB": 1001.9,
+    "rssDeltaMiB": 432.2,
+    "peakRssSumMiB": 1010.1,
+    "cpuClockTicksPerSecond": 100
+  }
+}
