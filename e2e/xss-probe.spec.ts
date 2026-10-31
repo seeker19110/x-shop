@@ -43,7 +43,13 @@ async function expectClean(page: Page, dialogs: string[], where: string): Promis
         if (name.startsWith("on")) out.push(`${el.tagName}[${name}]`);
         if (["href", "src", "action", "formaction", "xlink:href", "data", "srcset"].includes(name)) {
           const v = normalize(attr.value);
-          if (v.startsWith("javascript:") || v.startsWith("vbscript:") || v.startsWith("data:text/html"))
+          // data: chỉ chấp nhận ảnh raster (không svg — svg chạy được script); mọi data: khác là nguy hiểm.
+          const safeData = /^data:image\/(png|jpe?g|gif|webp|avif)[;,]/.test(v);
+          if (
+            v.startsWith("javascript:") ||
+            v.startsWith("vbscript:") ||
+            (v.startsWith("data:") && !safeData)
+          )
             out.push(`${el.tagName}[${name}=${attr.value.slice(0, 40)}]`);
         }
       }
