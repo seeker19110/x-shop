@@ -1108,3 +1108,17 @@
 - Chọn: Coverage tích hợp bỏ src/admin/** (đo 93,82/83,70); src/admin vẫn đo + ratchet ở coverage unit (jsdom); nâng baseline integration từ artefact CI đầu tiên
 - Lý do (tiêu chí chất lượng cuối): Đúng (tiêu chí 1): mỗi bộ đo vùng nó chạy tới, không vùng nào thoát đo — src/admin đã nằm trong collectCoverageFrom của test:coverage (unit, ratchet); không hạ baseline (LOOP-CI-001), còn nâng lên; phương án 3 chặn mọi PR vì lý do đo sai chỗ
 - Đường lùi: Bỏ cờ --collectCoverageFrom riêng của test:integration:coverage; tắt job integration-coverage
+
+### D-158 · 2026-10-31T20:04:33+00:00 · T-203/T-204/T-205 (consent, retention, DSAR — PII, ngoại lệ cứng merge người) làm trong PR #20 hay lát sau?
+
+- Phương án: (1) Dời sang PR riêng sau khi PR #20 merge (nhánh làm việc cắt lại từ master), người rà PII trên diff nhỏ · (2) Làm luôn trong PR #20 (đã ~840 file)
+- Chọn: Dời sang PR riêng sau khi PR #20 merge (nhánh làm việc cắt lại từ master), người rà PII trên diff nhỏ
+- Lý do (tiêu chí chất lượng cuối): An toàn (tiêu chí 1) và giữ đường lùi (2): ngoại lệ cứng PII cần người rà thật — diff riêng nhỏ rà được, gộp vào PR 840 file thì không; mỗi lát một PR (P8); cùng cách D-140 cho T-186
+- Đường lùi: Làm ngay trên nhánh hiện tại nếu chủ dự án muốn gộp
+
+### D-159 · 2026-10-31T20:46:46+00:00 · T-221: chuỗi tiếng Việt còn trong lib/content/home.ts, navigation.ts (dữ liệu cấu hình, sẽ lấy từ CMS — WEB01), fixtures và lỗi nội bộ (env/log/http) — đưa vào vi.json?
+
+- Phương án: (1) Giữ nguyên: là dữ liệu cấu hình/nội dung (CMS) hoặc thông điệp cho lập trình viên/vận hành, không phải chuỗi UI cứng; lint chỉ bắt .tsx · (2) Đưa home/navigation vào vi.json
+- Chọn: Giữ nguyên: là dữ liệu cấu hình/nội dung (CMS) hoặc thông điệp cho lập trình viên/vận hành, không phải chuỗi UI cứng; lint chỉ bắt .tsx
+- Lý do (tiêu chí chất lượng cuối): Đúng phân loại (tiêu chí 1/3): i18n chuỗi UI ≠ nội dung CMS; đưa nội dung vào messages làm mất đường thay bằng CMS; lỗi nội bộ không hiển thị cho khách; thông báo validate của @x-shop/domain là phạm vi riêng nếu cần đa ngôn ngữ
+- Đường lùi: Chuyển home/navigation vào vi.json bằng một task mới
