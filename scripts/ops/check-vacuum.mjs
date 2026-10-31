@@ -149,6 +149,8 @@ export async function main(env = process.env) {
       connectionString: url,
       connectionTimeoutMillis: TIMEOUT_MS,
       statement_timeout: TIMEOUT_MS,
+      // Phía client: mạng mất gói sau khi đã kết nối thì statement_timeout (server) không cứu được.
+      query_timeout: TIMEOUT_MS,
       application_name: "x-shop check-vacuum",
     });
     await client.connect();

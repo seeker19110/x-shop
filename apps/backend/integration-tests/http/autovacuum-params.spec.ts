@@ -53,7 +53,10 @@ medusaIntegrationTestRunner({
   testSuite: ({ getContainer }) => {
     const pg = (): Knex => getContainer().resolve(ContainerRegistrationKeys.PG_CONNECTION);
 
-    /** Như Medusa: mỗi migration trong một transaction (`set local lock_timeout` có hiệu lực trong đó). */
+    /**
+     * Như Medusa: migration chạy trong transaction (MikroORM `allOrNothing` — các migration chờ của MỘT module chung một
+     * transaction, mỗi cái một savepoint), nên `set local lock_timeout` còn hiệu lực tới COMMIT của lượt đó, không rò sang phiên khác.
+     */
     const run = (direction: "up" | "down", db: Knex = pg()) =>
       db.transaction(async (trx) => {
         for (const sql of await migrationSql(direction)) await trx.raw(sql);
