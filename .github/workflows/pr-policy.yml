@@ -9,23 +9,15 @@ name: pr-policy
 
 on:
   # `labeled`/`unlabeled`: nhãn ngoại lệ `fix-no-test` (check-fix-pr) đổi thì kiểm lại. `edited`: GitHub gộp sửa tiêu đề và sửa
-  # thân vào một loại sự kiện — giữ vì tiêu đề có thể đổi thành `fix:`; job `regression` tự lọc theo `github.event.changes`.
+  # thân vào một loại sự kiện — giữ vì tiêu đề có thể đổi thành `fix:`. Job `regression` chạy lại ở MỌI sự kiện của PR fix (kể
+  # cả sửa thân/nhãn) — chấp nhận chi phí để giữ một nhóm concurrency chung, đơn giản (D-152).
   pull_request: { branches: [master], types: [opened, edited, synchronize, reopened, labeled, unlabeled] }
 
 permissions:
   contents: read
 
-# Nhóm theo LOẠI sự kiện (T-209): `code` (opened/synchronize/reopened), `regr` (sự kiện meta mà job `regression` chạy lại — đúng
-# vế meta của `if:` ở job đó; sửa một chỗ thì sửa cả hai), `meta` (sửa thân/nhãn khác). Một nhóm chung thì sửa thân PR sẽ huỷ run
-# của push đang chạy `regression`, còn run mới lại bỏ qua `regression` → mất kết quả. Hai push liên tiếp vẫn huỷ nhau.
 concurrency:
-  group: >-
-    pr-policy-${{ github.event.pull_request.number }}-${{
-    contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action) && 'code'
-    || ((github.event.action == 'edited' && (github.event.changes.title
-    || contains(github.event.pull_request.labels.*.name, 'fix-no-test')))
-    || github.event.label.name == 'fix-no-test') && 'regr'
-    || 'meta' }}
+  group: pr-policy-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -185,18 +177,10 @@ jobs:
   # scripts/check-fix-pr.mjs `--regression`. Job riêng (không gộp `policy`) để kiểm thân PR vẫn báo trong vài giây.
   # HEAD = `GITHUB_SHA` (merge commit của PR — đúng mã sẽ vào master); base = tip nhánh đích (fetch-depth 0, không cần fetch).
   # Điều kiện job (biểu thức, không qua shell — tiêu đề không nội suy vào lệnh): tiêu đề bắt đầu `fix` (lọc thô; regex chặt
-  # `fix(...)?!?:` ở script), không phải bot; và sự kiện có thể đổi kết luận: push/mở/mở lại; `edited` khi đổi TIÊU ĐỀ hoặc khi
-  # PR đang có nhãn `fix-no-test` (thân có thể vừa thêm 'Ngoại lệ test:'); gắn/gỡ đúng nhãn `fix-no-test`. Sửa thân/nhãn khác
-  # → `skipped`, không cài phụ thuộc. Vế meta trùng nhóm `regr` của `concurrency` đầu file — sửa một chỗ thì sửa cả hai.
+  # `fix(...)?!?:` ở script) và không phải bot. Không lọc loại sự kiện (D-152): sửa thân/nhãn của PR fix cũng chạy lại.
   regression:
     name: regression
-    if: >-
-      ${{ startsWith(github.event.pull_request.title, 'fix')
-      && !endsWith(github.event.pull_request.user.login, '[bot]')
-      && (contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action)
-      || (github.event.action == 'edited' && (github.event.changes.title
-      || contains(github.event.pull_request.labels.*.name, 'fix-no-test')))
-      || github.event.label.name == 'fix-no-test') }}
+    if: ${{ startsWith(github.event.pull_request.title, 'fix') && !endsWith(github.event.pull_request.user.login, '[bot]') }}
     runs-on: ubuntu-latest
     # Trần thời gian (không phải ngưỡng chất lượng): cài phụ thuộc không cache (~3–5 phút) + test đổi của PR chạy hai lần
     # (HEAD, base); mỗi lệnh test có hạn riêng 10 phút trong script.
