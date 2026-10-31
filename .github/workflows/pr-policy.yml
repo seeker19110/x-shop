@@ -3,19 +3,29 @@
 # đổi API/config mà không chạm tài liệu → cảnh báo. Tách khỏi `ci.yml` như `pr-title.yml`: nghe `edited` (sửa thân PR) nhưng chỉ
 # chạy vài giây, không chạy lại CI nặng. Không phải required check của ruleset mẫu. Dữ liệu từ PR (thân, tiêu đề) đi qua `env:`,
 # không nội suy `${{ }}` vào lệnh shell (chống injection).
-# Job `regression` (T-209, FE-TEST-006) là ngoại lệ về thời gian: chỉ với PR `fix:` có test chạy được, nó cài phụ thuộc và chạy
-# lại test mới/sửa của PR trên HEAD (phải xanh) và trên commit base (phải đỏ); PR khác xong sau bước kế hoạch (vài giây).
+# Job `regression` (T-209, FE-TEST-006) là ngoại lệ về thời gian: chỉ với PR có tiêu đề `fix:` và test chạy được, nó cài phụ thuộc
+# và chạy lại test mới/sửa của PR trên HEAD (phải xanh) và trên commit base (phải đỏ). PR khác: job `skipped` (điều kiện `if:`).
 name: pr-policy
 
 on:
-  # `labeled`/`unlabeled`: nhãn ngoại lệ `fix-no-test` (check-fix-pr) đổi thì kiểm lại.
+  # `labeled`/`unlabeled`: nhãn ngoại lệ `fix-no-test` (check-fix-pr) đổi thì kiểm lại. `edited`: GitHub gộp sửa tiêu đề và sửa
+  # thân vào một loại sự kiện — giữ vì tiêu đề có thể đổi thành `fix:`; job `regression` tự lọc theo `github.event.changes`.
   pull_request: { branches: [master], types: [opened, edited, synchronize, reopened, labeled, unlabeled] }
 
 permissions:
   contents: read
 
+# Nhóm theo LOẠI sự kiện (T-209): `code` (opened/synchronize/reopened), `regr` (sự kiện meta mà job `regression` chạy lại — đúng
+# vế meta của `if:` ở job đó; sửa một chỗ thì sửa cả hai), `meta` (sửa thân/nhãn khác). Một nhóm chung thì sửa thân PR sẽ huỷ run
+# của push đang chạy `regression`, còn run mới lại bỏ qua `regression` → mất kết quả. Hai push liên tiếp vẫn huỷ nhau.
 concurrency:
-  group: pr-policy-${{ github.event.pull_request.number }}
+  group: >-
+    pr-policy-${{ github.event.pull_request.number }}-${{
+    contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action) && 'code'
+    || ((github.event.action == 'edited' && (github.event.changes.title
+    || contains(github.event.pull_request.labels.*.name, 'fix-no-test')))
+    || github.event.label.name == 'fix-no-test') && 'regr'
+    || 'meta' }}
   cancel-in-progress: true
 
 jobs:
@@ -166,7 +176,7 @@ jobs:
           node scripts/check-dependabot.mjs
 
   # FE-TEST-006, QA-STRAT-005 (T-209): test tái hiện lỗi phải TỰ CHỨNG MINH "đỏ trước, xanh sau", không chỉ khai trong mô tả.
-  # PR fix (tiêu đề hoặc một commit `fix:`/`fix(...)`): test mới/sửa của PR (`git diff base...head`) chạy trên HEAD phải xanh,
+  # PR fix (CHỈ tiêu đề PR `fix:`/`fix(...)` — squash-merge, D-152): test mới/sửa của PR (`git diff base...head`) trên HEAD xanh,
   # chạy trên mã base + file test của HEAD phải đỏ (≥ 1 lệnh fail; mọi lệnh xanh → "test không tái hiện lỗi"). Runner theo
   # vị trí file: vitest (storefront, domain), jest unit (backend), node --test (scripts/, e2e/*.test.mjs). Test tích hợp backend
   # và E2E KHÔNG chạy ở đây (cảnh báo): mỗi suite dựng app Medusa trên Postgres/Redis + vai trò DB — thêm service vào job này
@@ -174,8 +184,19 @@ jobs:
   # → đỏ, trừ ngoại lệ chung của check-fix-pr: nhãn `fix-no-test` + 'Ngoại lệ test: <lý do>'. Logic + test:
   # scripts/check-fix-pr.mjs `--regression`. Job riêng (không gộp `policy`) để kiểm thân PR vẫn báo trong vài giây.
   # HEAD = `GITHUB_SHA` (merge commit của PR — đúng mã sẽ vào master); base = tip nhánh đích (fetch-depth 0, không cần fetch).
+  # Điều kiện job (biểu thức, không qua shell — tiêu đề không nội suy vào lệnh): tiêu đề bắt đầu `fix` (lọc thô; regex chặt
+  # `fix(...)?!?:` ở script), không phải bot; và sự kiện có thể đổi kết luận: push/mở/mở lại; `edited` khi đổi TIÊU ĐỀ hoặc khi
+  # PR đang có nhãn `fix-no-test` (thân có thể vừa thêm 'Ngoại lệ test:'); gắn/gỡ đúng nhãn `fix-no-test`. Sửa thân/nhãn khác
+  # → `skipped`, không cài phụ thuộc. Vế meta trùng nhóm `regr` của `concurrency` đầu file — sửa một chỗ thì sửa cả hai.
   regression:
     name: regression
+    if: >-
+      ${{ startsWith(github.event.pull_request.title, 'fix')
+      && !endsWith(github.event.pull_request.user.login, '[bot]')
+      && (contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action)
+      || (github.event.action == 'edited' && (github.event.changes.title
+      || contains(github.event.pull_request.labels.*.name, 'fix-no-test')))
+      || github.event.label.name == 'fix-no-test') }}
     runs-on: ubuntu-latest
     # Trần thời gian (không phải ngưỡng chất lượng): cài phụ thuộc không cache (~3–5 phút) + test đổi của PR chạy hai lần
     # (HEAD, base); mỗi lệnh test có hạn riêng 10 phút trong script.
@@ -194,13 +215,9 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          if [[ "$PR_AUTHOR" == *"[bot]" ]] || [[ "$PR_TITLE" == 'Revert "'* ]]; then
-            echo "Bỏ qua (bot / revert)."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
           node --test scripts/check-fix-pr.test.mjs
           node scripts/check-fix-pr.mjs --regression --dry-run --base "$BASE_SHA" --head "$GITHUB_SHA"
       - if: steps.plan.outputs.run == 'true'

@@ -105,12 +105,13 @@ test("ngoại lệ: nhãn + lý do đủ dài → đạt; thiếu lý do hoặc 
 
 // ───────────────────────────── --regression (T-209, FE-TEST-006) ─────────────────────────────
 
-test("isFixPr: tiêu đề fix HOẶC một subject commit fix; không có thì sai", () => {
-  assert.equal(isFixPr("fix(cart): a", []), true);
-  assert.equal(isFixPr("feat: a", ["chore: b", "fix(ui): c"]), true);
-  assert.equal(isFixPr("feat: a", ["feat: b", "fixup! fix: c", 'Revert "fix: d"']), false);
-  assert.equal(isFixPr(undefined, undefined), false);
-  assert.equal(isFixPr("", []), false);
+test("isFixPr: CHỈ theo tiêu đề PR (D-152) — PR feat có commit fix: dọc đường → bỏ qua", () => {
+  for (const t of ["fix(cart): a", "fix: a", "fix!: a"]) assert.equal(isFixPr(t), true, t);
+  // Đối số thứ hai (danh sách subject commit) bị bỏ qua có chủ đích: tiêu đề feat → không phải PR fix.
+  assert.equal(isFixPr("feat: a", ["chore: b", "fix(ui): c"]), false);
+  for (const t of ["feat: a", "fixup: a", 'Revert "fix: d"', "fix:", "", null, undefined]) {
+    assert.equal(isFixPr(t), false, String(t));
+  }
 });
 
 test("classifyTest: runner theo vị trí, khớp testMatch/include thật của từng gói", () => {

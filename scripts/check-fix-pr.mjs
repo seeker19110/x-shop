@@ -9,7 +9,7 @@
 // Chế độ `--regression` (T-209, FE-TEST-006; job `regression` của pr-policy) CHẠY LẠI test mới/sửa của PR fix: trên HEAD
 // phải xanh; trên commit base (mã nguồn base + file test của HEAD) phải ĐỎ — ít nhất một lệnh test fail.
 //   node scripts/check-fix-pr.mjs --regression --base <sha> --head <sha> [--dry-run]
-//   - PR fix = tiêu đề HOẶC một subject commit (base..head, bỏ merge) dạng `fix:`/`fix(...)` (như check-specs với `feat`).
+//   - PR fix = tiêu đề PR dạng `fix:`/`fix(...)` (D-152: squash-merge — subject commit trong PR không xét).
 //   - File test = thêm/đổi/đổi tên trong `git diff base...head`; runner theo vị trí (xem `classifyTest`). Giữ thêm từ HEAD
 //     các file hỗ trợ test trong thư mục `__tests__/` (fake, fixture) để test HEAD nạp được trên mã base.
 //   - `--dry-run`: in kế hoạch (file → runner → lệnh), không đổi cây làm việc; có GITHUB_OUTPUT thì ghi `run=true|false`
@@ -90,9 +90,12 @@ export function checkFixPr({ title, body, labels = [], files = [] }) {
 
 // ───────────────────────────── Chế độ --regression (T-209): phần thuần ─────────────────────────────
 
-/** PR fix khi tiêu đề hoặc một subject commit là `fix:`/`fix(...)` (cùng regex `isFixTitle`). */
-export function isFixPr(title, subjects = []) {
-  return isFixTitle(title) || subjects.some((s) => isFixTitle(s));
+/**
+ * PR fix CHỈ theo tiêu đề PR `fix:`/`fix(...)` (D-152): repo squash-merge, tiêu đề PR thành commit trên master. Subject
+ * commit trong PR không xét — PR `feat:` có commit `fix:` dọc đường không phải PR fix.
+ */
+export function isFixPr(title) {
+  return isFixTitle(title);
 }
 
 /**
@@ -349,7 +352,6 @@ function mainRegression(argv) {
   let top;
   let base;
   let head;
-  let subjects;
   let files;
   try {
     args = parseRegressionArgs(argv);
@@ -358,17 +360,14 @@ function mainRegression(argv) {
     top = git(["rev-parse", "--show-toplevel"]).trim();
     base = git(["rev-parse", "--verify", "--end-of-options", `${args.base}^{commit}`], top).trim();
     head = git(["rev-parse", "--verify", "--end-of-options", `${args.head}^{commit}`], top).trim();
-    subjects = git(["log", "--no-merges", "--format=%s", `${base}..${head}`], top)
-      .split("\n")
-      .filter(Boolean);
     files = git(["diff", "--name-only", "-z", "--diff-filter=ACMR", `${base}...${head}`], top).split("\0");
   } catch (e) {
     console.error(`::error::regression: không đọc được đầu vào — ${e.message}`);
     setOutput(false);
     return 2;
   }
-  if (!isFixPr(process.env.PR_TITLE, subjects)) {
-    console.log("Không phải PR `fix:` (tiêu đề và subject commit) — bỏ qua.");
+  if (!isFixPr(process.env.PR_TITLE)) {
+    console.log("Tiêu đề PR không phải `fix:` — bỏ qua (subject commit không xét, D-152).");
     setOutput(false);
     return 0;
   }
