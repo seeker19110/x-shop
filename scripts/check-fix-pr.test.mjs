@@ -80,6 +80,12 @@ test("fieldOf: lấy giá trị dòng, bỏ chú thích HTML, Unicode, rỗng �
   assert.equal(fieldOf(null, "Đỏ trước"), null);
 });
 
+test("fieldOf: chú thích HTML lồng/không đóng không để lộ dòng nhãn", () => {
+  assert.equal(fieldOf("<!<!---->--\nĐỏ trước: mẫu\n-->", "Đỏ trước"), null);
+  assert.equal(fieldOf("x\n<!--\nĐỏ trước: mẫu", "Đỏ trước"), null);
+  assert.equal(fieldOf("<!-- a -->\nĐỏ trước: thật", "Đỏ trước"), "thật");
+});
+
 test("PR không phải fix: bỏ qua dù không có test", () => {
   const r = checkFixPr({ title: "feat: x", body: "", files: ["a.ts"] });
   assert.deepEqual(r, { ok: true, skipped: true, errors: [] });

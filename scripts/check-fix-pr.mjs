@@ -55,7 +55,14 @@ export function isTestFile(path) {
 
 /** Giá trị (không rỗng, sau khi bỏ chú thích HTML) của dòng `<nhãn>: <giá trị>` trong mô tả; không có → null. */
 export function fieldOf(body, label) {
-  const clean = (body ?? "").replace(/<!--[\s\S]*?-->/g, "");
+  // Bỏ chú thích HTML lặp tới khi ổn định: chú thích lồng/ghép (`<!<!---->--`) không còn sót `<!--` (CodeQL
+  // js/incomplete-multi-character-sanitization); `<!--` không đóng thì bỏ tới hết thân.
+  let clean = String(body ?? "");
+  for (let prev = ""; prev !== clean;) {
+    prev = clean;
+    clean = clean.replace(/<!--[\s\S]*?-->/g, "");
+  }
+  clean = clean.replace(/<!--[\s\S]*$/, "");
   const re = new RegExp(`^\\s*(?:[-*]\\s*)?${label}\\s*:[ \\t]*(\\S[^\\n]*)$`, "imu");
   const m = re.exec(clean);
   return m ? m[1].trim() : null;
