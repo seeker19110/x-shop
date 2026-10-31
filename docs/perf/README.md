@@ -18,7 +18,7 @@ Mặc định dataset là 10.000 sản phẩm (`LOAD_PRODUCTS`); mốc đã comm
 
 - `commit`, `dateUtc`, `environment`: commit gốc (HEAD lúc đo — thay đổi chưa commit không nằm trong số), ngày UTC, bản node, CPU, số nhân, RAM.
 - `storefront.pages[]` — mỗi màn chính (trang chủ, danh mục, PDP, giỏ), build production + `next start` với dữ liệu mẫu (`XS_DATA_SOURCE=fixtures`):
-  - `requests`: số request = HTML + mọi tài nguyên tĩnh HTML tham chiếu (script, stylesheet, preload font, ảnh cùng origin). Font nạp qua `@font-face` trong CSS (không preload trong HTML) không được tính → `font: 0` ở mốc hiện tại là giới hạn của phương pháp, không phải "không có font".
+  - `requests`: số request = HTML + mọi tài nguyên tĩnh HTML tham chiếu (script, stylesheet, preload font, favicon `rel=icon`, ảnh cùng origin). Bỏ `<script nomodule>` (polyfill), `<img loading="lazy">` và `apple-touch-icon` vì trình duyệt hiện đại không tải chúng ở lần tải đầu. Font nạp qua `@font-face` trong CSS (không preload trong HTML) không được tính → `font: 0` ở mốc hiện tại là giới hạn của phương pháp, không phải "không có font".
   - `bytes.*` / `totalBytes` / `totalKiB`: byte truyền tải theo loại; văn bản gzip mức 9 (như CDN), font/ảnh byte thật.
   - Không gồm chunk nạp động sau hydrate, RSC prefetch, ảnh lazy: số này là cận dưới của tải đầu. Ngân sách §10.2 đo bằng trình duyệt thật ở `pnpm perf:budget` (`scripts/perf/budget.mjs`).
 - `backend` — N request (mặc định 1.000) `GET /store/x/products/:handle` vào backend tải, `concurrency` song song, sau 50 request khởi động nóng:

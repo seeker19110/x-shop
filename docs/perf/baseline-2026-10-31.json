@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "task": "T-216",
-  "commit": "9c6bfb77aa4a8b4a864c23752d1eac691f688125",
+  "commit": "385e87e5ec979b35a99143326e57c46454b54858",
   "dateUtc": "2026-10-31",
-  "generatedAtUtc": "2026-10-31T16:19:55.785Z",
+  "generatedAtUtc": "2026-10-31T17:05:58.523Z",
   "environment": {
     "node": "v22.22.0",
     "platform": "linux-x64",
@@ -19,15 +19,15 @@
       {
         "route": "/",
         "name": "trang-chu",
-        "requests": 27,
-        "totalBytes": 214007,
-        "totalKiB": 209,
+        "requests": 15,
+        "totalBytes": 169739,
+        "totalKiB": 165.8,
         "bytes": {
-          "html": 10014,
-          "js": 190863,
+          "html": 10010,
+          "js": 151343,
           "css": 7828,
           "font": 0,
-          "image": 5302,
+          "image": 558,
           "rsc": 0,
           "other": 0
         }
@@ -35,15 +35,15 @@
       {
         "route": "/danh-muc/ao",
         "name": "danh-muc",
-        "requests": 18,
-        "totalBytes": 213697,
-        "totalKiB": 208.7,
+        "requests": 15,
+        "totalBytes": 172612,
+        "totalKiB": 168.6,
         "bytes": {
           "html": 9790,
-          "js": 193921,
+          "js": 154401,
           "css": 7828,
           "font": 0,
-          "image": 2158,
+          "image": 593,
           "rsc": 0,
           "other": 0
         }
@@ -51,15 +51,15 @@
       {
         "route": "/san-pham/ao-so-mi-lua",
         "name": "pdp",
-        "requests": 19,
-        "totalBytes": 217730,
-        "totalKiB": 212.6,
+        "requests": 15,
+        "totalBytes": 173332,
+        "totalKiB": 169.3,
         "bytes": {
-          "html": 8232,
-          "js": 196813,
+          "html": 8227,
+          "js": 157292,
           "css": 7220,
           "font": 0,
-          "image": 5465,
+          "image": 593,
           "rsc": 0,
           "other": 0
         }
@@ -67,15 +67,15 @@
       {
         "route": "/gio-hang",
         "name": "gio-hang",
-        "requests": 14,
-        "totalBytes": 205393,
-        "totalKiB": 200.6,
+        "requests": 12,
+        "totalBytes": 164697,
+        "totalKiB": 160.8,
         "bytes": {
           "html": 4314,
-          "js": 192685,
+          "js": 153166,
           "css": 7013,
           "font": 0,
-          "image": 1381,
+          "image": 204,
           "rsc": 0,
           "other": 0
         }
