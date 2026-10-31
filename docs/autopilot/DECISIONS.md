@@ -1087,3 +1087,10 @@
 - Chọn: Giữ chặt: mọi hook lỗi không tính; vitest làm nhất quán, sửa lời nhắn 'hook'
 - Lý do (tiêu chí chất lượng cuối): Chặt hơn (tiêu chí 1) và nhất quán giữa runner; jest không phân biệt beforeAll/beforeEach tin cậy từ stack; có ngoại lệ fix-no-test làm đường thoát
 - Đường lùi: Đổi classifyFailure chỉ coi cancelledByParent/beforeAll là hook
+
+### D-155 · 2026-10-31T00:13:28+00:00 · T-234: nhận hook vitest (kể cả async) — reporter vitest tự viết xuất task.result.hooks hay giữ tín hiệu stack?
+
+- Phương án: (1) Reporter vitest tự viết (tin cậy, thêm file + đổi RUNNERS, test I/O vitest thật) · (2) Giữ tín hiệu frame vitest/dist wrapper như jest _callCircusHook, ghi giới hạn hook async
+- Chọn: Giữ tín hiệu frame vitest/dist wrapper như jest _callCircusHook, ghi giới hạn hook async
+- Lý do (tiêu chí chất lượng cuối): Đơn giản, test được (tiêu chí 3); lỗ còn lại hẹp (hook async lỗi sau await) và nhất quán với giới hạn của jest; mất tín hiệu thì về failed (không đỏ oan); fix-no-test là đường thoát
+- Đường lùi: Thêm reporter vitest riêng thành task mới
