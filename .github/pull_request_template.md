@@ -15,6 +15,11 @@
   - Xanh sau:
 - [ ] Mục blueprint liên quan tick kèm `— Kiểm: <lệnh>` hoặc `— Bằng chứng:` — ID:
 
+## Map tiêu chí → test
+<!-- WF-SDD-003, PM-SPEC-004: bắt buộc cho PR `feat:` (`pr-policy` kiểm). Link spec Approved ở mục "Mục tiêu" (`docs/specs/SPEC-*.md`),
+rồi mỗi tiêu chí của lát này một dòng: `S-NNN → tên test (đường dẫn)`. Tiêu chí chưa có test tự động: ghi vào
+`scripts/spec-trace-allowlist.json` kèm lý do (`pnpm check:spec-trace`). PR không phải `feat:` ghi "không áp dụng — lý do". -->
+
 ## Docs cập nhật
 <!-- WF-DOC-001: thay đổi hành vi đi cùng PR với tài liệu (README, docs/, ADR, CHANGELOG `Unreleased`). Ghi file đã cập nhật, hoặc
 "không cần — lý do". Không có "sẽ cập nhật docs sau". `pr-policy` cảnh báo khi đổi API/config mà không chạm tài liệu. -->
@@ -51,6 +56,20 @@ Backup trước migrate: <!-- DB-MIG-011: link backup/snapshot mới (hoặc PIT
 ## Phụ thuộc mới
 <!-- Mỗi gói một dòng: `tên · phiên bản ghim · giấy phép · lý do · phương án thay thế đã xét`; không có thì ghi "không có".
 Mẫu cố ý không điền sẵn: CI so lockfile có thể đỏ khi mục trống mà có gói mới (BASE-DEP-006). -->
+Mỗi gói mới tick đủ (BASE-DEP-006); không thêm gói thì ghi "không có" và bỏ qua các ô:
+- [ ] Repo không archive; có phát hành/bảo trì trong 12 tháng gần nhất
+- [ ] Giấy phép nằm trong allowlist (không rõ/copyleft/không OSI: có quyết định ghi lại)
+- [ ] Không bật telemetry gửi dữ liệu mặc định (hoặc đã tắt, nêu cách tắt)
+- [ ] Đã xét stdlib/gói sẵn có thay thế — ghi phương án ở trên
+- [ ] Phiên bản ghim chính xác; lockfile cập nhật cùng PR
+- [ ] Nâng MAJOR một phụ thuộc có sẵn: dùng mẫu `major-upgrade` (`?template=major-upgrade.md`), PR riêng
+
+## Dark pattern (PR đổi giao diện/luồng mua; không đổi UI ghi "không áp dụng — lý do")
+<!-- UX-CONTENT-005: mỗi dòng tick kèm bằng chứng (ảnh, test, đường dẫn). -->
+- [ ] Không có ô tick/tuỳ chọn chọn sẵn có lợi cho cửa hàng (đồng ý nhận tin, bảo hiểm, quà tặng…)
+- [ ] Không ẩn phí: tổng tiền gồm phí ship/phụ phí hiện trước bước đặt, không thêm khoản ở bước cuối
+- [ ] Hủy/rút lui dễ như đăng ký: số bước hủy ≤ số bước đặt (`e2e/cancel-order.spec.ts`), không bắt gọi điện/gửi thư
+- [ ] Không đếm ngược/khan hiếm giả: mọi đồng hồ, "chỉ còn N" đến từ dữ liệu thật của server
 
 ## Hỗ trợ AI
 <!-- WF-REVIEW-019: phần nào do AI sinh, phần nào người đã tự kiểm và kiểm thế nào, phần nào chỉ máy/AI kiểm. Không ghi tên model/phiên. -->

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://x-shop.invalid/schemas/log-line.json",
+  "title": "Dòng log JSON của x-shop (backend + storefront server)",
+  "$comment": "BASE-ERR-005/006, T-190. Nguồn chung duy nhất: test của backend (apps/backend/src/lib/log/__tests__/logging-schema.unit.spec.ts) và storefront (apps/storefront/src/lib/log/logger.test.ts) đọc file này. Đặt ở docs/ops vì là hợp đồng vận hành với Collector (OPS-OBS-001), không phải mã dùng chung — hai app không import lẫn nhau. Mỗi bản ghi = MỘT dòng JSON.",
+  "type": "object",
+  "required": ["timestamp", "level", "severity_number", "message", "service", "version", "env"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "description": "RFC 3339 UTC, độ phân giải ms, hậu tố Z.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "level": { "enum": ["trace", "debug", "info", "warn", "error", "fatal"] },
+    "severity_number": {
+      "description": "OTel Logs Data Model: trace 1, debug 5, info 9, warn 13, error 17, fatal 21.",
+      "enum": [1, 5, 9, 13, 17, 21]
+    },
+    "message": { "type": "string" },
+    "service": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "env": { "type": "string", "minLength": 1 },
+    "trace_id": {
+      "type": "string",
+      "description": "Mã tham chiếu request: x-request-id hợp lệ, hoặc trace-id 32 hex của traceparent, hoặc mã sinh mới.",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+    },
+    "span_id": {
+      "type": "string",
+      "description": "Span HIỆN TẠI của chính dịch vụ ghi log (W3C/OTel: 16 hex thường, không toàn 0) — không phải parent-id của traceparent đến (parent đó, nếu có, nằm ở parent_span_id). Bắt buộc khi có trace_id.",
+      "pattern": "^(?!0{16}$)[0-9a-f]{16}$"
+    },
+    "parent_span_id": {
+      "type": "string",
+      "description": "parent-id của traceparent hợp lệ đến từ phía gọi (nếu có).",
+      "pattern": "^(?!0{16}$)[0-9a-f]{16}$"
+    },
+    "exception.type": { "type": "string" },
+    "exception.message": { "type": "string" },
+    "exception.stacktrace": { "type": "string" }
+  },
+  "allOf": [
+    { "if": { "required": ["trace_id"] }, "then": { "required": ["span_id"] } },
+    { "if": { "properties": { "level": { "const": "trace" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 1 } } } },
+    { "if": { "properties": { "level": { "const": "debug" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 5 } } } },
+    { "if": { "properties": { "level": { "const": "info" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 9 } } } },
+    { "if": { "properties": { "level": { "const": "warn" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 13 } } } },
+    { "if": { "properties": { "level": { "const": "error" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 17 } } } },
+    { "if": { "properties": { "level": { "const": "fatal" } }, "required": ["level"] }, "then": { "properties": { "severity_number": { "const": 21 } } } }
+  ],
+  "additionalProperties": true
+}

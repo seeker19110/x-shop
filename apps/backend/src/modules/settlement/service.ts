@@ -1,4 +1,5 @@
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
+import type { Logger } from "@medusajs/framework/types";
 import { generateEntityId } from "@medusajs/framework/utils";
 import type { SettlementState } from "@x-shop/domain";
 import {
@@ -19,6 +20,7 @@ import {
 } from "./constants";
 import type { SettlementRow } from "./csv";
 import { classifyLine, nextSettlementState, type SettlementTarget } from "./match";
+import { isNonEmpty, msToSecondsCeil, msToSecondsFloor } from "@x-shop/domain";
 
 export const BATCH_TABLE = "x_settlement_batch";
 export const LINE_TABLE = "x_settlement_line";
@@ -35,7 +37,8 @@ export function toVnd(v: unknown): number {
   return n;
 }
 const toVndOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : toVnd(v));
-const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOString() : null);
+const iso = (v: unknown): string | null =>
+  isNonEmpty(v as string | Date | null | undefined) ? new Date(v as string).toISOString() : null;
 
 export interface BatchView {
   id: string;
@@ -180,7 +183,7 @@ const toDiscrepancy = (r: Row): DiscrepancyView => ({
 export class SettlementError extends Error {
   override readonly name = "SettlementError";
   constructor(
-    readonly code: "BATCH_CONFLICT" | "NOT_FOUND" | "INVALID_STATE",
+    readonly code: "BATCH_CONFLICT" | "IMPORT_IN_PROGRESS" | "NOT_FOUND" | "INVALID_STATE",
     message: string,
     readonly detail: Record<string, unknown> = {},
   ) {
@@ -262,9 +265,11 @@ const PRIORITY_RANK = `case x.priority when 'urgent' then 0 when 'high' then 1 w
  */
 export default class SettlementModuleService {
   protected readonly db: Knex;
+  protected readonly logger_?: Logger;
 
-  constructor({ __pg_connection__ }: { __pg_connection__: Knex }) {
+  constructor({ __pg_connection__, logger }: { __pg_connection__: Knex; logger?: Logger }) {
     this.db = __pg_connection__;
+    this.logger_ = logger;
   }
 
   /* ------------------------------------------------------------------ nhập batch */
@@ -279,13 +284,46 @@ export default class SettlementModuleService {
     return row ? toBatch(row) : null;
   }
 
+  /**
+   * Giành khoá nhập theo nguồn với hạn chờ `SETTLEMENT_CONFIG.importLockWaitMs` (T-140). Mặc định phiên không có
+   * `lock_timeout` → câu chờ khoá chỉ bị `statement_timeout` (30 s) cắt: lỗi chung 57014 → 500, và request Admin treo tới
+   * lúc đó. Ở đây `lock_timeout` đặt LOCAL chỉ quanh câu chờ (Postgres áp `lock_timeout` cho cả advisory lock — đo ở
+   * docs/db/connections.md §5) rồi trả về mặc định ngay sau khi giành được: khoá dòng `FOR UPDATE` phía sau giữ hành vi
+   * cũ. Hết hạn chờ (55P03) — hoặc `statement_timeout` của môi trường đặt nhỏ hơn hạn chờ (57014) — trên CHÍNH câu này
+   * nghĩa là đang có lần nhập khác giữ khoá → lỗi rõ, gọi lại được (chưa ghi gì; transaction rollback).
+   */
+  private async lockImport(trx: Knex.Transaction, source: SettlementSource): Promise<void> {
+    await trx.raw("select set_config('lock_timeout', ?, true)", [`${SETTLEMENT_CONFIG.importLockWaitMs}ms`]);
+    try {
+      await trx.raw("select pg_advisory_xact_lock(hashtext(?))", [`x-settlement:${source}`]);
+    } catch (e) {
+      const code = (e as { code?: unknown } | null)?.code;
+      if (code === "55P03" || code === "57014") {
+        // Đo tần suất ở production (T-140): nhiều dòng này = hạn chờ ngắn so với thời gian nhập thật (xem RTT ở
+        // docs/db/connections.md §5). Chỉ nguồn + mã lỗi, không dữ liệu chứng từ.
+        this.logger_?.warn(
+          `[settlement] Nhập ${source} trả IMPORT_IN_PROGRESS: chờ khoá quá ${SETTLEMENT_CONFIG.importLockWaitMs}ms (code=${code})`,
+        );
+        throw new SettlementError(
+          "IMPORT_IN_PROGRESS",
+          `Đang có một lần nhập đối soát khác cùng nguồn — thử lại sau khoảng ${msToSecondsCeil(
+            SETTLEMENT_CONFIG.importLockWaitMs,
+          )} giây`,
+          { source },
+        );
+      }
+      throw e;
+    }
+    await trx.raw("set local lock_timeout to default");
+  }
+
   async importBatch(input: ImportBatchInput): Promise<ImportBatchResult> {
     return this.db.transaction(async (trx) => {
-      await trx.raw("select pg_advisory_xact_lock(hashtext(?))", [`x-settlement:${input.source}`]);
+      await this.lockImport(trx, input.source);
 
       const existing = await this.findBatchByHash(input.source, input.content_hash, trx);
       if (existing) return { ...(await this.batchDetail(existing, trx)), replayed: true };
-      if (input.external_ref) {
+      if (isNonEmpty(input.external_ref)) {
         const other = (await trx(BATCH_TABLE)
           .where({ source: input.source, external_ref: input.external_ref })
           .first()) as Row | undefined;
@@ -388,7 +426,11 @@ export default class SettlementModuleService {
     resolutions: Map<number, Resolution>,
     running: Map<string, number>,
   ): Promise<ImportBatchResult> {
-    const touched = new Set(p.lines.flatMap((l) => (l.target_id ? [String(l.target_id)] : [])));
+    const touched = new Set(
+      p.lines.flatMap((l) =>
+        isNonEmpty(l.target_id as string | null | undefined) ? [String(l.target_id)] : [],
+      ),
+    );
     const targets = new Map<string, SettlementTarget>();
     for (const r of resolutions.values()) if (r.target) targets.set(r.target.id, r.target);
     const exactlySettled = [...targets.values()]
@@ -617,7 +659,7 @@ export default class SettlementModuleService {
         const pa = payments.find((x) => x.txn_ref === row.reference);
         out.set(row.line, {
           target:
-            pa && pa.ledger_id
+            pa && pa.ledger_id != null
               ? {
                   kind: "capture",
                   id: String(pa.ledger_id),
@@ -871,7 +913,7 @@ export default class SettlementModuleService {
           actor_id: input.actor_id,
           batch_id: null,
           note: input.note,
-          data: input.evidence_ref ? { evidence_ref: input.evidence_ref } : null,
+          data: isNonEmpty(input.evidence_ref) ? { evidence_ref: input.evidence_ref } : null,
         },
       ]);
       const events = (
@@ -989,7 +1031,8 @@ export default class SettlementModuleService {
   /**
    * Dashboard ngoại lệ (§5.5, S-406): ngoại lệ vận hành còn mở (ops_exception) + chênh lệch đối soát còn mở + COD đã
    * giao chưa đối soát đủ — một danh sách có owner/vai trò phụ trách, ưu tiên, thời điểm mở và tuổi; ưu tiên cao trước,
-   * cũ trước.
+   * cũ trước. `reference`: mã chứng từ (settlement), mã vận đơn (cod); ops chỉ có ở `catalog_compensation_failed` = id
+   * sản phẩm lệch (D-101) — các kind ops khác null.
    */
   async listExceptions(
     filter: ExceptionFilter,
@@ -1001,7 +1044,9 @@ export default class SettlementModuleService {
     by_kind: Array<{ source: string; kind: string; count: number; amount: number }>;
   }> {
     const union = `
-      select 'ops' as source, o.id, o.kind, o.order_id, null::text as reference, o.amount::bigint as amount,
+      select 'ops' as source, o.id, o.kind, o.order_id,
+             case when o.kind = 'catalog_compensation_failed' then o.detail->>'product_id' end as reference,
+             o.amount::bigint as amount,
              o.priority, o.state, o.owner, o.created_at as opened_at, o.due_at
         from ops_exception o where o.deleted_at is null and o.state in ('open', 'in_progress')
       union all
@@ -1058,7 +1103,7 @@ export default class SettlementModuleService {
               : (EXCEPTION_OWNER_ROLE[String(r.kind)] ?? "owner"),
           opened_at: opened.toISOString(),
           due_at: iso(r.due_at),
-          age_seconds: Math.max(0, Math.floor((now.getTime() - opened.getTime()) / 1000)),
+          age_seconds: Math.max(0, msToSecondsFloor(now.getTime() - opened.getTime())),
         };
       }),
       count: byKind.reduce((a, g) => a + g.count, 0),

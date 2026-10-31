@@ -369,3 +369,742 @@
 - Chọn: Commit script phân mảnh; dòng xt.yaml + mọi thay đổi xt.yaml/settings gom thành patch để chủ dự án áp (hoặc nâng timeout hook) — agent không sửa hàng rào của chính mình
 - Lý do (tiêu chí chất lượng cuối): Không hạ cổng, không tự nới hàng rào harness; settings.json cũng là cấu hình cổng nên agent không commit được; chủ dự án quyết
 - Đường lùi: Áp patch khi chủ dự án đồng ý
+
+### D-053 · 2026-10-26T11:03:18+00:00 · Xử lý 5 lỗ hổng high trong lockfile (graphql-tools, lodash, uuid, zod — gián tiếp, có bản vá) và ngưỡng VULN-SLA
+
+- Phương án: (1) Ngoại lệ có hạn trong osv-scanner.toml · (2) Vá bằng nâng bản/pnpm.overrides theo bản vá, chạy đủ cổng (build + test + tích hợp + e2e) để chứng minh không vỡ; SLA mặc định Critical 7/High 14/Medium 60/Low 90 ngày, ngoại lệ tối đa 90 ngày có duyệt chủ dự án
+- Chọn: Vá bằng nâng bản/pnpm.overrides theo bản vá, chạy đủ cổng (build + test + tích hợp + e2e) để chứng minh không vỡ; SLA mặc định Critical 7/High 14/Medium 60/Low 90 ngày, ngoại lệ tối đa 90 ngày có duyệt chủ dự án
+- Lý do (tiêu chí chất lượng cuối): Vá thật an toàn hơn che lỗi; ngoại lệ chỉ khi bản vá phá Medusa (major graphql-tools/uuid) — khi đó ghi lý do và đề xuất chủ dự án duyệt
+- Đường lùi: Bỏ overrides trong package.json
+
+### D-054 · 2026-10-26T13:26:02+00:00 · 401 ẩn danh ở /admin/* do authenticate của Medusa trả {message} thường, không problem+json (BASE-ERR-003)
+
+- Phương án: (1) Chấp nhận ngoại lệ: ghi vào ADR-0003/OpenAPI, giữ luồng xác thực native của Medusa · (2) Tắt AUTHENTICATE cho /admin/x, tự gọi authenticate(allowUnauthenticated) + guard trả 401 problem
+- Chọn: Chấp nhận ngoại lệ: ghi vào ADR-0003/OpenAPI, giữ luồng xác thực native của Medusa
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: không tự viết lại luồng xác thực admin — đổi luồng auth là rủi ro lỗ hổng lớn hơn lợi ích định dạng; (3) đơn giản, theo chuẩn framework; 401 không lộ chi tiết nên không vi phạm bảo mật
+- Đường lùi: Làm phương án 2 trong một task riêng có test rbac/security; BASE-ERR-003 giữ [ ] kèm ghi chú ngoại lệ
+
+### D-055 · 2026-10-26T13:26:02+00:00 · SĐT mẫu trong fixture (0912345678…) thuộc dải thuê bao thật; VN chưa xác minh có dải số dành riêng cho test (QA-DATA-002)
+
+- Phương án: (1) Giữ allowlist 6 số mẫu ở docs/compliance/test-data-policy.md, cấm mọi số khác trong fixture · (2) Tìm dải số reserved có nguồn rồi đổi toàn bộ fixture
+- Chọn: Giữ allowlist 6 số mẫu ở docs/compliance/test-data-policy.md, cấm mọi số khác trong fixture
+- Lý do (tiêu chí chất lượng cuối): (1) số mẫu phổ biến không gắn dữ liệu cá nhân thật, không gửi SMS trong dev/CI (adapter mock); script chặn số ngoài allowlist; (3) đổi hàng loạt test không tăng an toàn khi chưa có dải reserved xác minh
+- Đường lùi: Khi có dải số reserved có nguồn: sửa allowlist trong test-data-policy.md, check-fixtures báo các chỗ phải đổi
+
+### D-056 · 2026-10-26T14:26:34+00:00 · Nối kiểm EXPLAIN đường nóng vào CI (DB-PERF-001)? dựng dataset ~8 phút
+
+- Phương án: (1) Job CI theo lịch/trước release: perf-dataset.mjs + explain-hot-paths.mjs · (2) Chỉ đưa explain-hot-paths.test.mjs (hàm thuần) vào gate; EXPLAIN chạy tay mỗi mốc PLAN · (3) Thêm vào perf của xt.yaml (cần người sửa xt.yaml)
+- Chọn: Chỉ đưa explain-hot-paths.test.mjs (hàm thuần) vào gate; EXPLAIN chạy tay mỗi mốc PLAN
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi: không thêm job 8 phút chưa đo trên runner; (3) đơn giản, test được ngay; hồi quy index vẫn bị bắt ở mốc PLAN (pha harden audit mỗi mốc). DB-PERF-001 giữ [ ] vì yêu cầu test tự động trong CI
+- Đường lùi: Thêm job schedule/release khi có staging (T-060) hoặc khi runner đo được thời gian
+
+### D-057 · 2026-10-26T15:48:44+00:00 · pr-commits đỏ trên PR #20: 15 commit đã đẩy có subject > 72 ký tự (viết trước khi T-111 thêm check)
+
+- Phương án: (1) Viết lại lịch sử + force-push nhánh · (2) Giữ lịch sử; commit mới tuân thủ ≤ 72; chủ dự án squash-merge PR (tiêu đề PR đạt chuẩn) hoặc tự quyết rewrite · (3) Nới check-commits (miễn commit cũ)
+- Chọn: Giữ lịch sử; commit mới tuân thủ ≤ 72; chủ dự án squash-merge PR (tiêu đề PR đạt chuẩn) hoặc tự quyết rewrite
+- Lý do (tiêu chí chất lượng cuối): (1) AGENTS.md §4 cấm force-push, guard chặn; (3) không nới cổng (LOOP-CI-001); phương án 2 giữ đường lùi và lịch sử nhánh trên master là squash một commit hợp lệ
+- Đường lùi: Chủ dự án có thể rewrite tay rồi force-push nếu muốn giữ từng commit
+
+### D-058 · 2026-10-26T16:36:07+00:00 · Timeout lệnh cho kết nối BullMQ (event bus/workflow engine) — BASE-ERR-004, ARC-RES-001, BE-REL-001
+
+- Phương án: (1) commandTimeout ≥ 30 s lớn hơn hạn chặn worker · (2) Ghi ngoại lệ (BullMQ bắt buộc maxRetriesPerRequest:null) ở docs/db/connections.md, giữ 3 mục [ ] kèm Thiếu · (3) blockingTimeout của ioredis (chỉ bảo vệ lệnh chặn)
+- Chọn: Ghi ngoại lệ (BullMQ bắt buộc maxRetriesPerRequest:null) ở docs/db/connections.md, giữ 3 mục [ ] kèm Thiếu
+- Lý do (tiêu chí chất lượng cuối): (1) không cắt lệnh chặn hợp lệ của worker (phương án 1 có rủi ro mất job khi đổi cấu hình); (3) không tick khi chưa đủ — cách hiểu chặt
+- Đường lùi: Làm phương án 1 kèm test worker dài khi có metric job thật
+
+### D-059 · 2026-10-26T16:36:07+00:00 · Tạo lại session ID sau đăng nhập admin (BE-AUTH-004, session fixation)
+
+- Phương án: (1) Ghi đè POST /auth/session gọi req.session.regenerate (task mới T-133, có test) · (2) Để Thiếu, dựa vào cookie __Host-
+- Chọn: Ghi đè POST /auth/session gọi req.session.regenerate (task mới T-133, có test)
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: chống session fixation là yêu cầu bảo mật MUST, __Host- chỉ chặn cấy cookie từ subdomain; (3) test được bằng express-session thật như T-099
+- Đường lùi: Bỏ route ghi đè khi Medusa tự regenerate
+
+### D-060 · 2026-10-26T16:36:08+00:00 · Q-PROMO-1/2: giới hạn lượt/người và ngân sách khuyến mãi (mua không cần tài khoản)
+
+- Phương án: (1) Khoá theo SĐT + ngân sách tiền cộng dồn · (2) Giữ quota tổng lượt + giới hạn tốc độ; không ngân sách tiền ở v1 · (3) Chỉ mã gắn tài khoản
+- Chọn: Giữ quota tổng lượt + giới hạn tốc độ; không ngân sách tiền ở v1
+- Lý do (tiêu chí chất lượng cuối): (1) đúng đặc tả gốc (mua không cần tài khoản, chỉ có quota S-008); khoá SĐT dễ né và lưu thêm PII; (3) đơn giản; ngân sách tiền là tính năng mới cần chủ sản phẩm
+- Đường lùi: Thêm ngân sách tiền theo mã (cộng dồn, hoàn khi huỷ) khi chủ sản phẩm yêu cầu
+
+### D-061 · 2026-10-26T16:36:08+00:00 · Q-PROMO-3/4: chồng nhiều mã cấp đơn; snapshot khuyến mãi trong đơn
+
+- Phương án: (1) Một mã cấp đơn; snapshot lưu loại + giá trị + điều kiện tại lúc đặt · (2) Cho chồng mã có thứ tự + cờ stackable; snapshot chỉ mã + số giảm
+- Chọn: Một mã cấp đơn; snapshot lưu loại + giá trị + điều kiện tại lúc đặt
+- Lý do (tiêu chí chất lượng cuối): (1) đúng hành vi hiện có và đặc tả; snapshot đầy đủ giúp đối soát/đổi trả đúng khi mã đổi sau đó (cách chặt hơn); (3) không thêm tính năng chồng mã chưa yêu cầu
+- Đường lùi: Thêm stackable khi chủ sản phẩm yêu cầu
+
+### D-062 · 2026-10-26T18:00:47+00:00 · Unit test chạy hai lần trong CI (test + test:coverage)
+
+- Phương án: (1) Giữ, tốn ~3 phút CI · (2) Đổi test trong xt.yaml sang test:coverage (chạm cấu hình cổng, cần người)
+- Chọn: Giữ, tốn ~3 phút CI
+- Lý do (tiêu chí chất lượng cuối): (2) không chạm xt.yaml (D-052: agent không tự sửa hàng rào); (3) đơn giản; 3 phút CI chấp nhận được
+- Đường lùi: Chủ dự án đổi xt.yaml test → test:coverage rồi bỏ bước trùng
+
+### D-063 · 2026-10-26T18:00:47+00:00 · Gate T-060 (tối ưu PDP p95 ≤ 300 ms) và gốc so sánh
+
+- Phương án: (1) Gate mẫu PERF-LOG §2: build + bật backend cả hai cây, perf compare ≥10 mẫu; gốc = SHA lúc mở task · (2) Chỉ load:smoke 30+3/s
+- Chọn: Gate mẫu PERF-LOG §2: build + bật backend cả hai cây, perf compare ≥10 mẫu; gốc = SHA lúc mở task
+- Lý do (tiêu chí chất lượng cuối): (1) đúng LOOP-OPT-003 (so có thống kê, khoá bộ đo); gốc SHA cố định lúc mở task để so lặp lại được
+- Đường lùi: Đổi gốc sang origin/master nếu task kéo dài qua nhiều merge
+
+### D-064 · 2026-10-26T18:00:48+00:00 · Coverage test tích hợp backend (QA-COV-001)
+
+- Phương án: (1) Thêm test:integration:coverage, đo thời gian trước khi nối CI (task mới T-135) · (2) Miễn kèm lý do
+- Chọn: Thêm test:integration:coverage, đo thời gian trước khi nối CI (task mới T-135)
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt: backend phần lớn logic chỉ được phủ bởi test tích hợp (unit lines 28,8%); (3) đo trước để không vượt timeout CI
+- Đường lùi: Miễn có lý do nếu đo thấy CI vượt 20 phút
+
+### D-065 · 2026-10-26T20:12:54+00:00 · Mẫu nhận diện PII có hai bản (backend redact.ts, storefront analytics/schema.ts)
+
+- Phương án: (1) Gom vào packages/domain · (2) Giữ hai bản + test chung bộ mẫu (fixture dùng chung, test cả hai phải che giống nhau)
+- Chọn: Giữ hai bản + test chung bộ mẫu (fixture dùng chung, test cả hai phải che giống nhau)
+- Lý do (tiêu chí chất lượng cuối): (1) bundle client không được kéo domain (node:fs/crypto — đã gặp ở T-082); (3) test khoá chống lệch, đơn giản
+- Đường lùi: Tách mẫu PII ra module domain không phụ thuộc node khi có subpath export riêng
+
+### D-066 · 2026-10-26T20:12:55+00:00 · CMND 9 số trong văn bản tự do (trùng số tiền VND 9 chữ số)
+
+- Phương án: (1) Giữ: chỉ che theo tên trường · (2) Che 9 số khi có từ khoá đi kèm (CMND/CMT/chứng minh)
+- Chọn: Che 9 số khi có từ khoá đi kèm (CMND/CMT/chứng minh)
+- Lý do (tiêu chí chất lượng cuối): (1) cách chặt hơn cho PII mà không che nhầm số tiền; test được bằng bảng ca
+- Đường lùi: Tắt luật từ khoá nếu che nhầm trong log thật
+
+### D-067 · 2026-10-26T20:35:49+00:00 · Gắn check-schema.mjs vào CI (DB-MODEL-004)
+
+- Phương án: (1) Phiên chính thêm bước CI ngay khi merge T-101 (Postgres service đã có trong job gate) · (2) Để task riêng sau
+- Chọn: Phiên chính thêm bước CI ngay khi merge T-101 (Postgres service đã có trong job gate)
+- Lý do (tiêu chí chất lượng cuối): (1) yêu cầu MUST cần CI chặn; job gate đã có Postgres service; (3) một bước, đã có test script
+- Đường lùi: Gỡ bước nếu CI vượt timeout
+
+### D-068 · 2026-10-26T21:17:12+00:00 · Review bù T-099/T-100/T-092/T-088 tìm 1 🟠 (dò tài khoản qua register) + tick BE-FILE-005 sai + rủi ro statement_timeout chưa đo
+
+- Phương án: (1) Hạ tick BE-AUTH-003, BE-FILE-005; thêm T-138…T-141 làm ngay theo thứ tự rủi ro · (2) Giữ tick, ghi nợ kỹ thuật
+- Chọn: Hạ tick BE-AUTH-003, BE-FILE-005; thêm T-138…T-141 làm ngay theo thứ tự rủi ro
+- Lý do (tiêu chí chất lượng cuối): (1) đúng và an toàn: tick phải phản ánh thật (P1 bằng chứng); dò tài khoản admin là rủi ro bảo mật MUST
+- Đường lùi: Tick lại khi T-138/T-141 xanh
+
+### D-069 · 2026-10-26T21:32:26+00:00 · Nguồn khoá HMAC cho băm ngắn literal SQL trong log
+
+- Phương án: (1) Dẫn xuất từ COOKIE_SECRET với nhãn riêng · (2) Biến riêng LOG_HASH_KEY
+- Chọn: Dẫn xuất từ COOKIE_SECRET với nhãn riêng
+- Lý do (tiêu chí chất lượng cuối): (3) không thêm bí mật phải quản lý; COOKIE_SECRET đã bắt buộc ≥32 ký tự ở production; dẫn xuất có nhãn tách mục đích; reviewer xác nhận
+- Đường lùi: Thêm LOG_HASH_KEY nếu cần xoay cookie secret mà vẫn đối chiếu log cũ
+
+### D-070 · 2026-10-26T21:46:26+00:00 · BE-CACHE-007: vô hiệu hoá cache catalog theo sự kiện hay giữ SWR 60 s
+
+- Phương án: (1) Webhook backend → storefront revalidateTag khi sửa sản phẩm/giá (task T-142, có xác thực HMAC + test cập nhật rồi đọc ngay) · (2) Giữ SWR, bỏ vế không nhận bản cũ quá ngưỡng
+- Chọn: Webhook backend → storefront revalidateTag khi sửa sản phẩm/giá (task T-142, có xác thực HMAC + test cập nhật rồi đọc ngay)
+- Lý do (tiêu chí chất lượng cuối): (1) giá hiển thị cũ hàng giờ ở trang ít người xem là sai trải nghiệm/khiếu nại giá; không nới yêu cầu MUST; (3) revalidateTag là cơ chế chuẩn của Next
+- Đường lùi: Tắt webhook, quay về SWR TTL
+
+### D-071 · 2026-10-26T21:46:44+00:00 · CHECK payment_ledger.state: chỉ 'succeeded' hay toàn bộ REFUND_STATES
+
+- Phương án: (1) Chỉ 'succeeded' (mọi đường ghi hiện tại) · (2) Toàn bộ REFUND_STATES theo kiểu TS
+- Chọn: Chỉ 'succeeded' (mọi đường ghi hiện tại)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt hơn: ledger là sổ tiền đã xảy ra; reviewer xác nhận chỉ 2 đường ghi đều 'succeeded'; (2) nới sau bằng migration mới dễ hơn siết
+- Đường lùi: Migration mới nới CHECK khi có đường ghi trạng thái khác
+
+### D-072 · 2026-10-26T21:46:44+00:00 · Danh sách con theo một đơn (refunds?order_id, orders/{ref}/returns) và exports/products.csv chưa có trần
+
+- Phương án: (1) Giữ: bị chặn bởi đơn cha / export theo thiết kế, ghi lý do trong bảng phân loại list-bounds · (2) Thêm trần cứng + cờ truncated
+- Chọn: Giữ: bị chặn bởi đơn cha / export theo thiết kế, ghi lý do trong bảng phân loại list-bounds
+- Lý do (tiêu chí chất lượng cuối): (1) phần tính tiền không được cắt dòng — trần có thể làm sai số hoàn/đổi trả; số con theo một đơn tự nhiên nhỏ; (3) đơn giản
+- Đường lùi: Thêm trần + truncated cho phần hiển thị nếu đo thấy đơn có quá nhiều dòng con
+
+### D-073 · 2026-10-26T22:37:42+00:00 · Đăng ký admin không kèm invite_token (dashboard Medusa gốc gọi register không token)
+
+- Phương án: (1) Giữ: cho qua khi có lời mời chưa nhận còn hạn đúng email (dashboard gốc chạy); chấp nhận rủi ro làm hỏng lời mời (không chiếm được tài khoản vì accept cần token) · (2) Bắt buộc invite_token, làm trang mời riêng trong src/admin
+- Chọn: Giữ: cho qua khi có lời mời chưa nhận còn hạn đúng email (dashboard gốc chạy); chấp nhận rủi ro làm hỏng lời mời (không chiếm được tài khoản vì accept cần token)
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi và UI admin gốc; (1) rủi ro còn lại chỉ là phá lời mời (DoS lời mời), có rate limit, không leo thang quyền — reviewer-alt kiểm lại điểm này
+- Đường lùi: Bắt buộc token + trang mời riêng nếu review/quan sát thấy lạm dụng
+
+### D-074 · 2026-10-26T22:37:43+00:00 · Tài khoản khách (P1, POST04) khi identity emailpass dùng chung actor
+
+- Phương án: (1) Đóng đăng ký khách tới khi làm P1 · (2) Mở kèm xác minh email · (3) Provider riêng cho khách
+- Chọn: Đóng đăng ký khách tới khi làm P1
+- Lý do (tiêu chí chất lượng cuối): (1) đặc tả: mua không cần tài khoản, tài khoản khách là P1; đóng là cách an toàn nhất; (2) quyết thiết kế cùng task P1
+- Đường lùi: Mở khi làm P1 với provider riêng hoặc xác minh email
+
+### D-075 · 2026-10-26T23:25:33+00:00 · Thay D-073: đăng ký admin không kèm invite_token (review T-138: người lạ chiếm trước identity email đang được mời, gắn TOTP của họ; rủi ro chiếm tài khoản qua reset sau này)
+
+- Phương án: (1) Chỉ nhánh token; dashboard: lấy invite_token từ Referer cùng origin /app/invite?token=… khi thân không có, thiếu thì từ chối; dọn identity chưa gắn actor khi xoá/gửi lại lời mời · (2) Chỉ nhánh token, onboarding bằng CLI/trang mời riêng · (3) Giữ D-073 (chấp nhận rủi ro)
+- Chọn: Chỉ nhánh token; dashboard: lấy invite_token từ Referer cùng origin /app/invite?token=… khi thân không có, thiếu thì từ chối; dọn identity chưa gắn actor khi xoá/gửi lại lời mời
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: không có đường tạo identity admin khi không chứng minh có token mời — đúng tiêu chí T-138; (2)(4) dashboard gốc vẫn dùng được vì nó chạy cùng origin với token trên URL; thiếu Referer → từ chối (đóng an toàn)
+- Đường lùi: Phương án 2 (trang mời riêng) nếu Referer không tin cậy trong môi trường thật
+
+### D-076 · 2026-10-27T02:28:12+00:00 · Rebuild catalog toàn phần giữ khoá 108–113 s ở 50k SKU (T-137 Q2) — thay đổi trong lúc đó trễ quá 60 s §7.4
+
+- Phương án: (1) Dựng dòng ngoài khoá, chỉ giữ khoá lúc replaceAll, rồi xả lại dấu có từ sau mốc bắt đầu rebuild (gộp vào T-140) · (2) Chấp nhận, ghi ngoại lệ RPO/§7.4
+- Chọn: Dựng dòng ngoài khoá, chỉ giữ khoá lúc replaceAll, rồi xả lại dấu có từ sau mốc bắt đầu rebuild (gộp vào T-140)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng mục tiêu độ trễ §7.4 ở quy mô production; không nới yêu cầu
+- Đường lùi: Ghi ngoại lệ nếu đo thấy replaceAll ngoài khoá gây sai lệch
+
+### D-077 · 2026-10-27T02:28:13+00:00 · Cô lập Redis cho test tích hợp chạy đồng thời (T-137 Q1)
+
+- Phương án: (1) globalSetup giành độc quyền Redis DB bằng SET NX EX (T-146) · (2) Redis riêng mỗi worktree · (3) Namespace qua medusa-config
+- Chọn: globalSetup giành độc quyền Redis DB bằng SET NX EX (T-146)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt nhất, chỉ đụng hạ tầng test; namespace không phủ locking-redis/workflows-cleaner
+- Đường lùi: Redis riêng mỗi worktree
+
+### D-078 · 2026-10-27T02:41:06+00:00 · Log khoá VNPAY trước chỉ ở IPN; return/querydr chưa có (interpretQueryResponseWithRotation không trả secretUsed)
+
+- Phương án: (1) Giữ: IPN là đường chính xác nhận tiền; RUNBOOK ghi rõ · (2) Mở rộng sang return/querydr
+- Chọn: Giữ: IPN là đường chính xác nhận tiền; RUNBOOK ghi rõ
+- Lý do (tiêu chí chất lượng cuối): (3) đơn giản: IPN là nơi VNPAY ký bằng khoá cấu hình ở cổng, đủ để biết khi nào bỏ khoá trước; querydr do server chủ động gọi
+- Đường lùi: Cho interpretQueryResponseWithRotation trả secretUsed nếu vận hành cần
+
+### D-079 · 2026-10-27T03:11:59+00:00 · T-145: request-target có '#' hoặc '\' (trái RFC 9112)
+
+- Phương án: (1) Chặn ở tầng server (400) · (2) Giữ, lớp chiều sâu đã khớp Express
+- Chọn: Chặn ở tầng server (400)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt hơn, trình duyệt không bao giờ gửi; giảm bề mặt khác biệt parser
+- Đường lùi: Bỏ luật nếu client hợp lệ bị chặn
+
+### D-080 · 2026-10-27T03:11:59+00:00 · T-145: mặc định GET native admin không khai báo quyền (any_role)
+
+- Phương án: (1) Giữ any_role, mở task liệt kê route dashboard rồi đóng sau · (2) Đóng ngay
+- Chọn: Giữ any_role, mở task liệt kê route dashboard rồi đóng sau
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi: đóng ngay vỡ dashboard khi chưa liệt kê đủ route; lỗ hổng URL tuyệt đối đã chặn ở 2 lớp
+- Đường lùi: Đóng mặc định khi native-permissions liệt kê đủ (task sau)
+
+### D-081 · 2026-10-27T03:11:59+00:00 · Thay một phần D-035: drain gặp khoá bận thì chờ (T-137) — nhưng không chờ trong job worker và dừng khi đang tắt
+
+- Phương án: (1) Job phút không chờ (waitMs 0), bận thì giao scheduleCatalogDrain chờ nền ≤300 s; mọi vòng chờ kiểm isDraining() · (2) Nâng concurrency jobWorker
+- Chọn: Job phút không chờ (waitMs 0), bận thì giao scheduleCatalogDrain chờ nền ≤300 s; mọi vòng chờ kiểm isDraining()
+- Lý do (tiêu chí chất lượng cuối): (1) không chặn khe job dùng chung (outbox, expire-holds) và không vượt trần tắt êm T-094; (3) không đổi cấu hình mọi job
+- Đường lùi: Quay về bỏ lượt khi bận (D-035)
+
+### D-082 · 2026-10-27T04:01:31+00:00 · Review T-145 INCONCLUSIVE (dò đường vòng đối nghịch bị bộ phân loại chặn); code đang đẩy có lỗ hổng RBAC đã tái hiện
+
+- Phương án: (1) Merge hotfix ngay + gia cố 🟢1 (từ chối byte ≤0x20/0x7F/≥0x80) + ghi việc rà bảo mật đối nghịch cho người · (2) Giữ hotfix chờ review CLEAN
+- Chọn: Merge hotfix ngay + gia cố 🟢1 (từ chối byte ≤0x20/0x7F/≥0x80) + ghi việc rà bảo mật đối nghịch cho người
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: giữ lại nghĩa là để lỗ hổng đã chứng minh trên PR; hotfix chỉ thu hẹp đầu vào, phần đã rà sạch (unit/tích hợp/đối chiếu parseurl); (2) đường lùi: revert từng commit
+- Đường lùi: Revert 2 commit T-145 nếu rà bảo mật thấy hồi quy
+
+### D-083 · 2026-10-27T04:54:45+00:00 · Vùng Redis DB cho test tích hợp (T-146)
+
+- Phương án: (1) 1–12 trừ 7 (an toàn với E2E DB7, tải/perf/diễn tập 13–15) · (2) 1–15 trừ 7
+- Chọn: 1–12 trừ 7 (an toàn với E2E DB7, tải/perf/diễn tập 13–15)
+- Lý do (tiêu chí chất lượng cuối): (1) FLUSHDB không xoá dữ liệu của e2e/tải/perf chạy cùng lúc; 11 DB đủ cho số tiến trình song song thực tế
+- Đường lùi: Đổi hằng TEST_REDIS_DBS
+
+### D-084 · 2026-10-27T06:01:35+00:00 · T-143 reset-password: vượt ngưỡng trả 429 hay vẫn 201; ngưỡng 3/5/20 trong 15 phút, sàn thời gian 250 ms
+
+- Phương án: (1) Giữ 429 + Retry-After (bộ đếm như nhau cho mọi email nên không lộ tồn tại); duyệt ngưỡng 3/5/20/15 phút và sàn 250 ms · (2) Vượt ngưỡng vẫn 201, không chạy workflow
+- Chọn: Giữ 429 + Retry-After (bộ đếm như nhau cho mọi email nên không lộ tồn tại); duyệt ngưỡng 3/5/20/15 phút và sàn 250 ms
+- Lý do (tiêu chí chất lượng cuối): (1) không lộ tài khoản (đếm theo email nhập, không theo tồn tại); (4) người dùng thật biết phải chờ thay vì mất email âm thầm; thống nhất với login/register
+- Đường lùi: Đổi sang 201 im lặng trong resetPasswordGuard nếu đo thấy kênh phụ
+
+### D-085 · 2026-10-27T06:28:35+00:00 · T-143 🟠-2: bộ đếm rate limit tăng cả lượt đã bị 429 → một IP khoá hộ reset/đăng nhập của email bất kỳ và kéo dài quá cửa sổ
+
+- Phương án: (1) Kẹp bộ đếm ở limit+1 cho mọi scope (không kéo dài khoá); reset: ngưỡng theo identity chỉ áp trong việc nền cho identity có thật, vượt thì bỏ âm thầm; giữ 429 theo IP và email+IP · (2) Giữ như hiện tại
+- Chọn: Kẹp bộ đếm ở limit+1 cho mọi scope (không kéo dài khoá); reset: ngưỡng theo identity chỉ áp trong việc nền cho identity có thật, vượt thì bỏ âm thầm; giữ 429 theo IP và email+IP
+- Lý do (tiêu chí chất lượng cuối): (1) giảm DoS khoá tài khoản do kẻ tấn công điều khiển mà vẫn chặn dò/brute force; (4) admin thật không bị khoá kéo dài
+- Đường lùi: Bỏ kẹp nếu đo thấy brute force lọt
+
+### D-086 · 2026-10-27T06:28:36+00:00 · T-143 🟠-1: dò email qua độ trễ request đồng thời do workflow reset chạy cùng tiến trình
+
+- Phương án: (1) Giới hạn/bỏ metadata, khởi chạy workflow sau độ trễ ngẫu nhiên đều (0–5 s) ngoài thời điểm request; ghi rủi ro còn lại (đo loopback, ≤5 lượt/email/15 phút) · (2) Hàng đợi job ở tiến trình worker riêng
+- Chọn: Giới hạn/bỏ metadata, khởi chạy workflow sau độ trễ ngẫu nhiên đều (0–5 s) ngoài thời điểm request; ghi rủi ro còn lại (đo loopback, ≤5 lượt/email/15 phút)
+- Lý do (tiêu chí chất lượng cuối): (1) phá tương quan thời gian với request đối chứng; (3) không thêm hạ tầng job mới; dự án chưa gửi thư reset (chưa có subscriber) nên rủi ro thực hiện tại thấp
+- Đường lùi: Chuyển sang job worker khi bật gửi thư reset
+
+### D-087 · 2026-10-27T06:51:08+00:00 · T-143 vòng 2: Retry-After so với cửa sổ; rủi ro R-07; sàn 250 ms và độ trễ nền 0–5 s
+
+- Phương án: (1) Giữ: kiểm Retry-After ≤ khoá tối thiểu của xấp xỉ cửa sổ trượt; R-07 accept; duyệt 250 ms/5 s · (2) Đổi sliding-window sang log thời điểm thật (đụng limiter store/order-lookup); chuyển việc nền sang worker
+- Chọn: Giữ: kiểm Retry-After ≤ khoá tối thiểu của xấp xỉ cửa sổ trượt; R-07 accept; duyệt 250 ms/5 s
+- Lý do (tiêu chí chất lượng cuối): (1) đã đóng lỗi khoá hộ (không kéo dài quá khoá tối thiểu, có test đối chứng); (3) không mở rộng sang limiter dùng chung; email reset chậm ≤5 s chấp nhận được (4)
+- Đường lùi: Đổi sliding-window.ts sang log thời điểm; chuyển việc nền sang job worker khi bật gửi thư reset
+
+### D-088 · 2026-10-27T06:51:08+00:00 · T-093: OUTBOX_POLICY.maxAttempts (blueprint BE-JOB-003 nói mặc định 3–5)
+
+- Phương án: (1) Giữ 8 lần (cửa sổ ~21 phút), BE-JOB-003 để mở kèm lý do · (2) 5 lần base 80 s (lần đầu chậm 40–80 s, ảnh hưởng payment.native_sync) · (3) 5 lần base 10 s (cửa sổ ~2,5 phút, sự cố SMTP ngắn đã vào dead)
+- Chọn: Giữ 8 lần (cửa sổ ~21 phút), BE-JOB-003 để mở kèm lý do
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: không đẩy sự kiện thanh toán/thông báo vào dead vì sự cố tạm ngắn, không làm chậm đồng bộ thanh toán; lỗi vĩnh viễn đã dead ngay nên số lần chỉ áp cho lỗi tạm
+- Đường lùi: Đổi OUTBOX_POLICY (test lặp theo maxAttempts) hoặc tách chính sách theo loại job
+
+### D-089 · 2026-10-27T06:51:08+00:00 · Liên kết tra cứu đơn qua outbox hỏng (producer ghi token, handler cần link) và token thô nằm trong payload (BE-JOB-007)
+
+- Phương án: (1) Không lưu token thô: producer ghi order_id, handler phát hành token lúc gửi (task mới T-149) · (2) Handler dựng URL từ token + env, khai ngoại lệ token trong payload · (3) Producer ghi sẵn link (token vẫn trong payload)
+- Chọn: Không lưu token thô: producer ghi order_id, handler phát hành token lúc gửi (task mới T-149)
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: không có bí mật trong bảng outbox/log; sửa lỗi thật chức năng tra cứu; (3) test được qua order-lookup.spec
+- Đường lùi: Revert T-149; quay về producer ghi link
+
+### D-090 · 2026-10-27T07:02:23+00:00 · T-119: giây trong RFC3339 bắt buộc cả cho CSV đối soát?
+
+- Phương án: (1) Bắt buộc giây ở mọi đầu vào (một helper, đúng RFC 3339 §5.6) · (2) Giây tuỳ chọn riêng cho CSV (đường parse thứ hai)
+- Chọn: Bắt buộc giây ở mọi đầu vào (một helper, đúng RFC 3339 §5.6)
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn, một nguồn sự thật; chưa có dữ liệu/tài liệu nào dùng dạng thiếu giây; lỗi 422 nêu trường + ví dụ nên người nhập biết sửa
+- Đường lùi: Nới regex giây tuỳ chọn trong parseRfc3339 cho CSV
+
+### D-091 · 2026-10-27T08:25:49+00:00 · T-149 câu hỏi mở: ký giả trong runOrderLookup; redrive muộn phát token mới; token trùng nếu 2 thư cùng giây
+
+- Phương án: (1) Giữ: không ký giả (hai nhánh không khớp vẫn chạy cùng bước); redrive phát token mới hạn 15 phút từ lúc gửi; chấp nhận token trùng cùng giây (một link đổi được); STOREFRONT_URL bắt buộc ở production vào danh sách G7 · (2) Thêm ký giả; dead sự kiện lookup cũ hơn N phút; thêm nonce vào token (đổi packages/domain)
+- Chọn: Giữ: không ký giả (hai nhánh không khớp vẫn chạy cùng bước); redrive phát token mới hạn 15 phút từ lúc gửi; chấp nhận token trùng cùng giây (một link đổi được); STOREFRONT_URL bắt buộc ở production vào danh sách G7
+- Lý do (tiêu chí chất lượng cuối): (1) không lộ tồn tại đơn qua thời gian (nhánh khớp đã chậm hơn vì ghi DB, chênh lệch thật nằm ở outbox bất đồng bộ); token chỉ mở đúng đơn, một lần, gửi về chủ đơn nên phát mới khi redrive không mở rộng quyền; (3) không đổi domain cho ca hiếm
+- Đường lùi: Thêm nonce vào issueOrderToken; lọc sự kiện order.lookup_link quá hạn trong dispatcher
+
+### D-092 · 2026-10-27T09:10:26+00:00 · T-095: bộ đếm webhook khi DB lỗi; topology E2E hai bản sao
+
+- Phương án: (1) Fail-open + log warn (như rate limit Store; callback vẫn phải qua xác thực chữ ký); E2E: A mặc định (HTTP + job), B chỉ HTTP · (2) Fail-closed 503 khi bộ đếm lỗi; E2E cả hai bản chạy job
+- Chọn: Fail-open + log warn (như rate limit Store; callback vẫn phải qua xác thực chữ ký); E2E: A mặc định (HTTP + job), B chỉ HTTP
+- Lý do (tiêu chí chất lượng cuối): (1) giới hạn tần suất là lớp phụ sau xác thực callback, chặn callback thật khi DB chập chờn làm mất cập nhật vận đơn (tệ hơn); (3) topology E2E khớp triển khai dự kiến (một worker, nhiều server)
+- Đường lùi: Đổi nhánh lỗi của hitRateCounter sang 503; thêm MEDUSA_WORKER_MODE cho B
+
+### D-093 · 2026-10-27T09:41:38+00:00 · T-095 review: ARC-RES-005 chưa đạt (cache phí ship, upload đĩa cục bộ, IPN VNPAY limiter trong tiến trình)
+
+- Phương án: (1) Đóng một phần: merge T-095 (limiter GHN Postgres + E2E hai bản sao), không tick ARC-RES-005, ghi Thiếu → T-152/T-153/T-154 · (2) Mở rộng T-095 làm luôn cả ba việc trước khi merge
+- Chọn: Đóng một phần: merge T-095 (limiter GHN Postgres + E2E hai bản sao), không tick ARC-RES-005, ghi Thiếu → T-152/T-153/T-154
+- Lý do (tiêu chí chất lượng cuối): (2)(3) lát nhỏ, mỗi việc có Gate riêng; phần đã làm đúng và có test; tick blueprint chỉ khi đủ bằng chứng nên không tick sai MUST
+- Đường lùi: Gộp T-152..T-154 vào một lát nếu muốn đóng ARC-RES-005 một lần
+
+### D-094 · 2026-10-27T10:26:32+00:00 · T-152: chặn sớm trong bộ nhớ không UPSERT nên cửa sổ trước nhẹ hơn sau đợt dội (cửa sổ kế cho qua sớm hơn vài lượt)
+
+- Phương án: (1) Chấp nhận: cùng cửa sổ quyết định y hệt; tổng lượt qua trong cửa sổ trượt vẫn ≤ hạn mức; Retry-After không dài hơn bộ đếm chung · (2) Gom lượt bị chặn sớm, ghi bù UPSERT +n bằng bộ flush nền
+- Chọn: Chấp nhận: cùng cửa sổ quyết định y hệt; tổng lượt qua trong cửa sổ trượt vẫn ≤ hạn mức; Retry-After không dài hơn bộ đếm chung
+- Lý do (tiêu chí chất lượng cuối): (1) hạn mức công bố vẫn giữ; (3) không thêm bộ flush nền và tham số tăng; mục tiêu giảm ghi DB khi bị dội đạt
+- Đường lùi: Thêm tham số tăng cho hitRateCounter và flush định kỳ số lượt bị chặn sớm
+
+### D-095 · 2026-10-27T10:40:26+00:00 · T-155: lỗi bù trừ catalog có mở exception vận hành không (OPS_EXCEPTION_KINDS chưa có kind phù hợp)
+
+- Phương án: (1) Giữ log error trong T-155; tách T-156 thêm kind catalog_compensation_failed (migration + labels + owner) như catalog_index_mismatch (D-040) · (2) Dùng lại kind sẵn có (catalog_index_mismatch/outbox_dead) · (3) Chỉ log, không bao giờ mở exception
+- Chọn: Giữ log error trong T-155; tách T-156 thêm kind catalog_compensation_failed (migration + labels + owner) như catalog_index_mismatch (D-040)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng nghĩa, hiện trên dashboard vận hành; (2) migration tách lát riêng có đường lùi; không làm bẩn kind cũ
+- Đường lùi: Bỏ T-156; giữ chỉ log
+
+### D-096 · 2026-10-27T10:51:02+00:00 · T-153: bỏ cache phí trong tiến trình làm mỗi lần quote đều hỏi GHN; phương thức thanh toán có là đầu vào định phí
+
+- Phương án: (1) Giữ: không cache ở route quote (đo giới hạn tần suất GHN thật trước khi thêm); phương thức thanh toán là đầu vào định phí (cách hiểu chặt) · (2) Thêm cache Redis cho route quote; bỏ điều kiện phương thức thanh toán
+- Chọn: Giữ: không cache ở route quote (đo giới hạn tần suất GHN thật trước khi thêm); phương thức thanh toán là đầu vào định phí (cách hiểu chặt)
+- Lý do (tiêu chí chất lượng cuối): (1) phí báo khách luôn mới; chặt hơn khi phí sau này phụ thuộc COD; (3) đơn giản, không thêm lớp cache; rate limit store đã chặn quote dồn dập
+- Đường lùi: Thêm cache Redis TTL ngắn cho quoteShippingFee; bỏ payment_method khỏi reusableShippingFee
+
+### D-097 · 2026-10-27T11:01:31+00:00 · Phản hồi 400 của Medusa chép giá trị admin vừa gửi (unique: '<Bảng> with k: v, already exists.') ra message/detail
+
+- Phương án: (1) Tách task T-157: error-handler trả thông điệp chung cho dạng dbErrorMapper unique/FK ở 4xx, giữ mã lỗi + tên trường (không giá trị); test admin vẫn hiểu lỗi · (2) Giữ nguyên
+- Chọn: Tách task T-157: error-handler trả thông điệp chung cho dạng dbErrorMapper unique/FK ở 4xx, giữ mã lỗi + tên trường (không giá trị); test admin vẫn hiểu lỗi
+- Lý do (tiêu chí chất lượng cuối): (1) 4xx không lộ chi tiết nội bộ/giá trị, kể cả với admin (log/proxy/APM có thể ghi body); (4) giữ tên trường để admin sửa được
+- Đường lùi: Bỏ mẫu khỏi INTERNAL_LEAK (bổ sung sau T-157: bản cài nằm ở `dbValueMessage` trong error-handler — đường lùi là bỏ lời gọi `dbValueMessage`)
+
+### D-098 · 2026-10-27T11:17:46+00:00 · T-152: lượt đang bay (chờ DB) có tính vào chặn sớm không — lệch chữ D-092 khi DB treo
+
+- Phương án: (1) Tính: giữ trần ghi DB khi bị dội; khi DB treo và > hạn mức lượt đang bay của một IP thì lượt sau 429, tự hết sau ≤ 2 cửa sổ · (2) Không tính lượt đang bay (mất trần ghi DB khi dội song song)
+- Chọn: Tính: giữ trần ghi DB khi bị dội; khi DB treo và > hạn mức lượt đang bay của một IP thì lượt sau 429, tự hết sau ≤ 2 cửa sổ
+- Lý do (tiêu chí chất lượng cuối): (1) không mở vector dội ghi DB; tác động chỉ khi DB treo — lúc đó handler cũng không xử lý được; giống limiter trong tiến trình cũ (300/10 s)
+- Đường lùi: Bỏ đếm ticket chưa có kết quả khỏi effective() trong LocalHitGuard
+
+### D-099 · 2026-10-27T12:26:37+00:00 · openOpsExceptionIfNoneActive không tự tuần tự hoá — race tạo trùng exception khi người gọi không giữ khoá
+
+- Phương án: (1) T-156 giữ khoá ở người gọi; tách T-158: tuần tự hoá trong helper bằng pg_advisory_xact_lock(hashtext(kind)) cho mọi người gọi · (2) Partial unique index (kind) where state active · (3) Giữ mỗi người gọi tự khoá
+- Chọn: T-156 giữ khoá ở người gọi; tách T-158: tuần tự hoá trong helper bằng pg_advisory_xact_lock(hashtext(kind)) cho mọi người gọi
+- Lý do (tiêu chí chất lượng cuối): (1) sửa gốc cho mọi người gọi ở một chỗ; (2) không cần migration làm lỗi khi dữ liệu đã trùng; lát riêng có test race
+- Đường lùi: Bỏ advisory lock trong helper, quay về khoá ở người gọi
+
+### D-100 · 2026-10-27T12:26:37+00:00 · T-141: phân quyền tải file private; 403 vs 404 cho người khác; PRIVATE_UPLOAD_DIR khi có S3
+
+- Phương án: (1) Theo vai trò settings.manage + MFA (chỉ owner xem thông báo xuất); giữ 403 đồng nhất (không lộ tồn tại); quyết PRIVATE_UPLOAD_DIR ở T-154 · (2) Bảng x_private_file gắn người xuất (migration, ảnh hưởng T-154); 404 cho người khác
+- Chọn: Theo vai trò settings.manage + MFA (chỉ owner xem thông báo xuất); giữ 403 đồng nhất (không lộ tồn tại); quyết PRIVATE_UPLOAD_DIR ở T-154
+- Lý do (tiêu chí chất lượng cuối): (1) chặt: chỉ owner có MFA tải file PII, phản hồi đồng nhất không lộ tồn tại; (3) không thêm bảng sở hữu khi File Module chưa có; catalog_manager không tải được xuất sản phẩm là thiếu UX chấp nhận được
+- Đường lùi: Thêm quyền theo loại file (catalog.read cho xuất sản phẩm) hoặc bảng x_private_file
+
+### D-101 · 2026-10-27T12:56:33+00:00 · T-156: dedupe exception catalog_compensation_failed theo kind làm mất dấu sản phẩm thứ hai (lỗi bù trừ không tự phát hiện lại)
+
+- Phương án: (1) Dedupe theo kind + detail->>'product_id' trong các dòng đang mở; dashboard lấy reference từ product_id · (2) Một dòng, nối product_ids vào detail · (3) Chỉ lấy reference dashboard
+- Chọn: Dedupe theo kind + detail->>'product_id' trong các dòng đang mở; dashboard lấy reference từ product_id
+- Lý do (tiêu chí chất lượng cuối): (1) mỗi sản phẩm lệch có một mục xử lý riêng, đóng một mục không làm mất dấu mục khác; (3) không migration
+- Đường lùi: Về dedupe theo kind
+
+### D-102 · 2026-10-27T12:56:34+00:00 · T-141: tải file private qua route có phiên thay vì URL ký hết hạn ngắn (lệch chữ PLAN/BE-FILE-005)
+
+- Phương án: (1) Route có phiên + MFA + quyền, không URL ký (link trong thông báo nền sẽ hết hạn trước khi mở; không bí mật trong URL; thu quyền có hiệu lực ngay) · (2) URL ký HMAC hạn ngắn
+- Chọn: Route có phiên + MFA + quyền, không URL ký (link trong thông báo nền sẽ hết hạn trước khi mở; không bí mật trong URL; thu quyền có hiệu lực ngay)
+- Lý do (tiêu chí chất lượng cuối): (1) chặt hơn: mọi lần tải kiểm phiên+quyền+MFA, không token trong URL/log; mục Kiểm 'URL hết hạn → 403' thay bằng 'không phiên/không quyền → 401/403'
+- Đường lùi: Thêm endpoint cấp URL ký hạn ngắn từ route này (T-154 presigned)
+
+### D-103 · 2026-10-27T13:12:56+00:00 · T-159: phạm vi che thông điệp Medusa nội suy giá trị (22 dạng PII/nhạy cảm đã làm; còn nhóm giá trị admin gõ độ nhạy thấp và echo req.params.id ở 404)
+
+- Phương án: (1) Đóng T-159 với 22 dạng; không che id echo (id/handle hệ thống, cần cho debug admin); nhóm còn lại ghi backlog (không task) vì là giá trị cấu hình catalog do chính admin gõ, không PII · (2) Che toàn bộ 514 dạng và id echo
+- Chọn: Đóng T-159 với 22 dạng; không che id echo (id/handle hệ thống, cần cho debug admin); nhóm còn lại ghi backlog (không task) vì là giá trị cấu hình catalog do chính admin gõ, không PII
+- Lý do (tiêu chí chất lượng cuối): (1) PII/bí mật (email, SĐT, idempotency key, mã khuyến mãi, tên biến thể) đã che; (3)(4) che id làm mất thông tin debug, bảng che quá rộng tăng rủi ro báo nhầm
+- Đường lùi: Thêm dòng vào ECHO_FORMS cho dạng cần che
+
+### D-104 · 2026-10-27T13:23:24+00:00 · T-141: tạo/kiểm thư mục private ngay lúc khởi động provider (fail-fast) hay trì hoãn tới lần đọc/ghi đầu
+
+- Phương án: (1) Giữ fail-fast lúc khởi động; ghi rõ mọi tiến trình backend (server, worker, migrate) phải mount volume PRIVATE_UPLOAD_DIR (GO-NO-GO) · (2) Trì hoãn tới lần đọc/ghi đầu
+- Chọn: Giữ fail-fast lúc khởi động; ghi rõ mọi tiến trình backend (server, worker, migrate) phải mount volume PRIVATE_UPLOAD_DIR (GO-NO-GO)
+- Lý do (tiêu chí chất lượng cuối): (1) mặc định an toàn: cấu hình sai lộ ra ngay khi deploy thay vì lúc khách xuất file; (3) đơn giản
+- Đường lùi: Chuyển preparePrivateDir sang lazy trong provider
+
+### D-105 · 2026-10-27T14:08:50+00:00 · T-158: helper ops exception hết lock_timeout (55P03) thì làm gì
+
+- Phương án: (1) Ghi thêm một lần không khoá trong giao dịch mới (có thể trùng, không mất dấu) · (2) Ném lỗi, người gọi chỉ log (mất dấu khi DB nghẽn)
+- Chọn: Ghi thêm một lần không khoá trong giao dịch mới (có thể trùng, không mất dấu)
+- Lý do (tiêu chí chất lượng cuối): (1) mất dấu ngoại lệ vận hành tệ hơn trùng (nguyên tắc T-156/D-101); ca hiếm khi DB nghẽn
+- Đường lùi: Bỏ nhánh ghi dự phòng khi 55P03
+
+### D-106 · 2026-10-27T14:40:02+00:00 · T-098: backend start mặc định bind 127.0.0.1 (trước: mọi giao diện); in cấu hình hiệu lực; proxy.ts ném lỗi khi thiếu NEXT_PUBLIC_* ở production
+
+- Phương án: (1) Giữ bind 127.0.0.1 cho cả dev và start, triển khai đặt HOST=0.0.0.0 (ENV.md + RUNBOOK + GO-NO-GO); thêm script print-config dùng formatEffectiveConfig; chấp nhận proxy ném lỗi khi thiếu biến public ở production · (2) Chỉ dev bind 127.0.0.1, start giữ mọi giao diện
+- Chọn: Giữ bind 127.0.0.1 cho cả dev và start, triển khai đặt HOST=0.0.0.0 (ENV.md + RUNBOOK + GO-NO-GO); thêm script print-config dùng formatEffectiveConfig; chấp nhận proxy ném lỗi khi thiếu biến public ở production
+- Lý do (tiêu chí chất lượng cuối): (1) mặc định an toàn BASE-SEC-010; cấu hình thiếu lộ ra ngay lúc khởi động; (3) một script nhỏ đóng BASE-CFG-007
+- Đường lùi: Bỏ -H khỏi script start
+
+### D-107 · 2026-10-27T15:00:40+00:00 · T-158: dạng khoá advisory và hàng rào scope (lệch chữ PLAN hashtext(kind))
+
+- Phương án: (1) 2×int4 (hashtext namespace, hashtext(key)) theo kind hoặc kind+giá trị scope; hàng rào OPS_EXCEPTION_ACTIVE_SCOPES một dạng scope mỗi kind · (2) pg_advisory_xact_lock(hashtext(kind)) như chữ PLAN
+- Chọn: 2×int4 (hashtext namespace, hashtext(key)) theo kind hoặc kind+giá trị scope; hàng rào OPS_EXCEPTION_ACTIVE_SCOPES một dạng scope mỗi kind
+- Lý do (tiêu chí chất lượng cuối): (1) không va khoá bigint objsubid=1 của returns/trigger x_refund; hai sản phẩm không chờ nhau; hàng rào ngăn trộn dạng scope gây dedupe sai
+- Đường lùi: Về khoá bigint theo kind, bỏ hàng rào
+
+### D-108 · 2026-10-27T15:00:40+00:00 · T-147: quyền đọc native sau khi đóng mặc định any_role (catalog cho order/kế toán/CSKH; khách theo order.read; giá theo price.write; route mới trong nhóm đã khai)
+
+- Phương án: (1) Giữ chặt: catalog chỉ owner/catalog_manager/kho; khách theo order.read (T-023); bảng giá theo price.write; thêm test chốt số route GET native (133) để mỗi lần nâng cấp Medusa phải rà · (2) Mở any_role cho catalog; thêm price.read; quyền khách riêng
+- Chọn: Giữ chặt: catalog chỉ owner/catalog_manager/kho; khách theo order.read (T-023); bảng giá theo price.write; thêm test chốt số route GET native (133) để mỗi lần nâng cấp Medusa phải rà
+- Lý do (tiêu chí chất lượng cuối): (1) đóng mặc định, quyền tối thiểu; nới khi có nhu cầu thật có bằng chứng; (3) không đổi ma trận domain trong lát này
+- Đường lùi: Thêm quy tắc 'một trong các quyền' cho catalog read hoặc price.read vào domain
+
+### D-109 · 2026-10-27T15:00:41+00:00 · T-134: mã hết hạn giữa quote/submit trả 422 DISCOUNT_NOT_APPLICABLE hay 409 DISCOUNT_CHANGED; diffQuotes có so cả ảnh chụp điều khoản
+
+- Phương án: (1) Giữ 422 (storefront đã xử lý); diffQuotes giữ so mã + số giảm (khách xác nhận số tiền, không phải điều khoản) · (2) 409 + quote mới; so cả ảnh chụp
+- Chọn: Giữ 422 (storefront đã xử lý); diffQuotes giữ so mã + số giảm (khách xác nhận số tiền, không phải điều khoản)
+- Lý do (tiêu chí chất lượng cuối): (3) không đổi API-CONTRACT/storefront; (4) khách chỉ phải xác nhận lại khi số tiền đổi; (1) ảnh chụp lưu điều khoản tại lúc submit nên đối soát đúng
+- Đường lùi: Đổi lỗi hết hạn sang 409 DISCOUNT_CHANGED, diffQuotes so thêm snapshot
+
+### D-110 · 2026-10-27T16:14:48+00:00 · T-120: storefront dùng bản sao units.ts (client không được import @x-shop/domain) hay subpath export; lint cột số không hậu tố đơn vị (XC-UNITS-009)
+
+- Phương án: (1) Giữ bản sao có test khoá giống domain; tách T-160 cho lint tên cột số trong migration/model thiếu hậu tố đơn vị · (2) Subpath export @x-shop/domain/units (đổi exports, jest, tsconfig, nới client-bundle test)
+- Chọn: Giữ bản sao có test khoá giống domain; tách T-160 cho lint tên cột số trong migration/model thiếu hậu tố đơn vị
+- Lý do (tiêu chí chất lượng cuối): (3) không nới hàng rào bundle client vừa dựng ở T-098; test khoá chống lệch; lát nhỏ
+- Đường lùi: Thêm subpath export và bỏ bản sao
+
+### D-111 · 2026-10-27T16:24:52+00:00 · T-097: ngưỡng breaker, breaker cho expireHolds, lỗi vĩnh viễn ở lượt thử half-open, cửa sổ ngân sách
+
+- Phương án: (1) Giữ ngưỡng mặc định (notify 3000/ngày, khác 10000; 5 lỗi → nguội 5 phút; trần 100 vòng/50 lượt); tách T-161 cho expireHolds (ảnh hưởng nhả giữ hàng); lỗi vĩnh viễn của lượt thử half-open = dịch vụ đã trả lời → đóng breaker; ngân sách theo ngày UTC · (2) Tính ngưỡng từ lưu lượng dự kiến; áp breaker expireHolds ngay; lỗi vĩnh viễn trung lập; ngày giờ VN
+- Chọn: Giữ ngưỡng mặc định (notify 3000/ngày, khác 10000; 5 lỗi → nguội 5 phút; trần 100 vòng/50 lượt); tách T-161 cho expireHolds (ảnh hưởng nhả giữ hàng); lỗi vĩnh viễn của lượt thử half-open = dịch vụ đã trả lời → đóng breaker; ngân sách theo ngày UTC
+- Lý do (tiêu chí chất lượng cuối): (1) UTC theo luật dự án; đóng khi dịch vụ đã trả lời tránh treo half-open; expireHolds liên quan tồn kho nên lát riêng có test; ngưỡng chỉnh được ở một hằng
+- Đường lùi: Sửa OUTBOX_BREAKER_POLICY; coi lỗi vĩnh viễn half-open là trung lập
+
+### D-112 · 2026-10-27T18:11:24+00:00 · T-136: IP trần trong văn bản tự do; chuẩn hoá Unicode trước redact; khoá ip bị che theo tên
+
+- Phương án: (1) Không che IP trần (ghi knownGaps); thêm normalize NFC ở đầu redactText và looksLikePii; chấp nhận che mọi trường tên ip · (2) Che IPv4 công cộng trong văn bản; không chuẩn hoá Unicode
+- Chọn: Không che IP trần (ghi knownGaps); thêm normalize NFC ở đầu redactText và looksLikePii; chấp nhận che mọi trường tên ip
+- Lý do (tiêu chí chất lượng cuối): (1) NFD tiếng Việt làm lọt mẫu địa chỉ/khoá — chuẩn hoá rẻ, tuyến tính; che IP trần gây che nhầm số phiên bản/host nội bộ; IP không cần trong log ứng dụng
+- Đường lùi: Bỏ normalize NFC; thêm luật IPv4 công cộng
+
+### D-113 · 2026-10-27T19:16:07+00:00 · T-154: lưu file upload dùng chung giữa nhiều bản sao backend
+
+- Phương án: (1) Provider S3-compatible (@medusajs/file-s3 2.22.1, MIT), 2 bucket public/private, production bắt buộc FILE_STORAGE=s3 + https; dev/test fallback local có cảnh báo · (2) Giữ provider local trên volume dùng chung (NFS) có ghi ràng buộc triển khai · (3) MinIO trong dev-services
+- Chọn: Provider S3-compatible (@medusajs/file-s3 2.22.1, MIT), 2 bucket public/private, production bắt buộc FILE_STORAGE=s3 + https; dev/test fallback local có cảnh báo
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: volume dùng chung không chứng minh được lúc khởi động và root_squash xung đột kiểm chủ sở hữu D-104; Medusa ghi provider local chỉ cho dev; (2) đường lùi: FILE_STORAGE=local cho dev; (3) MinIO bản cộng đồng đã archived, không còn vá bảo mật (dl.min.io 410, tra 2026-10-27) nên loại; kho tự host đề xuất Garage (AGPL, dịch vụ riêng) hoặc SeaweedFS (Apache-2.0)
+- Đường lùi: FILE_STORAGE=local + một bản sao; gỡ @medusajs/file-s3
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Kho production do chủ dự án chọn: tự host Garage/SeaweedFS hoặc S3/R2 quản lý (cần tài khoản); thêm host ảnh vào remotePatterns/CSP storefront; chuyển file cũ giữ nguyên khoá
+
+### D-114 · 2026-10-27T19:30:06+00:00 · T-102: SET NOT NULL và drop unique index/constraint trong check-migrations
+
+- Phương án: (1) Chặn SET NOT NULL (miễn khi cột thêm kèm DEFAULT/bảng mới trong cùng file); chặn add column NOT NULL không DEFAULT; chặn drop index/constraint có tên do migration trên base tạo mà không tạo lại trong cùng file · (2) SET NOT NULL chỉ cảnh báo; không luật cho drop index
+- Chọn: Chặn SET NOT NULL (miễn khi cột thêm kèm DEFAULT/bảng mới trong cùng file); chặn add column NOT NULL không DEFAULT; chặn drop index/constraint có tên do migration trên base tạo mà không tạo lại trong cùng file
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: autopilot chỉ đọc exit code nên cảnh báo = cho qua; N−1 INSERT không biết cột mới vỡ NOT NULL; ~20 ON CONFLICT phụ thuộc unique index; lọc theo tên trên base tránh báo nhầm 22 drop phòng thủ; lối thoát có lý do: cờ contract/ALLOW
+- Đường lùi: Đổi luật thành cảnh báo trong check-migrations.mjs
+
+### D-115 · 2026-10-27T19:30:07+00:00 · T-102: vế OPS-DEPLOY-003 'test suite bản N−1 trên schema N' không có trong diff
+
+- Phương án: (1) Tách task mới T-163 (CI chạy test tích hợp của base trên schema của HEAD); T-102 chỉ đóng DB-MIG-001/003/008 phần CI · (2) Mở rộng T-102 làm luôn
+- Chọn: Tách task mới T-163 (CI chạy test tích hợp của base trên schema của HEAD); T-102 chỉ đóng DB-MIG-001/003/008 phần CI
+- Lý do (tiêu chí chất lượng cuối): (3) lát nhỏ, đảo ngược được; job gate đã ~26/30 phút nên cần đo/thiết kế job riêng; T-102 đã đủ lớn
+- Đường lùi: Gộp T-163 vào T-102
+
+### D-116 · 2026-10-27T20:10:56+00:00 · T-161: đơn quá hạn khi breaker querydr mở; ngân sách querydr; trần lookup
+
+- Phương án: (1) Giữ như unknown (không hủy khi chưa xác minh), ngân sách querydr 144000/ngày, lookup 1000 trong 3000 · (2) Bỏ qua không đổi trạng thái; ngân sách mặc định 10000 · (3) Hủy sau hạn cứng rồi hoàn qua late_payment
+- Chọn: Giữ như unknown (không hủy khi chưa xác minh), ngân sách querydr 144000/ngày, lookup 1000 trong 3000
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: hủy chưa xác minh biến IPN lạc thành hoàn tiền, trái RUNBOOK §1; querydr không tính phí theo lượt, ngân sách 10000 bị nghẽn đầu hàng đốt hết sau ~100 phút rồi đóng băng hủy cả ngày; lookup cần ≥9 cặp mã đơn+SĐT thật mới đốt hết 1000 (rate limit 5/giờ/SĐT)
+- Đường lùi: Sửa OUTBOX_BREAKER_POLICY / subBudgets
+
+### D-117 · 2026-10-27T20:10:56+00:00 · T-142: CATALOG_REVALIDATE_URLS ở production
+
+- Phương án: (1) Chỉ https (URL nội bộ từng bản storefront cần TLS) · (2) Cho phép http với host mạng riêng/loopback (HMAC giữ toàn vẹn)
+- Chọn: Chỉ https (URL nội bộ từng bản storefront cần TLS)
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn: phân loại mạng riêng dễ sai (DNS, IPv6, proxy), thân webhook lộ danh sách sản phẩm đổi; (2) đường lùi rẻ nếu vận hành không dựng được TLS
+- Đường lùi: Nới schema env cho http + host private
+
+### D-118 · 2026-10-27T21:38:48+00:00 · T-164 phần 2: staff hủy đơn unknown sau khi đối chiếu tay với cổng merchant
+
+- Phương án: (1) Quyền mới payment.override (chỉ owner, tuỳ chọn accountant) + route POST /admin/x/orders/:id/cancel-unverified; bắt buộc lý do + Idempotency-Key + mã đối chiếu merchant; audit order.cancelled_unverified; đóng payment_unknown · (2) Hai người: order_staff đề nghị, accountant khác duyệt · (3) Mở rộng /cancel bằng cờ payment_verified, đòi order.cancel + payment.read
+- Chọn: Quyền mới payment.override (chỉ owner, tuỳ chọn accountant) + route POST /admin/x/orders/:id/cancel-unverified; bắt buộc lý do + Idempotency-Key + mã đối chiếu merchant; audit order.cancelled_unverified; đóng payment_unknown
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: quyền tường minh, không gộp ngầm quyền cũ (loại C); tiền khách không mất vì IPN đến muộn đi đường AT09 late_payment → hoàn tiền; audit + mã đối chiếu cho truy vết; (3) khối lượng vừa, test được; (B) chặt hơn nhưng gấp đôi khối lượng cho thao tác hiếm, để chủ dự án nâng cấp nếu muốn
+- Đường lùi: Gỡ route + quyền; quay lại UPDATE tay theo RUNBOOK
+
+### D-119 · 2026-10-27T23:03:07+00:00 · T-135: nối coverage tích hợp backend vào CI?
+
+- Phương án: (1) Không nối: đo 36m39s > 20 phút (D-064); baseline integration ghi tay, --against vẫn chặn PR hạ baseline; mở lại khi chia shard test tích hợp · (2) Nối job riêng dù > 20 phút
+- Chọn: Không nối: đo 36m39s > 20 phút (D-064); baseline integration ghi tay, --against vẫn chặn PR hạ baseline; mở lại khi chia shard test tích hợp
+- Lý do (tiêu chí chất lượng cuối): (2) đường lùi D-064 'miễn kèm lý do'; job 36 phút làm PR chậm và vượt timeout 30 phút của runner; ratchet --against vẫn bảo vệ baseline
+- Đường lùi: Thêm job coverage-integration chia shard khi đo ≤ 20 phút
+
+### D-120 · 2026-10-27T23:06:19+00:00 · T-140: lần nhập đối soát thứ hai chờ advisory lock bị statement_timeout 30 s cắt thành 500
+
+- Phương án: (1) lock_timeout cục bộ 10 s quanh câu chờ khoá, hết hạn trả 409 IMPORT_IN_PROGRESS + Retry-After · (2) SET LOCAL statement_timeout lớn hơn cho giao dịch nhập · (3) pg_try_advisory_xact_lock trả 409 ngay
+- Chọn: lock_timeout cục bộ 10 s quanh câu chờ khoá, hết hạn trả 409 IMPORT_IN_PROGRESS + Retry-After
+- Lý do (tiêu chí chất lượng cuối): (1) không treo Admin, không 500, chưa ghi gì; giữ giao ước 5 lần nhập song song (201+200×4) mà try-lock phá; nâng statement_timeout vẫn treo và vẫn 500
+- Đường lùi: Đổi importLockWaitMs hoặc bỏ lockImport
+
+### D-121 · 2026-10-28T00:10:38+00:00 · T-167: rebuild catalog ngoài khoá — cách không mất thay đổi song song; rebuild do dấu '*' chạy ở đâu
+
+- Phương án: (1) Bảng catalog_index_write_log (migration mới) ghi mốc từng sản phẩm; replaceAll(rows, since) giữ dòng đã đồng bộ từ since và bỏ ảnh chụp cũ hơn; rebuild '*' chạy ngay trong lượt xả · (2) Chỉ xả lại dấu từ mốc bắt đầu (D-076 nguyên văn) · (3) Như (1) nhưng tách rebuild '*' ra chạy nền
+- Chọn: Bảng catalog_index_write_log (migration mới) ghi mốc từng sản phẩm; replaceAll(rows, since) giữ dòng đã đồng bộ từ since và bỏ ảnh chụp cũ hơn; rebuild '*' chạy ngay trong lượt xả
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: xả lại dấu không đủ vì lượt xả song song đã xoá dấu → replaceAll ghi đè ảnh cũ/dòng ma (đã tái hiện); chốt ở DB không dựa lease Redis; khoá ghi 46,7 s → 2,4–2,9 s ở 50k SKU; (3) đơn giản: chạy nền thêm xử lý shutdown D-081 mà lợi ích chỉ cho chính tiến trình đang rebuild
+- Đường lùi: Bỏ dùng write log trong replaceAll; quay lại rebuild trong khoá (bảng giữ nguyên, migration có down)
+- Bổ sung sau review T-167: sản phẩm giữ dòng (`kept`) được đánh dấu bẩn lại trong cùng giao dịch `replaceAll` để thay đổi không phát sự kiện không bị mất; giới hạn: trong lúc rebuild `'*'` (~50 s ở 50k SKU) lượt xả theo sự kiện cùng tiến trình chờ, và nếu job mỗi phút thấy `'*'` trước thì rebuild chạy trọn trong khe job (trái ý D-081, có từ trước) — docs/db/connections.md §5
+
+### D-122 · 2026-10-28T00:36:56+00:00 · T-165: phạm vi quyền/xác thực của cancel-unverified; lỗi AT09 hoàn qua cổng
+
+- Phương án: (1) Chỉ owner (không cấp kế toán); bắt reauth MFA gần (cơ chế reauth sẵn có trong admin-security/session.ts); merchant_ref ASCII 6–64 ghi '(chưa xác minh)' tới khi có tài liệu merchant; lỗi applyCapture không ghi provider_txn_no vào attempt failed tách T-168 · (2) Cấp thêm kế toán; chỉ cần phiên đã MFA
+- Chọn: Chỉ owner (không cấp kế toán); bắt reauth MFA gần (cơ chế reauth sẵn có trong admin-security/session.ts); merchant_ref ASCII 6–64 ghi '(chưa xác minh)' tới khi có tài liệu merchant; lỗi applyCapture không ghi provider_txn_no vào attempt failed tách T-168
+- Lý do (tiêu chí chất lượng cuối): (1) cách hiểu chặt hơn: thao tác hủy đơn có thể đã trả tiền là nhạy cảm như hoàn tiền — tách người hủy và người hoàn; reauth chặn phiên bị chiếm; lỗi AT09 có từ trước, ảnh hưởng cả đơn hết hạn nên làm lát riêng có test
+- Đường lùi: Gán payment.override cho kế toán / bỏ yêu cầu reauth trong config admin-security
+
+### D-123 · 2026-10-28T01:36:26+00:00 · T-163: test hàng rào so BẰNG schema = hằng code luôn đỏ ở bản N−1 khi migration nới CHECK; job có làm required
+
+- Phương án: (1) Danh sách miễn tường minh trong n-minus-1 (tên suite+ca, lý do, migration nới gây ra), mục đang hiệu lực mà không khớp ca đỏ nào → NHẮC (sửa theo D-124); mục nêu migration không còn tồn tại → đỏ; job không required, chia shard sau khi đo trên runner thật · (2) Đổi hàng rào thành DB ⊇ code · (3) Giữ nguyên, người đọc log phân biệt
+- Chọn: Danh sách miễn tường minh trong n-minus-1 (tên suite+ca, lý do, migration nới gây ra), mục đang hiệu lực mà không khớp ca đỏ nào → NHẮC (sửa theo D-124); mục nêu migration không còn tồn tại → đỏ; job không required, chia shard sau khi đo trên runner thật
+- Lý do (tiêu chí chất lượng cuối): (1) giữ nguyên độ chặt của hàng rào ở HEAD (bắt cả hai chiều lệch); miễn có lý do và tự hết hạn khi mục thừa; (C) làm job ồn nên tín hiệu thật bị bỏ qua; rủi ro N−1 đọc kind lạ ghi thành việc riêng
+- Đường lùi: Bỏ danh sách miễn; đổi hàng rào sang ⊇
+
+### D-124 · 2026-10-28T02:20:20+00:00 · T-163 review: job n-minus-1 thực tế chặn merge (_ci_blocker xét mọi check); phân loại; chập chờn; phạm vi so schema
+
+- Phương án: (1) Chấp nhận là cổng thật cho PR có migration: mã 2 (không kết luận được) đỏ kèm annotation hướng xử lý; phân loại theo CA; chập chờn (đỏ lần đầu, xác nhận ≥2 lần đều xanh) → mã 2 đỏ có annotation; mã 0 chỉ khi lần đầu xanh hoặc mọi ca đỏ đều được miễn; so schema thêm trigger/function/policy/enum/precision/identity/generated; mục N1_ALLOW đang hiệu lực mà không khớp → NHẮC (sửa câu chữ D-123) · (2) Tách job khỏi đường merge (workflow riêng, không trên head PR)
+- Chọn: Chấp nhận là cổng thật cho PR có migration: mã 2 (không kết luận được) đỏ kèm annotation hướng xử lý; phân loại theo CA; chập chờn (đỏ lần đầu, xác nhận ≥2 lần đều xanh) → mã 2 đỏ có annotation; mã 0 chỉ khi lần đầu xanh hoặc mọi ca đỏ đều được miễn; so schema thêm trigger/function/policy/enum/precision/identity/generated; mục N1_ALLOW đang hiệu lực mà không khớp → NHẮC (sửa câu chữ D-123)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: kiểm N−1 chỉ có giá trị nếu chặn được; autopilot chỉ đọc exit code nên 'chập chờn → 0' là cho qua (D-114); trigger là hàng rào ghi của audit/settlement/refund nên bỏ sót là lọt thật; chi phí 45 phút chỉ áp PR có migration
+- Đường lùi: Chuyển job sang workflow_dispatch/cron, bỏ khỏi pull_request
+
+### D-125 · 2026-10-28T03:21:39+00:00 · T-168: xung đột mã giao dịch trên attempt failed; loại ngoại lệ; đối soát late_after_cancel; quy tắc đóng late_payment
+
+- Phương án: (1) Không ghi đè mã (hoàn tay khi conflict); dùng lại payment_unknown reason attempt_txn_conflict; đối soát giữ late_after_cancel (không tự đóng); đóng late_payment khi ròng cả đơn ≤ 0 · (2) Ghi đè mã khi mã cũ chỉ từ thông báo thất bại; kind ngoại lệ mới; tự đóng chênh lệch; đóng theo từng capture_ref
+- Chọn: Không ghi đè mã (hoàn tay khi conflict); dùng lại payment_unknown reason attempt_txn_conflict; đối soát giữ late_after_cancel (không tự đóng); đóng late_payment khi ròng cả đơn ≤ 0
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn tiền: không mất dấu mã, không tự đóng chênh lệch tiền khi chưa có người xác nhận; (3) không thêm migration nới CHECK (chạm n-minus-1); quy tắc ròng cả đơn chặt và đúng với hoàn tay không gắn capture
+- Đường lùi: Đổi linkAttemptToCapture / thêm kind / sửa settlement auto-resolve
+
+### D-126 · 2026-10-28T05:14:28+00:00 · T-169: refund khi cổng hoàn tắt/từ chối dứt khoát — nhả tiền, phạm vi xung đột, chọn provider khi cổng tắt, nơi lưu lý do
+
+- Phương án: (1) Từ chối dứt khoát → failed giữ tiền, kế toán hủy có lý do (audit) mới nhả, thử lại được; đơn có xung đột mã → auto chọn manual cho mọi refund của đơn; provider tường minh khi cổng tắt → 409 lúc tạo; lý do ghi vào note · (2) Tự hủy nhả ngay; xét xung đột theo từng khoản thu; cho tạo rồi thất bại lúc execute; cột method_reason mới
+- Chọn: Từ chối dứt khoát → failed giữ tiền, kế toán hủy có lý do (audit) mới nhả, thử lại được; đơn có xung đột mã → auto chọn manual cho mọi refund của đơn; provider tường minh khi cổng tắt → 409 lúc tạo; lý do ghi vào note
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn tiền: không tự nhả khi có thể thử lại/đối chiếu, mọi lần nhả có người + audit; chặn sớm thay vì tạo yêu cầu chắc chắn kẹt; (3) không thêm migration
+- Đường lùi: Đổi refund-route/refundMachine; thêm cột method_reason bằng migration mới
+
+### D-127 · 2026-10-28T07:57:00+00:00 · T-173: từ chối refund theo trả hàng làm kẹt yêu cầu trả hàng
+
+- Phương án: (1) Server chặn /reject với refund return (409 RETURN_REFUND_NOT_REJECTABLE + next_steps), ẩn nút ở admin, không migration · (2) Cho mở lại sau rejected: migration thay IDX_x_refund_return_unique + sửa refundOfReturn
+- Chọn: Server chặn /reject với refund return (409 RETURN_REFUND_NOT_REJECTABLE + next_steps), ẩn nút ở admin, không migration
+- Lý do (tiêu chí chất lượng cuối): (1) cưỡng chế điều RUNBOOK §7 đã ghi; số tiền do kiểm định chốt nên từ chối không có nghĩa nghiệp vụ; (2) không migration, down của (2) không an toàn khi đã có bản rejected + bản mới; (3) phạm vi nhỏ
+- Đường lùi: Bỏ chặn trong rejectRefund; hiện lại nút
+
+### D-128 · 2026-10-28T09:00:00+00:00 · T-170: attempt cũ thiếu vnp_create_date — lấy từ đâu
+
+- Phương án: (1) Fallback created_at + WARN; vận hành điền tay từ payment_url theo RUNBOOK §1.2 · (2) Migration điền lại một lần từ payment_url · (3) Helper đọc payment_url mỗi lần gọi
+- Chọn: Fallback created_at + WARN; vận hành điền tay từ payment_url theo RUNBOOK §1.2
+- Lý do (tiêu chí chất lượng cuối): (3) đơn giản: chưa có dữ liệu production, cột chỉ thiếu ở attempt tạo trước bản này; không thêm UPDATE hàng loạt (khoá bảng) hay phân tích URL ở đường nóng; (2) đường lùi rõ qua RUNBOOK
+- Đường lùi: Thêm migration điền lại từ payment_url
+
+### D-129 · 2026-10-28T10:31:52+00:00 · 216 mục MUST còn mở sau PLAN-2: xử lý thế nào?
+
+- Phương án: (1) A: thêm mục L vào PLAN-2 (49 task T-175…T-223 cho 91 mục tự làm được; 85 mục C cần người/hạ tầng, 35 mục D chặn bởi task chờ người giữ ở Chờ người) · (2) B: dừng done-pending-human với 216 mục mở · (3) C: tạo PLAN-3 riêng và đổi PLAN của vòng
+- Chọn: A: thêm mục L vào PLAN-2 (49 task T-175…T-223 cho 91 mục tự làm được; 85 mục C cần người/hạ tầng, 35 mục D chặn bởi task chờ người giữ ở Chờ người)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1–3: còn 91 mục agent đóng được bằng Gate máy kiểm; giữ chung PLAN của vòng nên loop status/record không đổi cấu hình; ưu tiên bảo mật > tiền/tồn > độ tin cậy > tuân thủ > tài liệu
+- Đường lùi: Xoá mục L khỏi PLAN-2 (task chưa làm không có tác dụng phụ)
+
+### D-130 · 2026-10-28T11:24:33+00:00 · Allowlist host VNPAY cho safePaymentUrl ở storefront (T-178): đặt ở đâu?
+
+- Phương án: (1) Hằng VNPAY_HOST_SUFFIXES = vnpayment.vn, vnpay.vn trong safe-url.ts · (2) Biến môi trường NEXT_PUBLIC_VNPAY_HOSTS validate bằng zod · (3) Không kiểm host, chỉ kiểm scheme
+- Chọn: Hằng VNPAY_HOST_SUFFIXES = vnpayment.vn, vnpay.vn trong safe-url.ts
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: chặt hơn phương án 3; tiêu chí 3: hằng test được, không thêm cấu hình sai được ở runtime; host sandbox sandbox.vnpayment.vn và production vnpayment.vn đều là subdomain hợp lệ (theo URL mặc định trong apps/backend env); host production thật chưa xác minh với hợp đồng merchant (RK-006) — đổi khi có khoá thật
+- Đường lùi: Sửa VNPAY_HOST_SUFFIXES hoặc chuyển sang env ở safe-url.ts (một file)
+
+### D-131 · 2026-10-28T11:34:26+00:00 · safePaymentUrl chặn http://localhost của E2E (review T-178 🔴): sửa thế nào? (thay D-130)
+
+- Phương án: (1) Mặc định hằng vnpayment.vn/vnpay.vn chỉ https; thêm NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS tuỳ chọn (zod) cho dev/E2E, production từ chối origin http/localhost lúc khởi động · (2) Bỏ kiểm host khi NODE_ENV khác production · (3) Đổi E2E mock dùng https host giả
+- Chọn: Mặc định hằng vnpayment.vn/vnpay.vn chỉ https; thêm NEXT_PUBLIC_VNPAY_EXTRA_ORIGINS tuỳ chọn (zod) cho dev/E2E, production từ chối origin http/localhost lúc khởi động
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: production vẫn chặt (https + host VNPAY), không nới theo NODE_ENV ngầm; tiêu chí 3: cấu hình tường minh, validate lúc khởi động, test được; E2E chỉ cần đặt biến trong e2e/env.mjs
+- Đường lùi: Bỏ biến, quay về hằng D-130 (một file safe-url.ts + env schema)
+
+### D-132 · 2026-10-28T11:49:06+00:00 · D-131: dấu hiệu từ chối origin VNPAY bổ sung http/localhost — NODE_ENV=production không dùng được vì E2E chạy next start ở production
+
+- Phương án: (1) Chỉ cho origin http/localhost khi NEXT_PUBLIC_SITE_URL là localhost; site URL công khai thì schema ném lỗi lúc khởi động · (2) Thêm cờ NEXT_PUBLIC_DEPLOY_ENV · (3) Giữ NODE_ENV và đổi E2E sang https giả
+- Chọn: Chỉ cho origin http/localhost khi NEXT_PUBLIC_SITE_URL là localhost; site URL công khai thì schema ném lỗi lúc khởi động
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: triển khai thật luôn có site URL công khai nên origin http/localhost bị từ chối; tiêu chí 3: không thêm cờ dễ đặt sai, E2E giữ nguyên cách chạy; bổ sung D-131
+- Đường lùi: Đổi điều kiện trong parseVnpayExtraOrigins (apps/storefront/src/lib/env/public.ts)
+
+### D-133 · 2026-10-28T12:39:53+00:00 · T-185: trigger tồn có miễn backorder không?
+
+- Phương án: (1) Giữ chặt: mọi giữ hàng vượt tồn bị chặn (backorder thực tế tắt, 409) · (2) Miễn kiểm khi dòng có reservation backorder · (3) Gỡ hỗ trợ backorder khỏi checkout
+- Chọn: Giữ chặt: mọi giữ hàng vượt tồn bị chặn (backorder thực tế tắt, 409)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: đặc tả mặc định tắt backorder, không có sản phẩm nào bật; chặn bán vượt tồn là bất biến RK-001; tiêu chí 2: muốn bán đặt trước thì mở D mới + migration miễn có điều kiện (H-06 chính sách bán)
+- Đường lùi: Migration mới nới hàm trigger cho reservation allow_backorder
+
+### D-134 · 2026-10-28T12:39:54+00:00 · T-185: ghi đè mất cập nhật reserved (Medusa ghi giá trị tuyệt đối) — trigger có kiểm thêm tổng reservation_item?
+
+- Phương án: (1) Kiểm thêm stocked >= tổng reservation_item còn sống theo item+kho, trigger cả trên reservation_item · (2) Giữ nguyên, ghi rủi ro dư vào RK-001, dựa khoá Redis
+- Chọn: Kiểm thêm stocked >= tổng reservation_item còn sống theo item+kho, trigger cả trên reservation_item
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: bắt được oversell khi khoá Redis hỏng/đường ghi không qua khoá (đúng tinh thần RK-001); migration T-185 chưa áp ở đâu nên sửa trong cùng nhánh; tiêu chí 3: test được bằng hai phiên DB
+- Đường lùi: Migration mới bỏ phần tổng reservation khỏi hàm trigger
+
+### D-135 · 2026-10-29T10:17:26+00:00 · gitleaks quét cửa sổ 30 commit trượt dần, gặp lần lượt giá trị giả trong test (SENTINEL-…, …0123456789abcdef): xử lý thế nào?
+
+- Phương án: (1) Thêm .gitleaks.toml mở rộng cấu hình mặc định (useDefault) với allowlist regex trên giá trị bí mật: chứa SENTINEL hoặc chuỗi 0123456789 · (2) Thêm từng fingerprint vào .gitleaksignore mỗi lần CI báo · (3) Allowlist theo đường dẫn test
+- Chọn: Thêm .gitleaks.toml mở rộng cấu hình mặc định (useDefault) với allowlist regex trên giá trị bí mật: chứa SENTINEL hoặc chuỗi 0123456789
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: vẫn quét mọi file kể cả test bằng luật mặc định; chỉ bỏ giá trị mang dấu hiệu giả không thể là bí mật thật; phương án 3 nới quá rộng (bí mật thật lọt vào test vẫn phải bị bắt); phương án 2 làm CI đỏ lặp lại mỗi lần đẩy
+- Đường lùi: Xoá .gitleaks.toml
+
+### D-136 · 2026-10-29T13:58:44+00:00 · T-181: có hạ tham số scrypt khi NODE_ENV=test để CI nhanh hơn không?
+
+- Phương án: (1) Giữ N=2^17 ở mọi môi trường (CI chậm ~4-5 phút ở suite auth) · (2) Thêm XS_TEST_SCRYPT_LOGN chỉ nhận khi NODE_ENV=test
+- Chọn: Giữ N=2^17 ở mọi môi trường (CI chậm ~4-5 phút ở suite auth)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1+3: test chạy đúng cấu hình production, không thêm cờ có thể cấu hình sai; trần gate CI đã 60 phút (lần xanh 49 phút) còn chỗ; xem lại khi chia shard (T-128)
+- Đường lùi: Thêm env test-only như phương án 2
+
+### D-137 · 2026-10-29T13:58:44+00:00 · T-181: hash scrypt cũ (logN 15) xử lý thế nào?
+
+- Phương án: (1) Băm lại bằng tham số mới khi đăng nhập thành công (trong bản bọc TimingSafe, qua update của provider) · (2) Buộc đặt lại mật khẩu · (3) Bỏ qua vì chưa có tài khoản production
+- Chọn: Băm lại bằng tham số mới khi đăng nhập thành công (trong bản bọc TimingSafe, qua update của provider)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1: nâng dần mọi hash lên mức OWASP và bỏ rò rỉ thời gian (hash cũ verify nhanh hơn hash mồi logN 17); không làm phiền người dùng như phương án 2; không viết mật mã tự chế — chỉ gọi lại provider
+- Đường lùi: Bỏ nhánh băm lại trong bản bọc TimingSafe
+
+### D-138 · 2026-10-29T14:14:15+00:00 · T-184 vai trò DB: dev/CI chuyển hẳn sang xshop_app/xshop_migrator hay opt-in? Chọn URL migration thế nào?
+
+- Phương án: (1) Opt-in: dev giữ xshop làm DATABASE_URL mặc định; xshop_app/xshop_migrator + MIGRATION_DATABASE_URL tạo sẵn; lệnh medusa db:* tự dùng MIGRATION_DATABASE_URL (kiểm cùng host/cổng/DB, lệch thì từ chối); migration cấp DML + default privileges cho xshop_app · (2) Chuyển hẳn: owner DB dev sang migrator, runtime dev bằng xshop_app · (3) Script pnpm db:migrate tường minh thay vì chọn theo argv
+- Chọn: Opt-in: dev giữ xshop làm DATABASE_URL mặc định; xshop_app/xshop_migrator + MIGRATION_DATABASE_URL tạo sẵn; lệnh medusa db:* tự dùng MIGRATION_DATABASE_URL (kiểm cùng host/cổng/DB, lệch thì từ chối); migration cấp DML + default privileges cho xshop_app
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 2: giữ đường lùi, không phá luồng dev/test hiện có; production dùng hai URL tách (đã chạy thử runtime bằng xshop_app: readyz + POST carts 200); DB-SEC-002 tick [~] (dev/CI có vai trò, production chưa có hạ tầng)
+- Đường lùi: Bỏ MIGRATION_DATABASE_URL (mặc định = DATABASE_URL); migration down RESET + thu hồi quyền
+
+### D-139 · 2026-10-29T17:24:00+00:00 · T-187: 4 POST không nhận Idempotency-Key (imports/preview, checkout/quote, orders/lookup, size-charts revise) xử lý theo Q-06 thế nào?
+
+- Phương án: (1) Giữ allowlist no-business-effect (không ghi tiền/tồn/đơn), thêm T-225 làm revise idempotent tự nhiên (nội dung trùng bản hiện hành → không tạo phiên bản) · (2) Bắt buộc khoá cho cả 4 (phá storefront/Admin UI) · (3) Giữ nguyên tất cả, không task
+- Chọn: Giữ allowlist no-business-effect (không ghi tiền/tồn/đơn), thêm T-225 làm revise idempotent tự nhiên (nội dung trùng bản hiện hành → không tạo phiên bản)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1+4: không route nào ghi tiền/tồn/đơn; quote/lookup/preview là đọc/tính toán; bắt khoá làm hỏng client không đổi được an toàn; revise trùng chỉ sinh phiên bản thừa → sửa nhỏ theo phương án C. Q-07 giữ 409 IDEMPOTENCY_CONFLICT cho khác body (không đổi sang 422)
+- Đường lùi: Bỏ mục allowlist và bắt khoá
+
+### D-140 · 2026-10-29T20:10:18+00:00 · T-186: migration int4→bigint làm vỡ N-1 (code master đọc int8 thành chuỗi) nếu đi cùng PR #20 với parser; phát hành thế nào?
+
+- Phương án: (1) Tách hai lát: parser int8 (0b835f5, expand) vào PR #20; 3 commit migration/check-schema/ADR-0007 giữ ở nhánh riêng, mở PR sau khi PR #20 merge (N-1 với base có parser xanh) · (2) Gộp cả vào PR #20, chấp nhận n-minus-1 đỏ (chưa có dữ liệu thật) · (3) Bỏ bigint, giữ int4 với Miễn
+- Chọn: Tách hai lát: parser int8 (0b835f5, expand) vào PR #20; 3 commit migration/check-schema/ADR-0007 giữ ở nhánh riêng, mở PR sau khi PR #20 merge (N-1 với base có parser xanh)
+- Lý do (tiêu chí chất lượng cuối): Tiêu chí 1+2: giữ bất biến N-1 (code cũ chạy được trên schema mới) — chính là hàng rào T-163; không nới cổng; mỗi lát một PR (P8). Đã kiểm: n-minus-1 --base 0b835f5 xanh
+- Đường lùi: Revert 0b835f5 (parser) — không đổi schema
+
+### D-141 · 2026-10-29T22:07:57+00:00 · Hạn giữ dòng outbox_event ở trạng thái dead (T-193, BE-JOB-004)
+
+- Phương án: (1) Giữ vô thời hạn; người vận hành redrive theo RUNBOOK §12; test chặn mọi đường xoá trong src · (2) Job dọn dead sau N ngày · (3) Chuyển dead sang bảng lưu trữ rồi xoá
+- Chọn: Giữ vô thời hạn; người vận hành redrive theo RUNBOOK §12; test chặn mọi đường xoá trong src
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: dead là sự kiện chưa giao — xoá tự động làm mất thông báo/đối soát không khôi phục được; khối lượng dead nhỏ (chỉ sau hết lượt retry) nên không có áp lực dung lượng hiện tại; (2) giữ đường lùi: thêm job dọn sau này là thay đổi cộng thêm; (3) đơn giản, đã có test giữ bất biến
+- Đường lùi: Thêm job dọn có hạn (ADR mới) và nới allowlist DELETE_ALLOWLIST trong outbox-redrive.spec.ts
+
+### D-142 · 2026-10-29T22:07:57+00:00 · Thay D-008: client storefront có được import giá trị từ @x-shop/domain cho validation form (T-188, FE-FORM-001)?
+
+- Phương án: (1) Giữ bản phản chiếu schema ở storefront + test đối chiếu · (2) Client chỉ import subpath thuần @x-shop/domain/validation (zod/mini); gốc @x-shop/domain vẫn cấm phía client
+- Chọn: Client chỉ import subpath thuần @x-shop/domain/validation (zod/mini); gốc @x-shop/domain vẫn cấm phía client
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: một schema duy nhất cho client và server (FE-FORM-001), hết lệch luật; server vẫn parse lại; (3) hàng rào máy: client-bundle.test + validation.test chặn import ngoài validation/ và zod/mini (kể cả import không tên, import() động, require); chi phí ≤ 8,6 KiB gzip trong ngân sách 200 KiB (perf:budget đo lại khi có Chromium)
+- Đường lùi: Bỏ export ./validation của packages/domain và revert commit storefront của T-188 (quay lại bản phản chiếu)
+
+### D-143 · 2026-10-29T23:39:21+00:00 · T-207 phạm vi: Admin chưa có nút hủy đơn chưa xác minh / từ chối đổi trả (chỉ có API)
+
+- Phương án: (1) Chỉ nối dialog vào hành động đã có UI (thực thi hoàn tiền, từ chối hoàn tiền); spec+test sẵn cho hai loại còn lại · (2) Thêm nút UI mới cho hủy chưa xác minh và từ chối đổi trả trong T-207
+- Chọn: Chỉ nối dialog vào hành động đã có UI (thực thi hoàn tiền, từ chối hoàn tiền); spec+test sẵn cho hai loại còn lại
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: UX-STATE-008 áp cho hành động có trên giao diện — hành động chỉ có qua API không có điểm bấm cần xác nhận; (2) đường lùi: thêm nút sau dùng ngay confirmSpec đã test; (3) không phình phạm vi task
+- Đường lùi: Lát mới thêm nút ở trang đơn/exceptions, nối ConfirmDialog với spec order-cancel-unverified/return-reject
+
+### D-144 · 2026-10-30T03:59:39+00:00 · UX-STATE-001 Kiểm yêu cầu Storybook 4 story; T-206 dùng vitest *.states.test.tsx + script check-ui-states
+
+- Phương án: (1) Vitest 4 ca có assert hành vi + script đếm (đã có, chạy trong gate) · (2) Thêm Storybook chỉ để có 4 story mỗi component
+- Chọn: Vitest 4 ca có assert hành vi + script đếm (đã có, chạy trong gate)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: vitest kiểm hành vi thật (assert nội dung, aria) còn story chỉ hiển thị; (3) đơn giản: không thêm phụ thuộc lớn (Storybook ~ hàng trăm gói), test chạy sẵn trong gate; (5) chi phí CI thấp
+- Đường lùi: Thêm Storybook + story Loading/Empty/Error/Default, script đếm story thay check-ui-states
+
+### D-145 · 2026-10-30T09:05:14+00:00 · check-api-breaking báo 3 lần siết ràng buộc tham số request (Q6) trên PR #20: page maximum 9999 (products, search), code maxLength 200 (size-charts)
+
+- Phương án: (1) Allowlist tập trung có lý do + bằng chứng server đã enforce từ trước (spec bắt kịp code); mục thừa khi base đã chứa thay đổi → đỏ · (2) Gắn nhãn breaking + BREAKING CHANGE cho PR #20 · (3) Bỏ Q6 cho tham số query
+- Chọn: Allowlist tập trung có lý do + bằng chứng server đã enforce từ trước (spec bắt kịp code); mục thừa khi base đã chứa thay đổi → đỏ
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: nếu server đã từ chối giá trị vượt giới hạn từ trước thì client không vỡ — đây là tài liệu bắt kịp, không phải phá vỡ; giữ Q6 nghiêm cho mọi thay đổi khác; (2) đường lùi: xoá mục allowlist; (3) đơn giản, review được trong diff. Nếu kiểm ra server CHƯA enforce trước PR này thì đó là phá vỡ thật → phải theo phương án 2
+- Đường lùi: Xoá scripts/api-breaking-allowlist.json và gắn nhãn breaking cho PR có siết ràng buộc
+
+### D-146 · 2026-10-30T09:13:52+00:00 · check-api-breaking: GET /admin/x/size-charts tham số code thêm maxLength 200 trong PR #20 (server trước đó không giới hạn) — phá vỡ thật theo D-145
+
+- Phương án: (1) Allowlist có lý do: chưa phát hành/chưa có production (T-060 chờ người), route admin nội bộ, không client ngoài; giữ giới hạn đầu vào · (2) Gắn nhãn breaking + BREAKING CHANGE (release-please nhảy major) · (3) Bỏ .max(200) ở server và spec
+- Chọn: Allowlist có lý do: chưa phát hành/chưa có production (T-060 chờ người), route admin nội bộ, không client ngoài; giữ giới hạn đầu vào
+- Lý do (tiêu chí chất lượng cuối): (1) an toàn: giữ đầu vào có cận (bỏ cận là lùi về kém an toàn); không có client triển khai nào bị vỡ vì chưa có production; (2) đường lùi: xoá mục allowlist; phương án 2 làm release-please lên 1.0.0 vô cớ. Mục allowlist ghi evidence = route admin RBAC + chưa có môi trường production; sau G7 (phát hành) mọi siết ràng buộc phải theo nhãn breaking
+- Đường lùi: Xoá mục allowlist size-charts code, gắn nhãn breaking cho PR
+
+### D-147 · 2026-10-30T09:49:58+00:00 · Redis: image redis:7-alpine hiện là 7.4 (RSALv2/SSPLv1, không OSI); 7.2 là BSD-3; EOL cả hai 2029-12-01
+
+- Phương án: (1) Ghim redis:7.2-alpine (BSD-3) ở CI và dev; production theo cùng bản · (2) Giữ 7.4 (RSAL cho phép dùng nội bộ, cấm cung cấp Redis như dịch vụ cho bên thứ ba) · (3) Chuyển Valkey (BSD, fork Linux Foundation)
+- Chọn: Ghim redis:7.2-alpine (BSD-3) ở CI và dev; production theo cùng bản
+- Lý do (tiêu chí chất lượng cuối): (1) pháp lý: cách hiểu chặt hơn — giấy phép OSI rõ ràng, không phụ thuộc diễn giải 'as a service'; (2) đường lùi: đổi tag; cùng giao thức, cùng EOL 2029-12-01 nên không mất hỗ trợ; (3) thay đổi nhỏ nhất (cùng nhánh 7.x, client ioredis không đổi) — Valkey là bước lớn hơn, để dành khi 7.2 gần EOL
+- Đường lùi: Đổi lại tag redis:7-alpine (7.4) hoặc chuyển Valkey; cập nhật docs/RISKS.md
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Chủ dự án xác nhận dùng Redis 7.2 BSD hoặc chọn Valkey/dịch vụ Redis quản lý cho production
+
+### D-148 · 2026-10-30T13:50:25+00:00 · FE-BUILD-003 yêu cầu build chạy sau typecheck+lint; gate CI chạy song song trong gate-par theo xt.yaml (không sửa được xt.yaml — D-052)
+
+- Phương án: (1) Giữ gate-par song song; FE-BUILD-003 phần thứ tự để chờ người (cùng nhóm T-068/T-128 sửa xt.yaml); tick phần skipLibCheck (PRF-WEB-002) · (2) Tách job build riêng trong ci.yml với needs, bỏ build khỏi gate-par (phải sửa xt.yaml)
+- Chọn: Giữ gate-par song song; FE-BUILD-003 phần thứ tự để chờ người (cùng nhóm T-068/T-128 sửa xt.yaml); tick phần skipLibCheck (PRF-WEB-002)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng: không đổi cấu hình cổng ngoài quyền (xt.yaml bị guard/D-052); cả job gate đỏ khi typecheck hoặc lint đỏ nên không có gì merge được — chỉ khác thứ tự chạy; (2) đường lùi rõ: áp khi chủ dự án sửa xt.yaml
+- Đường lùi: Sửa xt.yaml: gate-par chạy typecheck ∥ lint rồi build; tick FE-BUILD-003
+
+### D-149 · 2026-10-30T17:06:28+00:00 · Trường note tuỳ chọn (đổi/trả, duyệt, điều chỉnh tồn, hoàn tiền) gửi "" hoặc toàn khoảng trắng đang lưu ""
+
+- Phương án: (1) Chuẩn hoá ""/khoảng trắng → null ở schema (giống email "" = vắng, T-188) · (2) Giữ "" để phân biệt đã gửi nhưng trống với vắng
+- Chọn: Chuẩn hoá ""/khoảng trắng → null ở schema (giống email "" = vắng, T-188)
+- Lý do (tiêu chí chất lượng cuối): (3) thống nhất với hợp đồng email "" = vắng (D-142/T-188) và đơn giản cho hiển thị/che; (1) không mất thông tin nghiệp vụ — ghi chú trống không mang nghĩa; không cần migration
+- Đường lùi: Bỏ chuẩn hoá trong schema note, sửa bảng optional-fields
+
+### D-150 · 2026-10-30T17:38:34+00:00 · T-191: phạm vi container — chỉ định dạng artefact hay kèm push registry/pipeline promote
+
+- Phương án: (1) Chỉ Dockerfile + compose mẫu + CI build/quét (không push, không chọn registry/hạ tầng); trivy chặn HIGH/CRITICAL đã có bản vá, chưa có bản vá chỉ báo cáo · (2) Thêm push registry + promote theo digest
+- Chọn: Chỉ Dockerfile + compose mẫu + CI build/quét (không push, không chọn registry/hạ tầng); trivy chặn HIGH/CRITICAL đã có bản vá, chưa có bản vá chỉ báo cáo
+- Lý do (tiêu chí chất lượng cuối): (2) giữ đường lùi, không cần khoá/tài khoản của chủ dự án (mặc định tự host); (1) quét vẫn chặn lỗ hổng có bản vá; chọn registry/hạ tầng là việc của người (T-060)
+- Đường lùi: Thêm job push GHCR + promote theo digest khi chủ dự án chọn registry
+- Khi chạy thật (đề xuất, chủ dự án quyết ở G7): Chủ dự án chọn registry (GHCR/ECR…) và hạ tầng chạy container
+
+### D-151 · 2026-10-30T19:49:46+00:00 · Quyền cho GET /admin/x/version (T-213)
+
+- Phương án: (1) report.read (không MFA; owner/accountant/catalog_manager và tài khoản smoke chỉ-đọc xem được) · (2) audit.read (chỉ owner) · (3) Quyền mới ops.read (đổi ma trận RBAC trong packages/domain)
+- Chọn: report.read (không MFA; owner/accountant/catalog_manager và tài khoản smoke chỉ-đọc xem được)
+- Lý do (tiêu chí chất lượng cuối): (1) dữ liệu không nhạy cảm (phiên bản/commit đã công khai ở release); vẫn cần xác thực admin; (3) không mở rộng ma trận quyền; tài khoản smoke chỉ-đọc dùng được cho --expect-version
+- Đường lùi: Đổi permissions.ts sang audit.read hoặc thêm ops.read
+
+### D-152 · 2026-10-30T21:26:30+00:00 · T-209 job regression: phạm vi test và cách nhận diện PR fix
+
+- Phương án: (1) Bỏ qua test tích hợp/E2E (chỉ cảnh báo, gate đã chạy trên HEAD); nhận diện fix chỉ theo TIÊU ĐỀ PR (squash-merge: tiêu đề = commit cuối) · (2) Job riêng có service Postgres/Redis cho test tích hợp; nhận diện fix theo tiêu đề hoặc bất kỳ subject commit
+- Chọn: Bỏ qua test tích hợp/E2E (chỉ cảnh báo, gate đã chạy trên HEAD); nhận diện fix chỉ theo TIÊU ĐỀ PR (squash-merge: tiêu đề = commit cuối)
+- Lý do (tiêu chí chất lượng cuối): (3) đơn giản, rẻ: không khởi service cho mọi sự kiện pr-policy; tiêu đề là đơn vị merge (squash) nên đúng ngữ nghĩa — PR feat lớn có commit fix: nội bộ không bị bắt chạy lại hàng trăm test trên base; (1) test tích hợp vẫn chạy ở gate trên HEAD, phần đỏ-trước dựa dòng Đỏ trước: của PR
+- Đường lùi: Thêm job regression-integration có service; mở rộng isFixPr sang subject commit
+
+### D-153 · 2026-10-30T22:07:21+00:00 · T-209: base đỏ vì lỗi nạp module (0 test case chạy) có được tính là tái hiện lỗi không?
+
+- Phương án: (1) Chỉ xét exit code, ghi cảnh báo trong summary · (2) Reporter máy đọc được (vitest json, jest --json, node junit): base đạt khi ≥1 test case cùng file+tên fail trên base và pass trên HEAD; chỉ đỏ do nạp → đỏ trừ ngoại lệ fix-no-test
+- Chọn: Reporter máy đọc được (vitest json, jest --json, node junit): base đạt khi ≥1 test case cùng file+tên fail trên base và pass trên HEAD; chỉ đỏ do nạp → đỏ trừ ngoại lệ fix-no-test
+- Lý do (tiêu chí chất lượng cuối): Đúng và chặt hơn (tiêu chí 1): lỗi nạp không chứng minh tái hiện bug (FE-TEST-006); ca hay gặp khi fix thêm export nên không phải lách hiếm; có ngoại lệ có giải trình làm đường thoát
+- Đường lùi: Hạ về so exit code: bỏ bước đối chiếu case trong regressionVerdict, giữ ngoại lệ
+
+### D-154 · 2026-10-30T23:44:37+00:00 · T-209 regression: case đỏ do beforeEach/afterEach lỗi có tính là tái hiện không (jest/node đang coi là hook → không tính, vitest coi là failed)?
+
+- Phương án: (1) Giữ chặt: mọi hook lỗi không tính; vitest làm nhất quán, sửa lời nhắn 'hook' · (2) Chỉ beforeAll không tính; beforeEach tính là tái hiện
+- Chọn: Giữ chặt: mọi hook lỗi không tính; vitest làm nhất quán, sửa lời nhắn 'hook'
+- Lý do (tiêu chí chất lượng cuối): Chặt hơn (tiêu chí 1) và nhất quán giữa runner; jest không phân biệt beforeAll/beforeEach tin cậy từ stack; có ngoại lệ fix-no-test làm đường thoát
+- Đường lùi: Đổi classifyFailure chỉ coi cancelledByParent/beforeAll là hook
+
+### D-155 · 2026-10-31T00:13:28+00:00 · T-234: nhận hook vitest (kể cả async) — reporter vitest tự viết xuất task.result.hooks hay giữ tín hiệu stack?
+
+- Phương án: (1) Reporter vitest tự viết (tin cậy, thêm file + đổi RUNNERS, test I/O vitest thật) · (2) Giữ tín hiệu frame vitest/dist wrapper như jest _callCircusHook, ghi giới hạn hook async
+- Chọn: Giữ tín hiệu frame vitest/dist wrapper như jest _callCircusHook, ghi giới hạn hook async
+- Lý do (tiêu chí chất lượng cuối): Đơn giản, test được (tiêu chí 3); lỗ còn lại hẹp (hook async lỗi sau await) và nhất quán với giới hạn của jest; mất tín hiệu thì về failed (không đỏ oan); fix-no-test là đường thoát
+- Đường lùi: Thêm reporter vitest riêng thành task mới
+
+### D-156 · 2026-10-31T16:06:17+00:00 · T-197 thay D-056: chạy EXPLAIN đường nóng (dataset ~8 phút) tự động ở đâu?
+
+- Phương án: (1) Workflow hằng đêm (schedule + workflow_dispatch, không chạy PR): Postgres service, perf-dataset.mjs → explain-hot-paths.mjs, đỏ khi Seq Scan/hồi quy, artefact 14 ngày · (2) Giữ D-056: chỉ test hàm thuần trong gate, EXPLAIN chạy tay mỗi mốc · (3) Thêm vào gate PR (+8 phút mỗi PR)
+- Chọn: Workflow hằng đêm (schedule + workflow_dispatch, không chạy PR): Postgres service, perf-dataset.mjs → explain-hot-paths.mjs, đỏ khi Seq Scan/hồi quy, artefact 14 ngày
+- Lý do (tiêu chí chất lượng cuối): Đúng hơn (tiêu chí 1): hồi quy index bị bắt tự động trong ≤ 24 giờ thay vì chờ mốc tay; không làm chậm PR (tiêu chí 4/5); đường lùi là tắt schedule
+- Đường lùi: Xoá .github/workflows/perf-nightly.yml, quay về D-056
+
+### D-157 · 2026-10-31T18:26:09+00:00 · T-198 thay D-119: coverage tích hợp (8 shard) đỏ vì phạm vi đo có src/admin/** (UI trình duyệt, 0% qua HTTP) — phạm vi đo?
+
+- Phương án: (1) Coverage tích hợp bỏ src/admin/** (đo 93,82/83,70); src/admin vẫn đo + ratchet ở coverage unit (jsdom); nâng baseline integration từ artefact CI đầu tiên · (2) Chỉ bỏ .tsx (91,78 < 91,85) rồi viết thêm test cho phần .ts hở · (3) Giữ phạm vi, job đỏ tới khi có test (chặn mọi PR)
+- Chọn: Coverage tích hợp bỏ src/admin/** (đo 93,82/83,70); src/admin vẫn đo + ratchet ở coverage unit (jsdom); nâng baseline integration từ artefact CI đầu tiên
+- Lý do (tiêu chí chất lượng cuối): Đúng (tiêu chí 1): mỗi bộ đo vùng nó chạy tới, không vùng nào thoát đo — src/admin đã nằm trong collectCoverageFrom của test:coverage (unit, ratchet); không hạ baseline (LOOP-CI-001), còn nâng lên; phương án 3 chặn mọi PR vì lý do đo sai chỗ
+- Đường lùi: Bỏ cờ --collectCoverageFrom riêng của test:integration:coverage; tắt job integration-coverage

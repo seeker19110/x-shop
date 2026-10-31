@@ -25,6 +25,7 @@ import {
   type SubmitCheckoutInput,
   type VerifiedOrder,
 } from "./steps";
+import { isNonEmpty } from "@x-shop/domain";
 
 export const SUBMIT_CHECKOUT_WORKFLOW_ID = "x-submit-checkout";
 
@@ -42,15 +43,16 @@ export interface SubmitCheckoutResult {
 function toOrderInput(input: SubmitCheckoutInput, prepared: PreparedCheckout): CreateOrderWorkflowInput {
   const b = prepared.breakdown;
   const byLine = new Map(b.lines.map((l) => [l.lineId, l]));
-  const promotionId = prepared.discount?.promotion_id;
-  const code = prepared.discount?.code ?? null;
+  // Điều chỉnh native ghi theo ảnh chụp khuyến mãi trong breakdown (T-134) — cùng nguồn với order_finance.quote.
+  const orderPromo = b.orderPromotion;
+  const shippingPromo = b.shippingPromotion;
   return {
     region_id: prepared.cart.region_id ?? undefined,
     sales_channel_id: prepared.cart.sales_channel_id ?? undefined,
     currency_code: prepared.cart.currency_code,
     // Chỉ gắn khách đã xác thực; KHÔNG truyền email (findOrCreateCustomer sẽ gộp đơn khách vãng lai vào tài khoản
     // trùng email — CHK02 cấm). Email liên hệ nằm ở snapshot order_finance + metadata.
-    ...(input.customer_id && { customer_id: input.customer_id }),
+    ...(isNonEmpty(input.customer_id) && { customer_id: input.customer_id }),
     status: "pending",
     no_notification: true,
     shipping_address: {
@@ -80,7 +82,13 @@ function toOrderInput(input: SubmitCheckoutInput, prepared: PreparedCheckout): C
         // Mã null: Medusa không tính lại/gỡ điều chỉnh này (refresh promotion chỉ xử lý adjustment có code).
         adjustments:
           q.allocatedDiscount > 0
-            ? [{ amount: q.allocatedDiscount, description: `Mã giảm ${code}`, promotion_id: promotionId }]
+            ? [
+                {
+                  amount: q.allocatedDiscount,
+                  description: `Mã giảm ${orderPromo?.code ?? b.orderDiscountCode}`,
+                  promotion_id: orderPromo?.promotionId ?? undefined,
+                },
+              ]
             : [],
         // Snapshot bảng size đúng phiên bản lúc mua (ADM03) — đổi trả sai size đối chiếu được về sau (T-027).
         metadata: { cart_line_item_id: l.id, ...l.size_chart },
@@ -94,7 +102,13 @@ function toOrderInput(input: SubmitCheckoutInput, prepared: PreparedCheckout): C
         data: { service: prepared.shipping_service },
         adjustments:
           b.shippingDiscountTotal > 0
-            ? [{ amount: b.shippingDiscountTotal, description: `Mã giảm ${code}`, promotion_id: promotionId }]
+            ? [
+                {
+                  amount: b.shippingDiscountTotal,
+                  description: `Mã giảm ${shippingPromo?.code ?? b.shippingDiscountCode}`,
+                  promotion_id: shippingPromo?.promotionId ?? undefined,
+                },
+              ]
             : [],
       },
     ],

@@ -3,12 +3,13 @@
 import { useId } from "react";
 import styles from "./ColorSwatch.module.css";
 import { cx } from "./cx";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface SwatchOption {
   value: string;
   /** Tên màu: dùng cho tên truy cập và chữ hiện khi chọn. */
   name: string;
-  /** Mã màu CSS (vd #1a1a1a). */
+  /** Mã màu CSS dạng hex (dữ liệu màu sản phẩm từ catalog). */
   hex?: string;
   /** Ảnh swatch (ưu tiên hơn `hex`). Trang trí — tên màu đã có ở chữ. */
   imageUrl?: string;
@@ -61,7 +62,7 @@ export function ColorSwatchGroup({ options, value, onChange, legend = "Màu" }: 
 
 /** Ô màu thuần hiển thị (không tương tác). */
 export function Swatch({ option, className }: { option: SwatchOption; className?: string }) {
-  const style = option.imageUrl
+  const style = isNonEmpty(option.imageUrl)
     ? { backgroundImage: `url("${option.imageUrl.replace(/["\\\n]/g, "")}")` }
     : { backgroundColor: option.hex ?? "transparent" };
   return <span aria-hidden="true" className={cx(styles.dot, className)} style={style} />;

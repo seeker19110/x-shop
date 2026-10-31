@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
-import { searchKey } from "@x-shop/domain";
+import { searchKey, isNonEmpty, minutesToMs, secondsToMs } from "@x-shop/domain";
 import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import type CatalogIndexModuleService from "../../modules/catalog-index/service";
 import type { CatalogIndexRow, DirtyClaim, DirtyDefer } from "../../modules/catalog-index/service";
 import { acquireOrdered, isLockUnavailable, releaseOwnedQuietly, withOwnedLock } from "../checkout/locks";
+import { isDraining } from "../lifecycle/shutdown";
 import { colorOf, loadDictionary, sizeOf, type Dictionary } from "./dictionary";
 import { loadProductSources, PRODUCT_SOURCE_BATCH, toVnd, type ProductSource } from "./product-source";
 import {
@@ -17,11 +18,12 @@ import {
   type PricingContext,
   type VariantPrice,
 } from "./sell-state";
+import { notifyCatalogChanged } from "./revalidate";
 
 /** Khoá ghi read model: đồng bộ theo sự kiện và rebuild toàn phần không xen kẽ (không ghi đè bằng dữ liệu cũ). */
 export const CATALOG_INDEX_LOCK = "x-shop:catalog-index";
 /** Chờ tối đa khi khóa đang bị giữ (rebuild/xả dài); Redis câm thì lời gọi có hạn riêng (LOCK_CALL_TIMEOUT_MS). */
-const LOCK_WAIT_MS = 300_000;
+const LOCK_WAIT_MS = minutesToMs(5);
 /** Lease khóa của sync/rebuild — gia hạn nền khi còn chạy; tiến trình chết thì tự hết sau ≤ 30 giây. */
 const WRITE_LOCK_TTL_SECONDS = 30;
 const LOCK_SCOPE = "catalog-index";
@@ -63,7 +65,7 @@ export function searchTextOf(p: ProductSource, sku: string): string {
 
 function thumbnailFor(p: ProductSource, color: string | null): string | null {
   return (
-    (color ? p.images.find((i) => i.color === color)?.url : undefined) ??
+    (isNonEmpty(color) ? p.images.find((i) => i.color === color)?.url : undefined) ??
     p.thumbnail ??
     p.images[0]?.url ??
     null
@@ -160,8 +162,8 @@ export async function buildIndexRowsWithReport(
       for (const v of p.variants) {
         const price = prices.get(v.id);
         if (!price || v.sku === "") continue;
-        const color = v.color ? colorOf(ctx.dict, v.color) : null;
-        const size = v.size ? sizeOf(ctx.dict, v.size) : null;
+        const color = isNonEmpty(v.color) ? colorOf(ctx.dict, v.color) : null;
+        const size = isNonEmpty(v.size) ? sizeOf(ctx.dict, v.size) : null;
         rows.push({
           variant_id: v.id,
           sales_channel_id: channelId,
@@ -245,7 +247,8 @@ export const CATALOG_INDEX_MISMATCH_KIND = "catalog_index_mismatch";
 
 /**
  * Mở ngoại lệ `catalog_index_mismatch` nếu CHƯA có cái đang mở/đang xử lý cùng kind (nhiều lượt lỗi liên tiếp chỉ
- * một ngoại lệ; xử lý xong mà lỗi tái diễn thì mở lại). Gọi dưới khoá ghi index nên không tranh nhau.
+ * một ngoại lệ; xử lý xong mà lỗi tái diễn thì mở lại). Helper tự tuần tự hoá theo kind (khoá advisory, T-158) —
+ * không dựa vào khoá ghi index.
  */
 async function openMismatchException(
   container: MedusaContainer,
@@ -309,12 +312,17 @@ async function syncUnlocked(
   const stored = written.size > 0 ? await index.countRows([...written]) : 0;
   reportBuild(container, "sync", { ...report, rows: writtenRows }, stored);
   if (report.missing.length > 0) await openMismatchException(container, "sync", report);
+  // Read model đã mới → báo storefront làm mới cache (T-142). Gồm cả sản phẩm bị bỏ qua: PDP đọc nguồn trực tiếp.
+  await notifyCatalogChanged(container, { productIds: ids });
   return { rows: writtenRows, skipped };
 }
 
 export interface RebuildResult {
   products: number;
-  /** Số dòng đã ghi vào bảng (0 khi rebuild bị hủy vì `missing > 0` — bảng cũ được giữ). */
+  /**
+   * Số dòng trong bảng sau khi thay (dòng của ảnh chụp + dòng giữ nguyên của sản phẩm đồng bộ trong lúc rebuild); 0 khi
+   * rebuild bị hủy vì `missing > 0` (bảng cũ được giữ) hoặc bị bỏ vì ảnh chụp mới hơn đã áp (`superseded`).
+   */
   rows: number;
   /** Số dòng kỳ vọng theo giá niêm yết (xem `IndexBuildReport.expected`). */
   expected: number;
@@ -322,15 +330,31 @@ export interface RebuildResult {
   missing: number;
   /** SKU thật sự không có giá bán (đã loại, log WARN). */
   unpriced: number;
+  /** Số sản phẩm giữ bản do đồng bộ ghi sau mốc bắt đầu rebuild (không ghi đè bằng ảnh chụp cũ hơn) — T-167. */
+  kept: number;
+  /** true = một rebuild bắt đầu SAU lần này đã thay bảng trước → lần này không ghi gì (chỉ ảnh chụp mới nhất thắng). */
+  superseded: boolean;
 }
 
+/** Khoá tuần tự hoá các lần rebuild toàn phần với nhau (KHÔNG chặn đồng bộ/xả — chúng chỉ dùng `CATALOG_INDEX_LOCK`). */
+export const CATALOG_REBUILD_LOCK = `${CATALOG_INDEX_LOCK}:rebuild`;
+
 /**
- * Rebuild theo lô `SOURCE_CHUNK` sản phẩm (như sync) nhưng gom mọi dòng rồi thay cả bảng trong MỘT giao dịch cuối —
- * người đọc thấy bảng cũ tới khi commit.
+ * Rebuild toàn phần (T-167, D-076): đọc nguồn theo lô `SOURCE_CHUNK` sản phẩm và gom mọi dòng NGOÀI khoá ghi (đồng bộ
+ * theo sự kiện vẫn chạy — thay đổi trong lúc rebuild không trễ theo nó), chỉ giữ khoá ghi lúc thay cả bảng trong MỘT
+ * giao dịch (`replaceAll`) — người đọc thấy bảng cũ tới khi commit. Thay đổi xen giữa không bị ghi đè vĩnh viễn:
+ * - `since` = đồng hồ DB lấy TRƯỚC mọi lần đọc nguồn;
+ * - sản phẩm được đồng bộ ghi từ `since` (write log, cùng giao dịch ghi) → giữ bản đồng bộ (gồm cả xoá/ẩn — không dòng
+ *   ma) VÀ đánh dấu bẩn lại trong cùng giao dịch: mốc write log là lúc GHI, lượt đồng bộ có thể đã đọc nguồn trước
+ *   `since` nên bỏ mất thay đổi không phát sự kiện mà ảnh chụp có — lượt xả hẹn ngay sau rebuild đọc lại nguồn mới nhất;
+ * - thay đổi chưa kịp đồng bộ → dấu bẩn của nó còn trong hàng đợi (chỉ đồng bộ xong mới xoá dấu) → lượt xả kế tiếp ghi
+ *   bản mới ngay khi khoá ghi nhả;
+ * - ảnh chụp cũ hơn ảnh chụp đã áp → bỏ (`superseded`).
  */
-async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResult> {
-  const ctx = await loadIndexContext(container);
+async function rebuildOutsideLock(container: MedusaContainer): Promise<RebuildResult> {
   const index = indexService(container);
+  const since = await index.clockNow();
+  const ctx = await loadIndexContext(container);
   const products = await container
     .resolve(Modules.PRODUCT)
     .listProducts({ status: "published" }, { select: ["id"], take: null, order: { id: "ASC" } });
@@ -340,44 +364,60 @@ async function rebuildUnlocked(container: MedusaContainer): Promise<RebuildResul
   for (let i = 0; i < ids.length; i += SOURCE_CHUNK) {
     const built = await buildIndexRowsWithReport(
       container,
-      await loadProductSources(container, { id: ids.slice(i, i + SOURCE_CHUNK) }),
+      await loadProductSources(container, {
+        id: ids.slice(i, i + SOURCE_CHUNK),
+      }),
       ctx,
     );
     for (const r of built.rows) rows.push(r);
     mergeReport(report, built.report);
   }
-  if (report.missing.length > 0) {
-    // Dấu hiệu lỗi hệ thống (đọc giá hỏng): KHÔNG thay bảng — giữ bảng cũ (còn đúng hơn bảng thiếu dòng), báo ngay.
-    reportBuild(container, "rebuild", report, await index.countRows());
-    container
-      .resolve(ContainerRegistrationKeys.LOGGER)
-      .error(
-        `[catalog-index] Rebuild BỊ HỦY, giữ bảng cũ: ${report.missing.length} SKU có giá niêm yết nhưng không ra ` +
-          `giá bán (kỳ vọng ${report.expected} dòng, dựng ${report.rows}).`,
-      );
-    await openMismatchException(container, "rebuild", report);
-    return {
-      products: ids.length,
-      rows: 0,
-      expected: report.expected,
-      missing: report.missing.length,
-      unpriced: report.unpriced.length,
-    };
-  }
-  await index.replaceAll(rows);
-  reportBuild(container, "rebuild", report, await index.countRows());
-  container
-    .resolve(ContainerRegistrationKeys.LOGGER)
-    .info(
-      `[catalog-index] Rebuild: ${ids.length} sản phẩm, ${rows.length} dòng (kỳ vọng ${report.expected}, ` +
-        `thiếu giá bán ${report.missing.length}, không giá ${report.unpriced.length}).`,
-    );
-  return {
+  const base = {
     products: ids.length,
-    rows: rows.length,
     expected: report.expected,
     missing: report.missing.length,
     unpriced: report.unpriced.length,
+  };
+  const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+  if (report.missing.length > 0) {
+    // Dấu hiệu lỗi hệ thống (đọc giá hỏng): KHÔNG thay bảng — giữ bảng cũ (còn đúng hơn bảng thiếu dòng), báo ngay.
+    reportBuild(container, "rebuild", report, await index.countRows());
+    logger.error(
+      `[catalog-index] Rebuild BỊ HỦY, giữ bảng cũ: ${report.missing.length} SKU có giá niêm yết nhưng không ra ` +
+        `giá bán (kỳ vọng ${report.expected} dòng, dựng ${report.rows}).`,
+    );
+    await openMismatchException(container, "rebuild", report);
+    // Bảng cũ được giữ nhưng nguồn (PDP đọc trực tiếp) có thể đã đổi → vẫn làm mới cả catalog ở storefront (T-142).
+    await notifyCatalogChanged(container, { all: true });
+    return { ...base, rows: 0, kept: 0, superseded: false };
+  }
+  const { res, stored } = await withIndexLock(container, async () => {
+    const r = await index.replaceAll(rows, since);
+    // Đang giữ khoá ghi → không ai khác ghi bảng giữa lúc thay và lúc đếm.
+    return { res: r, stored: r.applied ? await index.countRows() : 0 };
+  });
+  if (!res.applied) {
+    logger.info(
+      `[catalog-index] Rebuild (bắt đầu ${since}) không ghi: ảnh chụp mới hơn đã thay bảng trước — không ghi đè.`,
+    );
+    return { ...base, rows: 0, kept: 0, superseded: true };
+  }
+  // Read model đã thay (đã commit) → báo storefront làm mới cả catalog (T-142). Ngoài khoá ghi: chỉ ghi outbox.
+  await notifyCatalogChanged(container, { all: true });
+  // Sản phẩm giữ bản đồng bộ đã được đánh dấu bẩn lại trong replaceAll → xả ngay, không chờ job mỗi phút.
+  if (res.keptProducts.length > 0) scheduleCatalogDrain(container, 0);
+  const total = res.inserted + res.keptRows;
+  reportBuild(container, "rebuild", { ...report, rows: total }, stored);
+  logger.info(
+    `[catalog-index] Rebuild: ${ids.length} sản phẩm, ${total} dòng (kỳ vọng ${report.expected}, thiếu giá bán ` +
+      `${report.missing.length}, không giá ${report.unpriced.length}; giữ bản đồng bộ mới hơn của ` +
+      `${res.keptProducts.length} sản phẩm).`,
+  );
+  return {
+    ...base,
+    rows: total,
+    kept: res.keptProducts.length,
+    superseded: false,
   };
 }
 
@@ -394,11 +434,34 @@ export async function syncCatalogProducts(container: MedusaContainer, productIds
   });
 }
 
-/** Rebuild toàn phần: tính mọi dòng rồi thay cả bảng trong MỘT giao dịch (người đọc thấy bảng cũ tới khi commit). */
-export async function rebuildCatalogIndex(container: MedusaContainer): Promise<RebuildResult> {
-  return withIndexLock(container, () => rebuildUnlocked(container));
+export interface RebuildOptions {
+  /** Chờ tối đa (ms) khi đang có rebuild khác chạy; mặc định `LOCK_WAIT_MS`. Quá hạn → `BUSY_RETRY`. */
+  waitMs?: number;
 }
 
+/**
+ * Rebuild toàn phần (xem `rebuildOutsideLock`): các lần rebuild tuần tự với nhau qua `CATALOG_REBUILD_LOCK`; khoá ghi
+ * index chỉ bị giữ lúc thay bảng.
+ */
+export async function rebuildCatalogIndex(
+  container: MedusaContainer,
+  opts: RebuildOptions = {},
+): Promise<RebuildResult> {
+  return withOwnedLock(
+    container.resolve(Modules.LOCKING),
+    CATALOG_REBUILD_LOCK,
+    {
+      waitMs: Math.max(0, opts.waitMs ?? LOCK_WAIT_MS),
+      ttlSeconds: WRITE_LOCK_TTL_SECONDS,
+      scope: LOCK_SCOPE,
+      onReleaseError: (e) =>
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .warn(`[catalog-index] Nhả khoá rebuild lỗi/quá hạn (lease tự hết): ${(e as Error).message}`),
+    },
+    () => rebuildOutsideLock(container),
+  );
+}
 /** Ký hiệu "cần rebuild toàn phần" trong hàng đợi sản phẩm bẩn. */
 export const REBUILD_MARK = "*";
 const DRAIN_BATCH = 500;
@@ -409,114 +472,233 @@ export const SKIP_MAX_ATTEMPTS = SKIP_RETRY_DELAYS_SECONDS.length + 1;
 // Lease ngắn + gia hạn mỗi 1/3 lease khi còn xả: tiến trình chết giữa chừng thì khoá tự hết sau ≤ 30 giây (lease
 // dài 600 giây cũ làm index đứng 10 phút và chặn rebuild — chờ tối đa LOCK_TIMEOUT_SECONDS — tới khi hết hạn).
 export const DRAIN_LOCK_EXPIRE_SECONDS = 30;
+/**
+ * Khoá bận khi xả (T-137): người giữ có thể KHÔNG phải một lượt xả — sync/rebuild (`withIndexLock`; từ T-167 rebuild chỉ
+ * giữ lúc `replaceAll`, trước đó giữ suốt ~1–2 phút ở 50k SKU) hoặc tiến trình khác — nên không ai xả dấu vừa đặt; bỏ lượt thì dấu nằm chờ job mỗi phút (đo dưới tải:
+ * 41 giây, tối đa 60 giây + thời gian giữ khoá). Thay vào đó lượt xả CHỜ khoá (thăm dò ≤ 80 ms như mọi người chờ khác),
+ * cứ mỗi lát `DRAIN_WAIT_SLICE_MS` kiểm còn dấu đến hạn không — hết dấu (lượt xả khác đã xả xong) thì thôi chờ. Tiến
+ * trình đang tắt (`isDraining`, T-094) → thôi chờ, giành được khoá thì nhả ngay: không bắt đầu việc nặng giữa lúc tắt
+ * (dấu còn trong DB cho tiến trình khác/lần chạy sau — D-081).
+ */
+export const DRAIN_WAIT_SLICE_MS = secondsToMs(2);
+/** Hạn chờ khoá của lượt xả hẹn sau sự kiện — bằng hạn chờ của sync/rebuild (khoá bị giữ quá lâu → job phút sau). */
+export const DRAIN_SCHEDULED_WAIT_MS = LOCK_WAIT_MS;
+
+export interface DrainOptions {
+  /** Chờ khoá tối đa (ms) khi đang bị giữ và còn dấu đến hạn; 0 (mặc định) = bận thì trả về ngay. */
+  waitMs?: number;
+}
+
+type DrainLockResult = "acquired" | "busy" | "idle" | "unavailable" | "shutdown";
+
+/** Giành khoá xả: chờ theo lát tới `deadline`; giữa các lát hết dấu đến hạn → "idle" (không còn gì để xả). */
+async function acquireDrainLock(
+  container: MedusaContainer,
+  index: CatalogIndexModuleService,
+  ownerId: string,
+  deadline: number,
+): Promise<DrainLockResult> {
+  const locking = container.resolve(Modules.LOCKING);
+  for (;;) {
+    if (isDraining()) return "shutdown";
+    try {
+      // Gia hạn lease nền do acquireOrdered đảm nhiệm (cùng ownerId, bỏ qua lỗi tạm).
+      await acquireOrdered(locking, [CATALOG_INDEX_LOCK], {
+        ownerId,
+        waitMs: Math.min(DRAIN_WAIT_SLICE_MS, Math.max(0, deadline - Date.now())),
+        ttlSeconds: DRAIN_LOCK_EXPIRE_SECONDS,
+        scope: LOCK_SCOPE,
+      });
+      if (isDraining()) {
+        // Tín hiệu tắt tới trong lúc chờ: trả khoá ngay (không giữ tới hết lease), không bắt đầu đồng bộ.
+        await releaseOwnedQuietly(locking, ownerId, [CATALOG_INDEX_LOCK]);
+        return "shutdown";
+      }
+      return "acquired";
+    } catch (e) {
+      // Redis lỗi/không trả lời: bỏ lượt, dấu bẩn còn trong DB nên lượt/job sau xả tiếp.
+      if (isLockUnavailable(e)) {
+        container
+          .resolve(ContainerRegistrationKeys.LOGGER)
+          .warn(`[catalog-index] Bỏ lượt xả — hạ tầng khoá không sẵn sàng: ${(e as Error).message}`);
+        return "unavailable";
+      }
+      if (Date.now() >= deadline) return "busy";
+      if ((await index.dirtyCount(true)) === 0) return "idle";
+    }
+  }
+}
 
 /** Đánh dấu sản phẩm cần đồng bộ (sự kiện) — ghi một dòng, rẻ; việc nặng do `drainCatalogIndex` làm theo lô. */
 export async function markCatalogDirty(container: MedusaContainer, productIds: string[]): Promise<void> {
   await indexService(container).markDirty(productIds);
 }
 
+const isBusyRetry = (e: unknown): boolean => (e as { code?: unknown } | null)?.code === "BUSY_RETRY";
+
 /**
- * Xả hàng đợi sản phẩm bẩn: chỉ MỘT tiến trình xả tại một thời điểm (khoá không chờ — tiến trình khác đang xả thì
- * trả về ngay, lượt xả đang chạy sẽ thấy dấu mới ở vòng lặp kế). Nhiều sự kiện của cùng sản phẩm gộp thành một lần
- * đồng bộ. Dấu đặt lại trong lúc đồng bộ được giữ cho vòng sau (so mốc marked_at). Trả số sản phẩm đã xử lý.
+ * Rebuild do dấu '*' trong hàng đợi — KHÔNG chờ khi rebuild khác đang chạy: lượt xả chờ ~1 phút thì sản phẩm bẩn của tiến
+ * trình này (lượt hẹn gộp, `scheduleCatalogDrain`) cũng chờ theo. Rebuild đang chạy có thể đã đọc nguồn TRƯỚC thay đổi
+ * gây ra '*' → không coi là đã phủ: giữ dấu '*' (false), job mỗi phút thử lại. Redis lỗi → cũng giữ dấu. Lỗi khác ném lên
+ * như trước.
  */
-export async function drainCatalogIndex(container: MedusaContainer): Promise<number> {
+async function rebuildForDrain(container: MedusaContainer): Promise<boolean> {
+  try {
+    await rebuildCatalogIndex(container, { waitMs: 0 });
+    return true;
+  } catch (e) {
+    if (!isBusyRetry(e) && !isLockUnavailable(e)) throw e;
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .warn(
+        `[catalog-index] Chưa rebuild được theo dấu '*' (rebuild khác đang chạy/khoá lỗi) — để lượt sau.`,
+      );
+    return false;
+  }
+}
+
+/**
+ * Xả hàng đợi sản phẩm bẩn: chỉ MỘT tiến trình xả tại một thời điểm. Khoá bận → chờ tối đa `waitMs` (mặc định 0 =
+ * trả về ngay) trong khi còn dấu đến hạn — xem `DRAIN_WAIT_SLICE_MS`. Nhiều sự kiện của cùng sản phẩm gộp thành một
+ * lần đồng bộ. Dấu đặt lại trong lúc đồng bộ được giữ cho vòng sau (so mốc marked_at). Trả số sản phẩm đã xử lý (0 khi
+ * lượt xả khác đã xả hết trong lúc chờ).
+ */
+export async function drainCatalogIndex(
+  container: MedusaContainer,
+  opts: DrainOptions = {},
+): Promise<number> {
   const locking = container.resolve(Modules.LOCKING);
   const index = indexService(container);
   let processed = 0;
+  const waitMs = Math.max(0, opts.waitMs ?? 0);
+  // Một hạn chờ cho cả lời gọi (mọi vòng) — job mỗi phút không kéo dài quá chu kỳ của nó.
+  const deadline = Date.now() + waitMs;
   // Vòng ngoài: sau khi nhả khoá còn dấu mới (đặt đúng lúc đang nhả) thì thử xả tiếp.
   for (let attempt = 0; attempt < 3; attempt++) {
     const ownerId = `drain-${randomUUID()}`;
-    try {
-      // Không chờ khoá (waitMs 0); gia hạn lease nền do acquireOrdered đảm nhiệm (cùng ownerId, bỏ qua lỗi tạm).
-      await acquireOrdered(locking, [CATALOG_INDEX_LOCK], {
-        ownerId,
-        waitMs: 0,
-        ttlSeconds: DRAIN_LOCK_EXPIRE_SECONDS,
-        scope: LOCK_SCOPE,
-      });
-    } catch (e) {
-      // Bận: tiến trình khác đang giữ (xả/rebuild) — nó sẽ xử lý dấu này. Redis lỗi/không trả lời: bỏ lượt, dấu bẩn còn
-      // trong DB nên lượt/job sau xả tiếp.
-      if (isLockUnavailable(e)) {
+    const lock = await acquireDrainLock(container, index, ownerId, deadline);
+    if (lock !== "acquired") {
+      if (lock === "busy" && waitMs > 0) {
         container
           .resolve(ContainerRegistrationKeys.LOGGER)
-          .warn(`[catalog-index] Bỏ lượt xả — hạ tầng khoá không sẵn sàng: ${(e as Error).message}`);
+          .warn(`[catalog-index] Khoá index bị giữ quá ${waitMs} ms — dấu bẩn để lượt/job sau xả.`);
       }
       return processed;
     }
+    // Dấu '*' (cần rebuild toàn phần): rebuild chạy SAU khi nhả khoá xả — nó đọc nguồn ngoài khoá ghi (T-167).
+    let rebuildClaim: DirtyClaim | null = null;
     try {
       let ctx: IndexContext | null = null;
       for (;;) {
-        const claims = await index.claimDirty(DRAIN_BATCH);
+        // Đang tắt: xong lô đang làm thì dừng, dấu còn lại để lần chạy sau.
+        if (isDraining()) break;
+        const batch = await index.claimDirty(DRAIN_BATCH);
+        rebuildClaim = batch.find((c) => c.product_id === REBUILD_MARK) ?? rebuildClaim;
+        // Sản phẩm bẩn vẫn đồng bộ ngay (không chờ rebuild ~1 phút); '*' còn trong bảng nên lô sau bỏ qua nó.
+        const claims = batch.filter((c) => c.product_id !== REBUILD_MARK);
         if (claims.length === 0) break;
-        if (claims.some((c) => c.product_id === REBUILD_MARK)) {
-          await rebuildUnlocked(container);
-          // Rebuild bao trùm mọi dấu có từ trước khi nó đọc nguồn.
-          await index.clearDirty(claims);
-        } else {
-          ctx ??= await loadIndexContext(container);
-          const { skipped } = await syncUnlocked(
-            container,
-            claims.map((c) => c.product_id),
-            ctx,
-          );
-          // Sản phẩm bị bỏ qua (lệch giá) KHÔNG xoá dấu: lùi giờ thử lại; hết lượt thì xoá, ngoại lệ lo tiếp.
-          const defers: DirtyDefer[] = [];
-          const giveUp: DirtyClaim[] = [];
-          const done: DirtyClaim[] = [];
-          for (const c of claims) {
-            if (!skipped.has(c.product_id)) done.push(c);
-            else if (c.attempts + 1 >= SKIP_MAX_ATTEMPTS) giveUp.push(c);
-            else
-              defers.push({
-                ...c,
-                attempts: c.attempts + 1,
-                delay_seconds: SKIP_RETRY_DELAYS_SECONDS[c.attempts] ?? SKIP_RETRY_DELAYS_SECONDS.at(-1)!,
-              });
-          }
-          if (giveUp.length > 0) {
-            container
-              .resolve(ContainerRegistrationKeys.LOGGER)
-              .error(
-                `[catalog-index] Bỏ thử lại sau ${SKIP_MAX_ATTEMPTS} lần: ${giveUp.length} sản phẩm vẫn lệch giá, ` +
-                  `xoá dấu (xử lý theo ngoại lệ ${CATALOG_INDEX_MISMATCH_KIND}): ${sample(giveUp.map((c) => c.product_id))}`,
-              );
-          }
-          await index.clearDirty([...done, ...giveUp]);
-          await index.deferDirty(defers);
+        ctx ??= await loadIndexContext(container);
+        const { skipped } = await syncUnlocked(
+          container,
+          claims.map((c) => c.product_id),
+          ctx,
+        );
+        // Sản phẩm bị bỏ qua (lệch giá) KHÔNG xoá dấu: lùi giờ thử lại; hết lượt thì xoá, ngoại lệ lo tiếp.
+        const defers: DirtyDefer[] = [];
+        const giveUp: DirtyClaim[] = [];
+        const done: DirtyClaim[] = [];
+        for (const c of claims) {
+          if (!skipped.has(c.product_id)) done.push(c);
+          else if (c.attempts + 1 >= SKIP_MAX_ATTEMPTS) giveUp.push(c);
+          else
+            defers.push({
+              ...c,
+              attempts: c.attempts + 1,
+              delay_seconds: SKIP_RETRY_DELAYS_SECONDS[c.attempts] ?? SKIP_RETRY_DELAYS_SECONDS.at(-1)!,
+            });
         }
+        if (giveUp.length > 0) {
+          container
+            .resolve(ContainerRegistrationKeys.LOGGER)
+            .error(
+              `[catalog-index] Bỏ thử lại sau ${SKIP_MAX_ATTEMPTS} lần: ${giveUp.length} sản phẩm vẫn lệch giá, ` +
+                `xoá dấu (xử lý theo ngoại lệ ${CATALOG_INDEX_MISMATCH_KIND}): ${sample(giveUp.map((c) => c.product_id))}`,
+            );
+        }
+        await index.clearDirty([...done, ...giveUp]);
+        await index.deferDirty(defers);
         processed += claims.length;
       }
     } finally {
       const err = await releaseOwnedQuietly(locking, ownerId, [CATALOG_INDEX_LOCK]);
-      if (err) {
+      // releaseOwnedQuietly trả đúng `null` khi nhả xong; mọi giá trị khác (kể cả lỗi "falsy") là lỗi.
+      if (err !== null) {
         container
           .resolve(ContainerRegistrationKeys.LOGGER)
           .warn(`[catalog-index] Nhả khoá xả lỗi/quá hạn (lease tự hết): ${(err as Error).message}`);
       }
     }
-    if ((await index.dirtyCount(true)) === 0) break;
+    if (rebuildClaim && !isDraining()) {
+      if (!(await rebuildForDrain(container))) return processed;
+      // Rebuild bắt đầu SAU khi lấy dấu '*' → bao trùm thay đổi đã đánh dấu tới lúc đó; '*' đặt lại sau đó được giữ.
+      await index.clearDirty([rebuildClaim]);
+      processed += 1;
+    }
+    if (isDraining() || (await index.dirtyCount(true)) === 0) break;
   }
   return processed;
 }
 
+/**
+ * Lượt xả của job mỗi phút: KHÔNG chờ khoá trong khe job worker — job worker của workflow-engine-redis chạy BullMQ
+ * `concurrency: 1` chung cho mọi scheduled job (outbox 10 s, expire-holds…), và SIGTERM phải chờ job đang chạy (D-081).
+ * Khoá bận/còn dấu đến hạn → giao cho lượt hẹn nền (`scheduleCatalogDrain`, đã gộp lượt, chờ ≤ 300 s).
+ */
+export async function drainCatalogIndexForJob(container: MedusaContainer): Promise<number> {
+  const processed = await drainCatalogIndex(container);
+  if (!isDraining() && (await indexService(container).dirtyCount(true)) > 0)
+    scheduleCatalogDrain(container, 0);
+  return processed;
+}
+
 let drainTimer: ReturnType<typeof setTimeout> | null = null;
+/** Lượt xả hẹn trước đang chạy/chờ khoá (mỗi tiến trình tối đa một); yêu cầu đến lúc đó gộp thành một lượt chạy lại. */
+let scheduledDrain: Promise<void> | null = null;
+let drainRequested = false;
+
+async function runScheduledDrain(container: MedusaContainer): Promise<void> {
+  try {
+    do {
+      drainRequested = false;
+      await drainCatalogIndex(container, { waitMs: DRAIN_SCHEDULED_WAIT_MS });
+    } while (drainRequested && !isDraining());
+  } catch (e) {
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .error(`[catalog-index] Xả hàng đợi lỗi: ${(e as Error).message}`);
+  } finally {
+    scheduledDrain = null;
+  }
+}
 
 /**
  * Hẹn một lượt xả sau `delayMs` (gộp mọi sự kiện đến trong khoảng đó thành một lô). Handler sự kiện chỉ đánh dấu rồi
- * trả về ngay → hàng đợi sự kiện không bị nghẽn bởi việc đồng bộ. Tiến trình chết trước khi xả → dấu còn trong DB,
- * job mỗi phút xả tiếp.
+ * trả về ngay → hàng đợi sự kiện không bị nghẽn bởi việc đồng bộ. Khoá đang bị giữ → lượt xả chờ khoá rồi xả ngay khi
+ * khoá nhả (T-137), không bỏ lượt chờ job mỗi phút. Đang có lượt hẹn trước chạy/chờ → chỉ đánh dấu chạy lại sau nó
+ * (không chồng nhiều lượt chờ). Đang tắt → không hẹn. Tiến trình chết trước khi xả → dấu còn trong DB, job mỗi phút
+ * xả tiếp.
  */
 export function scheduleCatalogDrain(container: MedusaContainer, delayMs = 250): void {
+  if (isDraining()) return;
+  if (scheduledDrain) {
+    drainRequested = true;
+    return;
+  }
   if (drainTimer) return;
   drainTimer = setTimeout(() => {
     drainTimer = null;
-    drainCatalogIndex(container).catch((e: unknown) =>
-      container
-        .resolve(ContainerRegistrationKeys.LOGGER)
-        .error(`[catalog-index] Xả hàng đợi lỗi: ${(e as Error).message}`),
-    );
+    if (isDraining()) return;
+    scheduledDrain = runScheduledDrain(container);
   }, delayMs);
   drainTimer.unref?.();
 }

@@ -1,4 +1,6 @@
 import { findPii, ORDER_EVENTS, SCHEMA_VERSION, type AnalyticsEvent, type AnalyticsPayload } from "./schema";
+import { getAnalyticsTransport } from "../env/public";
+import { isNonEmpty } from "../presence";
 
 /**
  * `track()` phía client — không thư viện ngoài. Mặc định đẩy vào `window.dataLayer`; khi cấu hình
@@ -29,7 +31,8 @@ function storages(): Storage[] {
   for (const pick of [() => window.localStorage, () => window.sessionStorage]) {
     try {
       const s = pick();
-      if (s) out.push(s);
+      // Kiểu nói luôn có; môi trường lạ có thể trả null.
+      if (s != null) out.push(s);
     } catch {
       // trình duyệt chặn kho này
     }
@@ -84,7 +87,10 @@ export function resetAnalyticsForTests(): void {
 
 function validLocally(e: AnalyticsEvent): boolean {
   if (e.value !== undefined && (!Number.isInteger(e.value) || e.value < 0)) return false;
-  if ((ORDER_EVENTS as readonly string[]).includes(e.event) && (!e.order_id || e.value === undefined))
+  if (
+    (ORDER_EVENTS as readonly string[]).includes(e.event) &&
+    (!isNonEmpty(e.order_id) || e.value === undefined)
+  )
     return false;
   return findPii(e) === null;
 }
@@ -98,7 +104,7 @@ export function track(payload: AnalyticsPayload): boolean {
     if (event.event === "purchase" && !firstPurchase(event.order_id as string)) return false;
 
     (window.dataLayer ??= []).push(event);
-    if (process.env.NEXT_PUBLIC_ANALYTICS_TRANSPORT === "beacon" && hasAnalyticsConsent()) {
+    if (getAnalyticsTransport() === "beacon" && hasAnalyticsConsent()) {
       navigator.sendBeacon?.(
         ANALYTICS_ENDPOINT,
         new Blob([JSON.stringify(event)], { type: "application/json" }),

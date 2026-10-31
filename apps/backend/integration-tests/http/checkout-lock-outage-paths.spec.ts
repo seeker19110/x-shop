@@ -7,9 +7,9 @@ import { randomUUID } from "node:crypto";
 import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
 import { LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS } from "../../src/lib/checkout/errors";
 import { activeLeaseCount, LOCK_CALL_TIMEOUT_MS, lockKeys } from "../../src/lib/checkout/locks";
+import { CATALOG_INDEX_LOCK, CATALOG_REBUILD_LOCK } from "../../src/lib/catalog/indexer";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { AUDIT_MODULE } from "../../src/modules/audit";
 import type AuditModuleService from "../../src/modules/audit/service";
 import { CATALOG_IMPORT_MODULE } from "../../src/modules/catalog-import";
@@ -145,12 +145,12 @@ medusaIntegrationTestRunner({
       fx = await seedCatalog(container, { stock: { "Đen/S": 20, "Đen/M": 20 } });
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       ip = newIp();
     });
     afterEach(() => {
       restoreRedis();
-      expect(activeLeaseCount()).toBe(0);
+      // Chỉ khóa checkout/tồn: lượt đồng bộ catalog do sự kiện chỉnh tồn kích có thể đang giữ lease hợp lệ (T-137/T-146).
+      expect(activeLeaseCount([CATALOG_INDEX_LOCK, CATALOG_REBUILD_LOCK])).toBe(0);
     });
 
     describe("hủy đơn", () => {
@@ -360,7 +360,7 @@ medusaIntegrationTestRunner({
         expect(created.status).toBe(201);
         silentAcquire();
         const { value: res } = await timed("revise bảng size", () =>
-          adminPost(`/admin/x/size-charts/${code}/revise`, TEST_CHART),
+          adminPost(`/admin/x/size-charts/${code}/revise`, { ...TEST_CHART, name: `${TEST_CHART.name} v2` }),
         );
         expectLockUnavailable(res, "revise bảng size");
         restoreRedis();
@@ -368,7 +368,10 @@ medusaIntegrationTestRunner({
         const charts = (await fashion.listSizeCharts({ code })) as unknown as Array<{ version: number }>;
         expect(charts.map((c) => c.version)).toEqual([1]);
 
-        const ok = await adminPost(`/admin/x/size-charts/${code}/revise`, TEST_CHART);
+        const ok = await adminPost(`/admin/x/size-charts/${code}/revise`, {
+          ...TEST_CHART,
+          name: `${TEST_CHART.name} v2`,
+        });
         expect(ok.status).toBe(201);
       });
     });

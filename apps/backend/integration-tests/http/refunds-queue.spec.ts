@@ -2,7 +2,6 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { RETURNS_CONFIG } from "../../src/modules/returns/constants";
 import { MockVnpayRefundGateway, setRefundGatewayForTest } from "../../src/workflows/returns/refund-gateway";
 import {
@@ -90,7 +89,6 @@ medusaIntegrationTestRunner({
       });
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       refundGateway = new MockVnpayRefundGateway(DEV_VNPAY);
       setRefundGatewayForTest(refundGateway);
       ip = newIp();

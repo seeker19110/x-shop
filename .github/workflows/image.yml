@@ -1,0 +1,142 @@
+# Build image triển khai + quét lỗ hổng HĐH/gói trong image (T-191; BASE-DEP-009, BASE-SEC-010). KHÔNG push image, không
+# deploy: container chỉ là định dạng artefact (đề xuất D-NNN của T-191); pipeline promote theo digest (OPS-DEPLOY-001,
+# WF-ENV-006) chờ chủ dự án chọn hạ tầng/registry.
+#   - hadolint: lint Dockerfile, ngưỡng `info` (mọi cảnh báo = đỏ).
+#   - image (backend | storefront): `docker build --target …` rồi Trivy: HIGH/CRITICAL ĐÃ CÓ BẢN VÁ trong gói HĐH hoặc thư
+#     viện của image = đỏ (exit-code 1). Lỗ hổng CHƯA có bản vá (ignore-unfixed) không chặn — không có hành động khắc phục
+#     ngoài đổi base/gói — nhưng được IN ở bước báo cáo riêng (không chặn) để theo dõi theo docs/ops/VULN-SLA.md.
+#     Chấp nhận tạm một lỗ hổng: thêm `.trivyignore` có hạn và lý do (cùng nguyên tắc osv-scanner.toml), không hạ ngưỡng.
+# Chưa phải required check của ruleset (quyết định riêng — xem .github/rulesets/main.json).
+name: image
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .nvmrc
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
+      - apps/**
+      - packages/**
+      - .github/workflows/image.yml
+  push:
+    branches: [master]
+  # Hằng tuần: base image/gói không đổi vẫn có CVE mới công bố (BASE-DEP-009). Giờ lẻ tránh đỉnh tải của runner.
+  schedule:
+    - cron: "43 3 * * 3" # thứ Tư 03:43 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# PR: push mới hủy run cũ cùng PR. `master`: mỗi commit một group (run_id), không hủy.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  hadolint:
+    name: hadolint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # hadolint/hadolint-action v3.5.0 (hadolint v2.15.1; image ghcr.io/hadolint/hadolint ghim digest trong action) — SHA
+      # commit của tag (tag nhẹ) lấy bằng `git ls-remote https://github.com/hadolint/hadolint-action refs/tags/v3.5.0`
+      # ngày 2026-10-30.
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: info
+
+  image:
+    name: image (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [backend, storefront]
+    env:
+      IMAGE_REF: x-shop-${{ matrix.target }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Storefront: NEXT_PUBLIC_* là tham số build bắt buộc (Dockerfile) — CI dùng giá trị GIẢ công khai chỉ để quét; image
+      # này không dùng để triển khai.
+      - name: Build image (không push)
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          args=(--target "$TARGET" --tag "$IMAGE_REF" --label "org.opencontainers.image.revision=${GITHUB_SHA}")
+          if [ "$TARGET" = "storefront" ]; then
+            args+=(--build-arg NEXT_PUBLIC_SITE_URL=https://shop.example.vn
+                   --build-arg NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=pk_ci_image_scan_placeholder)
+          fi
+          docker build "${args[@]}" .
+          docker image inspect "$IMAGE_REF" --format 'user={{.Config.User}} stopsignal={{.Config.StopSignal}}'
+          # Hàng rào cấu hình image: không chạy bằng root, STOPSIGNAL SIGTERM, có HEALTHCHECK.
+          test "$(docker image inspect "$IMAGE_REF" --format '{{.Config.User}}')" = "1000:1000"
+          test "$(docker image inspect "$IMAGE_REF" --format '{{.Config.StopSignal}}')" = "SIGTERM"
+          test -n "$(docker image inspect "$IMAGE_REF" --format '{{if .Config.Healthcheck}}{{.Config.Healthcheck.Test}}{{end}}')"
+      # Smoke nhẹ (không cần DB/Redis): phụ thuộc production phân giải được từ WORKDIR của image (đường `require` đi lên
+      # node_modules của pnpm, @x-shop/domain đã build) và phụ thuộc dev KHÔNG có trong image.
+      - name: Smoke — phân giải module trong image
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = "backend" ]; then
+            mods="@medusajs/medusa/commands/start @medusajs/cli/cli.js @x-shop/domain"
+          else
+            mods="next/dist/bin/next react-dom @x-shop/domain"
+          fi
+          docker run --rm --entrypoint node "$IMAGE_REF" -e '
+            const [need, absent] = [process.argv[1].split(" "), ["ts-node", "vite", "jest", "vitest", "typescript"]];
+            for (const m of need) console.log("ok", m, "→", require.resolve(m));
+            for (const m of absent) {
+              let found = false;
+              try { require.resolve(m); found = true; } catch {}
+              if (found) { console.error("phụ thuộc dev lọt vào image:", m); process.exit(1); }
+            }' "$mods"
+      # aquasecurity/trivy-action v0.36.0 — tag có chữ ký (annotated), SHA commit (^{}) lấy bằng
+      # `git ls-remote https://github.com/aquasecurity/trivy-action refs/tags/v0.36.0` ngày 2026-10-30. Sự cố chuỗi cung ứng
+      # 03/2026 (tag cũ của action bị ghi đè) → CHỈ ghim SHA, không dùng tag. Trivy v0.76.1 (bản mới nhất 2026-10-30,
+      # `git ls-remote https://github.com/aquasecurity/trivy`), cài bằng setup-trivy ghim SHA bên trong action.
+      - name: Trivy — HIGH/CRITICAL đã có bản vá = đỏ
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.1
+          scan-type: image
+          image-ref: ${{ env.IMAGE_REF }}
+          scanners: vuln,secret
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          hide-progress: true
+      - name: Trivy — báo cáo HIGH/CRITICAL chưa có bản vá (không chặn)
+        if: ${{ !cancelled() }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.1
+          skip-setup-trivy: true
+          scan-type: image
+          image-ref: ${{ env.IMAGE_REF }}
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+          format: table
+          hide-progress: true

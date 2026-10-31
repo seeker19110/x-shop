@@ -1,8 +1,9 @@
+import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import type { MedusaContainer } from "@medusajs/framework/types";
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { AUDIT_MODULE } from "../../src/modules/audit";
 import type AuditModuleService from "../../src/modules/audit/service";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
@@ -10,6 +11,7 @@ import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { RETURNS_MODULE } from "../../src/modules/returns";
 import type ReturnsModuleService from "../../src/modules/returns/service";
 import { SETTLEMENT_MODULE } from "../../src/modules/settlement";
+import { SETTLEMENT_CONFIG } from "../../src/modules/settlement/constants";
 import type SettlementModuleService from "../../src/modules/settlement/service";
 import { SHIPPING_MODULE } from "../../src/modules/shipping";
 import type ShippingModuleService from "../../src/modules/shipping/service";
@@ -92,7 +94,6 @@ medusaIntegrationTestRunner({
       });
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       ip = newIp();
     });
 
@@ -559,6 +560,173 @@ medusaIntegrationTestRunner({
         expect(both.map((x) => x.status).sort()).toEqual([200, 409]);
         const list = await get(`/admin/x/settlements/discrepancies?batch_id=${r.data.batch.id}`);
         expect(list.data.discrepancies[0].events.map((e: J) => e.action)).toEqual(["opened", "resolved"]);
+      });
+    });
+
+    describe("chờ khoá nhập dưới statement_timeout (T-140)", () => {
+      const LOCK_WAIT = SETTLEMENT_CONFIG.importLockWaitMs;
+      /**
+       * Giữ một khoá trong giao dịch riêng (kết nối khác của pool) tới khi `release()` hoặc quá `autoReleaseMs` — tự nhả
+       * để mã cũ (chờ vô hạn: test tích hợp không có statement_timeout) không treo test mà ra kết quả sai rõ ràng.
+       */
+      async function holdLock(sql: string, bindings: string[], autoReleaseMs: number) {
+        const db = container.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION);
+        let release!: () => void;
+        const released = new Promise<void>((r) => (release = r));
+        let ready!: () => void;
+        const acquired = new Promise<void>((r) => (ready = r));
+        const done = db.transaction(async (trx) => {
+          await trx.raw(sql, bindings as unknown as Knex.ValueDict[]);
+          ready();
+          await released;
+        });
+        await acquired;
+        // Đếm hạn tự nhả từ lúc ĐÃ giữ khoá (không tính thời gian giành khoá).
+        const timer = setTimeout(release, autoReleaseMs);
+        return async () => {
+          clearTimeout(timer);
+          release();
+          await done;
+        };
+      }
+      const timedImport = async (csv: string) => {
+        const t = Date.now();
+        const r = await importCsv(A("accountant"), "ghn_cod", csv);
+        return { r, ms: Date.now() - t };
+      };
+      const ADVISORY = "select pg_advisory_xact_lock(hashtext(?))";
+
+      it("lần nhập khác giữ khoá quá hạn chờ → 409 IMPORT_IN_PROGRESS + Retry-After sau ~hạn chờ (không đợi tới statement_timeout), không ghi gì; nhả rồi nhập lại → 201", async () => {
+        expect(LOCK_WAIT).toBeGreaterThanOrEqual(1_000);
+        expect(LOCK_WAIT).toBeLessThan(30_000); // < statement_timeout mặc định (T-092)
+        const { o, s } = await deliveredCod();
+        const csv = csvOf(line(s.client_order_code, o.total, "cod"));
+        const release = await holdLock(ADVISORY, ["x-settlement:ghn_cod"], LOCK_WAIT * 2);
+        let busy: Awaited<ReturnType<typeof timedImport>>;
+        try {
+          busy = await timedImport(csv);
+        } finally {
+          await release();
+        }
+        expect({ status: busy.r.status, code: busy.r.data.code }).toEqual({
+          status: 409,
+          code: "IMPORT_IN_PROGRESS",
+        });
+        expect(busy.r.headers["content-type"]).toContain("application/problem+json");
+        expect(busy.r.headers["retry-after"]).toBe(String(Math.ceil(LOCK_WAIT / 1000)));
+        expect(busy.r.data).toMatchObject({ source: "ghn_cod" });
+        expect(busy.ms).toBeGreaterThanOrEqual(LOCK_WAIT - 50);
+        expect(busy.ms).toBeLessThan(LOCK_WAIT * 2 - 1_000); // hết hạn chờ, không phải nhờ người giữ tự nhả
+        expect((await settlement().listBatches({}, { limit: 10, offset: 0 })).count).toBe(0);
+        expect(await settlementState(s.id)).toBe("unsettled");
+
+        const retry = await importCsv(A("accountant"), "ghn_cod", csv);
+        expect(retry.status).toBe(201);
+        expect(await settlementState(s.id)).toBe("settled");
+      });
+
+      it("khoá nguồn KHÁC đang bị giữ không chặn; người giữ cùng nguồn nhả trước hạn chờ → chờ rồi nhập bình thường (201)", async () => {
+        const { o, s } = await deliveredCod();
+        const releaseOther = await holdLock(ADVISORY, ["x-settlement:vnpay"], LOCK_WAIT * 2);
+        try {
+          const release = await holdLock(ADVISORY, ["x-settlement:ghn_cod"], 1_500);
+          const { r, ms } = await timedImport(csvOf(line(s.client_order_code, o.total, "cod")));
+          await release();
+          expect(r.status).toBe(201);
+          expect(ms).toBeGreaterThanOrEqual(1_000);
+          expect(ms).toBeLessThan(LOCK_WAIT);
+        } finally {
+          await releaseOther();
+        }
+        expect(await settlementState(s.id)).toBe("settled");
+      });
+
+      it("hạn chờ chỉ áp cho khoá nhập: khoá dòng vận đơn (FOR UPDATE) giữ lâu hơn hạn chờ vẫn được chờ như cũ → 201", async () => {
+        const { o, s } = await deliveredCod();
+        const release = await holdLock(
+          "select id from shipment where id = ? for update",
+          [s.id],
+          LOCK_WAIT + 1_500,
+        );
+        let res: Awaited<ReturnType<typeof timedImport>>;
+        try {
+          res = await timedImport(csvOf(line(s.client_order_code, o.total, "cod")));
+        } finally {
+          await release();
+        }
+        expect(res.r.status).toBe(201);
+        // Chờ khoá dòng LÂU HƠN hạn chờ khoá nhập mà không bị 55P03 → lock_timeout đã trả về mặc định sau khoá nhập.
+        expect(res.ms).toBeGreaterThan(LOCK_WAIT);
+        expect(await settlementState(s.id)).toBe("settled");
+      });
+    });
+
+    describe("lock_timeout cục bộ không rò sang kết nối pool (T-140)", () => {
+      const poolMax = () =>
+        (
+          container.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION).client as unknown as {
+            pool: { max: number };
+          }
+        ).pool.max;
+      /**
+       * Giữ ĐỒNG THỜI mọi kết nối của pool (rào: mỗi giao dịch giữ kết nối tới khi đủ `pool.max` giao dịch cùng giữ) và đọc
+       * `lock_timeout` của từng phiên — kết nối vừa phục vụ lần nhập chắc chắn nằm trong số đó. `set_config(..., false)`
+       * (mức phiên) sẽ để lại `10s` sau commit.
+       */
+      async function poolLockTimeouts(): Promise<Array<{ lt: string; pid: number }>> {
+        const db = container.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION);
+        const max = poolMax();
+        let holding = 0;
+        let allHeld!: () => void;
+        const barrier = new Promise<void>((r) => (allHeld = r));
+        return Promise.all(
+          Array.from({ length: max }, () =>
+            db.transaction(async (trx) => {
+              const r = await trx.raw(
+                "select current_setting('lock_timeout') as lt, pg_backend_pid() as pid",
+              );
+              if (++holding === max) allHeld();
+              await barrier;
+              return r.rows[0] as { lt: string; pid: number };
+            }),
+          ),
+        );
+      }
+
+      it("sau lần nhập thành công (201) và sau 409, mọi kết nối pool vẫn lock_timeout mặc định (0)", async () => {
+        const db = container.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION);
+        const { o, s } = await deliveredCod();
+        const ok = await importCsv(
+          A("accountant"),
+          "ghn_cod",
+          csvOf(line(s.client_order_code, o.total, "cod")),
+        );
+        expect(ok.status).toBe(201);
+        const afterOk = await poolLockTimeouts();
+        expect(new Set(afterOk.map((r) => r.pid)).size).toBe(poolMax());
+        expect(afterOk.filter((r) => r.lt !== "0")).toEqual([]);
+
+        // Ca 409: giữ khoá nhập từ một giao dịch khác quá hạn chờ.
+        let release!: () => void;
+        const released = new Promise<void>((r) => (release = r));
+        let ready!: () => void;
+        const acquired = new Promise<void>((r) => (ready = r));
+        const holder = db.transaction(async (trx) => {
+          await trx.raw("select pg_advisory_xact_lock(hashtext(?))", ["x-settlement:ghn_cod"]);
+          ready();
+          await released;
+        });
+        await acquired;
+        let busy: Res;
+        try {
+          busy = await importCsv(A("accountant"), "ghn_cod", csvOf(line("MA-POOL-PROBE", 1_000, "cod")));
+        } finally {
+          release();
+          await holder;
+        }
+        expect(busy.status).toBe(409);
+        const afterBusy = await poolLockTimeouts();
+        expect(afterBusy.filter((r) => r.lt !== "0")).toEqual([]);
       });
     });
 

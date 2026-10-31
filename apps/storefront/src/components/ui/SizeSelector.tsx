@@ -5,6 +5,8 @@ import { useId } from "react";
 import { InlineError } from "./InlineError";
 import styles from "./SizeSelector.module.css";
 import { cx } from "./cx";
+import { isNonEmpty } from "../../lib/presence";
+import { safeHref } from "../../lib/safe-url";
 
 export interface SizeOption {
   value: string;
@@ -48,8 +50,8 @@ export function SizeSelector({
           <button type="button" className={styles.guide} onClick={onSizeGuide} aria-haspopup="dialog">
             Hướng dẫn chọn size
           </button>
-        ) : sizeGuideHref ? (
-          <Link href={sizeGuideHref} className={styles.guide}>
+        ) : isNonEmpty(sizeGuideHref) ? (
+          <Link href={safeHref(sizeGuideHref)} className={styles.guide}>
             Hướng dẫn chọn size
           </Link>
         ) : null}
@@ -57,7 +59,7 @@ export function SizeSelector({
       <div
         role="group"
         aria-labelledby={labelId}
-        aria-describedby={error ? errorId : undefined}
+        aria-describedby={isNonEmpty(error) ? errorId : undefined}
         className={styles.group}
       >
         {options.map((o) => {
@@ -79,7 +81,7 @@ export function SizeSelector({
           );
         })}
       </div>
-      {error ? <InlineError id={errorId}>{error}</InlineError> : null}
+      {isNonEmpty(error) ? <InlineError id={errorId}>{error}</InlineError> : null}
     </div>
   );
 }

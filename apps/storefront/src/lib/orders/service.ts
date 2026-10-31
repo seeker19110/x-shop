@@ -3,6 +3,7 @@ import { cartEnabled } from "../cart/service";
 import { readOrderAccess, writeOrderAccess } from "./cookie";
 import { mapOrderResponse, ORDER_REF_RE } from "./map";
 import type { LookupState, OrderResult } from "./types";
+import { isNonEmpty } from "../presence";
 
 /**
  * Gọi `/store/x/orders/*` từ SERVER. Token phiên đơn đọc từ cookie HttpOnly và gửi qua header `x-order-access` — không
@@ -29,7 +30,7 @@ async function withAccess(
 ): Promise<{ result: OrderResult; raw: unknown }> {
   if (!cartEnabled() || !ORDER_REF_RE.test(ref)) return { result: { kind: "not_found" }, raw: null };
   const token = await readOrderAccess(ref);
-  if (!token) return { result: { kind: "not_found" }, raw: null };
+  if (!isNonEmpty(token)) return { result: { kind: "not_found" }, raw: null };
   const r = await run(token);
   return { result: mapOrderResponse(r.status, r.body), raw: r.body };
 }

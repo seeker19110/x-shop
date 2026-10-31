@@ -3,6 +3,7 @@ import { auditContextOf } from "../../../../../../lib/audit/record";
 import { handleReturnsRouteError } from "../../../../../../workflows/returns/errors";
 import { actorOf, DecisionBody, parseBody } from "../../../../../../workflows/returns/http";
 import { approveReturn, presentReturn } from "../../../../../../workflows/returns/returns";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/returns/:id/approve — duyệt yêu cầu đổi/trả (quyền `return.approve`). Đổi size: tạo đơn thay thế liên
@@ -12,9 +13,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
   try {
     const actor = actorOf(req, "return.approve");
     const body = parseBody(DecisionBody, req.body);
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
     const { ret, changed } = await approveReturn(
       req.scope,
-      String(req.params.id),
+      params.data.id,
       actor,
       body.note ?? null,
       auditContextOf(req),

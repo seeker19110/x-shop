@@ -1,0 +1,14 @@
+-- payment-attempt-by-txn-ref
+-- Nguồn: apps/backend/src/lib/checkout/payment.ts IPN → listPaymentAttempts({ txn_ref, provider })
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["T0123456","vnpay"]
+
+SELECT * FROM payment_attempt WHERE txn_ref = $1 AND provider = $2 AND deleted_at IS NULL;
+
+Index Scan using "IDX_payment_attempt_txn_ref_unique" on payment_attempt  (cost=0.42..8.44 rows=1 width=133) (actual time=0.012..0.012 rows=1 loops=1)
+  Index Cond: (txn_ref = 'T0123456'::text)
+  Filter: ((deleted_at IS NULL) AND (provider = 'vnpay'::text))
+  Buffers: shared hit=4
+Planning Time: 0.048 ms
+Execution Time: 0.019 ms

@@ -1,3 +1,4 @@
+/* eslint-disable testing-library/no-container -- kiểm phần tử role=note không có truy vấn vai trò tương ứng trong ngữ cảnh này */
 import { render } from "@testing-library/react";
 import axe from "axe-core";
 import { renderToStaticMarkup } from "react-dom/server";

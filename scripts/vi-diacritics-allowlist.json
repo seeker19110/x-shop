@@ -1,0 +1,22 @@
+[
+  {
+    "file": "apps/backend/src/lib/notify/templates.ts",
+    "contains": "sms:",
+    "reason": "SMS cố ý không dấu để giữ bộ ký tự GSM-7 và tránh tách nhiều tin (ghi ở đầu templates.ts); email vẫn có dấu"
+  },
+  {
+    "file": "apps/backend/src/lib/checkout/recheck.ts",
+    "contains": "orderInfo:",
+    "reason": "vnp_OrderInfo của VNPAY phải không dấu, không ký tự đặc biệt (sanitizeOrderInfo); không hiển thị cho khách"
+  },
+  {
+    "file": "apps/backend/src/workflows/checkout/steps.ts",
+    "contains": "orderInfo:",
+    "reason": "vnp_OrderInfo của VNPAY phải không dấu, không ký tự đặc biệt (sanitizeOrderInfo); không hiển thị cho khách"
+  },
+  {
+    "file": "apps/backend/src/workflows/returns/refunds.ts",
+    "contains": "orderInfo:",
+    "reason": "vnp_OrderInfo của VNPAY phải không dấu, không ký tự đặc biệt (sanitizeOrderInfo); không hiển thị cho khách"
+  }
+]

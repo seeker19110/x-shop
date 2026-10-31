@@ -2,11 +2,12 @@
 
 import { useEffect } from "react";
 import { track } from "../../lib/analytics/track";
+import { isNonEmpty } from "../../lib/presence";
 
 /** `/san-pham/<handle>` → handle (đã giải mã); khác dạng → null. */
 export function handleFromHref(href: string): string | null {
   const m = /^\/san-pham\/([^/?#]+)/.exec(href);
-  if (!m?.[1]) return null;
+  if (!m || !isNonEmpty(m[1])) return null;
   try {
     return decodeURIComponent(m[1]);
   } catch {
@@ -38,7 +39,7 @@ export function ListAnalytics({ listId, items }: ListAnalyticsProps) {
       const a =
         e.target instanceof Element ? e.target.closest<HTMLAnchorElement>(".product-grid a[href]") : null;
       const handle = a ? handleFromHref(a.getAttribute("href") ?? "") : null;
-      if (!handle) return;
+      if (!isNonEmpty(handle)) return;
       const index = items.findIndex((i) => i.handle === handle);
       track({
         event: "select_item",

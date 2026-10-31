@@ -1,6 +1,8 @@
 import Image from "next/image";
 import { formatVnd } from "../../lib/format-vnd";
 import styles from "./Checkout.module.css";
+import { isNonEmpty } from "../../lib/presence";
+import { safeImgSrc } from "../../lib/safe-url";
 
 export interface CheckoutLine {
   id: string;
@@ -21,12 +23,12 @@ export function OrderLines({ lines }: { lines: readonly CheckoutLine[] }) {
         <li key={l.id} className={styles.orderLine}>
           <div className={styles.orderThumb}>
             {l.thumbnail ? (
-              <Image src={l.thumbnail.url} alt={l.thumbnail.alt} width={56} height={70} />
+              <Image src={safeImgSrc(l.thumbnail.url)} alt={l.thumbnail.alt} width={56} height={70} />
             ) : null}
           </div>
           <div className={styles.orderInfo}>
             <p>{l.title}</p>
-            {l.variantLabel ? <p className={styles.muted}>{l.variantLabel}</p> : null}
+            {isNonEmpty(l.variantLabel) ? <p className={styles.muted}>{l.variantLabel}</p> : null}
             <p className={styles.muted}>{`Số lượng: ${l.quantity}`}</p>
           </div>
           <p className={styles.orderPrice}>{formatVnd(l.lineTotal)}</p>

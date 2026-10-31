@@ -76,9 +76,10 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
       setConfirmOpen(false);
       if (r.kind === "ok") {
         setMessage({
-          text: r.refundRequested
-            ? "Đơn đã được hủy. Chúng tôi đã ghi nhận yêu cầu hoàn tiền và sẽ liên hệ với bạn."
-            : "Đơn đã được hủy.",
+          text:
+            r.refundRequested === true
+              ? "Đơn đã được hủy. Chúng tôi đã ghi nhận yêu cầu hoàn tiền và sẽ liên hệ với bạn."
+              : "Đơn đã được hủy.",
           error: false,
         });
         router.refresh();
@@ -123,22 +124,30 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
           </Button>
         ) : null}
       </div>
-      <p role="status" aria-live="polite" className={message?.error ? styles.alert : undefined}>
+      <p role="status" aria-live="polite" className={message?.error === true ? styles.alert : undefined}>
         {message?.text ?? ""}
       </p>
       <Dialog
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
-        title="Hủy đơn hàng?"
+        title={`Hủy đơn ${orderRef}?`}
         returnFocusRef={cancelBtn}
       >
+        <p>
+          Bạn sắp hủy đơn <strong>{orderRef}</strong>. Thao tác này không thể hoàn tác.
+        </p>
         <p>
           {paid
             ? "Đơn đã được thanh toán. Sau khi hủy, chúng tôi sẽ hoàn tiền theo chính sách hoàn tiền."
             : "Sau khi hủy, hàng giữ cho đơn sẽ được trả lại kho và không thể khôi phục đơn này."}
         </p>
         <div className={styles.actions}>
-          <Button variant="secondary" onClick={() => setConfirmOpen(false)} disabled={busy === "cancel"}>
+          <Button
+            variant="secondary"
+            data-autofocus
+            onClick={() => setConfirmOpen(false)}
+            disabled={busy === "cancel"}
+          >
             Giữ đơn
           </Button>
           <Button onClick={cancel} loading={busy === "cancel"} loadingLabel="Đang hủy">

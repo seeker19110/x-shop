@@ -4,11 +4,12 @@ import {
   createOrderPaymentCollectionWorkflow,
   markPaymentCollectionAsPaid,
 } from "@medusajs/medusa/core-flows";
-import { payloadHash, vnpay } from "@x-shop/domain";
+import { payloadHash, vnpay, isNonEmpty } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
+import { verifyNotificationWithRotation, type SecretUsed } from "../payment/vnpay-secrets";
 import type CheckoutModuleService from "../../modules/checkout/service";
-import { CHECKOUT_CONFIG, getVnpayConfig } from "./config";
+import { CHECKOUT_CONFIG, getVnpayIpnKeys } from "./config";
 import { readCheckoutError } from "./errors";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "./locks";
 
@@ -42,14 +43,52 @@ export function flattenQuery(query: Record<string, unknown>): Record<string, str
   return out;
 }
 
-/** IPN GET từ VNPAY: xác minh → inbox → xử lý → phản hồi `{RspCode, Message}`. */
+/**
+ * Xác minh bằng khoá TRƯỚC → cảnh báo có cấu trúc (khoá=`previous`, nguồn, mã giao dịch) để vận hành biết còn lưu lượng
+ * dùng khoá cũ (RUNBOOK §9 bước 4). KHÔNG ghi khoá/chữ ký. Lỗi logger không được làm hỏng xử lý thanh toán.
+ */
+export function warnIfPreviousSecret(
+  container: MedusaContainer,
+  secretUsed: SecretUsed | undefined,
+  source: NotificationSource,
+  txnRef: string | undefined,
+): void {
+  if (secretUsed !== "previous") return;
+  try {
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .warn(
+        `[payment] vnpay_secret_previous_used source=${source} txn_ref=${isNonEmpty(txnRef) ? txnRef.slice(0, 64) : "-"} — xác minh bằng VNPAY_HASH_SECRET_PREVIOUS (khoá trước)`,
+      );
+  } catch {
+    // log hỏng không chặn IPN
+  }
+}
+
+/**
+ * IPN GET từ VNPAY: xác minh → inbox → xử lý → phản hồi `{RspCode, Message}`. Xác minh bằng `getVnpayIpnKeys()` (T-166):
+ * VNPAY_ENABLED=false chỉ chặn tạo thanh toán mới — IPN của giao dịch đã tạo vẫn xác minh và ghi nhận (RUNBOOK §1). Không
+ * có khoá xác minh → 99 (VNPAY gửi lại sau, như khi bận khóa) và KHÔNG ghi gì (không inbox, không ngoại lệ, không tiền).
+ */
 export async function handleVnpayIpn(
   container: MedusaContainer,
   query: Record<string, string>,
 ): Promise<IpnResponse> {
-  const cfg = getVnpayConfig();
-  if (!cfg) return R.unknownError;
-  const verified = vnpay.verifyNotification(cfg, query);
+  const cfg = getVnpayIpnKeys();
+  if (!cfg) {
+    try {
+      container
+        .resolve(ContainerRegistrationKeys.LOGGER)
+        .warn(
+          `[payment] IPN VNPAY tới khi không có khoá xác minh (VNPAY tắt, thiếu VNPAY_TMN_CODE/VNPAY_HASH_SECRET) — trả 99 để VNPAY gửi lại, không ghi nhận`,
+        );
+    } catch {
+      // log hỏng không chặn IPN
+    }
+    return R.unknownError;
+  }
+  // Nhận khoá hiện tại hoặc khoá trước trong cửa sổ xoay (T-099).
+  const verified = verifyNotificationWithRotation(cfg, query);
   if (!verified.ok) {
     const payload = sanitize(query);
     const hash = payloadHash(payload);
@@ -72,6 +111,7 @@ export async function handleVnpayIpn(
     });
     return response;
   }
+  warnIfPreviousSecret(container, verified.secretUsed, "ipn", query.vnp_TxnRef);
   return processVerified(container, verified.value, "ipn", sanitize(query));
 }
 
@@ -150,8 +190,10 @@ async function processUnderOrderLock(
   }
   try {
     if (!n.success) {
-      // Giao dịch không thành công: attempt → failed (nếu còn mở); đơn giữ nguyên chờ hết hạn/thanh toán lại.
+      // Giao dịch không thành công: attempt → failed (nếu còn mở); đơn giữ nguyên chờ hết hạn/thanh toán lại. Đơn đang
+      // backoff của expire-holds (T-164) → bỏ hẹn: đã có tin chắc chắn, lượt kế tiếp xét ngay (không giữ hàng thêm).
       await s.movePaymentAttempt(attempt.id, "failed", n.transactionNo || null);
+      await s.clearHoldRecheck(attempt.order_id);
       return R.success;
     }
     const outcome = await s.applyCapture({
@@ -204,7 +246,7 @@ export async function syncNativePayment(
   ).flatMap((c) => (c && c.status !== "canceled" ? [c] : []));
   if (collections.some((c) => c.status !== "not_paid")) return "noop";
   let collectionId = collections[0]?.id;
-  if (!collectionId) {
+  if (!isNonEmpty(collectionId)) {
     const { result } = await createOrderPaymentCollectionWorkflow(container).run({
       input: { order_id: orderId, amount: fin.total },
     });

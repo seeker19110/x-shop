@@ -22,11 +22,11 @@ Phần máy — `python3 .xtemplates/scripts/xt.py release-check` @ `b17ec8221cb
 
 Máy: "Chờ người: prod_switch, attack, perf — máy không thay được chữ ký".
 
-Đếm theo danh mục mục 2 (BLOCKER 1–13 và 18; SHOULD 14–17; NICE 19; `PASS` chỉ khi có bằng chứng chạy thật):
+Đếm theo danh mục mục 2 (BLOCKER 1–13, 18 và 20; SHOULD 14–17; NICE 19; `PASS` chỉ khi có bằng chứng chạy thật):
 
 | Mức | PASS | FAIL | N/A |
 |---|---|---|---|
-| BLOCKER | 0 | 14 | 0 |
+| BLOCKER | 0 | 15 | 0 |
 | SHOULD | 0 | 4 | 0 |
 | NICE | 0 | 1 | 0 |
 
@@ -54,6 +54,7 @@ Máy: "Chờ người: prod_switch, attack, perf — máy không thay được c
 | 17 | SHOULD | Tài liệu khớp code | FAIL | asserted-not-measured | tài liệu T-038 (THREAT-MODEL, DPIA, openapi) mới cập nhật theo mã ngày 2026-10-26; chưa rà README (chưa có `README.md`) | |
 | 18 | BLOCKER | Mọi đề xuất "Khi chạy thật" đã được chủ dự án quyết | FAIL (chờ người) | real-path | `grep -n "Khi chạy thật" docs/autopilot/DECISIONS.md` → 4 mục, chưa có quyết định (xem 3.2) | |
 | 19 | NICE | Tối ưu mã nguồn: dead code/dependency thừa đã rà | FAIL | asserted-not-measured | chưa chạy knip/depcheck | |
+| 20 | BLOCKER | Mật khẩu admin: mọi hash emailpass trên DB production đạt scrypt tối thiểu OWASP (logN ≥ 17, r ≥ 8, p ≥ 1) — tài khoản còn hash cũ phải đặt lại mật khẩu (ADR-0006, D-137) | FAIL (chưa chạy trên DB production) | faithful-fixture | `DATABASE_URL=<production, chỉ đọc> pnpm check:scrypt-params` → phải exit 0 (`dưới chuẩn 0 · sai định dạng 0`); script được chạy trong `apps/backend/integration-tests/http/password-hash.spec.ts` (hash logN 15 → exit 1, sau đăng nhập đúng → exit 0) | |
 
 Mục đặc thù hồ sơ/ngành (ecommerce, PCI SAQ A, đối soát) nằm trong BLUEPRINT.md (IND-ECOM-*) — chưa tính ở bảng trên.
 
@@ -84,6 +85,9 @@ Mục đặc thù hồ sơ/ngành (ecommerce, PCI SAQ A, đối soát) nằm tro
 | 13 | BLOCKER | Kiểm tay a11y chưa có | — | biên bản người + ngày + luồng | người kiểm |
 | — | BLOCKER | Ruleset nhánh `main` đang tắt trên remote | THREAT-MODEL O-01 (file mẫu `.github/rulesets/main.json` đặt `active`) | chủ dự án bật ruleset đòi check `quality`, `gitleaks` | chủ dự án |
 | — | BLOCKER | Khoá merchant thật VNPAY + token GHN chưa có | THREAT-MODEL O-02 | chủ dự án đăng ký | chủ dự án |
+| — | BLOCKER | Production bắt buộc đặt `STOREFRONT_URL` (https://, gốc storefront thật) — liên kết tra cứu đơn dựng từ biến này; thiếu/không https thì backend từ chối khởi động (D-091, T-149) | `apps/backend/src/lib/env/index.ts` (`PRODUCTION_REQUIRED`), `docs/ops/ENV.md` | đặt biến trong cấu hình triển khai (server và worker) trước khi lên production | chủ dự án / người triển khai |
+| — | BLOCKER | Production bắt buộc kho file S3-compatible DÙNG CHUNG giữa các bản sao: `FILE_STORAGE=s3` + `S3_REGION`, `S3_BUCKET`, `S3_PRIVATE_BUCKET`, `S3_FILE_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (endpoint/URL công khai https), `MEDUSA_BACKEND_URL` https; vắng, `local`, hai bucket trùng, hay đặt kèm `PRIVATE_UPLOAD_DIR` thì backend từ chối khởi động (T-154; thay ràng buộc volume `PRIVATE_UPLOAD_DIR` của T-141/D-104) | `apps/backend/src/lib/env/index.ts` (`fileStorageProblems`), `apps/backend/src/lib/upload/s3/`, `docs/ops/RUNBOOK.md` §8.2b, `docs/ops/ENV.md` | dựng kho S3-compatible (tự host Garage/SeaweedFS — MinIO cộng đồng đã ngừng bảo trì — hoặc dịch vụ quản lý); bucket công khai có policy đọc nặc danh, bucket private KHÔNG (kiểm `curl` không chữ ký → 403); khoá truy cập riêng chỉ Get/Put/Delete/Head + `s3:ListBucket` trên hai bucket; TLS; cùng biến cho server, worker, `medusa db:migrate`, `medusa exec`; storefront đặt `XS_MEDIA_URL` (= `S3_FILE_URL`, https) LÚC BUILD; chuyển file `static/` và `PRIVATE_UPLOAD_DIR` cũ (nếu có) vào hai bucket cùng tên khoá; chạy test `upload` với kho thật (`XS_TEST_S3_ENDPOINT`) | chủ dự án / người triển khai |
+| — | BLOCKER | Script `start` của backend và storefront bind `127.0.0.1` mặc định (BASE-SEC-010) — triển khai sau LB/container phải đặt `HOST=0.0.0.0` cho tiến trình server và storefront, nếu không LB không kết nối được backend | `apps/backend/package.json` và `apps/storefront/package.json` (`start`), `docs/ops/ENV.md`, `docs/ops/RUNBOOK.md` | đặt `HOST=0.0.0.0` trong cấu hình triển khai (server) và kiểm readiness qua LB trước khi lên production | chủ dự án / người triển khai |
 
 ### 3.2 Đề xuất "Khi chạy thật" chờ chủ dự án quyết (mục 18, `prod_switch`)
 | D-NNN | Đề xuất (chủ dự án quyết ở G7) | Quyết định (chủ dự án) |

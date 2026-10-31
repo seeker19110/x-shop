@@ -1,4 +1,4 @@
-import { vnpay } from "@x-shop/domain";
+import { vnpay, isNonEmpty } from "@x-shop/domain";
 import { getVnpayConfig } from "../../lib/checkout/config";
 
 /**
@@ -6,13 +6,15 @@ import { getVnpayConfig } from "../../lib/checkout/config";
  * HỎI LẠI cùng nghiệp vụ, không tạo refund mới (AT16). Kết quả mơ hồ luôn là `unknown`, không bao giờ suy ra thất bại.
  *
  * Phạm vi T-027: chỉ có bản giả lập (VNPAY_MODE=mock, dev/CI) dựng thân request bằng `vnpay.buildRefund` của domain.
- * Ủy quyền hiện tại không cho gọi refund thật → ở sandbox/live cổng bị TẮT (fail-closed): hoàn `provider` trả 409
- * REFUND_PROVIDER_DISABLED, kế toán dùng phương thức `manual` có chứng từ. Bật HTTP thật là việc riêng khi có ủy quyền.
+ * Ủy quyền hiện tại không cho gọi refund thật → ở sandbox/live cổng bị TẮT (fail-closed): `auto` tự chọn `manual`, tạo
+ * `provider` trả 409 REFUND_PROVIDER_DISABLED; yêu cầu `provider` có từ trước → `failed` chưa gửi, hủy được (T-169). Kế
+ * toán hoàn `manual` có chứng từ. Bật HTTP thật là việc riêng khi có ủy quyền.
  */
 export interface ProviderRefundRequest {
   requestId: string;
   txnRef: string;
   transactionNo: string;
+  /** `vnp_TransactionDate` = `vnp_CreateDate` của URL thanh toán gốc (T-170, `transactionDateOf()`). */
   transactionDate: Date;
   amount: number;
   /** Hoàn toàn phần giao dịch (VNPAY `02`) hay một phần (`03`). */
@@ -57,7 +59,7 @@ export class MockVnpayRefundGateway implements RefundGateway {
   /** Tổng đã hoàn thật ở "cổng" (mọi requestId). */
   totalRefunded(txnRef?: string): number {
     let total = 0;
-    for (const r of this.executed.values()) if (!txnRef || r.txnRef === txnRef) total += r.amount;
+    for (const r of this.executed.values()) if (!isNonEmpty(txnRef) || r.txnRef === txnRef) total += r.amount;
     return total;
   }
 

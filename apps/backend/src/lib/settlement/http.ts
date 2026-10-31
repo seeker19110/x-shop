@@ -1,10 +1,15 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
 import { z } from "zod";
+import { msToSecondsCeil } from "@x-shop/domain";
 import { recordAudit } from "../audit/record";
+import { readQuery } from "../http/request-input";
+import { logServerError } from "../errors/error-handler";
 import { maskFreeText } from "../audit/sanitize";
+import { adminPageQuery } from "../http/pagination";
 import { readCsvBody } from "../http/read-body";
 import { sendProblem, zodErrors } from "../http/problem";
+import { rfc3339Instant } from "../http/time";
 import { SETTLEMENT_MODULE } from "../../modules/settlement";
 import {
   DISCREPANCY_KINDS,
@@ -13,7 +18,7 @@ import {
   SETTLEMENT_CONFIG,
   SETTLEMENT_SOURCES,
 } from "../../modules/settlement/constants";
-import { parseInstant, parseSettlementCsv } from "../../modules/settlement/csv";
+import { parseSettlementCsv } from "../../modules/settlement/csv";
 import SettlementModuleService, {
   SettlementError,
   type DiscrepancyView,
@@ -34,6 +39,7 @@ export class SettlementHttpError extends Error {
 
 const SETTLEMENT_ERROR_STATUS: Record<SettlementError["code"], number> = {
   BATCH_CONFLICT: 409,
+  IMPORT_IN_PROGRESS: 409,
   NOT_FOUND: 404,
   INVALID_STATE: 409,
 };
@@ -44,6 +50,9 @@ export function handleSettlementError(req: MedusaRequest, res: MedusaResponse, e
     return sendProblem(res, error.status, error.code, error.message, error.errors, error.extra);
   }
   if (error instanceof SettlementError) {
+    // Lần nhập khác cùng nguồn đang giữ khoá (T-140): chưa ghi gì, gọi lại được.
+    if (error.code === "IMPORT_IN_PROGRESS")
+      res.setHeader("Retry-After", String(msToSecondsCeil(SETTLEMENT_CONFIG.importLockWaitMs)));
     return sendProblem(res, SETTLEMENT_ERROR_STATUS[error.code], error.code, error.message, [], error.detail);
   }
   if (error instanceof MedusaError) {
@@ -51,11 +60,7 @@ export function handleSettlementError(req: MedusaRequest, res: MedusaResponse, e
       return sendProblem(res, 401, "UNAUTHORIZED", error.message);
     if (error.type === MedusaError.Types.FORBIDDEN) return sendProblem(res, 403, "FORBIDDEN", error.message);
   }
-  req.scope
-    .resolve(ContainerRegistrationKeys.LOGGER)
-    .error(
-      `[settlement] ${req.method} ${req.path}: ${error instanceof Error ? error.stack : "lỗi không rõ"}`,
-    );
+  logServerError(req, "settlement", error);
   sendProblem(res, 500, "INTERNAL", "Không thể xử lý yêu cầu lúc này");
 }
 
@@ -85,29 +90,23 @@ export function parseInput<T extends z.ZodType>(schema: T, input: unknown): z.ou
   return parsed.data;
 }
 
+/** Query của route settlement/báo cáo theo schema (`readQuery`); sai → 422 VALIDATION như `parseInput`. */
+export function parseQuery<T extends z.ZodType>(req: MedusaRequest, schema: T): z.output<T> {
+  const r = readQuery(req, schema);
+  if (!r.ok) throw new SettlementHttpError(422, "VALIDATION", "Dữ liệu không hợp lệ", {}, r.errors);
+  return r.data;
+}
+
 export const settlementOf = (req: MedusaRequest) =>
   req.scope.resolve<SettlementModuleService>(SETTLEMENT_MODULE);
 
-const instant = z
-  .string()
-  .trim()
-  .transform((v, ctx) => {
-    const d = parseInstant(v);
-    if (!d) {
-      ctx.addIssue({ code: "custom", message: "ISO 8601 có múi giờ, vd. 2026-10-25T00:00:00+07:00" });
-      return z.NEVER;
-    }
-    return d;
-  });
+const instant = rfc3339Instant;
 const notFuture = (d: Date) => d.getTime() <= Date.now() + SETTLEMENT_CONFIG.futureSkewMs;
 const code = z
   .string()
   .trim()
   .regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/, "1–64 ký tự [A-Za-z0-9_.:-], bắt đầu bằng chữ hoặc số");
-const page = {
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).max(100_000).default(0),
-};
+const page = adminPageQuery;
 
 export const ImportQuery = z
   .object({
@@ -175,7 +174,7 @@ const CSV_FILE_NAME = /\.(csv|txt)$/i;
  * parse tất cả-hoặc-không, rồi nhập dưới khóa theo nguồn. Trả `{ status, body, replayed }` để route gửi.
  */
 export async function importSettlementBatch(req: MedusaRequest, actorId: string) {
-  const query = parseInput(ImportQuery, req.query);
+  const query = parseQuery(req, ImportQuery);
   const body = await readCsvBody(req, SETTLEMENT_CONFIG.maxFileBytes);
   if (!body.ok) throw new SettlementHttpError(body.status, body.code, body.reason);
   if (body.fileName !== null && !CSV_FILE_NAME.test(body.fileName)) {

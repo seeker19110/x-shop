@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * `pnpm e2e` — dựng môi trường E2E từ đầu rồi chạy Playwright (Playwright tự bật/tắt backend, storefront, cổng VNPAY
- * giả lập qua `webServer` trong playwright.config.ts):
+ * `pnpm e2e` — dựng môi trường E2E từ đầu rồi chạy Playwright (Playwright tự bật/tắt hai bản sao backend + bộ cân bằng
+ * tải, storefront, cổng VNPAY giả lập qua `webServer` trong playwright.config.ts):
  *   1. build packages/domain (mock VNPAY dùng bản dist)
  *   2. DB riêng `xshop_e2e` (drop + create mỗi lần) + Redis DB số 7 làm sạch
  *   3. migrate + seed nền + seed catalog demo (apps/backend/src/scripts) + nâng tồn demo (boost-stock.mjs)
@@ -13,10 +13,22 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ADMIN_DB_URL, backendEnv, DATABASE_URL, E2E_DB_NAME, REDIS_URL, storefrontEnv } from "./env.mjs";
+import { playwrightArgs } from "./args.mjs";
+import {
+  ADMIN_DB_URL,
+  backendEnv,
+  DATABASE_URL,
+  E2E_ADMIN,
+  E2E_DB_NAME,
+  REDIS_URL,
+  storefrontEnv,
+} from "./env.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const backendDir = path.join(root, "apps/backend");
+/** Che userinfo của URL trong thông điệp lỗi (vd. DATABASE_URL kèm mật khẩu): `//user:pass@` → `//***@`. */
+const redactUrlUserinfo = (s) => s.replace(/\/\/[^\s/@]*@/g, "//***@");
+
 const log = (m) => console.log(`[e2e] ${m}`);
 
 /** Chạy lệnh, chờ xong; mã thoát khác 0 → ném lỗi. */
@@ -92,6 +104,9 @@ async function prepare() {
   await medusa(["exec", "./src/scripts/seed.ts"]);
   await medusa(["exec", "./src/scripts/seed-catalog.ts"]);
   await run("node", ["e2e/boost-stock.mjs"]);
+  // Admin owner TEST-ONLY cho spec sửa catalog qua Admin API (catalog-revalidate.spec.ts, T-142).
+  await medusa(["user", "-e", E2E_ADMIN.email, "-p", E2E_ADMIN.password]);
+  await medusa(["exec", "./src/scripts/grant-owner.ts", E2E_ADMIN.email]);
   const key = await readPublishableKey();
 
   // Luôn build lại storefront: publishable key đổi theo mỗi lần seed và được nhúng vào bundle lúc build.
@@ -114,7 +129,7 @@ async function main() {
   await flushRedis();
 
   log("chạy Playwright");
-  const pw = spawn("pnpm", ["exec", "playwright", "test", ...process.argv.slice(2)], {
+  const pw = spawn("pnpm", ["exec", "playwright", "test", ...playwrightArgs(process.argv.slice(2))], {
     cwd: root,
     env: { ...process.env, E2E_PUBLISHABLE_KEY: key },
     stdio: "inherit",
@@ -125,6 +140,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(`[e2e] LỖI: ${e instanceof Error ? e.message : e}`);
+  console.error(`[e2e] LỖI: ${redactUrlUserinfo(e instanceof Error ? e.message : String(e))}`);
   process.exit(1);
 });

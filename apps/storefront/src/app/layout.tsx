@@ -9,13 +9,14 @@ import { getMenuCategories } from "../lib/catalog/client";
 import { getClientEnv } from "../lib/env";
 import "./globals.css";
 import styles from "./layout.module.css";
+import { t } from "../lib/i18n";
 
 export function generateMetadata(): Metadata {
   return {
     metadataBase: new URL(getClientEnv().NEXT_PUBLIC_SITE_URL),
-    title: { default: "X-Shop", template: "%s | X-Shop" },
-    description: "Cửa hàng thời trang X-Shop.",
-    openGraph: { type: "website", siteName: "X-Shop", locale: "vi_VN" },
+    title: { default: t("layout.siteName"), template: t("layout.titleTemplate") },
+    description: t("layout.description"),
+    openGraph: { type: "website", siteName: t("layout.siteName"), locale: "vi_VN" },
     icons: { icon: "/icons/icon.svg", apple: "/icons/apple-touch-icon.png" },
   };
 }
@@ -36,7 +37,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang="vi">
       <body>
         <a className="skip-link" href="#noi-dung">
-          Bỏ qua tới nội dung
+          {t("layout.skipToContent")}
         </a>
         <OfflineBanner />
         <ServiceWorkerRegister />

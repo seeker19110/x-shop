@@ -1,6 +1,8 @@
 /** Kiểu dữ liệu checkout phía storefront (an toàn cho client). Tiền: số nguyên VND. Thời gian: ISO 8601 UTC. */
+import type { CheckoutPaymentMethod } from "@x-shop/domain/validation";
 
-export type PaymentMethod = "cod" | "vnpay";
+/** Một nguồn: `CHECKOUT_PAYMENT_METHODS` của schema chung (T-188). */
+export type PaymentMethod = CheckoutPaymentMethod;
 
 export interface AddressInput {
   provinceCode: string;

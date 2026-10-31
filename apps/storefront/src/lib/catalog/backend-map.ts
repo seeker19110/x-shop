@@ -23,7 +23,6 @@ import type {
 const FALLBACK_W = 800;
 const FALLBACK_H = 1000;
 const FALLBACK_HEX = "#9ca3af";
-
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);

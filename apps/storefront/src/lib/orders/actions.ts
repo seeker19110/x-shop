@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { cancelOrder, lookupOrder, recheckOrder, redeemLink } from "./service";
 import type { LookupState, OrderResult } from "./types";
+import { isNonEmpty } from "../presence";
 
 /**
  * Server Actions của trang đơn/tra cứu — mỏng, logic ở `service.ts`. Token phiên đơn chỉ nằm trong cookie HttpOnly;
@@ -36,5 +37,5 @@ export async function lookupOrderAction(_prev: LookupState, form: FormData): Pro
  */
 export async function redeemLinkAction(form: FormData): Promise<void> {
   const ref = await redeemLink(field(form, "token"));
-  redirect(ref ? `/don-hang/${encodeURIComponent(ref)}` : "/tra-cuu-don?loi=lien-ket");
+  redirect(isNonEmpty(ref) ? `/don-hang/${encodeURIComponent(ref)}` : "/tra-cuu-don?loi=lien-ket");
 }

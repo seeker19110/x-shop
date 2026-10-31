@@ -9,6 +9,7 @@ import { AdjustError, AdjustmentBody, adjustInventory } from "../../../../../lib
  * POST /admin/x/inventory/adjustments — điều chỉnh tồn (quyền `inventory.adjust`, INV03). Header `Idempotency-Key`
  * (16–128 ký tự [A-Za-z0-9_-]) bắt buộc; gửi lại cùng khóa + cùng nội dung → 200 kết quả cũ (`Idempotent-Replayed`),
  * khác nội dung → 409 IDEMPOTENCY_CONFLICT. Giảm dưới số đang giữ → 409 BELOW_RESERVED. Khóa bận → 409 BUSY_RETRY.
+ * Số giữ bị ghi đè đồng thời (hàng rào tồn T-185) → 409 INVENTORY_CONFLICT_RETRY.
  */
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   res.setHeader("Cache-Control", "no-store");

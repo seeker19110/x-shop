@@ -10,6 +10,7 @@ import { HOME_CONTENT } from "../lib/content/home";
 import { categoryHref } from "../lib/content/navigation";
 import { EMPTY_FILTER } from "@x-shop/domain";
 import styles from "./home.module.css";
+import { safeHref, safeImgSrc, safeSrcSet } from "../lib/safe-url";
 
 export const revalidate = 60;
 
@@ -53,7 +54,7 @@ export default async function HomePage() {
     <div className={styles.page}>
       <section aria-labelledby="hero-tieu-de" className={styles.hero}>
         <picture className={styles.heroPicture}>
-          <source media="(min-width: 48em)" srcSet={desktop.srcSet ?? desktop.src} />
+          <source media="(min-width: 48em)" srcSet={safeSrcSet(desktop.srcSet ?? desktop.src)} />
           <img {...mobile} alt="" className={styles.heroImage} />
         </picture>
         <div className={styles.heroCopy}>
@@ -61,7 +62,7 @@ export default async function HomePage() {
             {c.hero.title}
           </h1>
           <p>{c.hero.subtitle}</p>
-          <Button href={c.hero.cta.href} size="lg">
+          <Button href={safeHref(c.hero.cta.href)} size="lg">
             {c.hero.cta.label}
           </Button>
         </div>
@@ -75,7 +76,7 @@ export default async function HomePage() {
               <li key={i.handle}>
                 <Link href={categoryHref(i.handle)} className={styles.tile}>
                   <Image
-                    src={i.image.src}
+                    src={safeImgSrc(i.image.src)}
                     alt={i.image.alt}
                     width={i.image.width}
                     height={i.image.height}
@@ -94,7 +95,7 @@ export default async function HomePage() {
         <section aria-labelledby="muc-hang-moi" className={styles.section}>
           <div className={styles.sectionHead}>
             <h2 id="muc-hang-moi">{c.newArrivals.title}</h2>
-            <Link href={c.newArrivals.href} className={styles.more}>
+            <Link href={safeHref(c.newArrivals.href)} className={styles.more}>
               {c.newArrivals.linkLabel}
             </Link>
           </div>
@@ -108,9 +109,9 @@ export default async function HomePage() {
         <ul className={styles.lookList}>
           {c.lookbook.items.map((i) => (
             <li key={i.title}>
-              <Link href={i.href} className={styles.tile}>
+              <Link href={safeHref(i.href)} className={styles.tile}>
                 <Image
-                  src={i.image.src}
+                  src={safeImgSrc(i.image.src)}
                   alt={i.image.alt}
                   width={i.image.width}
                   height={i.image.height}
@@ -131,7 +132,7 @@ export default async function HomePage() {
             <li key={i.title} className={styles.infoItem}>
               <h3>{i.title}</h3>
               <p>{i.text}</p>
-              <Link href={i.href}>{i.linkLabel}</Link>
+              <Link href={safeHref(i.href)}>{i.linkLabel}</Link>
             </li>
           ))}
         </ul>

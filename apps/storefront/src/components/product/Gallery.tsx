@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import type { ProductImage } from "../../lib/catalog/types";
 import { Dialog } from "../ui/Dialog";
 import styles from "./Product.module.css";
+import { safeImgSrc } from "../../lib/safe-url";
 
 /** Ảnh trong gallery: rộng ~60% ở desktop, 100% ở mobile. */
 const GALLERY_SIZES = "(min-width: 64em) 36vw, 100vw";
@@ -37,7 +38,7 @@ export function Gallery({ images }: { images: readonly ProductImage[] }) {
               }}
             >
               <Image
-                src={img.url}
+                src={safeImgSrc(img.url)}
                 alt={img.alt}
                 width={img.width}
                 height={img.height}
@@ -59,7 +60,7 @@ export function Gallery({ images }: { images: readonly ProductImage[] }) {
       >
         {zoomed ? (
           <Image
-            src={zoomed.url}
+            src={safeImgSrc(zoomed.url)}
             alt={zoomed.alt}
             width={zoomed.width}
             height={zoomed.height}

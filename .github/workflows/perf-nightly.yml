@@ -1,0 +1,74 @@
+# D-156 (thay D-056, T-197, DB-PERF-001): EXPLAIN đường nóng trên dataset đo đạc (50k SKU + 200k đơn, ~8 phút) chạy HẰNG ĐÊM,
+# không chạy trên PR (không thêm ~8 phút vào mỗi PR). `perf-dataset.mjs` dựng DB `xshop_perf` → `explain-hot-paths.mjs --write`
+# (exit 1 = Seq Scan/hồi quy trên bảng lớn → job đỏ; exit 2 = lỗi cấu hình/dữ liệu → cũng đỏ) → artefact giữ 14 ngày.
+# Dữ liệu hoàn toàn tổng hợp, không secret. Đường lùi: xoá file này, quay về D-056 (EXPLAIN chạy tay mỗi mốc).
+name: perf-nightly
+
+on:
+  schedule:
+    - cron: "23 4 * * *" # 04:23 UTC hằng đêm (ngoài 06–09 giờ Pacific, phút lẻ)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  MEDUSA_DISABLE_TELEMETRY: "true"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  perf-nightly:
+    name: perf-nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        # Cùng digest với ci.yml (BASE-DEP-008).
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_USER: xshop
+          POSTGRES_PASSWORD: xshop
+          POSTGRES_DB: xshop
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        # perf-dataset.mjs đo catalog:reindex (Redis DB 14 riêng); cùng digest với ci.yml (D-147).
+        image: redis:7.2-alpine@sha256:2c933526722b4126a61d5c170f766dc159adf97682f0b1cbbc27b1666ba96d84
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PERF_PG_BASE_URL: postgres://xshop:xshop@localhost:5432
+      EXPLAIN_DATABASE_URL: postgres://xshop:xshop@localhost:5432/xshop_perf
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: setup — khoá `setup:` của xt.yaml
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      - name: Dựng dataset đo đạc — `perf-dataset.mjs`
+        shell: bash
+        run: |
+          mkdir -p perf-out
+          node scripts/ops/perf-dataset.mjs 2>&1 | tee perf-out/perf-dataset.log
+      - name: EXPLAIN đường nóng — `explain-hot-paths.mjs` (đỏ khi hồi quy)
+        shell: bash
+        run: node scripts/ops/explain-hot-paths.mjs --write 2>&1 | tee perf-out/explain-hot-paths.log
+      - name: Artefact (giữ 14 ngày)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-nightly
+          path: |
+            perf-out/
+            docs/db/explain/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,47 @@
+# Ngữ cảnh build của Dockerfile (T-191): DANH SÁCH TRẮNG — chặn mọi thứ, chỉ mở đúng file cần để cài phụ thuộc và build
+# domain → backend → storefront. Không vào image: .git, node_modules, .env*, khoá/chứng chỉ, .autopilot, .claude (gồm
+# worktrees), .xtemplates, docs, e2e, bản build cục bộ (.medusa, .next, dist), coverage, file private của provider local.
+*
+
+# Khai báo workspace + lockfile (pnpm install --frozen-lockfile).
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+
+# Mã ba gói.
+!packages/domain
+!apps/backend
+!apps/storefront
+
+# Chặn lại bên trong các thư mục vừa mở (dòng sau thắng dòng trước). Mấy dòng đầu đã bị `*` chặn — ghi lại tường minh để
+# sửa danh sách trắng về sau không vô tình mở ra.
+.git
+.autopilot
+.claude
+**/worktrees
+**/node_modules
+**/.git
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/.medusa
+**/.next
+**/dist
+**/coverage
+**/coverage-integration
+**/*.tsbuildinfo
+**/.DS_Store
+apps/backend/private-uploads
+apps/backend/integration-tests
+# Test không vào image (CI gate đã chạy/type-check chúng); một số test nhập file ngoài ba gói (vd. scripts/*.cjs).
+**/__tests__
+**/*.test.ts
+**/*.test.tsx
+**/*.test.mjs
+**/*.spec.ts
+**/*.spec.tsx
+**/vitest.config.ts
+**/vitest.setup.ts
+**/jest.config.js

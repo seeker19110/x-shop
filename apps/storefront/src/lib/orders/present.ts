@@ -1,5 +1,6 @@
 import { formatVnd } from "../format-vnd";
 import type { OrderDetails } from "./types";
+import { isNonEmpty } from "../presence";
 
 /**
  * Nội dung 3 khối "Đặt đơn" / "Thanh toán" / "Giao hàng" (CHK06) — thuần, dễ test. Chỉ nói "đã thanh toán" khi server
@@ -35,7 +36,7 @@ const TIME = new Intl.DateTimeFormat("vi-VN", {
 
 /** Giờ Việt Nam để hiển thị (dữ liệu luôn lưu UTC). */
 export function formatOrderTime(iso: string | null): string {
-  if (!iso) return "";
+  if (!isNonEmpty(iso)) return "";
   const t = Date.parse(iso);
   return Number.isNaN(t) ? "" : TIME.format(new Date(t));
 }
@@ -47,7 +48,7 @@ function placement(o: OrderDetails): StatusBlock {
       return {
         title,
         status: "Đã nhận đơn — chờ xác nhận",
-        detail: o.codConfirmBy
+        detail: isNonEmpty(o.codConfirmBy)
           ? `Nhân viên sẽ gọi xác nhận qua số ${o.contact.phone} trước ${formatOrderTime(o.codConfirmBy)}.`
           : null,
         tone: "info",
@@ -109,7 +110,7 @@ function payment(o: OrderDetails, now: Date): StatusBlock {
         status: "Đang xác nhận thanh toán",
         detail: holdOver
           ? "Thời gian giữ hàng đã hết — hệ thống đang kiểm tra kết quả cuối cùng với cổng thanh toán. Bạn không cần thanh toán lại."
-          : o.holdExpiresAt
+          : isNonEmpty(o.holdExpiresAt)
             ? `Hàng được giữ đến ${formatOrderTime(o.holdExpiresAt)}. Nếu bạn đã thanh toán, không cần thanh toán lại — bấm "Kiểm tra lại" để cập nhật.`
             : 'Nếu bạn đã thanh toán, không cần thanh toán lại — bấm "Kiểm tra lại" để cập nhật.',
         tone: "warning",

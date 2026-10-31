@@ -48,7 +48,7 @@ describe("resolveAdminRule", () => {
     expect(resolveAdminRule("POST", "/admin/x/users/u/roles")).toMatchObject({ reauth: true });
   });
 
-  it("native: bảng nhạy cảm; đọc chưa khai → any_role; ghi chưa khai → settings.manage", () => {
+  it("native: bảng nhạy cảm; đọc chưa khai → từ chối (T-147); ghi chưa khai → settings.manage", () => {
     // T-044: route native ghi tiền / hủy đơn đóng với mọi vai trò (kể cả owner) — đi qua /admin/x/*.
     for (const path of [
       "/admin/payments/p/refund",
@@ -78,6 +78,20 @@ describe("resolveAdminRule", () => {
     });
     expect(resolveAdminRule("POST", "/admin/products/p1")).toMatchObject({ permission: "catalog.write" });
     expect(resolveAdminRule("GET", "/admin/regions")).toEqual({ kind: "any_role" });
+    // Đọc native chưa khai: đóng với mọi vai trò (kể cả owner) — route đọc mới của Medusa không tự mở (T-147, D-080).
+    for (const path of ["/admin/route-doc-moi", "/admin", "/admin/uploads/u1", "/admin/index/details"]) {
+      expect({ path, rule: resolveAdminRule("GET", path) }).toEqual({
+        path,
+        rule: { kind: "deny", reason: "UNDECLARED_ROUTE" },
+      });
+    }
+    expect(resolveAdminRule("GET", "/admin/products/p1/variants/v1")).toMatchObject({
+      permission: "inventory.read",
+    });
+    expect(resolveAdminRule("GET", "/admin/products/p1/variants")).toMatchObject({
+      permission: "catalog.read",
+    });
+    expect(resolveAdminRule("GET", "/admin/search")).toMatchObject({ permission: "settings.manage" });
     expect(resolveAdminRule("DELETE", "/admin/regions/r")).toMatchObject({ permission: "settings.manage" });
     expect(resolveAdminRule("POST", "/admin/route-moi-trong-tuong-lai")).toMatchObject({
       permission: "settings.manage",
@@ -110,8 +124,8 @@ describe("chính sách phiên", () => {
     expect(sessionAnchorMs({ mfa_challenge_completed_at: "rác" })).toBeNull();
     expect(sessionAnchorMs({})).toBeNull();
     // Khóa phiên giống nhau qua refresh (cùng identity + mốc), khác giữa hai lần đăng nhập.
-    expect(sessionKey({ auth_identity_id: "a" }, T0)).toBe(sessionKey({ auth_identity_id: "a" }, T0));
-    expect(sessionKey({ auth_identity_id: "a" }, T0)).not.toBe(sessionKey({ auth_identity_id: "a" }, T0 + 1));
+    expect(sessionKey("a", T0)).toBe(sessionKey("a", T0));
+    expect(sessionKey("a", T0)).not.toBe(sessionKey("a", T0 + 1));
   });
 
   it("checkAndTouchSession: hoạt động gia hạn nhàn rỗi; phiên đã nhàn rỗi không được đánh thức lại", async () => {
@@ -160,39 +174,149 @@ describe("rate limit nhiều tín hiệu", () => {
   it("(email+IP) chặn sau ngưỡng; email đó từ IP khác và email khác cùng IP vẫn được thử", async () => {
     const store = new MemoryStore();
     for (let i = 0; i < L.perIdentityIp; i++) {
-      expect((await registerAttempt(store, "login", "a@x.vn", "1.1.1.1")).allowed).toBe(true);
+      expect((await registerAttempt(store, "login", "a@example.test", "1.1.1.1")).allowed).toBe(true);
     }
-    const blocked = await registerAttempt(store, "login", "A@x.vn ", "1.1.1.1");
+    const blocked = await registerAttempt(store, "login", "A@example.test ", "1.1.1.1");
     expect(blocked).toMatchObject({ allowed: false });
     expect((blocked as { retryAfterSeconds: number }).retryAfterSeconds).toBeGreaterThan(0);
-    expect((await registerAttempt(store, "login", "a@x.vn", "2.2.2.2")).allowed).toBe(true);
-    expect((await registerAttempt(store, "login", "b@x.vn", "1.1.1.1")).allowed).toBe(true);
+    expect((await registerAttempt(store, "login", "a@example.test", "2.2.2.2")).allowed).toBe(true);
+    expect((await registerAttempt(store, "login", "b@example.test", "1.1.1.1")).allowed).toBe(true);
   });
 
   it("đoán phân tán vào một email từ nhiều IP → chặn theo email", async () => {
     const store = new MemoryStore();
-    for (let i = 0; i < L.perIdentity; i++) await registerAttempt(store, "login", "v@x.vn", `10.0.0.${i}`);
-    expect((await registerAttempt(store, "login", "v@x.vn", "10.0.1.1")).allowed).toBe(false);
+    for (let i = 0; i < L.perIdentity; i++)
+      await registerAttempt(store, "login", "v@example.test", `10.0.0.${i}`);
+    expect((await registerAttempt(store, "login", "v@example.test", "10.0.1.1")).allowed).toBe(false);
   });
 
   it("không khoá cả mạng: một IP dùng chung với nhiều tài khoản chỉ bị chặn ở ngưỡng IP cao", async () => {
     const store = new MemoryStore();
     for (let i = 0; i < L.perIp; i++) {
-      expect((await registerAttempt(store, "login", `u${i}@x.vn`, "9.9.9.9")).allowed).toBe(true);
+      expect((await registerAttempt(store, "login", `u${i}@example.test`, "9.9.9.9")).allowed).toBe(true);
     }
-    expect((await registerAttempt(store, "login", "moi@x.vn", "9.9.9.9")).allowed).toBe(false);
+    expect((await registerAttempt(store, "login", "moi@example.test", "9.9.9.9")).allowed).toBe(false);
   });
 
   it("thành công không tính thất bại; lỗi 5xx được hoàn lại", async () => {
     const store = new MemoryStore();
     for (let i = 0; i < L.perIdentityIp * 3; i++) {
-      expect((await registerAttempt(store, "login", "ok@x.vn", "3.3.3.3")).allowed).toBe(true);
-      await registerSuccess(store, "login", "ok@x.vn", "3.3.3.3");
+      expect((await registerAttempt(store, "login", "ok@example.test", "3.3.3.3")).allowed).toBe(true);
+      await registerSuccess(store, "login", "ok@example.test", "3.3.3.3");
     }
     for (let i = 0; i < L.perIdentityIp * 3; i++) {
-      expect((await registerAttempt(store, "login", "err@x.vn", "4.4.4.4")).allowed).toBe(true);
-      await registerRefund(store, "login", "err@x.vn", "4.4.4.4");
+      expect((await registerAttempt(store, "login", "err@example.test", "4.4.4.4")).allowed).toBe(true);
+      await registerRefund(store, "login", "err@example.test", "4.4.4.4");
     }
+  });
+
+  it("IPv6 gộp /64 (T-148): xoay địa chỉ trong một /64 vẫn chung bộ đếm IP và (email+IP); /64 khác tách riêng", async () => {
+    const store = new MemoryStore();
+    const in64 = (i: number) => `2001:db8:a:b:${(i + 1).toString(16)}::${(i * 7 + 3).toString(16)}`;
+    for (let i = 0; i < L.perIp; i++) {
+      expect((await registerAttempt(store, "login", `x${i}@example.test`, in64(i))).allowed).toBe(true);
+    }
+    // Dạng viết đầy đủ (số 0 đầu, chữ hoa) của cùng /64 vẫn chung bộ đếm.
+    expect(
+      (await registerAttempt(store, "login", "moi@example.test", "2001:0DB8:000A:000B:ffff:1:2:3")).allowed,
+    ).toBe(false);
+    expect((await registerAttempt(store, "login", "moi2@example.test", "2001:db8:a:c::1")).allowed).toBe(
+      true,
+    );
+
+    for (let i = 0; i < L.perIdentityIp; i++) {
+      expect(
+        (await registerAttempt(store, "login", "v6@example.test", `2001:db8:1:2::${i + 1}`)).allowed,
+      ).toBe(true);
+    }
+    expect((await registerAttempt(store, "login", "v6@example.test", "2001:db8:1:2:9::9")).allowed).toBe(
+      false,
+    );
+    // Thành công từ một địa chỉ trong /64 xoá thất bại (email+IP) của cả /64 (cùng khoá).
+    await registerSuccess(store, "login", "v6@example.test", "2001:db8:1:2::77");
+    for (let i = 0; i < L.perIdentityIp; i++) {
+      expect(
+        (await registerAttempt(store, "login", "v6@example.test", `2001:db8:1:2:a::${i + 1}`)).allowed,
+      ).toBe(true);
+    }
+    expect((await registerAttempt(store, "login", "v6@example.test", "2001:db8:1:2:b::1")).allowed).toBe(
+      false,
+    );
+  });
+
+  it("kẹp bộ đếm (T-143, D-085): loạt 200 lần không kéo dài Retry-After so với khoá tối thiểu (limit + 1 lần)", async () => {
+    const M = AUTH_RATE_LIMITS.windowSeconds * 1000;
+    // Đầu cửa sổ cố định — trường hợp Retry-After dài nhất của xấp xỉ cửa sổ trượt.
+    const now = new Date(Math.floor(Date.now() / M) * M);
+    const lockout = async (n: number) => {
+      const store = new MemoryStore();
+      let last: Awaited<ReturnType<typeof registerAttempt>> = { allowed: true };
+      for (let i = 0; i < n; i++)
+        last = await registerAttempt(store, "reset", "k@example.test", "1.2.3.4", now);
+      expect(last.allowed).toBe(false);
+      return (last as { retryAfterSeconds: number }).retryAfterSeconds;
+    };
+    const L3 = AUTH_RATE_LIMITS.reset.perIdentityIp;
+    const minimal = await lockout(L3 + 1);
+    expect(await lockout(200)).toBe(minimal);
+    // Trần lý thuyết với bộ đếm kẹp ở L+1: hết cửa sổ hiện tại + 2/(L+1) cửa sổ sau.
+    expect(minimal).toBeLessThanOrEqual(Math.ceil((AUTH_RATE_LIMITS.windowSeconds * (L3 + 3)) / (L3 + 1)));
+  });
+
+  it("Retry-After tính cả tín hiệu chỉ đọc theo LƯỢT KẾ TIẾP: thử lại đúng mốc được báo thì qua (không 429 lần nữa)", async () => {
+    const store = new MemoryStore();
+    const M = AUTH_RATE_LIMITS.windowSeconds * 1000;
+    const t0 = Math.floor(Date.now() / M) * M + Math.floor(0.4 * M);
+    const at = (ms: number) => new Date(t0 + ms);
+    // (a) bộ đếm theo email nạn nhân lên đúng ngưỡng (20) từ 5 IP × 4 lượt.
+    for (let ipN = 0; ipN < 5; ipN++) {
+      for (let i = 0; i < 4; i++) {
+        expect(
+          (await registerAttempt(store, "login", "nan-nhan@example.test", `198.51.100.${ipN + 1}`, at(0)))
+            .allowed,
+        ).toBe(true);
+      }
+    }
+    // (b) IP 203.0.113.50 chạm ngưỡng IP (100) bằng các email khác.
+    for (let i = 0; i < L.perIp; i++) {
+      expect(
+        (await registerAttempt(store, "login", `khac${i}@example.test`, "203.0.113.50", at(0))).allowed,
+      ).toBe(true);
+    }
+    // (c) nạn nhân thử từ IP đó: bị chặn ở IP; tín hiệu email chỉ đọc nhưng lượt kế tiếp cũng vượt → Retry-After phải gồm nó.
+    const first = await registerAttempt(store, "login", "nan-nhan@example.test", "203.0.113.50", at(0));
+    expect(first.allowed).toBe(false);
+    const wait = (first as { retryAfterSeconds: number }).retryAfterSeconds;
+    // (d) thử lại đúng mốc được báo → qua.
+    expect(
+      await registerAttempt(store, "login", "nan-nhan@example.test", "203.0.113.50", at(wait * 1000)),
+    ).toEqual({
+      allowed: true,
+    });
+  });
+
+  it("D-085: IP A đã bị chặn không đốt hạn mức theo email của nạn nhân — nạn nhân ở IP B vẫn được thử", async () => {
+    const store = new MemoryStore();
+    const results = await Promise.all(
+      Array.from({ length: 200 }, (_, i) =>
+        registerAttempt(
+          store,
+          "login",
+          i % 2 ? "VICTIM@example.test" : " victim@example.test ",
+          "203.0.113.9",
+        ),
+      ),
+    );
+    expect(results.filter((r) => r.allowed)).toHaveLength(L.perIdentityIp);
+    expect((await registerAttempt(store, "login", "victim@example.test", "203.0.113.10")).allowed).toBe(true);
+  });
+
+  it("IPv4 giữ nguyên địa chỉ (T-148): hai IP liền kề không chung bộ đếm IP", async () => {
+    const store = new MemoryStore();
+    for (let i = 0; i < L.perIp; i++)
+      await registerAttempt(store, "login", `y${i}@example.test`, "198.51.100.7");
+    expect((await registerAttempt(store, "login", "z@example.test", "198.51.100.7")).allowed).toBe(false);
+    expect((await registerAttempt(store, "login", "z@example.test", "198.51.100.8")).allowed).toBe(true);
   });
 
   it("đồng thời: loạt thử song song không vượt ngưỡng (giữ chỗ trước bằng INCR)", async () => {

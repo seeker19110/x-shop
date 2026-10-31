@@ -10,7 +10,6 @@ import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { ensureNativeFulfillment } from "../../src/lib/shipping/fulfillment";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { RETURNS_MODULE } from "../../src/modules/returns";
@@ -68,7 +67,6 @@ medusaIntegrationTestRunner({
       fx = await seedCatalog(container);
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       ip = newIp();
     });
 

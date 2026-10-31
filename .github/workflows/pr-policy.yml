@@ -3,10 +3,14 @@
 # đổi API/config mà không chạm tài liệu → cảnh báo. Tách khỏi `ci.yml` như `pr-title.yml`: nghe `edited` (sửa thân PR) nhưng chỉ
 # chạy vài giây, không chạy lại CI nặng. Không phải required check của ruleset mẫu. Dữ liệu từ PR (thân, tiêu đề) đi qua `env:`,
 # không nội suy `${{ }}` vào lệnh shell (chống injection).
+# Job `regression` (T-209, FE-TEST-006) là ngoại lệ về thời gian: chỉ với PR có tiêu đề `fix:` và test chạy được, nó cài phụ thuộc
+# và chạy lại test mới/sửa của PR trên HEAD (phải xanh) và trên commit base (phải đỏ). PR khác: job `skipped` (điều kiện `if:`).
 name: pr-policy
 
 on:
-  # `labeled`/`unlabeled`: nhãn ngoại lệ `fix-no-test` (check-fix-pr) đổi thì kiểm lại.
+  # `labeled`/`unlabeled`: nhãn ngoại lệ `fix-no-test` (check-fix-pr) đổi thì kiểm lại. `edited`: GitHub gộp sửa tiêu đề và sửa
+  # thân vào một loại sự kiện — giữ vì tiêu đề có thể đổi thành `fix:`. Job `regression` chạy lại ở MỌI sự kiện của PR fix (kể
+  # cả sửa thân/nhãn) — chấp nhận chi phí để giữ một nhóm concurrency chung, đơn giản (D-152).
   pull_request: { branches: [master], types: [opened, edited, synchronize, reopened, labeled, unlabeled] }
 
 permissions:
@@ -20,7 +24,7 @@ jobs:
   policy:
     name: pr-policy
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8 # trần thời gian (không phải ngưỡng chất lượng): bước check-api-breaking cài phụ thuộc gốc (T-194)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,7 +75,7 @@ jobs:
                   errors.append("PR đổi migration phải điền 'Backup trước migrate: <link hoặc lý do>' (DB-MIG-011)")
 
           touches_docs = any(f.startswith("docs/") or f in ("README.md", "CHANGELOG.md") for f in changed)
-          api_or_config = [f for f in changed if re.match(r"^(apps/backend/src/api/|xt\.yaml$|.*/lib/env\.ts$)", f)]
+          api_or_config = [f for f in changed if re.match(r"^(apps/backend/src/api/|xt\.yaml$|.*/lib/env(\.ts|/))", f)]
           if api_or_config and not touches_docs:
               docs = section("Docs cập nhật") or ""
               if not re.search(r"không cần\s*[—-]\s*\S", docs):
@@ -105,3 +109,124 @@ jobs:
           node --test scripts/check-fix-pr.test.mjs
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/changed-fix.txt"
           FILES_PATH="$RUNNER_TEMP/changed-fix.txt" node scripts/check-fix-pr.mjs
+      # WF-SDD-001/003 (T-212): PR `feat:` phải link một SPEC Approved trong mô tả và có mục "Map tiêu chí → test".
+      # Logic + test ở scripts/check-specs.mjs `--pr`; thân/tiêu đề PR đi qua env, subject commit qua tệp.
+      - name: PR `feat:` link SPEC Approved + map tiêu chí → test — `check-specs.mjs --pr`
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$PR_AUTHOR" == *"[bot]" ]] || [[ "$PR_TITLE" == 'Revert "'* ]]; then
+            echo "Bỏ qua (bot / revert)."; exit 0
+          fi
+          node --test scripts/check-specs.test.mjs
+          git log --format=%s "$BASE_SHA..$HEAD_SHA" > "$RUNNER_TEMP/subjects.txt"
+          COMMIT_SUBJECTS_FILE="$RUNNER_TEMP/subjects.txt" node scripts/check-specs.mjs --pr
+      # STD-API-008, STD-PROC-003, QA-INT-007 (T-194): PR không được phá vỡ hợp đồng `docs/design/openapi.yaml` (xoá path/field,
+      # đổi kiểu, thêm field request bắt buộc…) trừ khi có nhãn `breaking` + `BREAKING CHANGE:` ở commit/tiêu đề. Logic + test ở
+      # scripts/check-api-breaking.mjs; cần thư viện `yaml` (ghim ở package.json gốc) nên cài phụ thuộc gốc, bỏ script vòng đời.
+      # Node ghim theo .nvmrc đã cài bởi bước actions/setup-node phía trên (cùng job, ghim SHA); corepack bật ngay trước pnpm.
+      # Nhãn/tiêu đề đi qua env, không nội suy vào shell; base đọc từ lịch sử (fetch-depth 0 ở trên), không checkout.
+      - name: PR không phá vỡ hợp đồng OpenAPI — `check-api-breaking.mjs`
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts --filter .
+          node --test scripts/check-api-breaking.test.mjs
+          node scripts/check-api-breaking.mjs --base "$BASE_SHA"
+      # OPS-MAINT-001, BASE-DEP-006 (T-202): gói phụ thuộc TRỰC TIẾP mới (dependencies/devDependencies của mọi package.json so với
+      # base) phải được nêu tên trong mục `## Phụ thuộc mới` của thân PR. Logic + test ở scripts/check-new-deps.mjs; thân PR đi
+      # qua env, base đọc từ lịch sử (fetch-depth 0). Chỉ module có sẵn của Node.
+      - name: PR thêm gói trực tiếp phải có mục "Phụ thuộc mới" — `check-new-deps.mjs`
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # Cổng chuỗi cung ứng: KHÔNG bỏ qua revert (revert thêm lại gói vẫn phải giải trình); chỉ bỏ qua bot.
+          if [[ "$PR_AUTHOR" == *"[bot]" ]]; then
+            echo "Bỏ qua (bot)."; exit 0
+          fi
+          node --test scripts/check-new-deps.test.mjs
+          node scripts/check-new-deps.mjs --base "$BASE_SHA"
+      # BASE-DEP-007, OPS-MAINT-001 (T-202): `.github/dependabot.yml` khớp manifest thật (npm theo workspace, github-actions,
+      # docker). Đặt ở pr-policy (không ở ci.yml job `quality`): chạy vài giây, không phụ thuộc kết quả build, và dùng chung
+      # bước cài phụ thuộc gốc ngay trước (thư viện `yaml`). Chỉ THÊM bước; ci.yml không đổi.
+      - name: dependabot.yml khớp manifest — `check-dependabot.mjs`
+        run: |
+          set -euo pipefail
+          node --test scripts/check-dependabot.test.mjs
+          node scripts/check-dependabot.mjs
+
+  # FE-TEST-006, QA-STRAT-005 (T-209): test tái hiện lỗi phải TỰ CHỨNG MINH "đỏ trước, xanh sau", không chỉ khai trong mô tả.
+  # PR fix (CHỈ tiêu đề PR `fix:`/`fix(...)` — squash-merge, D-152): test mới/sửa của PR (`git diff base...head`) trên HEAD xanh,
+  # chạy trên mã base + file test của HEAD phải đỏ Ở MỨC TEST CASE (D-153: ≥ 1 case cùng file + tên fail trên base, pass trên
+  # HEAD; đỏ không ở mức case — lỗi nạp file, case gọi export/binding import/module chưa có trên base, hook lỗi (D-154: mọi
+  # hook), quá hạn — → đỏ). Giới hạn (D-155): vitest/jest nhận hook lỗi qua stack, nên hook async lỗi SAU `await` đầu tiên
+  # (stack mất frame của runner) không nhận ra — case đó vẫn tính là tái hiện; node --test nhận qua JUnit `failure type`
+  # (`hookFailed` cho beforeEach/afterEach, `cancelledByParent` cho case con khi `before` lỗi — node 22).
+  # Runner theo vị trí file: vitest (storefront, domain), jest unit (backend), node --test
+  # (scripts/, e2e/*.test.mjs); file test không runner nào/không job CI nào chạy → đỏ "không chạy ở đâu". Test tích hợp backend
+  # và E2E KHÔNG chạy ở đây (cảnh báo): mỗi suite dựng app Medusa trên Postgres/Redis + vai trò DB — thêm service vào job này
+  # thì mọi sự kiện pr-policy (cả `edited`) đều khởi động service; job `gate` của ci.yml đã chạy chúng trên HEAD. Không có test
+  # → đỏ, trừ ngoại lệ chung của check-fix-pr: nhãn `fix-no-test` + 'Ngoại lệ test: <lý do>'. Logic + test:
+  # scripts/check-fix-pr.mjs `--regression`. Job riêng (không gộp `policy`) để kiểm thân PR vẫn báo trong vài giây.
+  # HEAD = `GITHUB_SHA` (merge commit của PR — đúng mã sẽ vào master); base = `GITHUB_SHA^1` (tip nhánh đích mà merge commit
+  # dựng trên — `base.sha` của payload có thể cũ hơn khi master đã tiến); không phải merge commit → `base.sha`.
+  # Điều kiện job (biểu thức, không qua shell — tiêu đề không nội suy vào lệnh): tiêu đề bắt đầu `fix` (lọc thô; regex chặt
+  # `fix(...)?!?:` ở script) và không phải bot. Không lọc loại sự kiện (D-152): sửa thân/nhãn của PR fix cũng chạy lại.
+  regression:
+    name: regression
+    if: ${{ startsWith(github.event.pull_request.title, 'fix') && !endsWith(github.event.pull_request.user.login, '[bot]') }}
+    runs-on: ubuntu-latest
+    # Trần thời gian (không phải ngưỡng chất lượng): cài phụ thuộc không cache (~3–5 phút) + test đổi của PR chạy hai lần
+    # (HEAD, base); mỗi lệnh test có hạn riêng 10 phút trong script.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # cần commit base và lịch sử base..head
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - id: plan
+        name: Kế hoạch — PR fix? test nào, runner nào — `check-fix-pr.mjs --regression --dry-run`
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          node --test scripts/check-fix-pr.test.mjs
+          base="$BASE_SHA"
+          if git rev-parse --verify --quiet "$GITHUB_SHA^2" > /dev/null; then base="$GITHUB_SHA^1"; fi
+          node scripts/check-fix-pr.mjs --regression --dry-run --base "$base" --head "$GITHUB_SHA"
+      - if: steps.plan.outputs.run == 'true'
+        name: Cài phụ thuộc — đúng khoá `setup:` của xt.yaml
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile
+      - if: steps.plan.outputs.run == 'true'
+        name: Test của PR — xanh trên HEAD, đỏ trên base — `check-fix-pr.mjs --regression`
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          base="$BASE_SHA"
+          if git rev-parse --verify --quiet "$GITHUB_SHA^2" > /dev/null; then base="$GITHUB_SHA^1"; fi
+          node scripts/check-fix-pr.mjs --regression --base "$base" --head "$GITHUB_SHA"

@@ -1,0 +1,87 @@
+import type { Readable } from "node:stream";
+import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
+import { Modules } from "@medusajs/framework/utils";
+import { z } from "zod";
+import { requirePermission } from "../../../../../lib/access/require-permission";
+import { sendProblem } from "../../../../../lib/http/problem";
+import { pathId, readParams } from "../../../../../lib/http/request-input";
+import { isPrivateFileKey, mimeForFileKey } from "../../../../../lib/upload/key";
+import { PRIVATE_FILE_PERMISSION } from "../../../../../lib/upload/private";
+
+/**
+ * GET /admin/x/files/:key — tải file private (T-141, BE-FILE-005): xuất khách hàng/đơn/tồn/sản phẩm, chunk nhập. File nằm
+ * trong kho private của File Module — bucket S3_PRIVATE_BUCKET (FILE_STORAGE=s3, bắt buộc ở production — T-154) hoặc
+ * PRIVATE_UPLOAD_DIR ngoài `static/` (FILE_STORAGE=local, dev/test) — KHÔNG có URL công khai; link trong thông báo xuất của
+ * Medusa trỏ về đây. Thiếu file: cả hai provider báo `code: "ENOENT"` → 404.
+ *
+ * Thứ tự kiểm: cổng admin (lib/admin-security/guard.ts — phiên, `settings.manage` theo map, MFA, audit từ chối) TRƯỚC khi
+ * route chạm tới khoá → không danh tính 401 / thiếu quyền 403 như nhau cho khoá có thật hay không. Trong route: khoá phải
+ * khớp đúng mẫu provider sinh (`private-<ms>-<ULID><đuôi>`, một đoạn — không traversal, không đọc file công khai) rồi mới
+ * mở; sai mẫu / không có / đã xoá → cùng một 404. Phản hồi: tải về (`attachment`), `private, no-store`, nosniff (header
+ * bảo mật chung của /admin).
+ */
+const notFound = (res: MedusaResponse) => sendProblem(res, 404, "NOT_FOUND", "Không tìm thấy file");
+
+const TEXT_TYPES = new Set(["text/csv", "application/json"]);
+
+const isMissing = (err: unknown) => {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+};
+
+export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
+  requirePermission(req, PRIVATE_FILE_PERMISSION);
+  const params = readParams(req, z.object({ key: pathId(256) }));
+  if (!params.ok) return notFound(res);
+  const { key } = params.data;
+  const mime = mimeForFileKey(key);
+  if (!isPrivateFileKey(key) || mime === null) return notFound(res);
+
+  // Client đã ngắt khi request còn ở cổng admin (session/RBAC/MFA là I/O bất đồng bộ): `close` của response ĐÃ phát — listener
+  // gắn sau sẽ không bao giờ chạy → không mở file (review T-141: rò fd + handler treo).
+  if (res.destroyed) return;
+  let stream: Readable;
+  try {
+    stream = await req.scope.resolve(Modules.FILE).getDownloadStream(key);
+  } catch (err) {
+    if (isMissing(err)) return notFound(res);
+    throw err;
+  }
+  if (res.destroyed) {
+    stream.destroy();
+    return;
+  }
+
+  res.status(200);
+  res.setHeader("Content-Type", TEXT_TYPES.has(mime) ? `${mime}; charset=utf-8` : mime);
+  res.setHeader("Content-Disposition", `attachment; filename="${key}"`);
+  res.setHeader("Cache-Control", "private, no-store");
+
+  await new Promise<void>((resolve, reject) => {
+    stream.once("error", (err: Error) => {
+      if (res.headersSent) {
+        // Lỗi giữa chừng sau khi đã gửi byte: cắt kết nối (client thấy tải hỏng, không nhận file thiếu như file đủ).
+        // Không truyền `err` vào destroy — tránh phát `error` trên response mà không ai nghe.
+        res.destroy();
+        return resolve();
+      }
+      res.removeHeader("Content-Disposition");
+      if (isMissing(err)) {
+        notFound(res);
+        return resolve();
+      }
+      reject(err); // handler lỗi toàn cục → 500 không lộ đường dẫn
+    });
+    // Client ngắt → đóng file (pipe không tự huỷ nguồn khi đích đóng).
+    res.once("close", () => {
+      stream.destroy();
+      resolve();
+    });
+    // Gắn listener và kiểm trạng thái trong CÙNG một nhịp đồng bộ: `close` phát trước lúc này thì listener trên không chạy.
+    if (res.destroyed) {
+      stream.destroy();
+      return resolve();
+    }
+    stream.pipe(res);
+  });
+};

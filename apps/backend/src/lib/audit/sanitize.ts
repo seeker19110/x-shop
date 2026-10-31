@@ -83,3 +83,28 @@ function walk(key: string, value: unknown, depth: number): unknown {
 export function sanitizeChanges(changes: Record<string, unknown>): Record<string, unknown> {
   return walk("", changes, 0) as Record<string, unknown>;
 }
+
+/** Độ dài tối đa của `user_agent` trong audit (CHECK ở DB, Migration20261027090000). */
+export const USER_AGENT_MAX = 256;
+// Ký tự điều khiển C0/C1, DEL, ký tự định hướng chữ (bidi), U+2028/2029 — không thuộc User-Agent hợp lệ.
+// eslint-disable-next-line no-control-regex -- lọc chính ký tự điều khiển khỏi header do client gửi
+const UA_STRIP = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu;
+
+/**
+ * User-Agent cho audit (SEC-LOG-002 `user_agent`): header do client gửi = dữ liệu không tin cậy → bỏ ký tự điều khiển,
+ * gộp khoảng trắng, che email/SĐT lẫn trong chuỗi (maskFreeText — vài ứng dụng nhúng tài khoản vào UA), cắt ≤ 256 ký tự
+ * (theo code point, không cắt đôi cặp surrogate). Rỗng/không phải chuỗi → null; mảng (header lặp) → phần tử đầu.
+ */
+export function sanitizeUserAgent(value: unknown): string | null {
+  const raw: unknown = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== "string") return null;
+  const cleaned = maskFreeText(
+    raw
+      .slice(0, USER_AGENT_MAX * 4)
+      .replace(UA_STRIP, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+  if (cleaned.length === 0) return null;
+  return [...cleaned].slice(0, USER_AGENT_MAX).join("");
+}

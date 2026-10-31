@@ -1,8 +1,19 @@
 import type { ExecArgs } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
+import { z } from "zod";
 import { recordAudit } from "../lib/audit/record";
 import { RBAC_MODULE } from "../modules/rbac";
 import type RbacModuleService from "../modules/rbac/service";
+
+/** Đối số dòng lệnh: đúng một email (≤ 254 ký tự, không khoảng trắng/NUL), chuẩn hoá chữ thường. */
+export const GrantOwnerArgs = z.tuple([
+  z
+    .string()
+    .trim()
+    .toLowerCase()
+    .max(254)
+    .regex(/^[^\s@\0]+@[^\s@\0]+$/),
+]);
 
 /**
  * Cấp vai trò `owner` cho admin user theo email — CHỈ qua dòng lệnh trên máy chủ (không có route công khai, T-023):
@@ -14,8 +25,9 @@ export default async function grantOwner({
   args,
 }: Pick<ExecArgs, "container" | "args">): Promise<{ userId: string; created: boolean }> {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
-  const email = (args?.[0] ?? "").trim().toLowerCase();
-  if (!email || !email.includes("@")) throw new Error("Cách dùng: rbac:grant-owner <email>");
+  const input = GrantOwnerArgs.safeParse(args ?? []);
+  if (!input.success) throw new Error("Cách dùng: rbac:grant-owner <email>");
+  const email = input.data[0];
   const [user] = await container.resolve(Modules.USER).listUsers({ email }, { select: ["id"] });
   if (!user) throw new Error("Không thấy admin user với email đã cho");
   const rbac = container.resolve<RbacModuleService>(RBAC_MODULE);

@@ -10,6 +10,8 @@ import { isUniqueViolation, type InventoryAdjustment } from "../../modules/audit
 import type { AuditEntryInput } from "../../modules/audit/service";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
+import { optionalNote } from "../http/request-input";
+import { INVENTORY_CONFLICT_RETRY, inventoryGuardKind } from "./guard";
 
 /**
  * Điều chỉnh tồn có kiểm soát (T-025, INV03, SPEC-admin S-404): lý do trong danh mục, người làm, trước/sau, khóa chống
@@ -48,7 +50,8 @@ export const AdjustmentBody = z
     reason: z.enum(Object.keys(ADJUST_REASONS) as [AdjustReason, ...AdjustReason[]], {
       message: `phải là một trong ${Object.keys(ADJUST_REASONS).join("|")}`,
     }),
-    note: z.string().trim().max(500).optional(),
+    // D-149: rỗng/toàn khoảng trắng → null (không ghi chú).
+    note: optionalNote(500),
   })
   .strict()
   .superRefine((b, ctx) => {
@@ -66,7 +69,7 @@ export type AdjustmentInput = z.output<typeof AdjustmentBody>;
 export class AdjustError extends Error {
   constructor(
     readonly status: number,
-    readonly code: "NOT_FOUND" | "BELOW_RESERVED" | "IDEMPOTENCY_CONFLICT",
+    readonly code: "NOT_FOUND" | "BELOW_RESERVED" | "IDEMPOTENCY_CONFLICT" | typeof INVENTORY_CONFLICT_RETRY,
     message: string,
     readonly extra: Record<string, unknown> = {},
   ) {
@@ -136,7 +139,32 @@ export async function adjustInventory(
       });
     }
 
-    await setStocked(scope, input, after);
+    try {
+      await setStocked(scope, input, after);
+    } catch (e) {
+      // Hàng rào DB (T-185): số giữ đã tăng giữa lúc đọc và lúc ghi (đường ghi không qua khóa inventory_item) → cùng
+      // nghĩa BELOW_RESERVED, không 500. Ghi bị từ chối nên tồn không đổi.
+      const guard = inventoryGuardKind(e);
+      if (guard === null) throw e;
+      if (guard === "drift") {
+        // Số giữ bị ghi đè đồng thời (T-185) — ghi bị hủy, tồn không đổi; gửi lại cùng khóa đọc số mới.
+        throw new AdjustError(
+          409,
+          INVENTORY_CONFLICT_RETRY,
+          "Tồn kho vừa được cập nhật đồng thời — vui lòng thử lại",
+        );
+      }
+      const [now] = await scope
+        .resolve(Modules.INVENTORY)
+        .listInventoryLevels({ inventory_item_id: input.inventory_item_id, location_id: input.location_id });
+      const stockedNow = Number(now?.stocked_quantity ?? before);
+      const reservedNow = Number(now?.reserved_quantity ?? reserved);
+      throw new AdjustError(409, "BELOW_RESERVED", "Không thể giảm tồn xuống dưới số đang giữ cho đơn", {
+        stocked_quantity: stockedNow,
+        reserved_quantity: reservedNow,
+        max_decrease: Math.max(0, stockedNow - reservedNow),
+      });
+    }
     try {
       const adjustment = await ledger.recordAdjustment(
         {

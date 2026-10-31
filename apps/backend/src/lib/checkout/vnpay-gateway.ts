@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { vnpay } from "@x-shop/domain";
+import { interpretQueryResponseWithRotation } from "../payment/vnpay-secrets";
 import { CHECKOUT_CONFIG, getVnpayConfig, type VnpayRuntimeConfig } from "./config";
 
 /**
@@ -10,7 +11,10 @@ import { CHECKOUT_CONFIG, getVnpayConfig, type VnpayRuntimeConfig } from "./conf
 export interface QueryStatusInput {
   txnRef: string;
   amount: number;
-  /** Thời điểm tạo giao dịch (vnp_TransactionDate). */
+  /**
+   * `vnp_TransactionDate` = `vnp_CreateDate` của URL thanh toán gốc (T-170) — lấy qua `transactionDateOf()`
+   * (`./vnpay-transaction-date`), không lấy `payment_attempt.created_at`.
+   */
   transactionDate: Date;
   orderInfo: string;
 }
@@ -28,7 +32,8 @@ export interface VnpayGateway {
 /** sandbox/live: POST JSON querydr tới VNPAY_API_URL, có hạn chờ. */
 export class HttpVnpayGateway implements VnpayGateway {
   constructor(
-    private readonly cfg: Pick<VnpayRuntimeConfig, "tmnCode" | "hashSecret" | "apiUrl">,
+    private readonly cfg: Pick<VnpayRuntimeConfig, "tmnCode" | "hashSecret" | "apiUrl"> &
+      Partial<Pick<VnpayRuntimeConfig, "hashSecretPrevious">>,
     private readonly timeoutMs: number = CHECKOUT_CONFIG.queryTimeoutMs,
     private readonly serverIp = "127.0.0.1",
   ) {}
@@ -61,19 +66,22 @@ export class HttpVnpayGateway implements VnpayGateway {
         reason: name === "TimeoutError" || name === "AbortError" ? "timeout" : "network",
       };
     }
-    return vnpay.interpretQueryResponse(this.cfg, json, { txnRef: input.txnRef, amount: input.amount });
+    return interpretQueryResponseWithRotation(this.cfg, json, { txnRef: input.txnRef, amount: input.amount });
   }
 }
 
 /** mock (dev/test): cổng giả lập cùng thuật toán ký — `pay()` ghi kết quả để querydr thấy. */
 export class MockModeVnpayGateway implements VnpayGateway {
   readonly mock: vnpay.MockVnpayGateway;
-  constructor(private readonly cfg: Pick<VnpayRuntimeConfig, "tmnCode" | "hashSecret">) {
+  constructor(
+    private readonly cfg: Pick<VnpayRuntimeConfig, "tmnCode" | "hashSecret"> &
+      Partial<Pick<VnpayRuntimeConfig, "hashSecretPrevious">>,
+  ) {
     this.mock = new vnpay.MockVnpayGateway(cfg);
   }
   async queryStatus(input: QueryStatusInput): Promise<QueryStatusResult> {
     const res = this.mock.query(input.txnRef, input.amount);
-    return vnpay.interpretQueryResponse(this.cfg, res, { txnRef: input.txnRef, amount: input.amount });
+    return interpretQueryResponseWithRotation(this.cfg, res, { txnRef: input.txnRef, amount: input.amount });
   }
 }
 

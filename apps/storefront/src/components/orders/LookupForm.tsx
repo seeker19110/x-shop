@@ -5,6 +5,7 @@ import { lookupOrderAction } from "../../lib/orders/actions";
 import type { LookupState } from "../../lib/orders/types";
 import { Button } from "../ui/Button";
 import styles from "./Order.module.css";
+import { isNonEmpty } from "../../lib/presence";
 
 const INITIAL: LookupState = { status: "idle" };
 
@@ -29,10 +30,10 @@ export function LookupForm({ defaultRef = "" }: { defaultRef?: string }) {
           placeholder="XS-ABC123"
           required
           maxLength={32}
-          aria-invalid={refError ? true : undefined}
-          aria-describedby={refError ? "tra-cuu-ma-loi" : undefined}
+          aria-invalid={isNonEmpty(refError) ? true : undefined}
+          aria-describedby={isNonEmpty(refError) ? "tra-cuu-ma-loi" : undefined}
         />
-        {refError ? (
+        {isNonEmpty(refError) ? (
           <p id="tra-cuu-ma-loi" className={styles.alert}>
             {refError}
           </p>
@@ -48,10 +49,10 @@ export function LookupForm({ defaultRef = "" }: { defaultRef?: string }) {
           autoComplete="tel"
           required
           maxLength={32}
-          aria-invalid={phoneError ? true : undefined}
-          aria-describedby={phoneError ? "tra-cuu-sdt-loi" : undefined}
+          aria-invalid={isNonEmpty(phoneError) ? true : undefined}
+          aria-describedby={isNonEmpty(phoneError) ? "tra-cuu-sdt-loi" : undefined}
         />
-        {phoneError ? (
+        {isNonEmpty(phoneError) ? (
           <p id="tra-cuu-sdt-loi" className={styles.alert}>
             {phoneError}
           </p>

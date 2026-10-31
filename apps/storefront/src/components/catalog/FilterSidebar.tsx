@@ -3,6 +3,7 @@ import type { Facets } from "../../lib/catalog/types";
 import { Button } from "../ui/Button";
 import { FilterFields } from "./FilterFields";
 import styles from "./Filters.module.css";
+import { safeHref } from "../../lib/safe-url";
 
 /** Bộ lọc desktop: `<form method="get">` thuần — hoạt động không cần JS; URL là nguồn sự thật. */
 export function FilterSidebar({
@@ -16,7 +17,7 @@ export function FilterSidebar({
 }) {
   return (
     <aside className={styles.sidebar} aria-labelledby="bo-loc-tieu-de">
-      <form method="get" action={basePath} className={styles.sidebarForm}>
+      <form method="get" action={safeHref(basePath)} className={styles.sidebarForm}>
         <h2 id="bo-loc-tieu-de" className="visually-hidden">
           Bộ lọc
         </h2>

@@ -69,7 +69,7 @@ const CatalogImport = (): ReactNode => {
         },
       );
       setJob({ ...job, ...done, can_commit: false });
-      toast.success(done.replayed ? "Lần nhập này đã được ghi trước đó" : "Đã nhập vào catalog");
+      toast.success(done.replayed === true ? "Lần nhập này đã được ghi trước đó" : "Đã nhập vào catalog");
     });
 
   const rowErrors = job ? normalizeRowErrors(job.errors) : [];
@@ -98,7 +98,7 @@ const CatalogImport = (): ReactNode => {
         <Button onClick={preview} isLoading={busy} disabled={!picked}>
           Xem trước
         </Button>
-        {job && job.can_commit && !committed && (
+        {job?.can_commit === true && !committed && (
           <Button variant="primary" onClick={commit} isLoading={busy}>
             Ghi vào catalog
           </Button>

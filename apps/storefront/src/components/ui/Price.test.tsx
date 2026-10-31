@@ -1,3 +1,4 @@
+/* eslint-disable testing-library/no-container -- kiểm phần tử <s> (không có vai trò ARIA) để chứng minh gạch giá */
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { Price, discountPercent } from "./Price";

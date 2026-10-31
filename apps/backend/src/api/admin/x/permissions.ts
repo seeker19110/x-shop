@@ -43,6 +43,9 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
     also: ["price.write", "inventory.adjust"],
   },
   { method: "GET", path: "/admin/x/exports/products.csv", permission: "catalog.read" },
+  // File private (T-141, BE-FILE-005): xuất khách hàng/đơn/tồn (PII) + chunk nhập — cùng quyền với route xuất native tạo
+  // ra chúng (mặc định `settings.manage`, nhạy cảm → MFA). lib/upload/private.ts PRIVATE_FILE_PERMISSION.
+  { method: "GET", path: "/admin/x/files/:key", permission: "settings.manage" },
   // Vai trò (T-023)
   { method: "GET", path: "/admin/x/users/:id/roles", permission: "user.manage" },
   { method: "POST", path: "/admin/x/users/:id/roles", permission: "user.manage", reauth: true },
@@ -71,6 +74,15 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   { method: "POST", path: "/admin/x/orders/:id/shipments", permission: "fulfillment.create" },
   // T-044: nhân viên hủy đơn (thay route native đã đóng) — lý do + Idempotency-Key bắt buộc, đơn đã thu → mở hoàn tiền.
   { method: "POST", path: "/admin/x/orders/:id/cancel", permission: "order.cancel" },
+  // T-165 (D-118): hủy đơn có thanh toán CHƯA XÁC MINH sau khi đối chiếu tay trên cổng merchant — quyền riêng
+  // `payment.override` (chỉ owner; nhạy cảm → MFA), lý do + mã đối chiếu + Idempotency-Key bắt buộc. D-122: xác thực lại
+  // MFA gần đây (≤ ADMIN_REAUTH_MAX_AGE_SECONDS) như đổi quyền — thao tác không đảo ngược trên đơn có thể đã trừ tiền.
+  {
+    method: "POST",
+    path: "/admin/x/orders/:id/cancel-unverified",
+    permission: "payment.override",
+    reauth: true,
+  },
   // Đối soát COD/sao kê + báo cáo/dashboard ngoại lệ (T-028, §5.5, AT14): kế toán nhập chứng từ (settlement.import —
   // nhạy cảm, đòi MFA) và đóng chênh lệch; báo cáo theo report.read, dashboard theo exception.read.
   { method: "POST", path: "/admin/x/settlements/batches", permission: "settlement.import" },
@@ -85,6 +97,9 @@ export const ADMIN_X_PERMISSIONS: readonly AdminXRoute[] = [
   },
   { method: "GET", path: "/admin/x/reports/summary", permission: "report.read" },
   { method: "GET", path: "/admin/x/reports/exceptions", permission: "exception.read" },
+  // D-050 (WF-REL-007): phiên bản/commit build — chỉ sau đăng nhập, để smoke sau deploy so với tag mà không lộ cho người lạ
+  // (/x/health công khai cố ý không trả). Quyền không nhạy cảm (không đòi MFA) để tài khoản smoke chỉ-đọc dùng được.
+  { method: "GET", path: "/admin/x/version", permission: "report.read" },
   // Audit + điều chỉnh tồn (T-025)
   { method: "GET", path: "/admin/x/audit", permission: "audit.read" },
   { method: "POST", path: "/admin/x/inventory/adjustments", permission: "inventory.adjust" },

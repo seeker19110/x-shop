@@ -45,6 +45,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+// S-503 (SPEC-storefront): sticky CTA chỉ hiện khi khối mua ra khỏi viewport, ẩn khi input focus.
 describe("shouldShowSticky (product)", () => {
   it("chỉ hiện khi khối mua RA KHỎI viewport và không có ô nhập focus", () => {
     expect(shouldShowSticky({ buyBoxInView: true, textEntryFocused: false })).toBe(false);

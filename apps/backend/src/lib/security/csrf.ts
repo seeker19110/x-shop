@@ -1,6 +1,7 @@
 import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { sendProblem } from "../http/problem";
 import { getHttpSecurityConfig, type OriginList } from "./config";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Chống CSRF cho thao tác ghi dùng cookie (SEC01). Phiên Medusa (`connect.sid`, HttpOnly, production SameSite=Lax +
@@ -37,7 +38,7 @@ export function originAllowed(origin: string, allowed: OriginList): boolean {
 
 export function checkCsrf(input: CsrfInput): CsrfVerdict {
   if (!UNSAFE.has(input.method.toUpperCase())) return { ok: true };
-  if (!input.cookie || input.cookie.trim() === "") return { ok: true };
+  if (!isNonEmpty(input.cookie) || input.cookie.trim() === "") return { ok: true };
   const site = input.secFetchSite?.trim().toLowerCase();
   const origin = input.origin?.trim();
   if (origin !== undefined && origin !== "") {

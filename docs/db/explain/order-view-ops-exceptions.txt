@@ -1,0 +1,15 @@
+-- order-view-ops-exceptions
+-- Nguồn: apps/backend/src/lib/orders/view.ts presentOrder, cancel.ts → listOpsExceptions({ order_id, kind })
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["order_PF0123400","refund_request","late_payment","overpayment"]
+
+SELECT * FROM ops_exception WHERE order_id = $1 AND kind IN ($2, $3, $4) AND deleted_at IS NULL;
+
+Index Scan using "IDX_ops_exception_order_id" on ops_exception  (cost=0.28..8.30 rows=1 width=117) (actual time=0.008..0.008 rows=0 loops=1)
+  Index Cond: (order_id = 'order_PF0123400'::text)
+  Filter: ((deleted_at IS NULL) AND (kind = ANY ('{refund_request,late_payment,overpayment}'::text[])))
+  Rows Removed by Filter: 1
+  Buffers: shared hit=3
+Planning Time: 0.043 ms
+Execution Time: 0.014 ms

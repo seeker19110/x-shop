@@ -1,0 +1,222 @@
+-- catalog-search-sku
+-- Nguồn: listingSql — tìm "mẫu 00042" (trigram ứng viên, không danh mục)
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+--   cho phép Seq Scan catalog_variant_index: CTE `v` (giá trị + nhãn facet của phạm vi kênh) đọc mọi dòng của kênh khi không có danh mục — phần đếm dùng trigram; facet phải liệt kê mọi giá trị của phạm vi (giao ước API, T-058)
+-- Tham số: ["[\"sc_01M5W7AP9DR65Y1KT0NJHENNY1\",\"sc_01M5W7APM754528X7D3Q5S2KVW\"]","[\"sc_01M5W7AP9DR65Y1KT0NJHENNY1\",\"sc_01M5W7APM754528X7D3Q5S2KVW\"]","[\"sc_01M5W7AP9DR65Y1KT0NJHENNY1\",\"sc_01M5W7APM754528X7D3Q5S2KVW\"]","%00042%"," 00042"," mau"," 00042","[\"sc_01M5W7AP9DR65Y1KT0NJHENNY1\",\"sc_01M5W7APM754528X7D3Q5S2KVW\"]",24,0]
+
+WITH v AS MATERIALIZED (
+  SELECT color, color_label, color_hex, color_rank, size, size_label, size_rank, material, material_label
+  FROM catalog_variant_index WHERE sales_channel_id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb)))
+  GROUP BY color, color_label, color_hex, color_rank, size, size_label, size_rank, material, material_label
+  ), q AS (
+  SELECT product_id FROM catalog_variant_index WHERE sales_channel_id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb))) AND product_id IN (SELECT product_id FROM catalog_variant_index WHERE sales_channel_id = ANY(ARRAY(SELECT jsonb_array_elements_text($3::jsonb)))
+  AND search_text LIKE $4 AND strpos(' ' || search_text, $5) > 0)
+  GROUP BY product_id HAVING bool_or(strpos(' ' || search_text, $6) > 0) AND bool_or(strpos(' ' || search_text, $7) > 0)
+  ), s AS MATERIALIZED (
+  SELECT product_id, price, in_stock, created_at, color, size, material, TRUE AS fc, TRUE AS fs, TRUE AS fm, TRUE AS fp
+  FROM catalog_variant_index WHERE sales_channel_id = ANY(ARRAY(SELECT jsonb_array_elements_text($8::jsonb))) AND product_id IN (SELECT product_id FROM q)
+  ), g AS MATERIALIZED (
+  SELECT product_id, min(price) AS price_min, max(price) AS price_max, bool_or(in_stock) AS in_stock,
+  max(created_at) AS created_at
+  FROM s WHERE fc AND fs AND fm AND fp GROUP BY product_id
+  )
+  SELECT (SELECT count(*) FROM g)::int AS total,
+  COALESCE((SELECT json_agg(json_build_object(
+  'product_id', product_id, 'price_min', price_min, 'price_max', price_max, 'in_stock', in_stock
+  ) ORDER BY created_at DESC, product_id COLLATE "C" ASC) FROM (
+  SELECT * FROM g ORDER BY created_at DESC, product_id COLLATE "C" ASC LIMIT $9
+  OFFSET $10
+  ) p), '[]'::json) AS items,
+  COALESCE((SELECT json_agg(json_build_object(
+  'value', fv.value, 'label', fv.label, 'extra', fv.extra, 'rank', fv.rank, 'count', COALESCE(n.count, 0)
+  ) ORDER BY fv.rank ASC NULLS LAST, fv.label ASC, fv.value COLLATE "C" ASC)
+  FROM (
+  SELECT color AS value, min(color_label) AS label, min(color_hex) AS extra, min(color_rank) AS rank
+  FROM v WHERE color IS NOT NULL GROUP BY color
+  ) fv LEFT JOIN (
+  SELECT value, count(*)::int AS count FROM (
+  SELECT color AS value, product_id FROM s WHERE color IS NOT NULL AND fs AND fm AND fp
+  GROUP BY color, product_id
+  ) vp GROUP BY value
+  ) n ON n.value = fv.value), '[]'::json) AS color,
+  COALESCE((SELECT json_agg(json_build_object(
+  'value', fv.value, 'label', fv.label, 'extra', fv.extra, 'rank', fv.rank, 'count', COALESCE(n.count, 0)
+  ) ORDER BY fv.rank ASC NULLS LAST, fv.label ASC, fv.value COLLATE "C" ASC)
+  FROM (
+  SELECT size AS value, min(size_label) AS label, min(NULL::text) AS extra, min(size_rank) AS rank
+  FROM v WHERE size IS NOT NULL GROUP BY size
+  ) fv LEFT JOIN (
+  SELECT value, count(*)::int AS count FROM (
+  SELECT size AS value, product_id FROM s WHERE size IS NOT NULL AND fc AND fm AND fp
+  GROUP BY size, product_id
+  ) vp GROUP BY value
+  ) n ON n.value = fv.value), '[]'::json) AS size,
+  COALESCE((SELECT json_agg(json_build_object(
+  'value', fv.value, 'label', fv.label, 'extra', fv.extra, 'rank', fv.rank, 'count', COALESCE(n.count, 0)
+  ) ORDER BY fv.rank ASC NULLS LAST, fv.label ASC, fv.value COLLATE "C" ASC)
+  FROM (
+  SELECT material AS value, min(material_label) AS label, min(NULL::text) AS extra, min(NULL::int) AS rank
+  FROM v WHERE material IS NOT NULL GROUP BY material
+  ) fv LEFT JOIN (
+  SELECT value, count(*)::int AS count FROM (
+  SELECT material AS value, product_id FROM s WHERE material IS NOT NULL AND fc AND fs AND fp
+  GROUP BY material, product_id
+  ) vp GROUP BY value
+  ) n ON n.value = fv.value), '[]'::json) AS material;
+
+Result  (cost=7750.74..7750.75 rows=1 width=132) (actual time=49.815..49.848 rows=1 loops=1)
+  Buffers: shared hit=2580 read=2303
+  CTE v
+    ->  HashAggregate  (cost=7124.24..7174.34 rows=5010 width=39) (actual time=49.106..49.171 rows=162 loops=1)
+          Group Key: catalog_variant_index.color, catalog_variant_index.color_label, catalog_variant_index.color_hex, catalog_variant_index.color_rank, catalog_variant_index.size, catalog_variant_index.size_label, catalog_variant_index.size_rank, catalog_variant_index.material, catalog_variant_index.material_label
+          Batches: 1  Memory Usage: 233kB
+          Buffers: shared hit=2566 read=2303
+          InitPlan 1 (returns $0)
+            ->  ProjectSet  (cost=0.00..0.52 rows=100 width=32) (actual time=0.002..0.004 rows=2 loops=1)
+                  ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1 loops=1)
+          ->  Seq Scan on catalog_variant_index  (cost=0.00..5996.36 rows=50105 width=39) (actual time=0.199..21.994 rows=50105 loops=1)
+                Filter: (sales_channel_id = ANY ($0))
+                Buffers: shared hit=2566 read=2303
+  CTE s
+    ->  Nested Loop  (cost=73.01..90.05 rows=10 width=45) (actual time=0.126..0.141 rows=4 loops=1)
+          Buffers: shared hit=14
+          InitPlan 3 (returns $2)
+            ->  ProjectSet  (cost=0.00..0.52 rows=100 width=32) (actual time=0.001..0.002 rows=2 loops=1)
+                  ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1 loops=1)
+          ->  GroupAggregate  (cost=72.21..72.56 rows=2 width=13) (actual time=0.120..0.129 rows=1 loops=1)
+                Group Key: catalog_variant_index_2.product_id
+                Filter: (bool_or((strpos((' '::text || catalog_variant_index_2.search_text), ' mau'::text) > 0)) AND bool_or((strpos((' '::text || catalog_variant_index_2.search_text), ' 00042'::text) > 0)))
+                Buffers: shared hit=11
+                InitPlan 4 (returns $3)
+                  ->  ProjectSet  (cost=0.00..0.52 rows=100 width=32) (actual time=0.001..0.003 rows=2 loops=1)
+                        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1 loops=1)
+                InitPlan 5 (returns $4)
+                  ->  ProjectSet  (cost=0.00..0.52 rows=100 width=32) (actual time=0.010..0.012 rows=2 loops=1)
+                        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1 loops=1)
+                ->  Sort  (cost=71.17..71.20 rows=10 width=61) (actual time=0.114..0.120 rows=4 loops=1)
+                      Sort Key: catalog_variant_index_2.product_id
+                      Sort Method: quicksort  Memory: 25kB
+                      Buffers: shared hit=11
+                      ->  Nested Loop  (cost=54.30..71.00 rows=10 width=61) (actual time=0.104..0.113 rows=4 loops=1)
+                            Buffers: shared hit=11
+                            ->  Unique  (cost=54.01..54.02 rows=2 width=13) (actual time=0.091..0.095 rows=1 loops=1)
+                                  Buffers: shared hit=8
+                                  ->  Sort  (cost=54.01..54.02 rows=2 width=13) (actual time=0.090..0.093 rows=4 loops=1)
+                                        Sort Key: catalog_variant_index_3.product_id
+                                        Sort Method: quicksort  Memory: 25kB
+                                        Buffers: shared hit=8
+                                        ->  Bitmap Heap Scan on catalog_variant_index catalog_variant_index_3  (cost=34.32..54.00 rows=2 width=13) (actual time=0.081..0.086 rows=4 loops=1)
+                                              Recheck Cond: (search_text ~~ '%00042%'::text)
+                                              Filter: ((strpos((' '::text || search_text), ' 00042'::text) > 0) AND (sales_channel_id = ANY ($4)))
+                                              Heap Blocks: exact=1
+                                              Buffers: shared hit=8
+                                              ->  Bitmap Index Scan on "IDX_cvi_search_text_trgm"  (cost=0.00..34.32 rows=5 width=0) (actual time=0.055..0.056 rows=4 loops=1)
+                                                    Index Cond: (search_text ~~ '%00042%'::text)
+                                                    Buffers: shared hit=7
+                            ->  Index Scan using "IDX_cvi_product_id" on catalog_variant_index catalog_variant_index_2  (cost=0.29..8.44 rows=5 width=61) (actual time=0.011..0.013 rows=4 loops=1)
+                                  Index Cond: (product_id = catalog_variant_index_3.product_id)
+                                  Filter: (sales_channel_id = ANY ($3))
+                                  Buffers: shared hit=3
+          ->  Index Scan using "IDX_cvi_product_id" on catalog_variant_index catalog_variant_index_1  (cost=0.29..8.44 rows=5 width=41) (actual time=0.005..0.006 rows=4 loops=1)
+                Index Cond: (product_id = catalog_variant_index_2.product_id)
+                Filter: (sales_channel_id = ANY ($2))
+                Buffers: shared hit=3
+  CTE g
+    ->  HashAggregate  (cost=0.21..0.22 rows=1 width=57) (actual time=0.137..0.139 rows=1 loops=1)
+          Group Key: s.product_id
+          Batches: 1  Memory Usage: 24kB
+          Buffers: shared hit=14
+          ->  CTE Scan on s  (cost=0.00..0.20 rows=1 width=49) (actual time=0.128..0.132 rows=4 loops=1)
+                Filter: (fc AND fs AND fm AND fp)
+                Buffers: shared hit=14
+  InitPlan 8 (returns $9)
+    ->  Aggregate  (cost=0.02..0.03 rows=1 width=8) (actual time=0.140..0.142 rows=1 loops=1)
+          Buffers: shared hit=14
+          ->  CTE Scan on g  (cost=0.00..0.02 rows=1 width=0) (actual time=0.138..0.140 rows=1 loops=1)
+                Buffers: shared hit=14
+  InitPlan 9 (returns $10)
+    ->  Aggregate  (cost=0.05..0.06 rows=1 width=32) (actual time=0.015..0.018 rows=1 loops=1)
+          ->  Limit  (cost=0.03..0.04 rows=1 width=89) (actual time=0.006..0.008 rows=1 loops=1)
+                ->  Sort  (cost=0.03..0.04 rows=1 width=89) (actual time=0.005..0.007 rows=1 loops=1)
+                      Sort Key: g_1.created_at DESC, g_1.product_id COLLATE "C"
+                      Sort Method: quicksort  Memory: 25kB
+                      ->  CTE Scan on g g_1  (cost=0.00..0.02 rows=1 width=89) (actual time=0.001..0.002 rows=1 loops=1)
+  InitPlan 10 (returns $11)
+    ->  Aggregate  (cost=162.00..162.01 rows=1 width=32) (actual time=49.417..49.420 rows=1 loops=1)
+          Buffers: shared hit=2566 read=2303
+          ->  Sort  (cost=160.49..160.99 rows=200 width=104) (actual time=49.379..49.383 rows=9 loops=1)
+                Sort Key: (min(v.color_rank)), (min(v.color_label)), v.color COLLATE "C"
+                Sort Method: quicksort  Memory: 25kB
+                Buffers: shared hit=2566 read=2303
+                ->  Hash Left Join  (cost=150.31..152.85 rows=200 width=104) (actual time=49.361..49.369 rows=9 loops=1)
+                      Hash Cond: (v.color = n.value)
+                      Buffers: shared hit=2566 read=2303
+                      ->  HashAggregate  (cost=150.05..152.05 rows=200 width=100) (actual time=49.313..49.316 rows=9 loops=1)
+                            Group Key: v.color
+                            Batches: 1  Memory Usage: 40kB
+                            Buffers: shared hit=2566 read=2303
+                            ->  CTE Scan on v  (cost=0.00..100.20 rows=4985 width=100) (actual time=49.113..49.240 rows=162 loops=1)
+                                  Filter: (color IS NOT NULL)
+                                  Buffers: shared hit=2566 read=2303
+                      ->  Hash  (cost=0.25..0.25 rows=1 width=36) (actual time=0.026..0.027 rows=2 loops=1)
+                            Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                            ->  Subquery Scan on n  (cost=0.23..0.25 rows=1 width=36) (actual time=0.021..0.023 rows=2 loops=1)
+                                  ->  HashAggregate  (cost=0.23..0.24 rows=1 width=36) (actual time=0.019..0.020 rows=2 loops=1)
+                                        Group Key: s_1.color
+                                        Batches: 1  Memory Usage: 24kB
+                                        ->  HashAggregate  (cost=0.21..0.22 rows=1 width=64) (actual time=0.013..0.014 rows=2 loops=1)
+                                              Group Key: s_1.color, s_1.product_id
+                                              Batches: 1  Memory Usage: 24kB
+                                              ->  CTE Scan on s s_1  (cost=0.00..0.20 rows=1 width=64) (actual time=0.003..0.004 rows=4 loops=1)
+                                                    Filter: ((color IS NOT NULL) AND fs AND fm AND fp)
+  InitPlan 11 (returns $12)
+    ->  Aggregate  (cost=162.00..162.01 rows=1 width=32) (actual time=0.126..0.128 rows=1 loops=1)
+          ->  Sort  (cost=160.49..160.99 rows=200 width=104) (actual time=0.095..0.097 rows=13 loops=1)
+                Sort Key: (min(v_1.size_rank)), (min(v_1.size_label)), v_1.size COLLATE "C"
+                Sort Method: quicksort  Memory: 25kB
+                ->  Hash Left Join  (cost=150.31..152.85 rows=200 width=104) (actual time=0.078..0.085 rows=13 loops=1)
+                      Hash Cond: (v_1.size = n_1.value)
+                      ->  HashAggregate  (cost=150.05..152.05 rows=200 width=100) (actual time=0.056..0.060 rows=13 loops=1)
+                            Group Key: v_1.size
+                            Batches: 1  Memory Usage: 40kB
+                            ->  CTE Scan on v v_1  (cost=0.00..100.20 rows=4985 width=68) (actual time=0.001..0.016 rows=162 loops=1)
+                                  Filter: (size IS NOT NULL)
+                      ->  Hash  (cost=0.25..0.25 rows=1 width=36) (actual time=0.017..0.017 rows=2 loops=1)
+                            Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                            ->  Subquery Scan on n_1  (cost=0.23..0.25 rows=1 width=36) (actual time=0.014..0.015 rows=2 loops=1)
+                                  ->  HashAggregate  (cost=0.23..0.24 rows=1 width=36) (actual time=0.013..0.014 rows=2 loops=1)
+                                        Group Key: s_2.size
+                                        Batches: 1  Memory Usage: 24kB
+                                        ->  HashAggregate  (cost=0.21..0.22 rows=1 width=64) (actual time=0.008..0.009 rows=2 loops=1)
+                                              Group Key: s_2.size, s_2.product_id
+                                              Batches: 1  Memory Usage: 24kB
+                                              ->  CTE Scan on s s_2  (cost=0.00..0.20 rows=1 width=64) (actual time=0.002..0.002 rows=4 loops=1)
+                                                    Filter: ((size IS NOT NULL) AND fc AND fm AND fp)
+  InitPlan 12 (returns $13)
+    ->  Aggregate  (cost=162.00..162.01 rows=1 width=32) (actual time=0.106..0.108 rows=1 loops=1)
+          ->  Sort  (cost=160.49..160.99 rows=200 width=104) (actual time=0.087..0.089 rows=9 loops=1)
+                Sort Key: (min(NULL::integer)), (min(v_2.material_label)), v_2.material COLLATE "C"
+                Sort Method: quicksort  Memory: 25kB
+                ->  Hash Left Join  (cost=150.31..152.85 rows=200 width=104) (actual time=0.073..0.078 rows=9 loops=1)
+                      Hash Cond: (v_2.material = n_2.value)
+                      ->  HashAggregate  (cost=150.05..152.05 rows=200 width=100) (actual time=0.056..0.059 rows=9 loops=1)
+                            Group Key: v_2.material
+                            Batches: 1  Memory Usage: 40kB
+                            ->  CTE Scan on v v_2  (cost=0.00..100.20 rows=4985 width=64) (actual time=0.001..0.017 rows=162 loops=1)
+                                  Filter: (material IS NOT NULL)
+                      ->  Hash  (cost=0.25..0.25 rows=1 width=36) (actual time=0.012..0.012 rows=1 loops=1)
+                            Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                            ->  Subquery Scan on n_2  (cost=0.23..0.25 rows=1 width=36) (actual time=0.010..0.011 rows=1 loops=1)
+                                  ->  HashAggregate  (cost=0.23..0.24 rows=1 width=36) (actual time=0.009..0.010 rows=1 loops=1)
+                                        Group Key: s_3.material
+                                        Batches: 1  Memory Usage: 24kB
+                                        ->  HashAggregate  (cost=0.21..0.22 rows=1 width=64) (actual time=0.006..0.007 rows=1 loops=1)
+                                              Group Key: s_3.material, s_3.product_id
+                                              Batches: 1  Memory Usage: 24kB
+                                              ->  CTE Scan on s s_3  (cost=0.00..0.20 rows=1 width=64) (actual time=0.001..0.002 rows=4 loops=1)
+                                                    Filter: ((material IS NOT NULL) AND fc AND fs AND fp)
+Planning:
+  Buffers: shared hit=20
+Planning Time: 0.957 ms
+Execution Time: 50.161 ms

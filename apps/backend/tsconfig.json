@@ -4,6 +4,7 @@
     "target": "ES2022",
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
+    "skipLibCheck": true,
     "skipDefaultLibCheck": true,
     "declaration": false,
     "sourceMap": false,

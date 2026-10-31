@@ -7,7 +7,7 @@ const job = (over: Partial<ImportJobView> = {}): ImportJobView => ({
   status: "previewed",
   // Băm có dãy "0" + 9 chữ số — trông như số điện thoại nếu để liền.
   file_hash: `ab0912345678cd${"e".repeat(50)}`,
-  file_name: "khach-an-0912345678@example.vn.csv",
+  file_name: "khach-an-0912345678@example.test.csv",
   summary: {
     rows_total: 3,
     rows_valid: 1,
@@ -41,7 +41,7 @@ describe("importAuditChanges (audit nhập CSV, che PII)", () => {
     const raw = JSON.stringify(changes);
     expect(raw).not.toContain("khach-an");
     expect(raw).not.toContain("HYPERLINK");
-    expect(raw).not.toContain("@example.vn");
+    expect(raw).not.toContain("@example.test");
   });
 
   it("băm file đi qua bộ che PII nguyên vẹn (nhóm 8 ký tự), ghép lại đúng băm gốc", () => {

@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
-import { Modules } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
+import { createCustomerAccountWorkflow, createPromotionsWorkflow } from "@medusajs/medusa/core-flows";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
-import { vnpay } from "@x-shop/domain";
+import { isNonEmpty, listWards, vnpay } from "@x-shop/domain";
+import { CHECKOUT_MESSAGES } from "@x-shop/domain/validation";
 import Redis from "ioredis";
 import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
 import { VNPAY_DEV_DEFAULTS } from "../../src/lib/env";
+import { GhnError, MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
+import * as shippingRates from "../../src/lib/shipping/rates";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { submitCheckoutWorkflow } from "../../src/workflows/checkout/submit-checkout";
@@ -57,11 +61,13 @@ interface Body {
   payment_url: string;
   code: string;
   field: string;
+  errors: Array<{ param: string; reason: string }>;
   action: string;
   detail: string;
   status: number;
   lines: unknown[];
   replacement: string;
+  trace_id: string;
 }
 /** Phần axios tối thiểu do test runner cấp. */
 interface Res {
@@ -75,7 +81,7 @@ interface Api {
 }
 
 const newKey = () => `k-${randomUUID()}`;
-const CONTACT = { name: "Nguyễn Văn An", phone: "0912 345 678", email: "an@example.vn" };
+const CONTACT = { name: "Nguyễn Văn An", phone: "0912 345 678", email: "an@example.test" };
 
 /** Giỏ mà test runner nhắm tới (cart_id) — handler hook làm lỗi bước cuối để kiểm bù trừ. */
 const failBeforeFinalize = new Set<string>();
@@ -90,12 +96,40 @@ async function leakedLocks(keys: string[]): Promise<string[]> {
     await redis.quit();
   }
 }
+/** GHN giả lập có núm cho T-153: đếm lần báo phí, đổi phí, đổi mã dịch vụ trả về, sập. */
+class ScriptedGhn extends MockModeGhnClient {
+  quoteCalls = 0;
+  feeOverride: number | null = null;
+  serviceOverride: string | null = null;
+  down = false;
+  override async quoteFee(input: Parameters<MockModeGhnClient["quoteFee"]>[0]) {
+    this.quoteCalls += 1;
+    if (this.down) throw new GhnError("unavailable", "GHN sập (giả lập)", { status: 503 });
+    const fee = await super.quoteFee(input);
+    return {
+      fee: this.feeOverride ?? fee.fee,
+      service: this.serviceOverride ?? fee.service,
+    };
+  }
+}
+
+/**
+ * CHỈ để đối chứng với mã trước T-153: mã đó giữ cache phí trong bộ nhớ (`clearShippingFeeCache`), gọi hàm này = submit ở
+ * bản sao có cache trống → test đỏ. Ở mã hiện tại hàm KHÔNG LÀM GÌ (không còn trạng thái báo phí trong tiến trình).
+ * Bằng chứng submit không phụ thuộc tiến trình nằm ở cặp test: "GHN sập → 200, không gọi GHN" (phí lấy từ DB, không từ
+ * hãng hay bộ nhớ) và "`shipping: null` → 503" (bỏ ảnh chụp trong DB thì không còn nguồn nào khác để dùng lại phí).
+ */
+async function asOtherReplica(): Promise<void> {
+  const clear = (shippingRates as Record<string, unknown>)["clearShippingFeeCache"];
+  if (typeof clear === "function") await (clear as () => unknown)();
+}
+
 /** Giỏ → độ trễ (ms) trước khi chốt — giữ attempt ở `preparing` để kiểm nhánh 202. */
 const slowBeforeFinalize = new Map<string, number>();
 submitCheckoutWorkflow.hooks.orderPrepared(async ({ cart_id }) => {
   if (failBeforeFinalize.has(cart_id)) throw new Error("lỗi giả lập trước khi chốt đơn");
   const delay = slowBeforeFinalize.get(cart_id);
-  if (delay) await new Promise((r) => setTimeout(r, delay));
+  if (delay !== undefined && delay !== 0) await new Promise((r) => setTimeout(r, delay));
 });
 
 medusaIntegrationTestRunner({
@@ -120,7 +154,7 @@ medusaIntegrationTestRunner({
           region_id: fx.regionId,
           items: items.map(([key, quantity]) => ({ variant_id: fx.variants[key]!.id, quantity })),
         },
-        cfg(auth ? { authorization: `Bearer ${auth}` } : {}),
+        cfg(isNonEmpty(auth) ? { authorization: `Bearer ${auth}` } : {}),
       );
       expect({ status: res.status, data: res.status === 200 ? null : res.data }).toEqual({
         status: 200,
@@ -133,7 +167,7 @@ medusaIntegrationTestRunner({
       return api.post(
         "/store/x/checkout/quote",
         { cart_id: cartId, payment_method: "cod", address: HANOI_ADDRESS, ...extra },
-        cfg(auth ? { authorization: `Bearer ${auth}` } : {}),
+        cfg(isNonEmpty(auth) ? { authorization: `Bearer ${auth}` } : {}),
       );
     }
 
@@ -153,7 +187,7 @@ medusaIntegrationTestRunner({
       return api.post(
         "/store/x/checkout/submit",
         body,
-        cfg({ "Idempotency-Key": key, ...(auth ? { authorization: `Bearer ${auth}` } : {}) }),
+        cfg({ "Idempotency-Key": key, ...(isNonEmpty(auth) ? { authorization: `Bearer ${auth}` } : {}) }),
       );
     }
 
@@ -218,6 +252,124 @@ medusaIntegrationTestRunner({
       });
     });
 
+    /**
+     * FE-FORM-001: route kiểm lại bằng CÙNG schema với form storefront (`@x-shop/domain/validation`). Gửi thẳng (bỏ qua
+     * client, như curl) dữ liệu sai → 422 problem+json, `field` = lỗi đầu tiên (hợp đồng cũ), `errors[]` = mọi trường sai
+     * với thông điệp của schema dùng chung; không tạo quote/attempt/đơn.
+     */
+    describe("FE-FORM-001 — dữ liệu sai gửi thẳng tới route → 422 theo từng field", () => {
+      const M = CHECKOUT_MESSAGES;
+
+      it("quote: nhiều trường sai → errors[] đủ từng trường, thông điệp của schema dùng chung", async () => {
+        const cartId = await createCart([["Đen/S", 1]]);
+        const res = await api.post(
+          "/store/x/checkout/quote",
+          {
+            cart_id: cartId,
+            payment_method: "tien-mat",
+            address: { province_code: "", ward_code: 5, line: "a" },
+            discount_code: 7,
+          },
+          cfg(),
+        );
+        expect(res.status).toBe(422);
+        expect(res.headers["content-type"]).toMatch(/^application\/problem\+json/);
+        expect(res.data).toMatchObject({ code: "VALIDATION", field: "payment_method", detail: M.payment });
+        expect(res.data.errors).toEqual([
+          { param: "payment_method", reason: M.payment },
+          { param: "address.province_code", reason: M.province },
+          { param: "address.ward_code", reason: M.ward },
+          { param: "address.line", reason: M.line },
+          { param: "discount_code", reason: M.discount },
+        ]);
+        expect(await service().listCheckoutQuotes({ cart_id: cartId })).toEqual([]);
+      });
+
+      it("submit: liên hệ sai, thiếu địa chỉ, trường thừa → errors[] theo field; không attempt, không đơn", async () => {
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const { address: _omit, ...noAddress } = submitBody(q);
+        const res = await submit({
+          ...noAddress,
+          contact: { name: "  ", phone: "0212345678", email: "khong-phai-email" },
+          ghi_chu: "x",
+        });
+        expect(res.status).toBe(422);
+        expect(res.headers["content-type"]).toMatch(/^application\/problem\+json/);
+        expect(res.data).toMatchObject({ code: "VALIDATION", field: "contact.name", detail: M.name });
+        expect(res.data.errors).toEqual([
+          { param: "contact.name", reason: M.name },
+          { param: "contact.phone", reason: M.phone },
+          { param: "contact.email", reason: M.email },
+          { param: "address", reason: M.address },
+          { param: "ghi_chu", reason: M.unknownKey },
+        ]);
+        expect(await service().listCheckoutAttempts({ cart_id: cartId })).toEqual([]);
+        expect(await countOrders(container)).toBe(0);
+      });
+
+      it("sai hình dạng: thân null/chuỗi → 400, mảng/contact mảng/cart_version chuỗi → 422 có field; không 500", async () => {
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const json = (body: string) =>
+          api.post("/store/x/checkout/submit", body, {
+            ...cfg({ "Idempotency-Key": newKey(), "content-type": "application/json" }),
+            transformRequest: [(d: unknown) => d],
+          });
+        // JSON gốc không phải object/mảng bị bộ parse JSON (strict) của framework chặn trước route: 400 INVALID_DATA.
+        const cases: Array<[string, Promise<Res>, number, string, string | undefined]> = [
+          ["null", json("null"), 400, "INVALID_DATA", undefined],
+          ["chuỗi", json('"abc"'), 400, "INVALID_DATA", undefined],
+          ["mảng", json("[]"), 422, "VALIDATION", "body"],
+          ["contact mảng", submit({ ...submitBody(q), contact: [CONTACT] }), 422, "VALIDATION", "contact"],
+          [
+            "cart_version chuỗi",
+            submit({ ...submitBody(q), cart_version: "1" }),
+            422,
+            "VALIDATION",
+            "cart_version",
+          ],
+        ];
+        for (const [name, pending, status, code, field] of cases) {
+          const res = await pending;
+          expect({ name, status: res.status, code: res.data.code, field: res.data.field }).toEqual({
+            name,
+            status,
+            code,
+            field,
+          });
+          if (status === 422)
+            expect({ name, errors: res.data.errors.length > 0 }).toEqual({ name, errors: true });
+        }
+        expect(await service().listCheckoutAttempts({ cart_id: cartId })).toEqual([]);
+      });
+
+      it("đồng thời: 8 submit sai + 1 submit đúng cùng giỏ → 8 × 422, đúng 1 đơn", async () => {
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const bad = Array.from({ length: 8 }, (_, i) =>
+          submit({ ...submitBody(q), contact: { ...CONTACT, phone: `0${i}` } }),
+        );
+        const [good, ...rest] = await Promise.all([submit(submitBody(q)), ...bad]);
+        expect(rest.map((r) => [r.status, r.data.field])).toEqual(
+          Array.from({ length: 8 }, () => [422, "contact.phone"]),
+        );
+        expect(good!.status).toBe(200);
+        expect(await countOrders(container)).toBe(1);
+      });
+
+      it("được phép (đối chứng): SĐT +84 có khoảng trắng, email rỗng → server chuẩn hoá, đặt được", async () => {
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const res = await submit(
+          submitBody(q, { contact: { name: "  Trần   Thị  Bình ", phone: "+84 912 345 678", email: "" } }),
+        );
+        expect(res.status).toBe(200);
+        const [fin] = await service().listOrderFinances({ order_id: res.data.order.id });
+        expect(fin!.contact).toEqual({ name: "Trần Thị Bình", phone: "0912345678", email: null });
+      });
+    });
+
     describe("submit COD / VNPAY", () => {
       it("S-009 COD → 200 placed + reservation gắn line_item đúng một bộ; snapshot không đổi khi giá đổi sau", async () => {
         const cartId = await createCart([
@@ -231,6 +383,7 @@ medusaIntegrationTestRunner({
         expect(res.data).toMatchObject({
           state: "ready",
           cart_id: cartId,
+          cart_version: q.cart_version,
           payment_method: "cod",
           payment_url: null,
           order: { state: "placed", total: 1_330_000, payment_method: "cod", hold_expires_at: null },
@@ -343,6 +496,68 @@ medusaIntegrationTestRunner({
       });
     });
 
+    describe("T-170 — vnp_CreateDate của URL thanh toán lưu vào attempt (vnp_TransactionDate của querydr/refund)", () => {
+      /** Trễ giả giữa prepare (mốc `prepared.now` = vnp_CreateDate) và INSERT attempt (mốc `created_at` = now() của DB). */
+      function delayAttemptInsert(...delays: number[]) {
+        const svc = service();
+        const original = svc.insertPaymentAttempt.bind(svc);
+        let call = 0;
+        return jest.spyOn(svc, "insertPaymentAttempt").mockImplementation(async (input) => {
+          const ms = delays[Math.min(call++, delays.length - 1)]!;
+          await new Promise((r) => setTimeout(r, ms));
+          return original(input);
+        });
+      }
+      const createDateOf = (paymentUrl: string) => new URL(paymentUrl).searchParams.get("vnp_CreateDate");
+
+      it("giá trị lưu = vnp_CreateDate trong URL (yyyyMMddHHmmss GMT+7), kể cả khi INSERT attempt trễ > 1 s so với prepare", async () => {
+        const spy = delayAttemptInsert(1_100);
+        try {
+          const cartId = await createCart([["Đen/S", 1]]);
+          const q = await quoteOk(cartId, { payment_method: "vnpay" });
+          const res = await submit(submitBody(q));
+          expect(res.status).toBe(200);
+          expect(spy).toHaveBeenCalledTimes(1);
+          const [pa] = await service().listPaymentAttempts({ order_id: res.data.order.id });
+          const sent = createDateOf(res.data.payment_url);
+          expect(sent).toMatch(/^\d{14}$/);
+          expect(pa!.vnp_create_date).toBe(sent);
+          // Đối chứng: trễ đủ để `created_at` (cách cũ) rơi sang giây khác — dùng nó cho vnp_TransactionDate là sai.
+          expect(vnpay.toVnpDate(new Date(pa!.created_at))).not.toBe(sent);
+          // Chuỗi lưu đọc lại được đúng một mốc và ký lại ra đúng chuỗi đó (không lệch múi giờ qua Date).
+          expect(vnpay.toVnpDate(vnpay.fromVnpDate(sent!)!)).toBe(sent);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it("đồng thời: hai đơn VNPAY submit song song, trễ khác nhau → mỗi attempt mang đúng vnp_CreateDate của URL của nó", async () => {
+        const spy = delayAttemptInsert(1_100, 1_600);
+        try {
+          const carts = await Promise.all([createCart([["Đen/S", 1]]), createCart([["Trắng/S", 1]])]);
+          const quotes = await Promise.all(carts.map((c) => quoteOk(c, { payment_method: "vnpay" })));
+          const results = await Promise.all(quotes.map((q) => submit(submitBody(q))));
+          expect(results.map((r) => r.status)).toEqual([200, 200]);
+          for (const r of results) {
+            const [pa] = await service().listPaymentAttempts({ order_id: r.data.order.id });
+            expect({ ref: pa!.txn_ref, date: pa!.vnp_create_date }).toEqual({
+              ref: new URL(r.data.payment_url).searchParams.get("vnp_TxnRef"),
+              date: createDateOf(r.data.payment_url),
+            });
+          }
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it("COD → không có payment_attempt (không có gì để lưu)", async () => {
+        const cartId = await createCart([["Đen/S", 1]]);
+        const res = await submit(submitBody(await quoteOk(cartId)));
+        expect(res.status).toBe(200);
+        expect(await service().listPaymentAttempts({ order_id: res.data.order.id })).toEqual([]);
+      });
+    });
+
     describe("AT03 — giá đổi giữa quote và submit", () => {
       it("409 PRICE_CHANGED kèm quote mới; không đơn, không reservation; xác nhận quote mới thì đặt được", async () => {
         const cartId = await createCart([["Đen/M", 1]]);
@@ -386,6 +601,193 @@ medusaIntegrationTestRunner({
         expect(expired.status).toBe(409);
         expect(expired.data.code).toBe("QUOTE_EXPIRED");
         expect(await countOrders(container)).toBe(0);
+      });
+    });
+
+    describe("T-153 — phí ship đã báo còn hiệu lực từ quote tới submit, qua mọi bản sao", () => {
+      let ghn: ScriptedGhn;
+      beforeEach(() => {
+        ghn = new ScriptedGhn();
+        setGhnClientForTest(ghn);
+      });
+      afterEach(() => setGhnClientForTest(null));
+
+      const otherWard = () => listWards("01").find((w) => w.code !== HANOI_ADDRESS.ward_code)!.code;
+      const storedQuote = async (id: string) => (await service().listCheckoutQuotes({ id }))[0]!;
+
+      it("quote ở bản B, GHN sập, submit ở bản A (cache trống), quote còn hạn → 200 đúng phí đã báo, không hỏi GHN", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        expect([q.shipping_fee, q.total, ghn.quoteCalls]).toEqual([30_000, 730_000, 1]);
+        ghn.down = true;
+        await asOtherReplica();
+
+        const res = await submit(submitBody(q));
+        expect({ status: res.status, code: res.data.code }).toEqual({ status: 200, code: undefined });
+        expect(res.data.order.total).toBe(730_000);
+        expect(ghn.quoteCalls).toBe(1);
+        expect(await countOrders(container)).toBe(1);
+      });
+
+      it("GHN đổi phí trong hạn quote, submit ở bản A (cache trống) → đặt với phí đã báo 30 000, không SHIPPING_CHANGED", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        ghn.feeOverride = 32_000;
+        await asOtherReplica();
+
+        const res = await submit(submitBody(q));
+        expect({ status: res.status, code: res.data.code }).toEqual({ status: 200, code: undefined });
+        expect(res.data.order.total).toBe(730_000);
+        expect(ghn.quoteCalls).toBe(1);
+      });
+
+      it("hãng trả mã dịch vụ khác cấu hình → phí vẫn dùng lại khi đầu vào không đổi; đơn ghi mã hãng trả", async () => {
+        ghn.serviceOverride = "53320";
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        expect((q as unknown as { shipping_quote: { service: string } }).shipping_quote.service).toBe(
+          "53320",
+        );
+        ghn.down = true;
+
+        const res = await submit(submitBody(q));
+        expect({ status: res.status, code: res.data.code }).toEqual({ status: 200, code: undefined });
+        expect(res.data.order.total).toBe(730_000);
+        expect(ghn.quoteCalls).toBe(1);
+        const { data } = await container.resolve("query").graph({
+          entity: "order",
+          fields: ["id", "shipping_methods.data"],
+          filters: { id: res.data.order.id },
+        });
+        const methods = (data[0] as { shipping_methods: Array<{ data: { service?: string } }> })
+          .shipping_methods;
+        expect(methods.map((m) => m.data.service)).toEqual(["53320"]);
+      });
+
+      it("đồng thời: GHN sập, hai tab submit song song ở bản sao cache trống → một đơn, đúng phí đã báo", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        ghn.down = true;
+        await asOtherReplica();
+
+        const [a, b] = await Promise.all([submit(submitBody(q)), submit(submitBody(q))]);
+        expect([a.status, b.status]).toEqual([200, 200]);
+        expect(a.data.order.id).toBe(b.data.order.id);
+        expect(a.data.order.total).toBe(730_000);
+        expect(await countOrders(container)).toBe(1);
+        expect(ghn.quoteCalls).toBe(1);
+      });
+
+      it("đổi phường lúc submit → hỏi lại GHN; phí khác → 409 SHIPPING_CHANGED kèm quote mới; xác nhận thì đặt đúng phí mới", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        ghn.feeOverride = 35_000;
+        const moved = { ...HANOI_ADDRESS, ward_code: otherWard() };
+
+        const res = await submit(submitBody(q, { address: moved }));
+        expect(res.status).toBe(409);
+        expect(res.data).toMatchObject({ code: "SHIPPING_CHANGED", action: "confirm_new_quote" });
+        expect(res.data.quote).toMatchObject({ shipping_fee: 35_000, total: 735_000 });
+        expect(ghn.quoteCalls).toBe(2);
+        expect(await countOrders(container)).toBe(0);
+
+        // Quote mới mang báo phí mới: xác nhận ngay → dùng lại phí đó (không hỏi GHN lần nữa).
+        const ok = await submit(submitBody(res.data.quote, { address: moved }));
+        expect(ok.status).toBe(200);
+        expect(ok.data.order.total).toBe(735_000);
+        expect(ghn.quoteCalls).toBe(2);
+      });
+
+      it("đổi phường mà phí như cũ → hỏi lại GHN rồi đặt được; đổi phường khi GHN sập → 503, không đặt bằng phí cũ", async () => {
+        const moved = { ...HANOI_ADDRESS, ward_code: otherWard() };
+        const c1 = await createCart([["Đen/M", 1]]);
+        const q1 = await quoteOk(c1);
+        const same = await submit(submitBody(q1, { address: moved }));
+        expect(same.status).toBe(200);
+        expect(same.data.order.total).toBe(730_000);
+        expect(ghn.quoteCalls).toBe(2);
+
+        const c2 = await createCart([["Trắng/M", 1]]);
+        const q2 = await quoteOk(c2);
+        ghn.down = true;
+        const down = await submit(submitBody(q2, { address: moved }));
+        expect(down.status).toBe(503);
+        expect(down.data.code).toBe("SHIPPING_UNAVAILABLE");
+        expect(await countOrders(container)).toBe(1);
+      });
+
+      it("khối lượng giỏ đổi (cân nặng biến thể sửa sau quote, giỏ giữ nguyên) → hỏi lại GHN, 409 SHIPPING_CHANGED", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        await container
+          .resolve(Modules.PRODUCT)
+          .updateProductVariants(fx.variants["Đen/M"]!.id, { weight: 2_000 });
+
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(409);
+        expect(res.data.code).toBe("SHIPPING_CHANGED");
+        // Bảng phí giả lập: 30 000 tới 1 kg + 5 000 mỗi 500 g → 2 kg = 40 000.
+        expect(res.data.quote).toMatchObject({ shipping_fee: 40_000 });
+        expect(ghn.quoteCalls).toBe(2);
+        expect(await countOrders(container)).toBe(0);
+      });
+
+      it("đổi phương thức thanh toán so với quote → không dùng lại phí đã báo (GHN sập → 503)", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        ghn.down = true;
+        const res = await submit(submitBody(q, { payment_method: "vnpay" }));
+        expect(res.status).toBe(503);
+        expect(res.data.code).toBe("SHIPPING_UNAVAILABLE");
+      });
+
+      it("quote hết hạn → QUOTE_EXPIRED, quote lại thì hỏi GHN; báo phí hết hạn (quote còn hạn) → hỏi lại, phí khác → SHIPPING_CHANGED", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q1 = await quoteOk(cartId);
+        ghn.feeOverride = 32_000;
+        await service().updateCheckoutQuotes({ id: q1.id, expires_at: new Date(Date.now() - 1000) });
+        const expired = await submit(submitBody(q1));
+        expect(expired.data.code).toBe("QUOTE_EXPIRED");
+        expect(ghn.quoteCalls).toBe(1);
+        const q2 = await quoteOk(cartId);
+        expect(q2.shipping_fee).toBe(32_000);
+        expect(ghn.quoteCalls).toBe(2);
+
+        ghn.feeOverride = 34_000;
+        const stored = await storedQuote(q2.id);
+        await service().updateCheckoutQuotes({
+          id: q2.id,
+          shipping: { ...stored.shipping, expiresAt: new Date(Date.now() - 1000).toISOString() },
+        });
+        const stale = await submit(submitBody(q2));
+        expect(stale.status).toBe(409);
+        expect(stale.data.code).toBe("SHIPPING_CHANGED");
+        expect(stale.data.quote).toMatchObject({ shipping_fee: 34_000 });
+        expect(ghn.quoteCalls).toBe(3);
+      });
+
+      it("quote không có báo phí lưu kèm (tạo trước T-153) → hỏi lại GHN (sập → 503)", async () => {
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId);
+        await service().updateCheckoutQuotes({ id: q.id, shipping: null });
+        ghn.down = true;
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(503);
+        expect(res.data.code).toBe("SHIPPING_UNAVAILABLE");
+      });
+
+      it("chỉ quote của chính giỏ mới cho mượn phí: quote_id của giỏ khác → 422; quote của giỏ mình → 200", async () => {
+        const mine = await createCart([["Đen/M", 1]]);
+        const other = await createCart([["Đen/M", 1]]);
+        const qOther = await quoteOk(other);
+        const qMine = await quoteOk(mine);
+        ghn.down = true;
+        const denied = await submit({ ...submitBody(qMine), quote_id: qOther.id });
+        expect(denied.status).toBe(422);
+        expect(denied.data).toMatchObject({ code: "VALIDATION", field: "quote_id" });
+        const allowed = await submit(submitBody(qMine));
+        expect(allowed.status).toBe(200);
+        expect(allowed.data.order.total).toBe(730_000);
       });
     });
 
@@ -463,6 +865,61 @@ medusaIntegrationTestRunner({
         expect(await countOrders(container)).toBe(1);
       });
 
+      it("replay cùng key (cả đồng thời) của attempt failed vì lỗi KHÔNG tạm → đúng lỗi gốc kèm field/detail/thông điệp, không chạy lại", async () => {
+        // Kết quả replay dựng từ error_code + error_detail đã lưu của attempt (ảnh chụp trong outcomeOf).
+        const problem = (r: { data: unknown }) =>
+          Object.fromEntries(
+            Object.entries(r.data as Record<string, unknown>).filter(([k]) => k !== "trace_id"),
+          );
+        const ordersBefore = await countOrders(container);
+
+        // INSUFFICIENT_STOCK: detail `lines` (số yêu cầu/còn lại) phải còn nguyên khi replay.
+        const cartId = await createCart([["Trắng/M", 2]]);
+        const q = await quoteOk(cartId);
+        await setStock(container, fx, "Trắng/M", 1);
+        const key = newKey();
+        const first = await submit(submitBody(q), key);
+        expect({ status: first.status, code: first.data.code }).toEqual({
+          status: 409,
+          code: "INSUFFICIENT_STOCK",
+        });
+        expect(first.data.lines).toEqual([
+          expect.objectContaining({ variant_id: fx.variants["Trắng/M"]!.id, requested: 2, available: 1 }),
+        ]);
+        const attemptId = first.headers["x-checkout-attempt-id"];
+        expect(attemptId).toBeTruthy();
+        const replays = await Promise.all([submit(submitBody(q), key), submit(submitBody(q), key)]);
+        for (const r of replays) {
+          expect(r.status).toBe(409);
+          expect(problem(r)).toEqual(problem(first));
+          expect(r.headers["x-checkout-attempt-id"]).toBe(attemptId);
+        }
+
+        // VALIDATION: `field` + thông điệp riêng (không phải thông điệp mặc định của mã) phải còn nguyên khi replay.
+        const mine = await createCart([["Đen/M", 1]]);
+        const other = await createCart([["Đen/M", 1]]);
+        const qOther = await quoteOk(other);
+        const qMine = await quoteOk(mine);
+        const key2 = newKey();
+        const body2 = { ...submitBody(qMine), quote_id: qOther.id };
+        const denied = await submit(body2, key2);
+        expect(denied.status).toBe(422);
+        expect(denied.data).toMatchObject({
+          code: "VALIDATION",
+          field: "quote_id",
+          detail: "Báo giá không hợp lệ cho giỏ này",
+        });
+        const replay2 = await submit(body2, key2);
+        expect(replay2.status).toBe(422);
+        expect(problem(replay2)).toEqual(problem(denied));
+
+        expect(await countOrders(container)).toBe(ordersBefore);
+        expect(await reservationsOf(container, fx, "Trắng/M")).toHaveLength(0);
+        // Replay không mở lại/chạy lại: mỗi key đúng một attempt, vẫn `failed`.
+        const attempts = await service().listCheckoutAttempts({ idempotency_key: [key, key2] });
+        expect(attempts.map((a) => a.state)).toEqual(["failed", "failed"]);
+      });
+
       it("thiếu/sai Idempotency-Key → 422 VALIDATION", async () => {
         const cartId = await createCart([["Trắng/S", 1]]);
         const q = await quoteOk(cartId);
@@ -473,6 +930,50 @@ medusaIntegrationTestRunner({
     });
 
     describe("202 — đã nhận, đang xử lý", () => {
+      it("202 luôn kèm body `preparing`: view dựng từ đúng lần đọc quyết định kết quả, không đọc lại attempt đã xong", async () => {
+        // Ép xen kẽ: lần đọc ảnh chụp (vòng chờ của request trùng) thấy `preparing` tới hết hạn chờ, trong khi attempt
+        // trong DB đã `ready`. Đọc lại attempt để dựng view (presentAttempt) sẽ ra 202 kèm state "ready" — mâu thuẫn.
+        const cartId = await createCart([["Trắng/S", 1]]);
+        const q = await quoteOk(cartId);
+        const key = newKey();
+        const first = await submit(submitBody(q), key);
+        expect({ status: first.status, state: first.data.state }).toEqual({ status: 200, state: "ready" });
+        const attemptId = first.data.checkout_attempt_id;
+
+        const mutableConfig = CHECKOUT_CONFIG as { replayWaitMs: number };
+        const oldWait = mutableConfig.replayWaitMs;
+        mutableConfig.replayWaitMs = 200;
+        const s = service();
+        const original = s.listCheckoutAttempts;
+        // Kiểu khai `readonly` (MedusaService); thay tạm trên chính instance mà route resolve được.
+        const patchable = s as { listCheckoutAttempts: typeof original };
+        // Ghi cờ, assert SAU request (expect ném trong service thay tạm sẽ thành 500 khó hiểu).
+        let snapshotReads = 0;
+        patchable.listCheckoutAttempts = (async (...args: Parameters<typeof original>) => {
+          const [filters, config] = args as [{ id?: unknown } | undefined, { select?: unknown } | undefined];
+          const rows = await original.apply(s, args);
+          // Chỉ lần đọc ảnh chụp có `select` của vòng chờ; lần đọc đầy đủ (presentAttempt/byKey) giữ nguyên DB.
+          if (filters?.id !== attemptId || config?.select === undefined) return rows;
+          snapshotReads++;
+          return rows.map((r) => ({ ...r, state: "preparing" as const }));
+        }) as typeof original;
+        let second: Awaited<ReturnType<typeof submit>>;
+        try {
+          second = await submit(submitBody(q), key);
+        } finally {
+          patchable.listCheckoutAttempts = original;
+          mutableConfig.replayWaitMs = oldWait;
+        }
+        expect(snapshotReads).toBeGreaterThan(0);
+        expect({ status: second.status, state: second.data.state }).toEqual({
+          status: 202,
+          state: "preparing",
+        });
+        expect(second.data.checkout_attempt_id).toBe(attemptId);
+        expect(second.headers["retry-after"]).toBe("1");
+        expect(await countOrders(container)).toBe(1);
+      });
+
       it("request trùng khi attempt còn preparing quá thời gian chờ → 202 + Location; xong thì status trả ready", async () => {
         const cartId = await createCart([["Đen/S", 1]]);
         const q = await quoteOk(cartId);
@@ -500,6 +1001,315 @@ medusaIntegrationTestRunner({
           mutableConfig.replayWaitMs = oldWait;
           slowBeforeFinalize.delete(cartId);
         }
+      });
+    });
+
+    describe("T-134 — ảnh chụp khuyến mãi trong đơn (D-061)", () => {
+      const promotions = () => container.resolve(Modules.PROMOTION);
+
+      /** Mã `standard` thủ công; trả id khuyến mãi. */
+      async function createPromo(
+        code: string,
+        method: {
+          type: "percentage" | "fixed";
+          target_type: "order" | "shipping_methods";
+          value: number;
+        },
+        extra: { limit?: number; campaign_id?: string } = {},
+      ): Promise<string> {
+        const { result } = await createPromotionsWorkflow(container).run({
+          input: {
+            promotionsData: [
+              {
+                code,
+                type: "standard",
+                status: "active",
+                is_automatic: false,
+                ...extra,
+                application_method: { ...method, allocation: "across", currency_code: "vnd" },
+              },
+            ],
+          },
+        });
+        return result[0]!.id;
+      }
+
+      const finOf = async (orderId: string) => {
+        const [fin] = await service().listOrderFinances({ order_id: orderId });
+        return fin!;
+      };
+      const quoteOf = async (orderId: string) =>
+        (await finOf(orderId)).quote as {
+          total: number;
+          orderDiscountTotal: number;
+          shippingDiscountTotal: number;
+          orderPromotion?: Record<string, unknown> | null;
+          shippingPromotion?: Record<string, unknown> | null;
+        };
+      const accessOf = (res: Res) => (res.data as unknown as { order_access: string }).order_access;
+
+      /** Điều chỉnh giảm giá đã ghi vào đơn native (dòng hàng + phương thức giao). */
+      async function nativeAdjustments(orderId: string) {
+        type Adj = { promotion_id?: string | null; amount?: unknown } | null;
+        const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
+          entity: "order",
+          fields: [
+            "id",
+            "items.adjustments.promotion_id",
+            "items.adjustments.amount",
+            "shipping_methods.adjustments.promotion_id",
+            "shipping_methods.adjustments.amount",
+          ],
+          filters: { id: orderId },
+        });
+        const order = data[0] as {
+          items?: Array<{ adjustments?: Adj[] | null } | null> | null;
+          shipping_methods?: Array<{ adjustments?: Adj[] | null } | null> | null;
+        };
+        const flat = (rows: Array<{ adjustments?: Adj[] | null } | null> | null | undefined) =>
+          (rows ?? [])
+            .flatMap((r) => r?.adjustments ?? [])
+            .flatMap((x) => (x ? [{ promotion_id: x.promotion_id ?? null, amount: Number(x.amount) }] : []));
+        return { items: flat(order.items), shipping: flat(order.shipping_methods) };
+      }
+
+      /** Mọi thứ đơn và đối soát đọc: order_finance, xem đơn của khách, số tiền thu (payment_attempt), đơn native. */
+      async function orderState(orderId: string, displayRef: string, access: string) {
+        const fin = await finOf(orderId);
+        const view = await api.get(`/store/x/orders/${displayRef}`, cfg({ "x-order-access": access }));
+        expect(view.status).toBe(200);
+        const payments = await service().listPaymentAttempts({ order_id: orderId });
+        const native = await container.resolve(Modules.ORDER).retrieveOrder(orderId);
+        return {
+          quote: fin.quote,
+          total: Number(fin.total),
+          view: view.data,
+          payment_amounts: payments.map((p) => Number(p.amount)),
+          native_total: Number(native.total),
+        };
+      }
+
+      it("đặt đơn chụp loại + giá trị + điều kiện + phạm vi + mã + id; sửa, tắt rồi xoá mã sau khi đặt → đơn và đối soát không đổi", async () => {
+        const promoId = await createPromo(
+          "GIAM10",
+          { type: "percentage", target_type: "order", value: 10 },
+          { limit: 5 },
+        );
+        const cartId = await createCart([["Đen/M", 2]]);
+        const q = await quoteOk(cartId, { payment_method: "vnpay", discount_code: "giam10" });
+        expect(q).toMatchObject({ subtotal: 1_400_000, discount_total: 140_000, total: 1_290_000 });
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(200);
+        const orderId = res.data.order.id;
+
+        const snap = await quoteOf(orderId);
+        expect(snap.orderPromotion).toEqual({
+          promotionId: promoId,
+          code: "GIAM10",
+          scope: "order",
+          kind: "percent",
+          basisPoints: 1000,
+          amount: null,
+          minSubtotal: null,
+          maxAmount: null,
+          discountTotal: 140_000,
+        });
+        expect(snap.shippingPromotion).toBeNull();
+        const before = await orderState(orderId, res.data.order.display_ref, accessOf(res));
+        expect(before.payment_amounts).toEqual([1_290_000]);
+        expect(before.native_total).toBe(1_290_000);
+
+        // Sửa giá trị + hạn mức: thay đổi có hiệu lực thật với báo giá mới…
+        await promotions().updatePromotions({
+          id: promoId,
+          limit: 100,
+          application_method: { value: 50 },
+        });
+        const other = await quoteOk(await createCart([["Đen/M", 2]]), { discount_code: "GIAM10" });
+        expect(other.discount_total).toBe(700_000);
+        // …nhưng đơn đã đặt giữ nguyên.
+        expect(await orderState(orderId, res.data.order.display_ref, accessOf(res))).toEqual(before);
+
+        await promotions().updatePromotions({ id: promoId, status: "inactive" });
+        expect(await orderState(orderId, res.data.order.display_ref, accessOf(res))).toEqual(before);
+
+        await promotions().deletePromotions(promoId);
+        expect(await promotions().listPromotions({ id: promoId })).toHaveLength(0);
+        expect(await orderState(orderId, res.data.order.display_ref, accessOf(res))).toEqual(before);
+        expect((await quoteOf(orderId)).orderPromotion).toMatchObject({
+          basisPoints: 1000,
+          promotionId: promoId,
+        });
+      });
+
+      it("ca biên: giảm 0, giảm vượt tiền hàng, miễn phí ship → ảnh chụp đúng, tổng không âm, đơn khớp quote", async () => {
+        // Medusa không cho mã phần trăm 0 % (giá trị phải trong (0, 100]) → giảm 0 qua mã cố định 0 đồng.
+        await createPromo("GIAM0", { type: "fixed", target_type: "order", value: 0 });
+        const zeroCart = await createCart([["Đen/M", 1]]);
+        const zq = await quoteOk(zeroCart, { discount_code: "GIAM0" });
+        expect(zq).toMatchObject({ discount_total: 0, total: 730_000 });
+        const zero = await submit(submitBody(zq));
+        expect(zero.status).toBe(200);
+        expect((await quoteOf(zero.data.order.id)).orderPromotion).toMatchObject({
+          code: "GIAM0",
+          kind: "fixed",
+          amount: 0,
+          discountTotal: 0,
+        });
+
+        await createPromo("TO", { type: "fixed", target_type: "order", value: 5_000_000 });
+        const bigCart = await createCart([["Trắng/S", 1]]);
+        const bq = await quoteOk(bigCart, { discount_code: "TO" });
+        expect(bq).toMatchObject({ subtotal: 300_000, discount_total: 300_000, total: 30_000 });
+        const big = await submit(submitBody(bq));
+        expect(big.status).toBe(200);
+        expect(big.data.order.total).toBe(30_000);
+        const bigSnap = await quoteOf(big.data.order.id);
+        expect(bigSnap.orderPromotion).toMatchObject({
+          kind: "fixed",
+          amount: 5_000_000,
+          basisPoints: null,
+          discountTotal: 300_000,
+        });
+        expect(bigSnap.total).toBe(30_000);
+
+        const freeId = await createPromo("FREESHIP", {
+          type: "percentage",
+          target_type: "shipping_methods",
+          value: 100,
+        });
+        const shipCart = await createCart([["Trắng/M", 1]]);
+        const sq = await quoteOk(shipCart, { discount_code: "FREESHIP" });
+        expect(sq).toMatchObject({ discount_total: 0, total: 300_000 });
+        const ship = await submit(submitBody(sq));
+        expect(ship.status).toBe(200);
+        const shipSnap = await quoteOf(ship.data.order.id);
+        expect(shipSnap.orderPromotion).toBeNull();
+        expect(shipSnap.shippingPromotion).toEqual({
+          promotionId: freeId,
+          code: "FREESHIP",
+          scope: "shipping",
+          kind: "free",
+          basisPoints: null,
+          amount: null,
+          minSubtotal: null,
+          maxAmount: null,
+          discountTotal: 30_000,
+        });
+        const shipAdj = await nativeAdjustments(ship.data.order.id);
+        expect(shipAdj).toEqual({ items: [], shipping: [{ promotion_id: freeId, amount: 30_000 }] });
+      });
+
+      it("mã hết hạn giữa quote và submit → 422 DISCOUNT_NOT_APPLICABLE, không đơn, không giữ lượt", async () => {
+        const now = Date.now();
+        const campaign = await promotions().createCampaigns({
+          name: "Tuần lễ",
+          campaign_identifier: `tuan-le-${randomUUID()}`,
+          starts_at: new Date(now - 3600_000),
+          ends_at: new Date(now + 3600_000),
+        });
+        await createPromo(
+          "HETHAN",
+          { type: "percentage", target_type: "order", value: 10 },
+          { campaign_id: campaign.id },
+        );
+        const cartId = await createCart([["Đen/S", 1]]);
+        const q = await quoteOk(cartId, { discount_code: "HETHAN" });
+        expect(q.discount_total).toBe(70_000);
+        await promotions().updateCampaigns({ id: campaign.id, ends_at: new Date(Date.now() - 1000) });
+
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(422);
+        expect(res.data).toMatchObject({ code: "DISCOUNT_NOT_APPLICABLE", field: "discount_code" });
+        expect(await countOrders(container)).toBe(0);
+        expect(await service().listCouponUsages({ promotion_code: "HETHAN" })).toHaveLength(0);
+      });
+
+      it("giá trị mã đổi giữa quote và submit → 409 DISCOUNT_CHANGED kèm quote mới; xác nhận thì đơn chụp điều khoản mới", async () => {
+        const promoId = await createPromo("DOI", { type: "percentage", target_type: "order", value: 10 });
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId, { discount_code: "DOI" });
+        expect(q.discount_total).toBe(70_000);
+        await promotions().updatePromotions({ id: promoId, application_method: { value: 20 } });
+
+        const changed = await submit(submitBody(q));
+        expect(changed.status).toBe(409);
+        expect(changed.data.code).toBe("DISCOUNT_CHANGED");
+        expect(changed.data.quote).toMatchObject({ discount_code: "DOI", discount_total: 140_000 });
+        expect(await countOrders(container)).toBe(0);
+
+        const ok = await submit(submitBody(changed.data.quote));
+        expect(ok.status).toBe(200);
+        expect((await quoteOf(ok.data.order.id)).orderPromotion).toMatchObject({
+          promotionId: promoId,
+          basisPoints: 2000,
+          discountTotal: 140_000,
+        });
+      });
+
+      it("đồng thời: hai tab submit, admin sửa mã giữa prepare và chốt → một đơn, giữ điều khoản lúc prepare, tiền thu khớp", async () => {
+        const promoId = await createPromo("HAITAB", { type: "percentage", target_type: "order", value: 10 });
+        const cartId = await createCart([["Đen/M", 2]]);
+        const q = await quoteOk(cartId, { payment_method: "vnpay", discount_code: "HAITAB" });
+        // Hook `orderPrepared` chạy sau prepare + tạo đơn + order_finance, trước khi chốt: giữ submit ở đó 3 s.
+        slowBeforeFinalize.set(cartId, 3_000);
+        try {
+          const tabs = Promise.all([submit(submitBody(q), newKey()), submit(submitBody(q), newKey())]);
+          let prepared = false;
+          for (let i = 0; i < 200 && !prepared; i++) {
+            prepared = (await service().listOrderFinances({ cart_id: cartId })).length > 0;
+            if (!prepared) await new Promise((r) => setTimeout(r, 25));
+          }
+          expect(prepared).toBe(true);
+          // Chắc chắn đúng cửa sổ: prepare đã đọc mã 10 %, đơn chưa chốt.
+          await promotions().updatePromotions({ id: promoId, application_method: { value: 30 } });
+          const [a, b] = await tabs;
+          expect([a!.status, b!.status]).toEqual([200, 200]);
+          expect(a!.data.checkout_attempt_id).toBe(b!.data.checkout_attempt_id);
+          expect(a!.data.order.id).toBe(b!.data.order.id);
+          expect(await countOrders(container)).toBe(1);
+
+          const orderId = a!.data.order.id;
+          const snap = await quoteOf(orderId);
+          expect(snap.orderPromotion).toMatchObject({
+            promotionId: promoId,
+            basisPoints: 1000,
+            discountTotal: 140_000,
+          });
+          expect(snap).toMatchObject({ orderDiscountTotal: 140_000, total: 1_290_000 });
+          const payments = await service().listPaymentAttempts({ order_id: orderId });
+          expect(payments.map((p) => Number(p.amount))).toEqual([1_290_000]);
+          const native = await container.resolve(Modules.ORDER).retrieveOrder(orderId);
+          expect(Number(native.total)).toBe(1_290_000);
+          const usage = await service().listCouponUsages({ promotion_code: "HAITAB" });
+          expect(usage.filter((u) => u.state === "held").map((u) => u.order_id)).toEqual([orderId]);
+        } finally {
+          slowBeforeFinalize.delete(cartId);
+        }
+      });
+
+      it("xoá rồi tạo lại cùng mã, cùng giá trị giữa quote và submit → 200; ảnh chụp, coupon_usage, điều chỉnh native mang id mới", async () => {
+        const oldId = await createPromo("TAOLAI", { type: "percentage", target_type: "order", value: 10 });
+        const cartId = await createCart([["Đen/M", 1]]);
+        const q = await quoteOk(cartId, { discount_code: "TAOLAI" });
+        await promotions().deletePromotions(oldId);
+        const newId = await createPromo("TAOLAI", { type: "percentage", target_type: "order", value: 10 });
+        expect(newId).not.toBe(oldId);
+
+        // Mã + số giảm như quote đã xác nhận → không DISCOUNT_CHANGED (D-109); đơn chụp khuyến mãi lúc submit.
+        const res = await submit(submitBody(q));
+        expect(res.status).toBe(200);
+        const snap = await quoteOf(res.data.order.id);
+        expect(snap.orderPromotion).toMatchObject({
+          promotionId: newId,
+          code: "TAOLAI",
+          discountTotal: 70_000,
+        });
+        const usage = await service().listCouponUsages({ promotion_code: "TAOLAI" });
+        expect(usage.map((u) => u.promotion_id)).toEqual([newId]);
+        const adj = await nativeAdjustments(res.data.order.id);
+        expect(adj.items).toEqual([{ promotion_id: newId, amount: 70_000 }]);
+        expect(adj.shipping).toEqual([]);
       });
     });
 
@@ -574,24 +1384,27 @@ medusaIntegrationTestRunner({
     });
 
     describe("quyền sở hữu giỏ", () => {
+      /**
+       * Khách có tài khoản. Đăng ký khách qua HTTP đóng ở P0 (T-138: identity emailpass dùng chung mọi actor → đăng ký khách
+       * dò/chiếm được email admin) → tạo identity + customer trong tiến trình, đăng nhập qua route thật.
+       */
       async function registerCustomer(email: string): Promise<string> {
         const password = "MatKhau-ThuNghiem-123";
-        const reg = await api.post("/auth/customer/emailpass/register", { email, password }, cfg());
-        expect(reg.status).toBe(200);
-        const created = await api.post(
-          "/store/customers",
-          { email, first_name: "Khách" },
-          cfg({ authorization: `Bearer ${reg.data.token}` }),
-        );
-        expect(created.status).toBe(200);
+        const reg = await container
+          .resolve(Modules.AUTH)
+          .register("emailpass", { body: { email, password } });
+        expect(reg.success).toBe(true);
+        await createCustomerAccountWorkflow(container).run({
+          input: { authIdentityId: reg.authIdentity!.id, customerData: { email, first_name: "Khách" } },
+        });
         const login = await api.post("/auth/customer/emailpass", { email, password }, cfg());
         expect(login.status).toBe(200);
         return login.data.token as string;
       }
 
-      it("giỏ của người khác → 404 (vãng lai, khách khác, kênh bán khác); chủ giỏ → được phép", async () => {
-        const tokenA = await registerCustomer(`a-${randomUUID()}@example.vn`);
-        const tokenB = await registerCustomer(`b-${randomUUID()}@example.vn`);
+      it("[api1-bola post /store/x/checkout/quote, post /store/x/checkout/submit, get /store/x/checkout/attempts/{id}, post /store/x/checkout/attempts/{id}/recheck] giỏ của người khác → 404 (vãng lai, khách khác, kênh bán khác); chủ giỏ → được phép", async () => {
+        const tokenA = await registerCustomer(`a-${randomUUID()}@example.test`);
+        const tokenB = await registerCustomer(`b-${randomUUID()}@example.test`);
         const cartA = await createCart([["Đen/S", 1]], tokenA);
 
         const anon = await quote(cartA);
@@ -601,7 +1414,9 @@ medusaIntegrationTestRunner({
         expect(other.status).toBe(404);
         const unknown = await quote("cart_khong_ton_tai");
         expect(unknown.status).toBe(404);
-        expect(unknown.data).toEqual(anon.data);
+        // Giống hệt trừ `trace_id` (mã ngẫu nhiên theo request, T-088) — không phân biệt giỏ có/không tồn tại.
+        expect({ ...unknown.data, trace_id: "*" }).toEqual({ ...anon.data, trace_id: "*" });
+        expect(unknown.data.trace_id).not.toBe(anon.data.trace_id);
 
         const q = await quoteOk(cartA, {}, tokenA);
         expect((await submit(submitBody(q))).status).toBe(404);
@@ -616,6 +1431,15 @@ medusaIntegrationTestRunner({
           cfg({ authorization: `Bearer ${tokenB}` }),
         );
         expect(statusB.status).toBe(404);
+        // Recheck bằng khách khác hoặc vãng lai → 404 như attempt không tồn tại (không dò được, không tốn lượt giới hạn).
+        for (const auth of [{ authorization: `Bearer ${tokenB}` }, {}] as Array<Record<string, string>>) {
+          const recheckForeign = await api.post(
+            `/store/x/checkout/attempts/${mine.data.checkout_attempt_id}/recheck?cart_id=${cartA}`,
+            {},
+            cfg(auth),
+          );
+          expect(recheckForeign.status).toBe(404);
+        }
 
         // Publishable key của kênh bán khác không thấy giỏ của kênh này.
         const { result: channels } = await (

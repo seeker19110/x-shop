@@ -44,9 +44,42 @@
 ## Ma trận vai trò (đặc tả §5.4)
 | Vai trò | Quyền chính |
 |---|---|
-| owner | `*` |
+| owner | `*` (gồm `payment.override` — hủy đơn thanh toán chưa xác minh, T-165/D-118: chỉ owner, MFA + xác thực lại ≤ 5 phút — D-122) |
 | catalog_manager | `catalog.*`, `content.*`, `price.write` |
 | order_staff | `order.read`, `order.confirm`, `fulfillment.*` |
 | warehouse | `inventory.*`, `return.receive`, `return.inspect` |
 | support | `order.read_masked`, `return.request`, `refund.request` |
 | accountant | `payment.read`, `refund.*`, `settlement.*`, `report.read` |
+
+## Đọc route admin native của Medusa (T-147, D-080, D-108)
+Bảng nguồn: `apps/backend/src/lib/admin-security/native-permissions.ts`. Route GET native **chưa khai báo → 403 với mọi vai trò, kể cả owner** (`UNDECLARED_ROUTE`); route ghi chưa khai báo → `settings.manage`. Danh sách đã khai = mọi route GET mà dashboard Medusa 2.22.1 gọi (`sdk.admin.*` trong `@medusajs/dashboard/dist`, ánh xạ qua `@medusajs/js-sdk`, đối chiếu `@medusajs/medusa/dist/api/admin`). `integration-tests/http/rbac.spec.ts` quét lại cả ba nguồn và chốt tổng số route GET native (133); số này đổi khi nâng cấp Medusa → test đỏ, phải rà lại bảng.
+
+| Nhóm route đọc native | Quyền | owner | catalog_manager | order_staff | warehouse | support | accountant |
+|---|---|---|---|---|---|---|---|
+| Tham chiếu (trường riêng không PII; quan hệ ngược tới đơn/khách bị chặn bởi chính sách `fields` bên dưới): stores, regions, sales-channels, currencies, locales, plugins, return/refund-reasons, views, layouts | có ít nhất một vai trò | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Catalog: products, product-variants, categories, collections, tags, types, options, property-labels, translations, shipping-profiles, price-preferences | `catalog.read` | ✓ | ✓ | – | ✓ | – | – |
+| Bảng giá, khuyến mãi, chiến dịch | `price.write` | ✓ | ✓ | – | – | – | – |
+| Tồn kho, giữ hàng, kho hàng; biến thể kèm tồn của form tạo vận đơn (`/admin/products/:id/variants/:variant_id` — vai trò thiếu `catalog.read` chỉ nhận trường tồn kho) | `inventory.read` | ✓ | ✓ | ✓ | ✓ | – | – |
+| Phương án giao (form tạo vận đơn) | `fulfillment.create` | ✓ | – | ✓ | – | – | – |
+| Đơn, đổi trả, khiếu nại, đổi hàng, đơn nháp, vận đơn; khách, nhóm khách (PII) | `order.read` | ✓ | – | ✓ | – | – | ✓ |
+| Thanh toán, payment collection | `payment.read` | ✓ | – | – | – | – | ✓ |
+| Người dùng, lời mời (PII nhân sự) | `user.manage` | ✓ | – | – | – | – | – |
+| Khoá API, thông báo (có người nhận), tìm kiếm toàn cục (quét đơn/khách/người dùng/khoá API), chỉ số tìm kiếm, thuế, nhà vận chuyển, loại phương án giao, workflow, RBAC native | `settings.manage` (MFA) | ✓ | – | – | – | – | – |
+| Cố ý đóng: `/admin/index/details`, `/admin/uploads/:id` (file private chỉ qua `/admin/x/files/:key`), `/admin/fulfillment-sets/:id/service-zones/:zone_id` | — | – | – | – | – | – | – |
+
+CSKH (`order.read_masked`) không đọc PII qua route native; xem đơn đã che qua `/admin/x/*`.
+
+**Chính sách trường (`?fields=`, `?order=`) — `apps/backend/src/lib/admin-security/field-policy.ts`.** Áp cho MỌI method (handler ghi của Medusa cũng tải lại thực thể theo `fields`). Quyền theo path chưa đủ: route native của Medusa nhận `fields` tuỳ ý và remote query đi theo link, kể cả link chỉ đọc (`Region.orders`, `SalesChannel.orders`, `Promotion.order_link`, `RefundReason.refunds…`). Vì vậy:
+- Vai trò thiếu `order.read` (catalog_manager, warehouse, support, user chưa có vai trò ở `/admin/users/me`): yêu cầu trường có đoạn `order(s)`, `cart(s)`, `customer(s)`, `fulfillment(s)`, `*_address`, `payment*`, `refunds`, `captures`, `account_holder(s)`, `order_items`, `cart_items`, `usages`, `return(s)`, `claims`, `exchanges`, `user(s)`, `invite(s)` hoặc bảng nối `*_link` → 403 + audit `rbac.denied` lý do `forbidden_fields`. Medusa cũng gỡ các trường đó khỏi trường mặc định của route (`req.disallowed`).
+- Route biến thể kèm tồn, vai trò thiếu `catalog.read` (nhân viên đơn): chỉ `id, title, sku, manage_inventory, allow_backorder, inventory_quantity, inventory, inventory.location_levels, inventory_items`; trường khác → 403, trường mặc định ngoài danh sách bị gỡ (`req.allowed`).
+- Vai trò thiếu `catalog.read` (nhân viên đơn, kế toán, CSKH): ngoài họ đơn hàng, đoạn `product(s)`, `variant(s)`, `product_variant(s)`, `products_link`, `variant_link` bị cấm (chặn sản phẩm nháp qua kênh bán/kho/tồn); Trong họ đơn hàng chỉ cho tên sản phẩm/biến thể của dòng hàng (đoạn `product`/`variant` lồng dưới `items.`/`item.`); vẫn cấm bảng nối `*_link`, đoạn số nhiều `products`/`variants`/`product_variants` và `product`/`variant` lồng ngoài `items.` (chặn `sales_channel.products_link.product.*`). `/admin/inventory-items*` chỉ trả trường riêng của tồn kho + mức tồn từng kho + `stock_locations.id/name` (bảng mức tồn của dashboard).
+- Route họ đơn hàng mà vai trò thiếu `order.read` vẫn gọi được (kho: ghi vận đơn native `fulfillment.update`): phản hồi chỉ có `id, display_id, status, version, created_at, updated_at` (đơn) hoặc mốc thời gian + nhãn + mặt hàng (vận đơn) — không email, khách, địa chỉ, `data`; kể cả khi không gửi `fields`.
+- Chọn 403 thay vì gỡ lặng lẽ để hành vi dò lộ rõ trong audit. `rbac.spec.ts` quét link (định nghĩa `@medusajs/link-modules` + joiner config lúc chạy, gồm `src/links` của dự án) và quan hệ nội module (model DML của từng module Medusa): alias/quan hệ mới dẫn tới đơn/giỏ/khách/vận đơn/thanh toán/người dùng chưa có trong danh sách cấm → đỏ; mọi route họ đơn hàng mà vai trò thiếu `order.read` gọi được phải có allowlist.
+- Giới hạn: tham số lọc (`?orders[...]=`) do schema zod của từng route quyết định (schema Medusa bỏ khoá lạ), chưa có kiểm riêng; module của dự án (`src/modules`) chỉ được quét qua link, không qua model nội bộ.
+
+Hạn chế đã biết của dashboard native (chấp nhận theo D-108):
+- Nhân viên đơn, kế toán, CSKH không đọc được catalog native (danh sách/chi tiết sản phẩm → 403); nhân viên đơn vẫn đọc được biến thể kèm tồn để tạo vận đơn.
+- Nhân viên đơn mở màn chi tiết tồn kho của dashboard (gửi `fields=*variants,*variants.product`) → 403; danh sách tồn kho, giữ hàng, form tạo vận đơn vẫn chạy.
+- Trang mặc định `/orders` của dashboard báo lỗi với vai trò không có `order.read` (catalog_manager, warehouse, support) — vào thẳng màn của vai trò mình.
+- Chuông thông báo ở khung dashboard gọi `GET /admin/notifications` mỗi 60 giây và nhận 403 với mọi vai trò trừ owner (dashboard bỏ qua lỗi); audit `rbac.denied` được gộp (lần 1, 10, 100…).
+- Thanh tìm kiếm toàn cục (Cmd-K) chỉ chạy với owner.

@@ -1,9 +1,9 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { vnpay } from "@x-shop/domain";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { RETURNS_CONFIG } from "../../src/modules/returns/constants";
@@ -109,7 +109,6 @@ medusaIntegrationTestRunner({
       });
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       refundGateway = new MockVnpayRefundGateway(DEV_VNPAY);
       setRefundGatewayForTest(refundGateway);
       ip = newIp();
@@ -427,12 +426,77 @@ medusaIntegrationTestRunner({
         expect(await checkout().listPaymentLedgers({ order_id: o.orderId, kind: "refund" })).toHaveLength(1);
       });
 
-      it("cổng hoàn chưa bật (sandbox/live chưa ủy quyền) → 409, yêu cầu giữ nguyên đã duyệt", async () => {
+      it("cổng hoàn chưa bật (sandbox/live chưa ủy quyền): yêu cầu cổng đã duyệt → 409 + `failed` chưa gửi, hủy được; `auto` mới → manual (T-169)", async () => {
+        const { o, id } = await approvedRefund(100_000);
         setRefundGatewayForTest(new DisabledRefundGateway());
-        const { id } = await approvedRefund(100_000);
         const r = await execute(id);
         expect(r).toMatchObject({ status: 409, data: { code: "REFUND_PROVIDER_DISABLED" } });
-        expect((await returns().getRefund(id))!.state).toBe("approved");
+        expect(await returns().getRefund(id)).toMatchObject({
+          state: "failed",
+          attempts: 0,
+          last_error: "provider_disabled",
+        });
+        expect(refundGateway.calls).toBe(0);
+        const cancelled = await flow.admin(`/admin/x/refunds/${id}/cancel`, A("accountant"), {
+          reason: "Cổng tắt — hoàn tay",
+        });
+        expect(cancelled.data.refund.state).toBe("cancelled");
+        const next = await createRefund(A("accountant"), other(o, 100_000));
+        expect(next.data.refund).toMatchObject({ method: "manual", state: "approved" });
+      });
+    });
+
+    describe("T-170 — refund gửi vnp_TransactionDate = vnp_CreateDate của URL thanh toán gốc", () => {
+      const execute = (id: string) => flow.admin(`/admin/x/refunds/${id}/execute`, A("accountant"));
+      const sentCreateDate = (paymentUrl: string) => new URL(paymentUrl).searchParams.get("vnp_CreateDate");
+      const attemptOf = async (orderId: string) =>
+        (await checkout().listPaymentAttempts({ order_id: orderId }))[0]!;
+
+      it("trễ > 1 s giữa prepare và INSERT attempt → thân refund mang đúng vnp_CreateDate gốc (không lấy created_at)", async () => {
+        const svc = checkout();
+        const original = svc.insertPaymentAttempt.bind(svc);
+        const spy = jest.spyOn(svc, "insertPaymentAttempt").mockImplementation(async (input) => {
+          await new Promise((r) => setTimeout(r, 1_100));
+          return original(input);
+        });
+        let o: PlacedOrder;
+        try {
+          o = await flow.place([["Đen/M", 1]], "vnpay");
+        } finally {
+          spy.mockRestore();
+        }
+        const pa = await attemptOf(o.orderId);
+        const sent = sentCreateDate(o.paymentUrl)!;
+        expect(vnpay.toVnpDate(new Date(pa.created_at))).not.toBe(sent);
+        const r = await createRefund(A("accountant"), other(o, 200_000));
+        expect(r.data.refund.state).toBe("approved");
+        expect((await execute(r.data.refund.id)).data.outcome).toBe("succeeded");
+        expect(refundGateway.bodies.map((b) => [b.vnp_TxnRef, b.vnp_TransactionDate])).toEqual([
+          [pa.txn_ref, sent],
+        ]);
+      });
+
+      it("dữ liệu trước T-170 (cột NULL) → fallback created_at (biên GMT+7 qua nửa đêm UTC) + log WARN có txn_ref", async () => {
+        const o = await flow.place([["Trắng/M", 1]], "vnpay");
+        const pa = await attemptOf(o.orderId);
+        const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+        // 2026-10-27T16:59:59Z = 23:59:59 ngày 27 giờ VN; một giây sau đã là ngày 28 giờ VN dù UTC vẫn ngày 27.
+        await pg.raw(
+          `UPDATE payment_attempt SET vnp_create_date = NULL, created_at = '2026-10-27T16:59:59.999Z' WHERE id = ?`,
+          [pa.id],
+        );
+        const logger = container.resolve(ContainerRegistrationKeys.LOGGER);
+        const warn = jest.spyOn(logger, "warn");
+        try {
+          const r = await createRefund(A("accountant"), other(o, 100_000));
+          expect((await execute(r.data.refund.id)).data.outcome).toBe("succeeded");
+          expect(refundGateway.bodies.map((b) => b.vnp_TransactionDate)).toEqual(["20261027235959"]);
+          const logged = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes(pa.txn_ref));
+          expect(logged).toHaveLength(1);
+          expect(logged[0]).toMatch(/vnp_create_date/);
+        } finally {
+          warn.mockRestore();
+        }
       });
     });
   },

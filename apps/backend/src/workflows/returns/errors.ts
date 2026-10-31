@@ -1,5 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
-import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
+import { MedusaError } from "@medusajs/framework/utils";
+import { logServerError } from "../../lib/errors/error-handler";
 import { readCheckoutError, sendProblem as sendCheckoutProblem } from "../../lib/checkout/errors";
 import { sendProblem } from "../../lib/http/problem";
 import { AdjustError } from "../../lib/inventory/adjust";
@@ -30,6 +31,16 @@ export const RETURNS_ERROR_STATUS = {
   REFUND_RETRY_EXHAUSTED: 409,
   REFUND_PROVIDER_UNCONFIRMED: 409,
   BUSY_RETRY: 409,
+  /** T-165: hủy chưa xác minh chỉ cho đơn `awaiting_payment` (đã xác nhận/đã hủy/COD… → 409, kèm `state`). */
+  NOT_AWAITING_PAYMENT: 409,
+  /** T-165: đơn chờ thanh toán nhưng thanh toán không ở diện "chưa xác minh" (còn hạn, đã có kết quả, đã thu). */
+  PAYMENT_NOT_UNVERIFIED: 409,
+  /**
+   * T-173: hoàn theo trả hàng (`return_id`) không từ chối được — bản `rejected` vẫn chiếm chỉ mục duy nhất theo yêu cầu
+   * trả nên yêu cầu trả sẽ kẹt. Kèm `next_steps` tính theo cách hoàn + trạng thái (`returnRefundNextSteps` của domain) và
+   * `evidence_required`.
+   */
+  RETURN_REFUND_NOT_REJECTABLE: 409,
 } as const;
 
 export type ReturnsErrorCode = keyof typeof RETURNS_ERROR_STATUS;
@@ -72,8 +83,6 @@ export function handleReturnsRouteError(req: MedusaRequest, res: MedusaResponse,
           : 0;
     if (status) return sendProblem(res, status, status === 401 ? "UNAUTHORIZED" : "FORBIDDEN", error.message);
   }
-  req.scope
-    .resolve(ContainerRegistrationKeys.LOGGER)
-    .error(`[returns] ${req.method} ${req.path}: ${error instanceof Error ? error.stack : "lỗi không rõ"}`);
+  logServerError(req, "returns", error);
   sendProblem(res, 500, "INTERNAL", "Không thể xử lý yêu cầu lúc này");
 }

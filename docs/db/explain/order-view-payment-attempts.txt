@@ -1,0 +1,18 @@
+-- order-view-payment-attempts
+-- Nguồn: apps/backend/src/lib/orders/view.ts presentOrder → listPaymentAttempts({ order_id }); recheck.ts
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["order_PF0123456"]
+
+SELECT * FROM payment_attempt WHERE order_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC;
+
+Sort  (cost=8.45..8.45 rows=1 width=133) (actual time=0.011..0.011 rows=1 loops=1)
+  Sort Key: created_at DESC
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=4
+  ->  Index Scan using "IDX_payment_attempt_order_id" on payment_attempt  (cost=0.42..8.44 rows=1 width=133) (actual time=0.009..0.009 rows=1 loops=1)
+        Index Cond: (order_id = 'order_PF0123456'::text)
+        Filter: (deleted_at IS NULL)
+        Buffers: shared hit=4
+Planning Time: 0.043 ms
+Execution Time: 0.018 ms

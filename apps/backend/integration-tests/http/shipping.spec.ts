@@ -2,8 +2,12 @@ import type { MedusaContainer } from "@medusajs/framework/types";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { listWards } from "@x-shop/domain";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
-import { getGhnClient, MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
+import {
+  getGhnClient,
+  MOCK_RATE_LIMIT_RETRY_AFTER_SECONDS,
+  MockModeGhnClient,
+  setGhnClientForTest,
+} from "../../src/lib/shipping/ghn-client";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { SHIPPING_MODULE } from "../../src/modules/shipping";
@@ -51,7 +55,6 @@ medusaIntegrationTestRunner({
       fx = await seedCatalog(container);
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       staff = await adminHeaders(api as unknown as HttpClient, container, { roles: ["order_staff"] });
     });
 
@@ -259,6 +262,34 @@ medusaIntegrationTestRunner({
       });
     });
 
+    describe("T-093 — hãng trả 429 + Retry-After khi tạo vận đơn (BE-INT-007)", () => {
+      it("202 pending với Retry-After theo hãng (30 s > mặc định 10 s); gọi lại → tra trước, gửi lại CÙNG client_order_code → 1 vận đơn", async () => {
+        const o = await paidVnpayOrder();
+        ghn.createFaults.push("rate_limited");
+        const r1 = await createShipment(o.orderId);
+        expect(r1.status).toBe(202);
+        expect(r1.headers["retry-after"]).toBe(String(MOCK_RATE_LIMIT_RETRY_AFTER_SECONDS));
+        expect(shipmentOf(r1)).toMatchObject({ provider_order_code: null, state: "unfulfilled" });
+        expect(ghn.mock.created).toBe(0);
+        const r2 = await createShipment(o.orderId);
+        expect(r2.status).toBe(201);
+        expect(shipmentOf(r2).id).toBe(shipmentOf(r1).id);
+        expect(shipmentOf(r2).client_order_code).toBe(shipmentOf(r1).client_order_code);
+        expect(ghn.lastCreateBody?.client_order_code).toBe(shipmentOf(r1).client_order_code);
+        expect(ghn.createCalls).toBe(2);
+        expect(ghn.mock.created).toBe(1);
+        expect(await shipping().listShipments({ order_id: o.orderId })).toHaveLength(1);
+      });
+
+      it("pending vì timeout (không có Retry-After của hãng) → giữ Retry-After mặc định 10 s", async () => {
+        const o = await paidVnpayOrder();
+        ghn.createFaults.push("timeout_before_commit");
+        const r = await createShipment(o.orderId);
+        expect(r.status).toBe(202);
+        expect(r.headers["retry-after"]).toBe("10");
+      });
+    });
+
     describe("song song — 2 nhân viên cùng tạo vận đơn", () => {
       it("khóa order + UNIQUE client_order_code → đúng 1 shipment, hãng nhận 1 lần", async () => {
         const o = await confirmedCodOrder();
@@ -402,6 +433,28 @@ medusaIntegrationTestRunner({
         row = (await shipping().listShipments({ id: s.id }))[0]!;
         expect(row).toMatchObject({ settlement_state: "unsettled", cod_reported_amount: o.total });
         expect(await shipping().codReceivable()).toEqual({ shipments: 1, amount: o.total, reported: 1 });
+      });
+    });
+
+    describe("T-093 — callback dồn dập: 429 của chính ta kèm Retry-After", () => {
+      // Đặt CUỐI file: bộ đếm theo IP (Postgres, chung mọi bản sao — T-095) — vượt ngưỡng ở đây không ảnh hưởng test trước.
+      it("vượt 300 callback/10 s/IP → 429 RATE_LIMITED + Retry-After (giây, 1–20); trong ngưỡng không có Retry-After", async () => {
+        const first = await callback({ OrderCode: "x" });
+        expect(first.status).toBe(400);
+        expect(first.headers["retry-after"]).toBeUndefined();
+        let limited: Res<Record<string, unknown>> | null = null;
+        // Cửa sổ 10 s theo đồng hồ (không reset được từ ngoài): đợt dội có thể vắt qua ranh giới cửa sổ. Gửi tới 700
+        // (≥ 2·300 + 1) → dù vắt qua một ranh giới, số hiệu dụng của cửa sổ trượt vẫn vượt 300.
+        for (let i = 0; i < 700 && !limited; i += 50) {
+          const batch = await Promise.all(Array.from({ length: 50 }, () => callback({ OrderCode: "x" })));
+          limited = batch.find((r) => r.status === 429) ?? null;
+        }
+        expect(limited).not.toBeNull();
+        expect(limited!.data).toMatchObject({ ok: false, code: "RATE_LIMITED" });
+        const after = Number(limited!.headers["retry-after"]);
+        expect(Number.isInteger(after)).toBe(true);
+        expect(after).toBeGreaterThanOrEqual(1);
+        expect(after).toBeLessThanOrEqual(20); // cửa sổ trượt: sau đợt dội có thể tới 2 cửa sổ (D-037)
       });
     });
   },

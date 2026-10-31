@@ -3,7 +3,17 @@ import { EMPTY_FILTER, parseFilter, type CatalogFilter } from "@x-shop/domain";
 import { resetEnvCacheForTests } from "../env";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { getCategoryName, getMenuCategories, getProduct, listProducts, search } from "./client";
+import {
+  getCategories,
+  getCategoryName,
+  getMenuCategories,
+  getProduct,
+  listProducts,
+  PROXY_BACKEND_TIMEOUT_MS,
+  proxyNet,
+  search,
+} from "./client";
+import { CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS } from "../client-fetch";
 import { FIXTURE_PRODUCTS } from "./fixtures";
 import { CatalogError } from "./types";
 
@@ -206,6 +216,60 @@ describe("backend (XS_DATA_SOURCE=backend)", () => {
     expect((err as CatalogError).message).not.toContain("10.0.0.1");
   });
 
+  it("GET có timeout + retry 1 lần cho 502/503/504; không retry 429/404/422", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0); // backoff 0 ms: không chờ thật
+    const calls = { n: 0, signals: 0 };
+    const reply = (first: Response, then: Response) =>
+      vi.stubGlobal("fetch", async (_u: unknown, init?: RequestInit) => {
+        calls.n += 1;
+        if (init?.signal instanceof AbortSignal) calls.signals += 1;
+        return (calls.n === 1 ? first : then).clone();
+      });
+    reply(new Response("x", { status: 503 }), ok({ data: [], count: 0 }));
+    await listProducts(EMPTY_FILTER);
+    expect(calls).toEqual({ n: 2, signals: 2 }); // mỗi lần gọi đều mang tín hiệu hết hạn
+    for (const status of [429, 404, 422]) {
+      calls.n = 0;
+      reply(ok({}, status), ok({ data: [], count: 0 }));
+      await listProducts(EMPTY_FILTER).catch((e: unknown) => e);
+      expect(calls.n).toBe(1);
+    }
+    // Route proxy đặt maxRetries 0 (client đã retry): 503 → đúng 1 lần gọi backend, không retry lồng.
+    calls.n = 0;
+    reply(new Response("x", { status: 503 }), ok({ data: [], count: 0 }));
+    await listProducts(EMPTY_FILTER, { net: { maxRetries: 0 } }).catch((e: unknown) => e);
+    expect(calls.n).toBe(1);
+    calls.n = 0;
+    await search(EMPTY_FILTER, { net: { maxRetries: 0 } }).catch((e: unknown) => e);
+    expect(calls.n).toBe(1);
+    vi.restoreAllMocks();
+  });
+
+  it("proxyNet: không retry, hạn server < hạn client, signal của request tới tận fetch; huỷ → dừng, không retry", async () => {
+    expect(PROXY_BACKEND_TIMEOUT_MS).toBeLessThan(CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS);
+    const ctrl = new AbortController();
+    expect(proxyNet(ctrl.signal)).toEqual({
+      maxRetries: 0,
+      timeoutMs: PROXY_BACKEND_TIMEOUT_MS,
+      signal: ctrl.signal,
+    });
+    let n = 0;
+    let seen: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", async (_u: unknown, init?: RequestInit) => {
+      n += 1;
+      seen = init?.signal;
+      return new Promise<Response>((_res, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    const p = listProducts(EMPTY_FILTER, { net: proxyNet(ctrl.signal) }).catch((e: unknown) => e);
+    await Promise.resolve();
+    ctrl.abort(); // client bỏ đi (request.signal huỷ)
+    expect(await p).toMatchObject({ code: "UNAVAILABLE" });
+    expect(n).toBe(1);
+    expect(seen?.aborted).toBe(true);
+  });
+
   it("getProduct: 404 → null; handle được encode", async () => {
     const fetchMock = vi.fn(async () => ok({ code: "NOT_FOUND" }, 404));
     vi.stubGlobal("fetch", fetchMock);
@@ -234,6 +298,47 @@ describe("backend (XS_DATA_SOURCE=backend)", () => {
     expect(menu.every((m) => ["nu", "nam", "giay", "phu-kien"].includes(m.handle))).toBe(true);
     expect(await getCategoryName("ao-nu")).toBe("Áo nữ");
     expect(await getCategoryName("khong-co")).toBeNull();
+  });
+
+  it("danh mục > 200: đọc theo offset tới count (trang 200) — danh mục thứ 201+ vẫn tra được tên", async () => {
+    const total = 250;
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = new URL(url);
+      const limit = Number(u.searchParams.get("limit"));
+      const offset = Number(u.searchParams.get("offset"));
+      const categories = Array.from({ length: Math.max(0, Math.min(limit, total - offset)) }, (_, i) => ({
+        handle: `dm-${offset + i}`,
+        name: `Danh mục ${offset + i}`,
+        parent_handle: null,
+        product_count: 1,
+      }));
+      return ok({ categories, count: total, limit, offset });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await getCategoryName("dm-249")).toBe("Danh mục 249");
+    const urls = (fetchMock.mock.calls as unknown as [string][]).map(([x]) => new URL(x).search);
+    expect(urls).toEqual(["?limit=200&offset=0", "?limit=200&offset=200"]);
+  });
+
+  it("trang danh mục là ảnh chụp lệch nhau (thêm danh mục giữa hai trang) → không trùng handle", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const offset = Number(new URL(url).searchParams.get("offset"));
+      // Trang 2 lấy sau khi có thêm một danh mục đứng trước biên → dm-199 lặp lại ở đầu trang 2.
+      const from = offset === 0 ? 0 : 199;
+      const n = offset === 0 ? 200 : 51;
+      const categories = Array.from({ length: n }, (_, i) => ({
+        handle: `dm-${from + i}`,
+        name: `Danh mục ${from + i}`,
+        parent_handle: null,
+        product_count: 1,
+      }));
+      return ok({ categories, count: offset === 0 ? 250 : 251, limit: 200, offset });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const all = await getCategories();
+    const handles = all.map((c) => c.handle);
+    expect(new Set(handles).size).toBe(handles.length);
+    expect(handles).toContain("dm-249");
   });
 
   it("phản hồi thật của danh sách/chi tiết/tìm kiếm đi qua lớp ánh xạ", async () => {

@@ -3,6 +3,8 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { CATALOG_INDEX_MODULE } from "../../modules/catalog-index";
 import type CatalogIndexModuleService from "../../modules/catalog-index/service";
 import { CATALOG_PRODUCTS_CHANGED } from "./constants";
+import { isNonEmpty } from "@x-shop/domain";
+import { z } from "zod";
 
 /** Sự kiện làm read model đổi (workflow native + sự kiện nội bộ của catalog). */
 export const CATALOG_INDEX_EVENTS = [
@@ -36,8 +38,14 @@ export type IndexTarget = { rebuild: true } | { rebuild: false; productIds: stri
 
 type Data = Record<string, unknown> | undefined;
 
-const ids = (v: unknown): string[] =>
-  (Array.isArray(v) ? v : [v]).filter((x): x is string => typeof x === "string" && x !== "");
+/** Payload sự kiện (nguồn: Event Bus, kể cả sự kiện từ module ngoài) = object khoá-chuỗi; kiểu lạ → coi như rỗng. */
+const EventData = z.record(z.string(), z.unknown()).catch({});
+
+/** Một id hoặc mảng id → chỉ giữ chuỗi không rỗng (số, null, object bị bỏ). */
+const IdList = z
+  .preprocess((v) => (Array.isArray(v) ? v : [v]), z.array(z.unknown()))
+  .transform((a) => a.filter((x): x is string => typeof x === "string" && x !== ""));
+const ids = (v: unknown): string[] => IdList.parse(v);
 
 async function productsOfVariants(container: MedusaContainer, variantIds: string[]): Promise<string[]> {
   if (variantIds.length === 0) return [];
@@ -48,7 +56,7 @@ async function productsOfVariants(container: MedusaContainer, variantIds: string
     filters: { id: variantIds },
   });
   const fromSource = (data as unknown as { product_id?: string | null }[]).flatMap((v) =>
-    v.product_id ? [v.product_id] : [],
+    isNonEmpty(v.product_id) ? [v.product_id] : [],
   );
   // Biến thể đã xoá không còn trong nguồn → lấy product từ chính read model.
   const index: CatalogIndexModuleService = container.resolve(CATALOG_INDEX_MODULE);
@@ -65,7 +73,7 @@ async function variantsOfInventoryItems(container: MedusaContainer, itemIds: str
     filters: { inventory_item_id: itemIds },
   });
   return (data as unknown as { variant_id?: string | null }[]).flatMap((l) =>
-    l.variant_id ? [l.variant_id] : [],
+    isNonEmpty(l.variant_id) ? [l.variant_id] : [],
   );
 }
 
@@ -78,7 +86,7 @@ async function variantsOfPriceSets(container: MedusaContainer, priceSetIds: stri
     filters: { price_set_id: priceSetIds },
   });
   return (data as unknown as { variant_id?: string | null }[]).flatMap((l) =>
-    l.variant_id ? [l.variant_id] : [],
+    isNonEmpty(l.variant_id) ? [l.variant_id] : [],
   );
 }
 
@@ -91,7 +99,7 @@ export async function targetsForEvent(
   name: string,
   data: Data,
 ): Promise<IndexTarget> {
-  const d = data ?? {};
+  const d = EventData.parse(data ?? {});
   if (name === CATALOG_PRODUCTS_CHANGED) return { rebuild: false, productIds: ids(d.product_ids) };
   if (name.startsWith("product.")) return { rebuild: false, productIds: ids(d.id) };
   if (name.startsWith("product-variant.")) {

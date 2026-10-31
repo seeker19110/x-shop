@@ -3,23 +3,62 @@ import { cache } from "react";
 import { categoryName, NAV_CATEGORIES } from "../content/navigation";
 import { mapCategories, mapList, mapProduct, mapSearch, type CategoryEntry } from "./backend-map";
 import { getClientEnv, getServerEnv, resolveDataSource } from "../env";
+import { CATALOG_REVALIDATE_S } from "../cache-policy";
+import { clientFetch } from "../client-fetch";
 import { clientIpHeader } from "../security/client-ip";
 import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
+import { isNonEmpty } from "../presence";
+import { LIST_TAGS, productTags } from "./revalidate";
 
 /**
  * Client catalog phía server (không import vào client component): chọn nguồn bằng `XS_DATA_SOURCE`.
- * Backend: `fetch` server-side, dữ liệu công khai cache 60 giây (`next.revalidate`).
+ * Backend: `fetch` server-side, dữ liệu công khai cache `CATALOG_REVALIDATE_S` giây (`next.revalidate`, docs/ops/CACHE.md)
+ * và gắn tag (`next.tags`) để webhook của backend hết hạn ngay khi sản phẩm/giá/tồn đổi (T-142, `/api/revalidate`):
+ * danh sách/tìm kiếm/danh mục = `LIST_TAGS`, PDP = `productTags(handle)`.
  */
 
 /** Số sản phẩm mỗi trang ở storefront (backend cho phép tới 48). */
 export const CATALOG_PAGE_SIZE = 12;
 
 const TIMEOUT_MS = 5000;
+/** SSR/ISR nhạy độ trễ: một lần thử lại là đủ (xấu nhất ≈ 2 × 5 s + backoff ≤ 2 s). */
+const RETRIES = 1;
+/**
+ * Chỉ 502/503/504 (cùng lỗi mạng/timeout). KHÔNG 429: backend đang giới hạn tốc độ thì thử lại chỉ nhân tải (route
+ * /api/catalog/* đã chuyển tiếp 429 + Retry-After cho client); 408/500 không chắc là tạm thời ở nguồn này.
+ */
+const RETRY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+/** Tuỳ chỉnh I/O của một lần `backendGet`. */
+export interface BackendNet {
+  maxRetries?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Cho route proxy `/api/catalog/*` (count/suggest): chỉ MỘT tầng retry cho mỗi chuỗi gọi (client đã có clientFetch retry)
+ * nên server không retry, và hạn server 3500 ms < hạn client 4000 ms (CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS) — server
+ * bỏ cuộc trước khi client hết hạn/thử lại, không để hai lời gọi backend chồng nhau. Truyền thêm `signal` của request.
+ */
+export const PROXY_BACKEND_TIMEOUT_MS = 3500;
+export function proxyNet(signal: AbortSignal): BackendNet {
+  return { maxRetries: 0, timeoutMs: PROXY_BACKEND_TIMEOUT_MS, signal };
+}
 
 interface ListOptions {
   category?: string | null;
   pageSize?: number;
+  /** Tuỳ chỉnh I/O tới backend (mặc định: retry 1 lần, hạn TIMEOUT_MS, không signal). */
+  net?: BackendNet;
+}
+
+/** Chỉ http(s) (env đã qua zod khi khởi động — kiểm lại tại điểm gửi). */
+function assertHttpBase(base: string): string {
+  const protocol = new URL(base).protocol;
+  if (protocol !== "https:" && protocol !== "http:") throw new Error("MEDUSA_BACKEND_URL phải là http(s)");
+  return base;
 }
 
 async function backendGet<T>(
@@ -27,20 +66,35 @@ async function backendGet<T>(
   params?: URLSearchParams,
   fresh = false,
   extraHeaders: Record<string, string> = {},
+  tags: readonly string[] = LIST_TAGS,
+  net: BackendNet = {},
 ): Promise<T> {
-  const base = getServerEnv().MEDUSA_BACKEND_URL;
+  const base = assertHttpBase(getServerEnv().MEDUSA_BACKEND_URL);
   const qs = params && params.size > 0 ? `?${params.toString()}` : "";
   let res: Response;
   try {
-    res = await fetch(`${base}${path}${qs}`, {
-      headers: {
-        accept: "application/json",
-        "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
-        ...extraHeaders,
+    // GET ⇒ idempotent: lỗi tạm thời (mạng, timeout, 502/503/504) thử lại tối đa `net.maxRetries ?? RETRIES` lần; hạn
+    // mỗi lần `net.timeoutMs ?? TIMEOUT_MS`; 429/408/500 KHÔNG retry (xem RETRY_STATUSES); `net.signal` huỷ → dừng ngay.
+    res = await clientFetch(
+      `${base}${path}${qs}`,
+      {
+        headers: {
+          accept: "application/json",
+          "x-publishable-api-key": getClientEnv().NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY,
+          ...extraHeaders,
+        },
+        ...(net.signal === undefined ? {} : { signal: net.signal }),
+        ...(fresh
+          ? { cache: "no-store" as const }
+          : { next: { revalidate: CATALOG_REVALIDATE_S, tags: [...tags] } }),
       },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-      ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: 60 } }),
-    });
+      {
+        timeoutMs: net.timeoutMs ?? TIMEOUT_MS,
+        maxRetries: net.maxRetries ?? RETRIES,
+        maxRetryAfterMs: 2000,
+        retryStatuses: RETRY_STATUSES,
+      },
+    );
   } catch {
     throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");
   }
@@ -56,6 +110,17 @@ async function backendGet<T>(
     const code = problem.code === "INVALID_RANGE" ? "INVALID_RANGE" : "VALIDATION";
     throw new CatalogError(code, problem.detail ?? "Tham số không hợp lệ.", 422);
   }
+  if (res.status === 429) {
+    // Backend giới hạn tốc độ (vd. tìm kiếm theo IP): giữ nguyên 429 + Retry-After để route chuyển tiếp cho client,
+    // tránh biến thành 503 "tạm thời" rồi bị retry làm tăng tải đúng lúc đang bị giới hạn.
+    const raw = res.headers.get("retry-after")?.trim() ?? "";
+    throw new CatalogError(
+      "UNAVAILABLE",
+      "Quá nhiều yêu cầu, thử lại sau.",
+      429,
+      /^\d{1,9}$/.test(raw) ? Number(raw) : null,
+    );
+  }
   throw new CatalogError("UNAVAILABLE", "Máy chủ dữ liệu đang gặp sự cố.", res.status);
 }
 
@@ -65,7 +130,7 @@ function backendBase(): string {
 
 function listParams(filter: CatalogFilter, opts: ListOptions): URLSearchParams {
   const p = new URLSearchParams(serializeFilter(filter));
-  if (opts.category) p.set("category", opts.category);
+  if (isNonEmpty(opts.category)) p.set("category", opts.category);
   p.set("page_size", String(opts.pageSize ?? CATALOG_PAGE_SIZE));
   return p;
 }
@@ -80,12 +145,15 @@ export async function listProducts(
     }
     return fixtureList(filter, { category: opts.category, pageSize: opts.pageSize ?? CATALOG_PAGE_SIZE });
   }
-  return mapList(await backendGet<unknown>("/store/x/products", listParams(filter, opts)), backendBase());
+  return mapList(
+    await backendGet<unknown>("/store/x/products", listParams(filter, opts), false, {}, LIST_TAGS, opts.net),
+    backendBase(),
+  );
 }
 
 export async function search(
   filter: CatalogFilter,
-  opts: { pageSize?: number } = {},
+  opts: { pageSize?: number; net?: BackendNet } = {},
 ): Promise<SearchResponse> {
   if (resolveDataSource() === "fixtures") {
     if (filter.priceMin !== null && filter.priceMax !== null && filter.priceMin > filter.priceMax) {
@@ -96,7 +164,14 @@ export async function search(
   // Tìm kiếm bị giới hạn theo IP khách ở backend (SEC03): chuyển tiếp IP (khi tin proxy) — khoá cache dữ liệu vì vậy
   // tách theo IP, chấp nhận được vì truy vấn tìm kiếm vốn phân tán.
   return mapSearch(
-    await backendGet<unknown>("/store/x/search", listParams(filter, opts), false, await clientIpHeader()),
+    await backendGet<unknown>(
+      "/store/x/search",
+      listParams(filter, opts),
+      false,
+      await clientIpHeader(),
+      LIST_TAGS,
+      opts.net,
+    ),
     backendBase(),
   );
 }
@@ -105,7 +180,13 @@ export async function search(
 export const getProduct = cache(async (handle: string): Promise<ProductDetail | null> => {
   if (resolveDataSource() === "fixtures") return fixtureProduct(handle);
   try {
-    const raw = await backendGet<unknown>(`/store/x/products/${encodeURIComponent(handle)}`);
+    const raw = await backendGet<unknown>(
+      `/store/x/products/${encodeURIComponent(handle)}`,
+      undefined,
+      false,
+      {},
+      productTags(handle),
+    );
     return mapProduct(raw, backendBase());
   } catch (e) {
     if (e instanceof CatalogError && e.code === "NOT_FOUND") return null;
@@ -128,6 +209,31 @@ export async function getProductFresh(handle: string): Promise<ProductDetail | n
   }
 }
 
+/**
+ * GET /store/x/categories phân trang (T-121): mỗi trang tối đa 200 (backend kẹp), tổng tối đa 1000 (CATEGORY_FETCH_MAX của
+ * backend). Đọc lần lượt theo `offset` tới `count` — danh mục thứ 201 trở đi vẫn có trong menu/sitemap/trang danh mục.
+ */
+export const CATEGORY_PAGE_SIZE = 200;
+const CATEGORY_TOTAL_MAX = 1000;
+
+async function fetchAllCategories(): Promise<CategoryEntry[]> {
+  // Mỗi trang cache riêng (revalidate 60 s) nên các trang có thể là ảnh chụp ở thời điểm khác nhau: danh mục vừa có/hết hàng
+  // làm lệch biên trang → bỏ trùng theo handle (mục bị đẩy qua biên chỉ thiếu tới khi cache trang đồng bộ, ≤ một chu kỳ).
+  const byHandle = new Map<string, CategoryEntry>();
+  for (let offset = 0; offset < CATEGORY_TOTAL_MAX;) {
+    const params = new URLSearchParams({ limit: String(CATEGORY_PAGE_SIZE), offset: String(offset) });
+    const raw = await backendGet<unknown>("/store/x/categories", params);
+    const page = mapCategories(raw);
+    for (const c of page) if (!byHandle.has(c.handle)) byHandle.set(c.handle, c);
+    const meta = (raw ?? {}) as { count?: unknown; limit?: unknown };
+    const limit = typeof meta.limit === "number" && meta.limit > 0 ? meta.limit : CATEGORY_PAGE_SIZE;
+    const total = typeof meta.count === "number" ? meta.count : offset + page.length;
+    offset += limit;
+    if (page.length < limit || offset >= total) break;
+  }
+  return [...byHandle.values()];
+}
+
 export interface MenuCategory {
   handle: string;
   name: string;
@@ -140,7 +246,7 @@ export interface MenuCategory {
 export const getCategories = cache(async (): Promise<CategoryEntry[]> => {
   if (resolveDataSource() === "backend") {
     try {
-      return mapCategories(await backendGet<unknown>("/store/x/categories"));
+      return await fetchAllCategories();
     } catch {
       return [];
     }

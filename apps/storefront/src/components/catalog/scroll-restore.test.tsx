@@ -85,6 +85,18 @@ describe("scroll-restore: lưu/đọc scrollY theo URL", () => {
     expect(() => saveScroll(bad, "/a", 10)).not.toThrow();
     expect(loadScroll(bad, "/a")).toBeNull();
   });
+
+  it("khóa do URL kiểm soát (__proto__, constructor) được lưu như mọi khóa, không chạm prototype", () => {
+    const s = new MemStore();
+    saveScroll(s, "__proto__", 50);
+    saveScroll(s, "constructor", 70);
+    saveScroll(s, "/a", 10);
+    expect(loadScroll(s, "__proto__")).toBe(50);
+    expect(loadScroll(s, "constructor")).toBe(70);
+    expect(loadScroll(s, "/a")).toBe(10);
+    expect(loadScroll(new MemStore(), "constructor")).toBeNull();
+    expect(Object.prototype).not.toHaveProperty("50");
+  });
 });
 
 describe("ScrollRestorer (CAT03)", () => {

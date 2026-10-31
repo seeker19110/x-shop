@@ -10,11 +10,23 @@ import {
   adminRefreshGuard,
   adminSecurityGuard,
   authRateLimit,
+  emailpassOnly,
   loginIdentity,
   mfaIdentity,
+  rejectEmailpassGet,
 } from "../lib/admin-security/guard";
+import { inviteAcceptGuard } from "../lib/admin-security/invite-guard";
+import { registerGate } from "../lib/admin-security/register-gate";
+import { reservationLocationGuard } from "../lib/admin-security/reservation-guard";
+import { resetPasswordGuard } from "../lib/admin-security/reset-password";
+import { authBusyContext } from "../lib/admin-security/scrypt-gate";
+import { securityAuditTrail } from "../lib/audit/http";
+import { inputAuditTrail, withInputAudit } from "../lib/audit/input";
+import { xErrorHandler } from "../lib/errors/error-handler";
+import { requestLogContext } from "../lib/log/http";
 import { csrfGuard } from "../lib/security/csrf";
 import { securityHeaders } from "../lib/security/headers";
+import { rejectNulBytes } from "../lib/security/nul-bytes";
 import {
   productSearchRateLimit,
   quoteRateLimit,
@@ -41,13 +53,28 @@ function blockNativeCartComplete(_req: MedusaRequest, res: MedusaResponse, _next
 }
 
 export default defineMiddlewares({
+  // Handler lỗi toàn cục (T-088): problem+json có trace_id, 5xx không lộ stack/SQL/đường dẫn (lib/errors/error-handler.ts).
+  // Bọc audit đầu vào bị từ chối (T-175, lib/audit/input.ts): lỗi schema/deserialize → `input.*`; phản hồi không đổi.
+  errorHandler: withInputAudit(xErrorHandler),
   routes: [
+    // Ngữ cảnh log (trace_id/span_id) + log truy cập đã che cho MỌI request (T-090, lib/log/http.ts). `matcher: "/"`
+    // không `methods` → Medusa xếp vào nhóm global, chạy trước mọi middleware khác của dự án.
+    // Audit đầu vào bị từ chối (400/422 `VALIDATION`/`INVALID_CHARACTERS`, lỗi schema native) cho MỌI route (T-175).
+    { matcher: "/", middlewares: [requestLogContext, inputAuditTrail] },
+    // Audit sự kiện xác thực + xuất/truy cập dữ liệu nhạy cảm theo bảng route (T-091, lib/audit/http.ts): ghi SAU khi
+    // phản hồi xong, kể cả thất bại/429. Toàn cục → gắn trước rate limit/CSRF nên thấy cả request bị chặn sớm.
+    // Ngữ cảnh cờ "scrypt bận" cho /auth (T-181, lib/admin-security/scrypt-gate.ts): provider emailpass vượt trần scrypt
+    // đồng thời → handler lỗi toàn cục trả 503 AUTH_BUSY + Retry-After thay vì 401 (Auth Module nuốt lỗi provider).
+    { matcher: "/auth", middlewares: [authBusyContext] },
+    { matcher: "/auth", middlewares: [securityAuditTrail] },
+    { matcher: "/admin", middlewares: [securityAuditTrail] },
     // Header bảo mật + CSRF cho thao tác ghi dùng cookie (SEC01, SEC05, T-034). Middleware toàn cục (không `methods`)
     // chạy trước middleware theo method; mảng giữ thứ tự → CSRF trước cổng RBAC admin bên dưới.
-    { matcher: "/store", middlewares: [securityHeaders, csrfGuard("store")] },
-    { matcher: "/admin", middlewares: [securityHeaders, csrfGuard("admin")] },
-    { matcher: "/auth", middlewares: [securityHeaders, csrfGuard("auth")] },
-    { matcher: "/x", middlewares: [securityHeaders] },
+    // `rejectNulBytes` (T-085): `%00`/U+0000 ở đường dẫn, query, thân → 400 trước khi tới DB (Postgres không nhận NUL).
+    { matcher: "/store", middlewares: [securityHeaders, csrfGuard("store"), rejectNulBytes] },
+    { matcher: "/admin", middlewares: [securityHeaders, csrfGuard("admin"), rejectNulBytes] },
+    { matcher: "/auth", middlewares: [securityHeaders, csrfGuard("auth"), rejectNulBytes] },
+    { matcher: "/x", middlewares: [securityHeaders, rejectNulBytes] },
     // Rate limit Store API theo IP + khoá nghiệp vụ (SEC03, T-034); tra cứu đơn giới hạn trong route (AT20).
     { methods: ["GET"], matcher: "/store/x/search", middlewares: [searchRateLimit] },
     { methods: ["GET"], matcher: "/store/x/products", middlewares: [productSearchRateLimit] },
@@ -70,6 +97,13 @@ export default defineMiddlewares({
       middlewares: [adminSecurityGuard],
     },
     {
+      // Đổi kho của reservation qua route native → 400 RESERVATION_LOCATION_CHANGE_UNSUPPORTED (T-224): Medusa 2.22.1 bỏ −q
+      // ở kho cũ nên hàng rào tồn DB luôn từ chối (lib/admin-security/reservation-guard.ts). Theo method → sau cổng RBAC.
+      methods: ["POST"],
+      matcher: "/admin/reservations/:id",
+      middlewares: [reservationLocationGuard],
+    },
+    {
       // Upload ảnh admin (SEC04): kiểm Content-Type/Content-Length TRƯỚC multer (toàn cục), MIME bằng magic bytes SAU
       // multer (theo method — đăng ký sau middleware native của route).
       matcher: "/admin/uploads",
@@ -81,10 +115,41 @@ export default defineMiddlewares({
       middlewares: [uploadContentCheck],
     },
     {
-      // Rate limit đăng nhập admin theo (email + IP), email, IP — chỉ chặn quét hàng loạt theo IP (SEC03, T-024).
+      // Rate limit đăng nhập theo (email + IP), email, IP — chỉ chặn quét hàng loạt theo IP (SEC03, T-024). Matcher THAM SỐ
+      // (T-138): identity emailpass dùng chung mọi actor nên `/auth/customer/emailpass`, `/auth/<actor lạ>/emailpass`,
+      // `/auth/%75ser/emailpass` (Express khớp literal trên đường dẫn thô nhưng giải mã tham số) cũng đoán được mật khẩu
+      // admin — mọi actor cộng chung một bộ đếm theo email.
       methods: ["POST"],
-      matcher: "/auth/user/emailpass",
-      middlewares: [authRateLimit("login", loginIdentity)],
+      matcher: "/auth/:actor_type/:auth_provider",
+      middlewares: [emailpassOnly(authRateLimit("login", loginIdentity))],
+    },
+    {
+      // GET (HEAD đi theo GET trong Express) của route đăng nhập gốc cũng chạy authenticate → 405 cho emailpass (T-138).
+      methods: ["GET", "HEAD"],
+      matcher: "/auth/:actor_type/:auth_provider",
+      middlewares: [rejectEmailpassGet],
+    },
+    {
+      // Lời mời admin ràng buộc email + identity (T-138, D-075): accept không đổi được email, không gắn identity khác.
+      methods: ["POST"],
+      matcher: "/admin/invites/accept",
+      middlewares: [inviteAcceptGuard],
+    },
+    {
+      // Đăng ký (BE-AUTH-003, T-138, D-068): rate limit rồi cổng lời mời — chỉ actor `user` + `emailpass` có lời mời hợp lệ
+      // cho đúng email; mọi ca khác (email admin có thật, email lạ, `customer`, actor lạ) cùng một phản hồi 400, không tạo
+      // auth_identity (lib/admin-security/register-gate.ts).
+      methods: ["POST"],
+      matcher: "/auth/:actor_type/:auth_provider/register",
+      middlewares: [authRateLimit("register", loginIdentity), registerGate],
+    },
+    {
+      // Yêu cầu đặt lại mật khẩu (T-143, D-085, D-086): rate limit theo IP và (email + IP), trả 201 sau thời gian cố định;
+      // việc nền (ngưỡng theo email cho identity có thật + workflow gốc) bắt đầu sau độ trễ ngẫu nhiên 0–5 s — thời gian
+      // không lộ email tồn tại (lib/admin-security/reset-password.ts). Mọi provider.
+      methods: ["POST"],
+      matcher: "/auth/:actor_type/:auth_provider/reset-password",
+      middlewares: [resetPasswordGuard],
     },
     {
       methods: ["POST"],

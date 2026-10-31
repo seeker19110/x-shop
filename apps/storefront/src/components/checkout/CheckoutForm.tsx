@@ -23,6 +23,9 @@ import styles from "./Checkout.module.css";
 import { Field } from "./Field";
 import { OrderLines, type CheckoutLine } from "./OrderLines";
 import { PAYMENT_LABEL, Totals } from "./Totals";
+import { clientFetch } from "../../lib/client-fetch";
+import { isNonEmpty } from "../../lib/presence";
+import { safePaymentUrl } from "../../lib/safe-url";
 
 export interface CheckoutFormProps {
   lines: readonly CheckoutLine[];
@@ -46,17 +49,6 @@ type Banner =
 
 const QUOTE_DEBOUNCE_MS = 500;
 const REAL_SLEEP = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** Chỉ chuyển hướng tới http(s) — URL thanh toán do server cấp nhưng vẫn không tin tuyệt đối. */
-export function safePaymentUrl(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url);
-    return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Checkout MỘT trang (CHK02–CHK06, S-504): liên hệ → giao hàng → thanh toán; mua không cần tài khoản; tổng tiền do
@@ -110,7 +102,10 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
         : { code: provinceCode, status: "loading", list: [] };
   const itemCount = lines.reduce((s, l) => s + l.quantity, 0);
   const trackItems = useMemo(
-    () => lines.flatMap((l) => (l.itemId ? [{ item_id: l.itemId, quantity: l.quantity }] : [])).slice(0, 50),
+    () =>
+      lines
+        .flatMap((l) => (isNonEmpty(l.itemId) ? [{ item_id: l.itemId, quantity: l.quantity }] : []))
+        .slice(0, 50),
     [lines],
   );
 
@@ -136,10 +131,11 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
 
   /* ---------------------------------------------------------------- tỉnh → phường/xã */
   const loadWards = useCallback((code: string, signal?: AbortSignal) => {
-    fetch(`/api/address/wards?province=${encodeURIComponent(code)}`, { signal })
+    // Nguồn lỗi tạm thời (route trả 503, hoặc lỗi mạng) tự thử lại có backoff; 404 (mã tỉnh sai) trả ngay (FE-STATE-005).
+    clientFetch(`/api/address/wards?province=${encodeURIComponent(code)}`, { signal })
       .then((r) => (r.ok ? (r.json() as Promise<{ wards?: { code: string; name: string }[] }>) : null))
       .then((j) => {
-        if (signal?.aborted) return;
+        if (signal?.aborted === true) return;
         setWards(
           j && Array.isArray(j.wards)
             ? { code, status: "ready", list: j.wards }
@@ -147,7 +143,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
         );
       })
       .catch(() => {
-        if (!signal?.aborted) setWards({ code, status: "error", list: [] });
+        if (signal?.aborted !== true) setWards({ code, status: "error", list: [] });
       });
   }, []);
 
@@ -225,7 +221,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
   const setEl = (f: FieldName) => (el: HTMLElement | null) => {
     fieldEls.current[f] = el;
   };
-  const clearError = (f: FieldName) => setErrors((e) => (e[f] ? { ...e, [f]: undefined } : e));
+  const clearError = (f: FieldName) => setErrors((e) => (isNonEmpty(e[f]) ? { ...e, [f]: undefined } : e));
 
   const deps: FlowDeps = useMemo(
     () => ({ submit: submitCheckout, poll: pollCheckout, sleep: REAL_SLEEP }),
@@ -241,7 +237,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
       // không chặn chuyển trang nếu xóa cookie lỗi
     }
     const url = payment === "vnpay" ? safePaymentUrl(o.paymentUrl) : null;
-    if (url) window.location.assign(url);
+    if (isNonEmpty(url)) window.location.assign(url);
     else router.push(`/don-hang/${encodeURIComponent(o.ref)}`);
   };
 
@@ -281,7 +277,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
           setAppliedCode(null);
           return;
         }
-        if (out.field) {
+        if (isNonEmpty(out.field)) {
           const f = out.field as FieldName;
           setErrors((e) => ({ ...e, [f]: out.message }));
           focusField(f);
@@ -587,6 +583,11 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
             name="ward"
             label="Phường/xã"
             required
+            hint={
+              wardsView.status === "ready" && wardsView.list.length === 0
+                ? "Chưa có danh sách phường/xã cho tỉnh/thành này. Vui lòng chọn tỉnh/thành khác."
+                : undefined
+            }
             error={
               errors.ward ??
               (wardsView.status === "error" ? "Không tải được danh sách phường/xã." : undefined)
@@ -709,7 +710,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
               </div>
             )}
           </Field>
-          {appliedCode ? (
+          {isNonEmpty(appliedCode) ? (
             <p className={styles.hint}>
               {`Đang áp dụng mã ${appliedCode}. `}
               <button

@@ -16,6 +16,7 @@ import type {
   ProductListResponse,
   SearchResponse,
 } from "./types";
+import { isNonEmpty } from "../presence";
 
 /**
  * Adapter fixture: lọc/đếm facet bằng `filterProducts` / `facetCounts` của domain — cùng "oracle" mà test tích hợp
@@ -29,7 +30,7 @@ function index(products: readonly ProductDetail[]): IndexedProduct[] {
     productId: p.product_id,
     // Tên danh mục đưa vào văn bản tìm kiếm (CAT01: tìm theo tên, SKU, danh mục).
     title: `${p.title} ${p.category?.name ?? ""}`,
-    material: p.attributes.material ? slugify(p.attributes.material) : null,
+    material: isNonEmpty(p.attributes.material) ? slugify(p.attributes.material) : null,
     createdAt: p.updated_at,
     variants: p.variants.map((v) => ({
       variantId: v.variant_id,
@@ -43,7 +44,7 @@ function index(products: readonly ProductDetail[]): IndexedProduct[] {
 }
 
 function inCategory(category: string | null | undefined): ProductDetail[] {
-  return FIXTURE_PRODUCTS.filter((p) => !category || p.category?.handle === category);
+  return FIXTURE_PRODUCTS.filter((p) => !isNonEmpty(category) || p.category?.handle === category);
 }
 
 function labelsFor(products: readonly ProductDetail[], facet: FacetName): Map<string, string> {
@@ -51,7 +52,8 @@ function labelsFor(products: readonly ProductDetail[], facet: FacetName): Map<st
   for (const p of products) {
     if (facet === "color") for (const c of p.options.color) labels.set(c.value, c.label);
     else if (facet === "size") for (const s of p.options.size) labels.set(s.value, s.label);
-    else if (p.attributes.material) labels.set(slugify(p.attributes.material), p.attributes.material);
+    else if (isNonEmpty(p.attributes.material))
+      labels.set(slugify(p.attributes.material), p.attributes.material);
   }
   return labels;
 }

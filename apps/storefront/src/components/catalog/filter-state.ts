@@ -41,7 +41,7 @@ export function chipsFor(
   const chips: FilterChip[] = [];
   const add = (key: string, label: string) =>
     chips.push({ key, label, href: hrefFor(basePath, withoutCondition(filter, key)) });
-  if (opts.includeQuery && filter.q !== null) add("q", `Từ khóa: ${filter.q}`);
+  if (opts.includeQuery === true && filter.q !== null) add("q", `Từ khóa: ${filter.q}`);
   for (const v of filter.colors) add(`color:${v}`, `Màu: ${labelOf(facets?.color, v, v)}`);
   for (const v of filter.sizes) add(`size:${v}`, `Size: ${labelOf(facets?.size, v, v.toUpperCase())}`);
   for (const v of filter.materials) add(`material:${v}`, `Chất liệu: ${labelOf(facets?.material, v, v)}`);

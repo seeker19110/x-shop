@@ -12,6 +12,8 @@ import {
   type CartView,
 } from "./types";
 import { buildCartView, CART_FIELDS, type ProductLookup, type RawCart, type RawCartLine } from "./view";
+import { isNonEmpty } from "../presence";
+import { minutesToMs } from "../units";
 
 /**
  * Nghiệp vụ giỏ ở server: id giỏ ở cookie HttpOnly, thao tác qua Medusa Store API native (`/store/carts`,
@@ -22,13 +24,28 @@ const fail = (code: CartErrorCode, message: string): CartActionResult => ({ ok: 
 
 const DISABLED = fail("CART_DISABLED", "Giỏ hàng chưa khả dụng ở môi trường này. Vui lòng quay lại sau.");
 const UNAVAILABLE = fail("UNAVAILABLE", "Không kết nối được máy chủ. Vui lòng thử lại sau ít phút.");
+const CART_UNCONFIRMED = fail(
+  "CART_UNKNOWN",
+  "Chưa xác nhận được thao tác với giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
+);
+const CART_HALF_ADD = fail(
+  "CART_UNKNOWN",
+  "Đã thêm phân loại mới nhưng chưa gỡ dòng cũ, vui lòng kiểm tra giỏ.",
+);
+const CART_HALF_REFRESH = fail("CART_UNKNOWN", "Đã gỡ dòng cũ nhưng chưa thêm lại, vui lòng kiểm tra giỏ.");
+/** Chờ trước khi đọc lại lần 2: request ghi bị client bỏ (8 s) có thể còn chạy và commit muộn ở server. */
+const SETTLE_MS = 1500;
+const CART_UNKNOWN = fail(
+  "CART_UNKNOWN",
+  "Không xác định được giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
+);
 
 export const cartEnabled = (): boolean => resolveDataSource() === "backend";
 
 /* ------------------------------------------------------------------ đọc */
 
 let regionCache: { id: string; at: number } | null = null;
-const REGION_TTL_MS = 10 * 60 * 1000;
+const REGION_TTL_MS = minutesToMs(10);
 
 /** Region tiền VND (kênh bán gắn theo publishable key). Cache ngắn trong tiến trình. */
 export async function getVnRegionId(now = Date.now()): Promise<string> {
@@ -51,7 +68,7 @@ export async function fetchRawCart(cartId: string): Promise<RawCart | null> {
       `/store/carts/${encodeURIComponent(cartId)}?fields=${CART_FIELDS}`,
     );
     const cart = data.cart ?? null;
-    return cart && !cart.completed_at ? cart : null;
+    return cart && !isNonEmpty(cart.completed_at) ? cart : null;
   } catch (e) {
     if (e instanceof StoreApiError && (e.status === 404 || e.status === 400)) return null;
     throw e;
@@ -60,7 +77,9 @@ export async function fetchRawCart(cartId: string): Promise<RawCart | null> {
 
 async function lookupProducts(raw: RawCart): Promise<ProductLookup> {
   const handles = [
-    ...new Set((raw.items ?? []).flatMap((i) => (i?.product_handle ? [i.product_handle] : []))),
+    ...new Set(
+      (raw.items ?? []).flatMap((i) => (i && isNonEmpty(i.product_handle) ? [i.product_handle] : [])),
+    ),
   ];
   const entries = await Promise.all(
     handles.map(async (h): Promise<[string, ProductDetail | null | undefined]> => {
@@ -78,7 +97,7 @@ async function lookupProducts(raw: RawCart): Promise<ProductLookup> {
 export async function loadCartView(): Promise<CartView> {
   if (!cartEnabled()) return EMPTY_CART_VIEW;
   const id = await readCartId();
-  if (!id) return EMPTY_CART_VIEW;
+  if (!isNonEmpty(id)) return EMPTY_CART_VIEW;
   const raw = await fetchRawCart(id);
   if (!raw) return EMPTY_CART_VIEW;
   return buildCartView(raw, await lookupProducts(raw), getServerEnv().MEDUSA_BACKEND_URL);
@@ -89,7 +108,7 @@ export async function loadCartCount(): Promise<number> {
   if (!cartEnabled()) return 0;
   try {
     const id = await readCartId();
-    if (!id) return 0;
+    if (!isNonEmpty(id)) return 0;
     const raw = await fetchRawCart(id);
     return countOf(raw);
   } catch {
@@ -114,7 +133,7 @@ async function createCart(): Promise<RawCart> {
 
 async function loadOrCreateCart(): Promise<RawCart> {
   const id = await readCartId();
-  const existing = id ? await fetchRawCart(id) : null;
+  const existing = isNonEmpty(id) ? await fetchRawCart(id) : null;
   return existing ?? (await createCart());
 }
 
@@ -138,10 +157,80 @@ function findLine(cart: RawCart, lineId: string): RawCartLine | undefined {
 
 const qtyOf = (l: RawCartLine | undefined): number => (l ? Number(l.quantity) || 0 : 0);
 
-async function ok(cartId: string, message: string): Promise<CartActionResult> {
-  const raw = await fetchRawCart(cartId);
+async function ok(cartId: string, message: string, known?: RawCart): Promise<CartActionResult> {
+  const raw = known ?? (await fetchRawCart(cartId));
   return { ok: true, count: countOf(raw), message };
 }
+
+const variantQty = (cart: RawCart | null, variantId: string): number =>
+  (cart?.items ?? []).reduce((s, i) => s + (i?.variant_id === variantId ? Number(i.quantity) || 0 : 0), 0);
+
+/**
+ * Ghi giỏ (POST/DELETE) KHÔNG retry vì Medusa không có Idempotency-Key (medusa.ts): hết hạn chờ (NETWORK) có thể đã ghi.
+ * Chỉ khi NETWORK mới đọc lại giỏ (GET có retry) và hỏi `applied` (trạng thái đích đã đạt?). Đường thành công/lỗi khác
+ * không tốn request thừa.
+ * `judge` so số lượng đọc lại với trước/đích: "done" (đã ghi đúng) · "none" (y nguyên) · "other" (khác cả hai, vd tab khác
+ * sửa đồng thời → không đoán, CART_UNKNOWN).
+ *  - done → `{ applied: cart }` (thành công, tái dùng giỏ vừa đọc);
+ *  - none, thao tác idempotent (đặt số lượng/xóa) → UNAVAILABLE (thử lại an toàn);
+ *  - none, thao tác KHÔNG idempotent (thêm: `settle`) → chờ `SETTLE_MS` rồi đọc lại lần 2 (ghi muộn?); vẫn "none" →
+ *    CART_UNCONFIRMED (không hứa thử lại an toàn);
+ *  - đọc lại lỗi/giỏ không còn/other → CART_UNKNOWN.
+ */
+type Judge = "done" | "none" | "other";
+type Written = { applied: RawCart | null } | { result: CartActionResult };
+
+async function readBack(cartId: string): Promise<RawCart | null> {
+  try {
+    return await fetchRawCart(cartId);
+  } catch {
+    return null;
+  }
+}
+
+async function writeConfirmed(
+  cartId: string,
+  write: () => Promise<unknown>,
+  judge: (cart: RawCart) => Judge,
+  opts: { settle?: boolean } = {},
+): Promise<Written> {
+  try {
+    await write();
+    return { applied: null };
+  } catch (e) {
+    if (!(e instanceof StoreApiError && e.code === "NETWORK")) throw e;
+  }
+  const first = await readBack(cartId);
+  if (!first) return { result: CART_UNKNOWN };
+  const j1 = judge(first);
+  if (j1 === "done") return { applied: first };
+  if (j1 === "other") return { result: CART_UNKNOWN };
+  if (opts.settle !== true) return { result: UNAVAILABLE };
+  await new Promise((r) => setTimeout(r, SETTLE_MS));
+  const second = await readBack(cartId);
+  if (!second) return { result: CART_UNKNOWN };
+  const j2 = judge(second);
+  if (j2 === "done") return { applied: second };
+  return { result: j2 === "none" ? CART_UNCONFIRMED : CART_UNKNOWN };
+}
+
+/** Bước 2 của thao tác 2 bước: bước 1 đã đổi giỏ nên MỌI thất bại ở đây = giỏ đổi một nửa, không bao giờ "thử lại". */
+async function secondStep(run: () => Promise<Written>, half: CartActionResult): Promise<Written> {
+  try {
+    const w = await run();
+    return "result" in w ? { result: half } : w;
+  } catch {
+    return { result: half };
+  }
+}
+
+/** Phân loại theo số lượng variant: before+q = done; before = none; khác = other. */
+const judgeAdd =
+  (variantId: string, before: number, q: number) =>
+  (after: RawCart): Judge => {
+    const n = variantQty(after, variantId);
+    return n === before + q ? "done" : n === before ? "none" : "other";
+  };
 
 const labelOf = (p: ProductDetail, variantId: string): string => {
   const v = p.variants.find((x) => x.variant_id === variantId);
@@ -208,11 +297,23 @@ export async function addItem(input: {
     if (qtyOf(existing ?? undefined) + quantity > MAX_LINE_QUANTITY) {
       return fail("LIMIT", `Mỗi sản phẩm tối đa ${MAX_LINE_QUANTITY} trong giỏ.`);
     }
-    await storeApi(`/store/carts/${cart.id}/line-items`, {
-      method: "POST",
-      body: { variant_id: variantId, quantity },
-    });
-    return await ok(cart.id, `Đã thêm ${labelOf(checked.product, variantId)} vào giỏ.`);
+    const before = variantQty(cart, variantId);
+    const w = await writeConfirmed(
+      cart.id,
+      () =>
+        storeApi(`/store/carts/${cart.id}/line-items`, {
+          method: "POST",
+          body: { variant_id: variantId, quantity },
+        }),
+      judgeAdd(variantId, before, quantity),
+      { settle: true },
+    );
+    if ("result" in w) return w.result;
+    return await ok(
+      cart.id,
+      `Đã thêm ${labelOf(checked.product, variantId)} vào giỏ.`,
+      w.applied ?? undefined,
+    );
   } catch (e) {
     return describeStoreError(e);
   }
@@ -227,7 +328,7 @@ async function withLine(
   if (!cartEnabled()) return DISABLED;
   try {
     const id = await readCartId();
-    const cart = id ? await fetchRawCart(id) : null;
+    const cart = isNonEmpty(id) ? await fetchRawCart(id) : null;
     const line = cart ? findLine(cart, lineId) : undefined;
     if (!cart || !line) return fail("NOT_FOUND", "Không tìm thấy dòng trong giỏ. Hãy tải lại trang.");
     return await fn(cart.id, line, cart);
@@ -241,19 +342,36 @@ export function setQuantity(lineId: string, quantity: number): Promise<CartActio
     return Promise.resolve(fail("INVALID_INPUT", `Số lượng phải từ 1 đến ${MAX_LINE_QUANTITY}.`));
   }
   return withLine(lineId, async (cartId, line) => {
-    await storeApi(`/store/carts/${cartId}/line-items/${encodeURIComponent(line.id)}`, {
-      method: "POST",
-      body: { quantity },
-    });
-    return ok(cartId, "Đã cập nhật số lượng.");
+    const w = await writeConfirmed(
+      cartId,
+      () =>
+        storeApi(`/store/carts/${cartId}/line-items/${encodeURIComponent(line.id)}`, {
+          method: "POST",
+          body: { quantity },
+        }),
+      (after) => {
+        const n = qtyOf(findLine(after, line.id));
+        return n === quantity ? "done" : n === qtyOf(line) ? "none" : "other";
+      },
+    );
+    if ("result" in w) return w.result;
+    return ok(cartId, "Đã cập nhật số lượng.", w.applied ?? undefined);
   });
 }
+
+const deleteLine = (cartId: string, lineId: string) =>
+  writeConfirmed(
+    cartId,
+    () => storeApi(`/store/carts/${cartId}/line-items/${encodeURIComponent(lineId)}`, { method: "DELETE" }),
+    (after) => (findLine(after, lineId) ? "none" : "done"),
+  );
 
 /** Xóa luôn được phép — kể cả dòng lỗi (SKU ẩn/hết hàng) để người dùng gỡ được. */
 export function removeLine(lineId: string): Promise<CartActionResult> {
   return withLine(lineId, async (cartId, line) => {
-    await storeApi(`/store/carts/${cartId}/line-items/${encodeURIComponent(line.id)}`, { method: "DELETE" });
-    return ok(cartId, "Đã xóa sản phẩm khỏi giỏ.");
+    const w = await deleteLine(cartId, line.id);
+    if ("result" in w) return w.result;
+    return ok(cartId, "Đã xóa sản phẩm khỏi giỏ.", w.applied ?? undefined);
   });
 }
 
@@ -263,7 +381,7 @@ export function changeVariant(lineId: string, variantId: string): Promise<CartAc
     return Promise.resolve(fail("INVALID_INPUT", "Lựa chọn không hợp lệ. Vui lòng chọn lại màu và size."));
   }
   return withLine(lineId, async (cartId, line, cart) => {
-    if (!line.product_handle) return fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.");
+    if (!isNonEmpty(line.product_handle)) return fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.");
     if (line.variant_id === variantId) return ok(cartId, "Giữ nguyên lựa chọn.");
     const checked = await checkVariant(line.product_handle, variantId);
     if (!checked.ok) return checked.result;
@@ -272,28 +390,52 @@ export function changeVariant(lineId: string, variantId: string): Promise<CartAc
       return fail("LIMIT", `Mỗi sản phẩm tối đa ${MAX_LINE_QUANTITY} trong giỏ.`);
     }
     // Thêm trước, gỡ sau: nếu thêm lỗi (hết hàng) dòng cũ còn nguyên.
-    await storeApi(`/store/carts/${cartId}/line-items`, {
-      method: "POST",
-      body: { variant_id: variantId, quantity: qtyOf(line) },
-    });
-    await storeApi(`/store/carts/${cartId}/line-items/${encodeURIComponent(line.id)}`, { method: "DELETE" });
-    return ok(cartId, `Đã đổi sang ${labelOf(checked.product, variantId)}.`);
+    const targetBefore = qtyOf(target ?? undefined);
+    const add = await writeConfirmed(
+      cartId,
+      () =>
+        storeApi(`/store/carts/${cartId}/line-items`, {
+          method: "POST",
+          body: { variant_id: variantId, quantity: qtyOf(line) },
+        }),
+      judgeAdd(variantId, targetBefore, qtyOf(line)),
+      { settle: true },
+    );
+    if ("result" in add) return add.result;
+    const del = await secondStep(() => deleteLine(cartId, line.id), CART_HALF_ADD);
+    if ("result" in del) return del.result;
+    return ok(cartId, `Đã đổi sang ${labelOf(checked.product, variantId)}.`, del.applied ?? undefined);
   });
 }
 
 /** Cập nhật giá dòng về giá hiện hành: gỡ rồi thêm lại cùng biến thể/số lượng (sau khi kiểm biến thể còn bán). */
 export function refreshLinePrice(lineId: string): Promise<CartActionResult> {
-  return withLine(lineId, async (cartId, line) => {
-    if (!line.product_handle || !line.variant_id)
+  return withLine(lineId, async (cartId, line, cart) => {
+    if (!isNonEmpty(line.product_handle) || !isNonEmpty(line.variant_id))
       return fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.");
     const checked = await checkVariant(line.product_handle, line.variant_id);
     if (!checked.ok) return checked.result;
-    await storeApi(`/store/carts/${cartId}/line-items/${encodeURIComponent(line.id)}`, { method: "DELETE" });
-    await storeApi(`/store/carts/${cartId}/line-items`, {
-      method: "POST",
-      body: { variant_id: line.variant_id, quantity: qtyOf(line) },
-    });
-    return ok(cartId, "Đã cập nhật giá.");
+    const del = await deleteLine(cartId, line.id);
+    if ("result" in del) return del.result;
+    // Sau khi gỡ, số lượng biến thể trong giỏ = phần còn lại của các dòng khác (đọc lại nếu NETWORK ở bước gỡ).
+    const variantId = line.variant_id;
+    const base = variantQty(del.applied ?? cart, variantId) - (del.applied ? 0 : qtyOf(line));
+    const add = await secondStep(
+      () =>
+        writeConfirmed(
+          cartId,
+          () =>
+            storeApi(`/store/carts/${cartId}/line-items`, {
+              method: "POST",
+              body: { variant_id: variantId, quantity: qtyOf(line) },
+            }),
+          judgeAdd(variantId, base, qtyOf(line)),
+          { settle: true },
+        ),
+      CART_HALF_REFRESH,
+    );
+    if ("result" in add) return add.result;
+    return ok(cartId, "Đã cập nhật giá.", add.applied ?? undefined);
   });
 }
 

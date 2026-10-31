@@ -43,6 +43,20 @@ describe("RBAC — AT21", () => {
     expect(can(["accountant"], "refund.execute")).toBe(true);
     expect(can(["support", "warehouse"], "return.inspect")).toBe(true);
   });
+  it("payment.override (T-165, D-118): chỉ owner — kế toán đọc thanh toán nhưng không ghi đè; tổ hợp vai trò không lách", () => {
+    expect(can(["owner"], "payment.override")).toBe(true);
+    for (const r of ROLES.filter((x) => x !== "owner")) {
+      expect({ r, ok: can([r], "payment.override") }).toEqual({ r, ok: false });
+    }
+    expect(can(["accountant"], "payment.read")).toBe(true);
+    expect(
+      can(
+        ROLES.filter((x) => x !== "owner"),
+        "payment.override",
+      ),
+    ).toBe(false);
+    expect(permissionsOf(["accountant", "order_staff"])).not.toContain("payment.override");
+  });
   it("chỉ owner quản lý người dùng/cấu hình", () => {
     for (const r of ROLES.filter((x) => x !== "owner")) {
       expect(can([r], "user.manage")).toBe(false);
@@ -113,5 +127,11 @@ describe("token tra cứu đơn — POST01", () => {
     expect(verifyLookupToken(secret, `${Buffer.from("x y.1").toString("base64url")}.m`, now)).toMatchObject({
       reason: "MALFORMED",
     });
+  });
+  it("phần thân/MAC thiếu hoặc rỗng → MALFORMED (BASE-DATA-003)", () => {
+    const [b64, mac] = tok.split(".");
+    expect(verifyLookupToken(secret, "", now)).toMatchObject({ reason: "MALFORMED" });
+    expect(verifyLookupToken(secret, `${b64}.`, now)).toMatchObject({ reason: "MALFORMED" });
+    expect(verifyLookupToken(secret, `.${mac}`, now)).toMatchObject({ reason: "MALFORMED" });
   });
 });

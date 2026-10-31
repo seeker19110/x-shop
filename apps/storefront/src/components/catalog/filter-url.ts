@@ -23,6 +23,9 @@ export function serializeQuery(f: CatalogFilter): string {
 }
 
 export function hrefFor(basePath: string, filter: CatalogFilter): string {
+  // Helper route nội bộ được lint cho phép (FE-SEC-002): basePath phải là đường dẫn cùng origin, không "//host" hay "/\\".
+  if (!basePath.startsWith("/") || basePath.startsWith("//") || basePath.startsWith("/\\"))
+    throw new Error(`hrefFor: basePath phải bắt đầu bằng "/" (không "//" hoặc "/\\"), nhận "${basePath}"`);
   const qs = serializeQuery(filter);
   return qs ? `${basePath}?${qs}` : basePath;
 }
@@ -30,7 +33,7 @@ export function hrefFor(basePath: string, filter: CatalogFilter): string {
 /** "Xóa tất cả": bỏ mọi điều kiện, giữ thứ tự sắp xếp (không phải điều kiện lọc). */
 export function withoutConditions(filter: CatalogFilter, opts: { keepQuery?: boolean } = {}): CatalogFilter {
   return {
-    q: opts.keepQuery ? filter.q : null,
+    q: opts.keepQuery === true ? filter.q : null,
     colors: [],
     sizes: [],
     materials: [],

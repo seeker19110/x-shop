@@ -16,6 +16,8 @@ import { ScrollRestorer } from "./ScrollRestorer";
 import { ListAnalytics } from "./ListAnalytics";
 import { ProductGrid } from "./ProductGrid";
 import { SortForm } from "./SortForm";
+import { isNonEmpty } from "../../lib/presence";
+import { safeHref } from "../../lib/safe-url";
 
 export interface CatalogViewProps {
   basePath: string;
@@ -61,7 +63,7 @@ export function CatalogView({
       <ScrollRestorer />
       <header className={styles.head}>
         <h1>{heading}</h1>
-        {intro ? <p className={styles.intro}>{intro}</p> : null}
+        {isNonEmpty(intro) ? <p className={styles.intro}>{intro}</p> : null}
         {header}
       </header>
 
@@ -99,7 +101,7 @@ export function CatalogView({
           {result === null ? (
             <div role="alert" className={styles.errorBox}>
               <InlineError>{error ?? "Không tải được danh sách sản phẩm. Vui lòng thử lại."}</InlineError>
-              <Button href={hrefFor(basePath, filter)} variant="secondary">
+              <Button href={safeHref(hrefFor(basePath, filter))} variant="secondary">
                 Thử lại
               </Button>
             </div>
@@ -116,7 +118,7 @@ export function CatalogView({
             <EmptyState
               title="Trang này không có sản phẩm"
               description={`Bộ lọc hiện có ${result.total} sản phẩm, trong ${lastPage} trang.`}
-              action={<Button href={hrefFor(basePath, { ...filter, page: 1 })}>Về trang 1</Button>}
+              action={<Button href={safeHref(hrefFor(basePath, { ...filter, page: 1 }))}>Về trang 1</Button>}
             />
           ) : (
             <EmptyState
@@ -132,7 +134,7 @@ export function CatalogView({
                     <ul className={styles.removeList} aria-label="Gỡ điều kiện">
                       {chips.map((c) => (
                         <li key={c.key}>
-                          <Link href={c.href} prefetch={false}>
+                          <Link href={safeHref(c.href)} prefetch={false}>
                             {`Bỏ lọc: ${c.label}`}
                           </Link>
                         </li>

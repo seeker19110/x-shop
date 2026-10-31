@@ -8,7 +8,7 @@
 ## Catalog (T-014) — shape THẬT của backend (đã đối chiếu bằng fixture phản hồi thật ở `apps/storefront/src/lib/catalog/__fixtures__/backend/`)
 Storefront ánh xạ sang kiểu nội bộ ở `lib/catalog/backend-map.ts`; backend là nguồn chuẩn.
 ### `GET /store/x/products` và `GET /store/x/search`
-Query: `q, color, size, material, price_min, price_max, in_stock=1, sort=newest|price_asc|price_desc, page, page_size≤48, category`.
+Query: `q, color, size, material, price_min, price_max, in_stock=1, sort=newest|price_asc|price_desc, page≤9999, page_size (mặc định 24; >48 bị kẹp về 48), category`.
 `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`.
 ```json
 { "items": [{ "product_id": "prod_…", "handle": "that-lung-da-bo", "title": "Thắt lưng da bò", "price_min": 450000, "price_max": 450000,
@@ -25,8 +25,9 @@ category{handle,name}|null, options{colors:[{value,label,hex|null}], sizes:[{val
 images[{url, alt|null, color|null, width|null, height|null}], size_chart{code,name,version,unit,columns:[{key,label,basis}],rows:[{size,label,values:{key: số|[min,max]}}]}|null,
 model_measurements[{image_set,color,height_cm,chest_cm,waist_cm,hip_cm,size_worn,note}], updated_at`. 404 `NOT_FOUND`.
 ### `GET /store/x/categories` (T-040)
-`{ "categories": [{ "handle": "ao-nu", "name": "Áo nữ", "parent_handle": "nu"|null, "product_count": 5 }] }` — chỉ danh mục có sản phẩm published
-trong kênh của publishable key (đếm gồm danh mục con); cùng Cache-Control catalog.
+`{ "categories": [{ "handle": "ao-nu", "name": "Áo nữ", "parent_handle": "nu"|null, "product_count": 5 }], "count": 1, "limit": 200, "offset": 0 }`
+— chỉ danh mục có sản phẩm published trong kênh của publishable key (đếm gồm danh mục con); cùng Cache-Control catalog. Phân trang
+`limit` (mặc định = tối đa 200, lớn hơn bị kẹp) / `offset` (0–1000); sai → 422 `INVALID_QUERY` (T-121).
 ### `GET /store/x/addresses/provinces` và `/provinces/:code/wards` (T-020)
 `{ "provinces": [{ "code": "01", "name": "Thành phố Hà Nội" }] }` · `{ "province_code": "01", "wards": [{ "code": "00004", "name": "Phường Ba Đình" }] }`
 (404 `NOT_FOUND` khi mã tỉnh sai). `Cache-Control: public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800`.
@@ -78,7 +79,9 @@ cookie HttpOnly `xs_order_<mã đơn>` ở server; token KHÔNG bao giờ nằm 
   (idempotent). 409 `NOT_CANCELLABLE` (đã có vận đơn / trạng thái kết thúc) · 409 `PAYMENT_PENDING` (cổng chưa trả lời rõ).
   Đơn đã thu tiền → ngoại lệ `refund_request`; hủy native + hoàn thật ở T-027.
 - `POST /store/x/orders/lookup` `{ display_ref, phone }` → luôn 202 `{ accepted: true, message }` cùng thông điệp; khớp → outbox
-  `order.lookup_link` `{ order_id, display_ref, token, expires_at }` (gửi thật ở T-029, URL `/tra-cuu-don/xac-thuc?token=…`).
+  `order.lookup_link` `{ order_id, display_ref }` — chỉ ID (T-149, D-089): bộ xử lý thông báo phát hành token một lần
+  (15 phút, tính từ lúc gửi) và dựng `STOREFRONT_URL` + `/tra-cuu-don/xac-thuc?token=…`; token/link không bao giờ nằm
+  trong outbox (schema `lib/outbox/payload.ts` cấm, kiểm cả lúc ghi lẫn lúc nhận).
   422 `VALIDATION` (`field`: `display_ref|phone`) khi sai định dạng · 429 khi vượt 5/giờ/SĐT, 10/giờ/mã, 20/giờ/IP.
 - `POST /store/x/orders/session` `{ token }` → 200 `{ display_ref, order_access, order_access_expires_at }`; token hết hạn/giả/đã
   dùng → 404. Storefront đổi bằng Server Action (khách bấm nút, không tự đổi khi GET) rồi chuyển tới `/don-hang/:ref`.

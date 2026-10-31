@@ -4,7 +4,11 @@ import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import type Redis from "ioredis";
 import { drainCatalogIndex } from "../../src/lib/catalog/indexer";
 import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
-import { LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS } from "../../src/lib/checkout/errors";
+import {
+  CheckoutError,
+  LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  RETRYABLE_CODES,
+} from "../../src/lib/checkout/errors";
 import { reconcileAttempts } from "../../src/lib/checkout/jobs";
 import { activeLeaseCount, LOCK_CALL_TIMEOUT_MS, lockKeys } from "../../src/lib/checkout/locks";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
@@ -126,7 +130,8 @@ medusaIntegrationTestRunner({
       if (pong !== "PONG") throw new Error(`Redis khóa trả "${String(pong)}" thay vì PONG`);
     };
     const restoreRedis = async () => {
-      if (!redis) return;
+      // Kiểu nói `redis` luôn có, nhưng beforeAll hỏng trước khi gán thì vẫn là undefined.
+      if ((redis as typeof redis | undefined) === undefined) return;
       redis.acquireLock = originalAcquireLock;
       hungCalls.splice(0).forEach((reject) => reject(new Error("Connection is closed.")));
       await waitRedisReady();
@@ -233,6 +238,62 @@ medusaIntegrationTestRunner({
       ).toEqual([]);
     });
 
+    it("request trùng đọc attempt `failed` rồi một request khác mở lại nó (retry cùng key) → trả lỗi đã thấy (503), không 202 ngay", async () => {
+      // Tái hiện tất định ca đỏ CI 09fd83d: 3 submit đồng thời — A chạy và đánh failed, C thấy failed → mở lại (preparing)
+      // chạy lần hai, B đang chờ thấy `failed` rồi đọc LẠI đúng lúc C vừa mở → `preparing` → 202 ngay (không chờ
+      // replayWaitMs). Ở đây xen kẽ được ép tại lời đọc chờ đầu tiên của B; không chờ thời gian thật.
+      const cartId = await client.createCart([["Trắng/S", 1]]);
+      const q = await client.quote(cartId);
+      const ordersBefore = await countOrders(container);
+      const key = newKey();
+
+      cutRedis();
+      expectLockUnavailable(await client.submit(q, key), "submit đầu (A)");
+      const [attempt] = await attemptsOfKey(key);
+      const attemptId = attempt!.id;
+      const s = service();
+      const lockErr = new CheckoutError("LOCK_UNAVAILABLE");
+      const stored = { message: lockErr.message, field: lockErr.field, detail: lockErr.detail };
+      const lease = () => new Date(Date.now() + CHECKOUT_CONFIG.attemptLeaseMs);
+      // Một request khác (C₁) đang chạy lại attempt: failed → preparing.
+      expect(await s.reopenRetryableAttempt(attemptId, RETRYABLE_CODES, lease())).toBe(true);
+
+      const original = s.listCheckoutAttempts;
+      // Kiểu khai `readonly` (MedusaService); thay tạm trên chính instance mà route resolve được.
+      const patchable = s as { listCheckoutAttempts: typeof original };
+      // Ghi cờ, assert SAU request: expect ném trong service thay tạm sẽ thành 500 khó hiểu ở phía route.
+      const interleave = { called: false, failed: false, seenState: "", reopened: false };
+      patchable.listCheckoutAttempts = (async (...args: Parameters<typeof original>) => {
+        const [filters] = args as [{ id?: unknown } | undefined];
+        if (interleave.called || filters?.id !== attemptId) return original.apply(s, args);
+        interleave.called = true;
+        // C₁ kết thúc (failed) → B đọc thấy failed → C₂ mở lại ngay sau lời đọc của B.
+        interleave.failed = await s.failAttempt(attemptId, "LOCK_UNAVAILABLE", stored);
+        const seen = await original.apply(s, args);
+        interleave.seenState = String(seen[0]?.state);
+        interleave.reopened = await s.reopenRetryableAttempt(attemptId, RETRYABLE_CODES, lease());
+        return seen;
+      }) as typeof original;
+      let res: Res;
+      const started = Date.now();
+      try {
+        res = await client.submit(q, key); // B
+      } finally {
+        patchable.listCheckoutAttempts = original;
+      }
+      expect(interleave).toEqual({ called: true, failed: true, seenState: "failed", reopened: true });
+      // B trả đúng trạng thái kết thúc nó đã quan sát, không 202 tức thì cho một lượt chạy khác vừa bắt đầu.
+      expectLockUnavailable(res, "submit trùng (B)");
+      expect(res.headers["x-checkout-attempt-id"]).toBe(attemptId);
+      expect(Date.now() - started).toBeLessThan(CHECKOUT_CONFIG.replayWaitMs);
+
+      // C₂ (giả lập) kết thúc; không đơn, không giữ hàng.
+      expect(await s.failAttempt(attemptId, "LOCK_UNAVAILABLE", stored)).toBe(true);
+      expect(await attemptsOfKey(key)).toHaveLength(1);
+      expect(await countOrders(container)).toBe(ordersBefore);
+      expect(await reservationsOf(container, fx, "Trắng/S")).toHaveLength(0);
+    });
+
     it("Redis khóa không trả lời (lệnh treo) → 503 sau hạn một lời gọi, không treo theo client; khóa không bị giữ", async () => {
       const cartId = await client.createCart([["Trắng/S", 1]]);
       const q = await client.quote(cartId);
@@ -317,13 +378,17 @@ medusaIntegrationTestRunner({
       expect(early.status).toBe(202);
       expect(await reservationsOf(container, fx, "Trắng/M")).toHaveLength(1);
 
-      // Khóa giỏ của attempt không nhả được lúc Redis mất: nó KHÔNG còn được gia hạn, chỉ sống tới hết TTL. Mô phỏng
-      // Redis về sau quá TTL (không chờ thời gian thật): rút TTL còn lại rồi đợi hết hạn.
+      // Khóa giỏ và khóa tồn của attempt không nhả được lúc Redis mất: chúng KHÔNG còn được gia hạn, chỉ sống tới hết TTL.
+      // Mô phỏng Redis về sau quá TTL (không chờ thời gian thật): rút TTL còn lại rồi đợi hết hạn. Khóa tồn phải hết hạn
+      // cùng lúc: job đối chiếu nhả reservation dưới khóa `inventory_item:` (T-224).
       const cartLock = `medusa_lock:${lockKeys.cart(cartId)}`;
-      const ttl = await redis.ttl(cartLock);
-      expect(ttl).toBeGreaterThan(0);
-      expect(ttl).toBeLessThanOrEqual(CHECKOUT_CONFIG.lockTtlSeconds);
-      await redis.pexpire(cartLock, 1);
+      const inventoryLock = `medusa_lock:${lockKeys.inventoryItem(fx.variants["Trắng/M"]!.inventoryItemId)}`;
+      for (const lock of [cartLock, inventoryLock]) {
+        const ttl = await redis.ttl(lock);
+        expect(ttl).toBeGreaterThan(0);
+        expect(ttl).toBeLessThanOrEqual(CHECKOUT_CONFIG.lockTtlSeconds);
+        await redis.pexpire(lock, 1);
+      }
       await new Promise((r) => setTimeout(r, 20));
       const leaseEnd = new Date(attempt!.lease_until as unknown as string).getTime();
       const summary = await reconcileAttempts(container, { now: new Date(leaseEnd + 60_000) });

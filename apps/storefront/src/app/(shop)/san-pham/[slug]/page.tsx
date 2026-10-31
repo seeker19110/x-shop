@@ -77,7 +77,9 @@ export default async function ProductPage({ params, searchParams }: Props) {
       <ProductExperience product={product} initial={initial}>
         <ProductDetails product={product} />
       </ProductExperience>
+      {/* eslint-disable-next-line react/no-danger -- JSON-LD do serializeJsonLd tạo (thoát "<", U+2028/2029), không có dữ liệu thô */}
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />
+      {/* eslint-disable-next-line react/no-danger -- JSON-LD do serializeJsonLd tạo (thoát "<", U+2028/2029), không có dữ liệu thô */}
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: crumbsLd }} />
     </>
   );

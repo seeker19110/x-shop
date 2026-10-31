@@ -4,6 +4,8 @@ import { CheckoutError } from "../../../../../../lib/checkout/errors";
 import { accessContext, handleRouteError } from "../../../../../../lib/checkout/http";
 import { presentAttempt } from "../../../../../../lib/checkout/submit";
 import { orderAccessFor } from "../../../../../../lib/orders/http";
+import { z } from "zod";
+import { IdParams, readParams, readQuery } from "../../../../../../lib/http/request-input";
 
 /**
  * GET /store/x/checkout/attempts/:id?cart_id=… — trạng thái một lần submit (phục hồi sau timeout, đặc tả §9.1). Chỉ
@@ -11,8 +13,11 @@ import { orderAccessFor } from "../../../../../../lib/orders/http";
  */
 export const GET = async (req: MedusaStoreRequest, res: MedusaResponse): Promise<void> => {
   try {
-    const cartId = typeof req.query.cart_id === "string" ? req.query.cart_id : "";
-    const attemptId = String(req.params.id ?? "");
+    const params = readParams(req, IdParams);
+    const query = readQuery(req, z.object({ cart_id: z.string().max(100) }));
+    // Thiếu/sai kiểu cart_id hoặc id → 404 như không tồn tại (không lộ attempt có thật hay không).
+    const cartId = query.ok ? query.data.cart_id : "";
+    const attemptId = params.ok ? params.data.id : "";
     const view = cartId && attemptId ? await presentAttempt(req.scope, attemptId) : null;
     if (!view || view.cart_id !== cartId) throw new CheckoutError("NOT_FOUND", "Không tìm thấy lần đặt hàng");
     const cart = await loadCheckoutCart(req.scope, cartId);

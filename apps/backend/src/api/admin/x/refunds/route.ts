@@ -1,10 +1,18 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
+import { z } from "zod";
 import { auditContextOf } from "../../../../lib/audit/record";
 import { rejectWithoutRecentMfa } from "../../../../lib/admin-security/guard";
+import { readQuery, readQueryBag } from "../../../../lib/http/request-input";
 import { RETURNS_CONFIG } from "../../../../modules/returns/constants";
 import { AdminRefundQueueQuery, refundQueueForAdmin } from "../../../../workflows/returns/admin-read";
 import { handleReturnsRouteError, ReturnsError } from "../../../../workflows/returns/errors";
-import { actorOf, idempotencyKeyOf, parseBody, RefundCreateBody } from "../../../../workflows/returns/http";
+import {
+  actorOf,
+  idempotencyKeyOf,
+  parseBody,
+  parseQuery,
+  RefundCreateBody,
+} from "../../../../workflows/returns/http";
 import { createRefund, presentRefund, refundSummary } from "../../../../workflows/returns/refunds";
 
 /**
@@ -51,25 +59,27 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
     actorOf(req, "refund.request");
-    if (!Object.prototype.hasOwnProperty.call(req.query, "order_id")) {
-      const query = parseBody(AdminRefundQueueQuery, req.query);
+    const bag = readQueryBag(req);
+    if (!bag.ok) throw new ReturnsError("VALIDATION", "Dữ liệu không hợp lệ", { errors: bag.errors });
+    if (!Object.prototype.hasOwnProperty.call(bag.data, "order_id")) {
+      const query = parseQuery(req, AdminRefundQueueQuery);
       const body = await refundQueueForAdmin(req.scope, query);
       res.setHeader("Cache-Control", "no-store");
       res.status(200).json(body);
       return;
     }
-    const mixed = Object.keys(req.query).filter((k) => k !== "order_id");
+    const mixed = Object.keys(bag.data).filter((k) => k !== "order_id");
     if (mixed.length > 0) {
       throw new ReturnsError("VALIDATION", "order_id không dùng kèm tham số hàng đợi", {
         errors: mixed.map((param) => ({ param, reason: "không dùng kèm order_id" })),
       });
     }
-    const orderId = typeof req.query.order_id === "string" ? req.query.order_id.trim() : "";
-    if (!orderId || orderId.length > 128) {
+    const lookup = readQuery(req, z.object({ order_id: z.string().trim().min(1).max(128) }));
+    if (!lookup.ok) {
       throw new ReturnsError("VALIDATION", "Cần order_id", { field: "order_id" });
     }
     res.setHeader("Cache-Control", "no-store");
-    res.status(200).json(await refundSummary(req.scope, orderId));
+    res.status(200).json(await refundSummary(req.scope, lookup.data.order_id));
   } catch (error) {
     handleReturnsRouteError(req, res, error);
   }

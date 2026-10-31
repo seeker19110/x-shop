@@ -42,8 +42,11 @@ export interface CartLineView {
   choices: LineChoices | null;
 }
 
+/**
+ * Dữ liệu giỏ cho trang giỏ/thanh toán — được tuần tự hoá sang Client Component nên KHÔNG chứa id giỏ: id giỏ là bearer
+ * (ai có nó thao tác được giỏ qua Store API), chỉ nằm trong cookie HttpOnly và ở server.
+ */
 export interface CartView {
-  id: string | null;
   lines: CartLineView[];
   /** Tổng số lượng (hiển thị ở header). */
   itemCount: number;
@@ -53,10 +56,17 @@ export interface CartView {
   blocked: boolean;
 }
 
-export const EMPTY_CART_VIEW: CartView = { id: null, lines: [], itemCount: 0, subtotal: 0, blocked: false };
+export const EMPTY_CART_VIEW: CartView = { lines: [], itemCount: 0, subtotal: 0, blocked: false };
 
 export type CartErrorCode =
-  "CART_DISABLED" | "INVALID_INPUT" | "NOT_FOUND" | "OUT_OF_STOCK" | "LIMIT" | "UNAVAILABLE";
+  | "CART_DISABLED"
+  | "INVALID_INPUT"
+  | "NOT_FOUND"
+  | "OUT_OF_STOCK"
+  | "LIMIT"
+  | "UNAVAILABLE"
+  /** Ghi giỏ hết hạn chờ và đọc lại cũng lỗi: không biết đã ghi hay chưa — người dùng cần kiểm giỏ. */
+  | "CART_UNKNOWN";
 
 export type CartActionResult =
   { ok: true; count: number; message: string } | { ok: false; code: CartErrorCode; message: string };

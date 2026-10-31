@@ -14,6 +14,7 @@ import { FASHION_MODULE } from "../../modules/fashion";
 import type FashionModuleService from "../../modules/fashion/service";
 import type { SizeChartContent } from "../../modules/fashion/validators";
 import { relinkSizeChart } from "./set-product-fashion";
+import { isNonEmpty } from "@x-shop/domain";
 
 type SizeChartRecord = { id: string; code: string; version: number; superseded_at?: Date | string | null };
 
@@ -31,7 +32,7 @@ const createChartStep = createStep(
     return new StepResponse(chart as unknown as SizeChartRecord, (chart as unknown as SizeChartRecord).id);
   },
   async (id, { container }) => {
-    if (!id) return;
+    if (!isNonEmpty(id)) return;
     const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
     await fashion.deleteSizeCharts(id);
   },
@@ -42,7 +43,39 @@ export const createSizeChartWorkflow = createWorkflow(
   (input: SizeChartContent & { code: string }) => new WorkflowResponse(createChartStep(input)),
 );
 
-type ReviseResult = { chart: SizeChartRecord; previous: SizeChartRecord; product_ids: string[] };
+type ReviseResult = {
+  chart: SizeChartRecord;
+  previous: SizeChartRecord | null;
+  product_ids: string[];
+  /** true = nội dung trùng bản hiện hành → không tạo phiên bản (D-139). */
+  unchanged: boolean;
+};
+
+/** JSON chuẩn hoá: khoá object sắp tăng dần, thứ tự mảng (cột/hàng) giữ nguyên vì là thứ tự hiển thị. */
+function canonical(value: unknown): string {
+  const norm = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(norm);
+    if (v !== null && typeof v === "object")
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>)
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([k, x]) => [k, norm(x)]),
+      );
+    return v;
+  };
+  return JSON.stringify(norm(value));
+}
+
+/** Chỉ phần nội dung (không id/version/superseded_at/updated_at). */
+function contentKey(c: SizeChartContent): string {
+  return canonical({
+    name: c.name,
+    garment_type: c.garment_type,
+    unit: c.unit,
+    columns: c.columns,
+    rows: c.rows,
+  });
+}
 
 /** Như mặc định của `locking.execute` trước đây: chờ khóa bận 5 s; lease 60 s (gia hạn nền khi còn chạy). */
 const REVISE_LOCK_WAIT_MS = 5_000;
@@ -93,6 +126,12 @@ async function reviseUnlocked(container: MedusaContainer, input: SizeChartConten
     { order: { version: "DESC" }, take: 1 },
   )) as unknown as SizeChartRecord[];
   if (!current) throw new MedusaError(MedusaError.Types.NOT_FOUND, `Không có bảng size "${input.code}"`);
+  // Idempotent tự nhiên (D-139): trùng nội dung bản hiện hành → trả bản đó. Đã trong khoá theo code nên hai request
+  // đồng thời cùng nội dung chỉ tạo một phiên bản.
+  if (contentKey(input) === contentKey(current as unknown as SizeChartContent)) {
+    const result: ReviseResult = { chart: current, previous: null, product_ids: [], unchanged: true };
+    return { result, compensation: null };
+  }
   const chart = (await fashion.createSizeCharts({
     ...input,
     version: current.version + 1,
@@ -119,7 +158,7 @@ async function reviseUnlocked(container: MedusaContainer, input: SizeChartConten
     await fashion.deleteSizeCharts(chart.id);
     throw e;
   }
-  const result: ReviseResult = { chart, previous: current, product_ids: moved };
+  const result: ReviseResult = { chart, previous: current, product_ids: moved, unchanged: false };
   return { result, compensation: { previousId: current.id, chartId: chart.id, productIds: moved } };
 }
 

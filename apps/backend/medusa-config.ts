@@ -1,7 +1,18 @@
 import { defineConfig, loadEnv } from "@medusajs/framework/utils";
-import { loadEnvOrExit } from "./src/lib/env";
+import { EMAILPASS_HASH_CONFIG } from "./src/lib/admin-security/password-hash";
+import { sessionCookieConfig } from "./src/lib/admin-security/session-cookie";
+import { installInt8Parser } from "./src/lib/db/int8";
+import { isMigrationCommand, loadEnvOrExit } from "./src/lib/env";
+import { databaseConfig, redisQueueOptions, redisRequestOptions } from "./src/lib/infra/timeouts";
+import { appLoggerFromEnv } from "./src/lib/log/app-logger";
+import { fileProviderEntry } from "./src/lib/upload/config";
 
-loadEnv(process.env.NODE_ENV || "development", process.cwd());
+// NODE_ENV vắng hoặc rỗng → "development" (cùng hợp đồng với schema env ở src/lib/env).
+const nodeEnv = process.env.NODE_ENV;
+loadEnv(nodeEnv === undefined || nodeEnv === "" ? "development" : nodeEnv, process.cwd());
+
+// int8 (cột tiền bigint) → number có kiểm Number.isSafeInteger, trước mọi truy vấn (T-186, src/lib/db/int8.ts).
+installInt8Parser();
 
 // Cấu hình sai → in tên biến (không in giá trị) và thoát mã 1 trước khi Medusa khởi động (BASE-CFG-002).
 const env = loadEnvOrExit(process.env);
@@ -10,49 +21,52 @@ const env = loadEnvOrExit(process.env);
  * Module hạ tầng chạy trên Redis khi có REDIS_URL (bắt buộc ở production): event bus, cache, caching,
  * workflow engine và Locking Module (provider Redis là mặc định — khoá phân tán giữa server và worker,
  * ADR-0001). Không có REDIS_URL (chỉ dev/test) → Medusa dùng bản in-memory, chỉ đúng cho một tiến trình.
+ * Timeout ioredis tường minh (T-092): connectTimeout mọi kết nối; commandTimeout trừ kết nối BullMQ (lệnh chặn) —
+ * src/lib/infra/timeouts.ts.
  */
-const redisModules = env.REDIS_URL
-  ? [
-      {
-        resolve: "@medusajs/medusa/cache-redis",
-        options: { redisUrl: env.REDIS_URL },
-      },
-      {
-        resolve: "@medusajs/medusa/caching",
-        options: {
-          providers: [
-            {
-              resolve: "@medusajs/medusa/caching-redis",
-              id: "caching-redis",
-              is_default: true,
-              options: { redisUrl: env.REDIS_URL },
-            },
-          ],
+const redisModules =
+  env.REDIS_URL !== undefined
+    ? [
+        {
+          resolve: "@medusajs/medusa/cache-redis",
+          options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
         },
-      },
-      {
-        resolve: "@medusajs/medusa/event-bus-redis",
-        options: { redisUrl: env.REDIS_URL },
-      },
-      {
-        resolve: "@medusajs/medusa/workflow-engine-redis",
-        options: { redis: { redisUrl: env.REDIS_URL } },
-      },
-      {
-        resolve: "@medusajs/medusa/locking",
-        options: {
-          providers: [
-            {
-              resolve: "@medusajs/medusa/locking-redis",
-              id: "locking-redis",
-              is_default: true,
-              options: { redisUrl: env.REDIS_URL },
-            },
-          ],
+        {
+          resolve: "@medusajs/medusa/caching",
+          options: {
+            providers: [
+              {
+                resolve: "@medusajs/medusa/caching-redis",
+                id: "caching-redis",
+                is_default: true,
+                options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
+              },
+            ],
+          },
         },
-      },
-    ]
-  : [];
+        {
+          resolve: "@medusajs/medusa/event-bus-redis",
+          options: { redisUrl: env.REDIS_URL, redisOptions: redisQueueOptions() },
+        },
+        {
+          resolve: "@medusajs/medusa/workflow-engine-redis",
+          options: { redis: { redisUrl: env.REDIS_URL, redisOptions: redisQueueOptions() } },
+        },
+        {
+          resolve: "@medusajs/medusa/locking",
+          options: {
+            providers: [
+              {
+                resolve: "@medusajs/medusa/locking-redis",
+                id: "locking-redis",
+                is_default: true,
+                options: { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() },
+              },
+            ],
+          },
+        },
+      ]
+    : [];
 
 // Bí mật: chỉ truyền khi đã đặt — khoá `undefined` sẽ đè mặc định dev của Medusa (defineConfig gộp nông).
 const http = {
@@ -63,12 +77,23 @@ const http = {
   ...(env.COOKIE_SECRET !== undefined && { cookieSecret: env.COOKIE_SECRET }),
 };
 
+// Postgres: pool có trần (DB_POOL_MAX mỗi tiến trình), connect timeout, statement_timeout, idle_in_transaction (T-092,
+// docs/db/connections.md). Lệnh `medusa db:*` (migrate, rollback, sync-links…) kết nối bằng MIGRATION_DATABASE_URL — vai
+// trò owner/DDL; server/worker/exec dùng DATABASE_URL — vai trò ứng dụng chỉ DML (T-184, DB-SEC-002).
+const db = databaseConfig(env, { migration: isMigrationCommand(process.argv) });
+
 module.exports = defineConfig({
+  // Logger JSON một dòng/stdout có che bí mật + PII (T-090, src/lib/log/) thay logger mặc định của Medusa.
+  logger: appLoggerFromEnv(env),
   projectConfig: {
-    databaseUrl: env.DATABASE_URL,
-    ...(env.REDIS_URL !== undefined && { redisUrl: env.REDIS_URL }),
+    databaseUrl: db.databaseUrl,
+    databaseDriverOptions: db.databaseDriverOptions,
+    // redisOptions: client kho phiên (express-session/connect-redis) của Medusa.
+    ...(env.REDIS_URL !== undefined && { redisUrl: env.REDIS_URL, redisOptions: redisRequestOptions() }),
     workerMode: env.MEDUSA_WORKER_MODE,
     http,
+    // Production: cookie phiên `__Host-xshop_sid` (Secure, HttpOnly, SameSite=Lax, Path=/, không Domain) — BE-AUTH-004, T-099.
+    ...sessionCookieConfig(env.NODE_ENV),
   },
   admin: {
     disable: env.DISABLE_MEDUSA_ADMIN,
@@ -76,6 +101,39 @@ module.exports = defineConfig({
   },
   modules: [
     ...redisModules,
+    // Auth Module: provider `emailpass` cân thời gian phản hồi — email không tồn tại cũng tốn một scrypt.verify như sai
+    // mật khẩu (BE-AUTH-003, T-099). Tuỳ chọn MFA (AUTH_MFA_ENCRYPTION_KEY) vẫn do defineConfig gộp vào như mặc định.
+    // hashConfig: scrypt N=2^17, r=8, p=1 — mức tối thiểu OWASP (mặc định Medusa logN 15 thấp hơn); hash cũ vẫn kiểm
+    // được vì tham số nằm trong chuỗi băm (BE-AUTH-001, T-181, ADR-0006).
+    {
+      resolve: "@medusajs/medusa/auth",
+      options: {
+        providers: [
+          {
+            resolve: "./src/lib/admin-security/emailpass",
+            id: "emailpass",
+            options: { hashConfig: { ...EMAILPASS_HASH_CONFIG } },
+          },
+        ],
+      },
+    },
+    // File Module (thay mặc định `@medusajs/medusa/file-local` của defineConfig): tên lưu do server sinh, không dùng tên
+    // client (BE-FILE-003, T-100); file private (xuất PII, chunk nhập) rời kho công khai, chỉ tải qua
+    // GET /admin/x/files/:key (T-141). Kho theo FILE_STORAGE (T-154, src/lib/upload/config.ts):
+    //  - s3 (bắt buộc ở production): kho S3-compatible DÙNG CHUNG giữa các bản sao — bucket công khai + bucket private;
+    //  - local (dev/test, mặc định): `static/` + PRIVATE_UPLOAD_DIR trên đĩa máy này — chỉ đúng cho một tiến trình.
+    {
+      resolve: "@medusajs/medusa/file",
+      options: {
+        providers: [
+          fileProviderEntry({
+            privateUploadDir: env.privateUploadDir,
+            backendUrl: env.MEDUSA_BACKEND_URL,
+            fileStorage: env.fileStorage,
+          }),
+        ],
+      },
+    },
     // Module tùy biến: checkout attempt, idempotency, quote, ledger, inbox/outbox, ngoại lệ (docs/design/checkout-flow.md).
     { resolve: "./src/modules/checkout" },
     // Catalog thời trang: bảng size có version, thuộc tính, bảng màu/size (T-013).

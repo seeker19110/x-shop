@@ -3,7 +3,7 @@ import { requirePermission } from "../../../../../lib/access/require-permission"
 import {
   ExceptionsQuery,
   handleSettlementError,
-  parseInput,
+  parseQuery,
   settlementOf,
 } from "../../../../../lib/settlement/http";
 
@@ -16,7 +16,7 @@ import {
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
     requirePermission(req, "exception.read");
-    const { limit, offset, ...filter } = parseInput(ExceptionsQuery, req.query);
+    const { limit, offset, ...filter } = parseQuery(req, ExceptionsQuery);
     const result = await settlementOf(req).listExceptions(filter, { limit, offset });
     res.setHeader("Cache-Control", "no-store");
     res.json({ ...result, limit, offset });

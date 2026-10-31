@@ -64,12 +64,26 @@ tables:
         retention: audit-1y
         recipients: []
         copies: không
+      user_agent:
+        category: basic
+        purpose: User-Agent của request (cắt ≤ 256 ký tự, đã che email/SĐT lẫn trong chuỗi) — nguồn của sự kiện bảo mật, phát hiện phiên/thiết bị lạ
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: []
+        copies: không
+      resource_id:
+        category: basic
+        purpose: đích của thao tác — có thể là id khách/nhân viên hoặc bí danh HMAC của email đăng nhập (idh_…, không lưu email thô) để gom các lần đăng nhập vào một tài khoản
+        legal_basis: legitimate_interests
+        retention: audit-1y
+        recipients: []
+        copies: không
     non_pii:
       - id
       - actor_type
       - action
       - resource_type
-      - resource_id
+      - outcome
       - changes
       - request_id
       - created_at
@@ -126,6 +140,12 @@ tables:
       - marked_at
       - attempts
       - next_attempt_at
+  catalog_index_write_log:
+    system: x-shop/backend/catalog-index
+    pii: {}
+    non_pii:
+      - product_id
+      - written_at
   catalog_variant_index:
     system: x-shop/backend/catalog-index
     pii: {}
@@ -185,6 +205,14 @@ tables:
       address:
         category: basic
         purpose: báo giá phí vận chuyển theo địa chỉ giao (AddressSnapshot)
+        legal_basis: contract
+        retention: transient-90d
+        recipients:
+          - ghn
+        copies: không
+      shipping:
+        category: basic
+        purpose: giữ phí ship đã báo tới submit (mã tỉnh/phường + khối lượng + giá trị khai lúc quote)
         legal_basis: contract
         retention: transient-90d
         recipients:
@@ -344,6 +372,22 @@ tables:
       - stocked_after
       - reserved_quantity
       - created_at
+  job_breaker:
+    system: x-shop/backend/checkout
+    pii: {}
+    non_pii:
+      - id
+      - breaker_key
+      - state
+      - consecutive_failures
+      - last_failed_event_id
+      - open_until
+      - probe_until
+      - trip_reason
+      - trip_count
+      - created_at
+      - updated_at
+      - deleted_at
   ops_exception:
     system: x-shop/backend/checkout
     pii:
@@ -415,6 +459,8 @@ tables:
       - total
       - payment_method
       - hold_expires_at
+      - next_check_at
+      - hold_check_attempts
       - cod_confirm_by
       - policy_version
       - quote
@@ -453,7 +499,7 @@ tables:
     pii:
       payload:
         category: basic
-        purpose: "hàng đợi sự kiện: mã đơn, display_ref, và với order.lookup_link là token liên kết tra cứu một lần 15 phút (cho phép xem đơn của khách)"
+        purpose: "hàng đợi sự kiện: chỉ ID và tham số tối thiểu (mã đơn, display_ref…); order.lookup_link chỉ {order_id, display_ref} — token liên kết phát hành lúc gửi, không lưu (T-149)"
         legal_basis: contract
         retention: transient-90d
         recipients: []
@@ -490,6 +536,7 @@ tables:
       - state
       - expires_at
       - provider_txn_no
+      - vnp_create_date
       - created_at
       - updated_at
       - deleted_at

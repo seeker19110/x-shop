@@ -4,6 +4,7 @@ import { handleReturnsRouteError } from "../../../../../../workflows/returns/err
 import { actorOf, InspectBody, parseBody } from "../../../../../../workflows/returns/http";
 import { presentRefund } from "../../../../../../workflows/returns/refunds";
 import { inspectReturn, presentReturn } from "../../../../../../workflows/returns/returns";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/returns/:id/inspect — kết quả kiểm định từng dòng (quyền `return.inspect`, INV04, AT15–AT17): đạt →
@@ -14,9 +15,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
   try {
     const actor = actorOf(req, "return.inspect");
     const body = parseBody(InspectBody, req.body);
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
     const { ret, refund, changed } = await inspectReturn(
       req.scope,
-      String(req.params.id),
+      params.data.id,
       actor,
       body.lines,
       auditContextOf(req),

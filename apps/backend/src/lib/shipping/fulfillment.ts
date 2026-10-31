@@ -18,7 +18,7 @@ import {
   updateInventoryLevelsWorkflow,
   updateReservationsWorkflow,
 } from "@medusajs/medusa/core-flows";
-import { payloadHash, type ShipmentState } from "@x-shop/domain";
+import { payloadHash, type ShipmentState, isNonEmpty } from "@x-shop/domain";
 import { randomUUID } from "node:crypto";
 import { AUDIT_MODULE } from "../../modules/audit";
 import type AuditModuleService from "../../modules/audit/service";
@@ -27,6 +27,8 @@ import type { ShipmentRow } from "../../modules/shipping/service";
 import { toSafeInteger } from "../checkout/cart";
 import { CHECKOUT_CONFIG } from "../checkout/config";
 import { acquireOrdered, lockKeys, releaseOwnedOrWarn } from "../checkout/locks";
+import { CheckoutError } from "../checkout/errors";
+import { inventoryGuardKind } from "../inventory/guard";
 
 /**
  * Fulfillment NATIVE của Medusa cho vận đơn GHN (T-043, S-303 "1 shipment / 1 fulfillment").
@@ -142,7 +144,7 @@ async function loadOrder(container: MedusaContainer, orderId: string): Promise<O
 }
 
 const activeFulfillments = (o: OrderRow) =>
-  (o.fulfillments ?? []).flatMap((f) => (f && !f.canceled_at ? [f] : []));
+  (o.fulfillments ?? []).flatMap((f) => (f && !isNonEmpty(f.canceled_at) ? [f] : []));
 /**
  * Fulfillment của vận đơn: bản còn hiệu lực trước; không có thì bản ĐÃ HỦY (vận đơn bị hãng hủy trước khi lấy hàng —
  * T-045) — để không bao giờ tạo fulfillment thứ hai (và trừ tồn lần hai) cho cùng vận đơn.
@@ -151,7 +153,7 @@ const fulfillmentOf = (o: OrderRow, shipmentId: string) => {
   const mine = (o.fulfillments ?? []).flatMap((f) =>
     f && f.metadata?.x_shipment_id === shipmentId ? [f] : [],
   );
-  return mine.find((f) => !f.canceled_at) ?? mine[0] ?? null;
+  return mine.find((f) => !isNonEmpty(f.canceled_at)) ?? mine[0] ?? null;
 };
 const qty = (v: unknown): number => toSafeInteger(v) ?? 0;
 
@@ -193,7 +195,7 @@ async function sellableLocationOf(
   container: MedusaContainer,
   salesChannelId: string | null,
 ): Promise<string | null> {
-  if (!salesChannelId) return null;
+  if (!isNonEmpty(salesChannelId)) return null;
   const { data } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
     entity: "sales_channel",
     fields: ["id", "stock_locations.id"],
@@ -201,7 +203,7 @@ async function sellableLocationOf(
   });
   const locs =
     (data[0] as { stock_locations?: Array<{ id?: string } | null> } | undefined)?.stock_locations ?? [];
-  return locs.find((l) => l?.id)?.id ?? null;
+  return locs.find((l) => isNonEmpty(l?.id))?.id ?? null;
 }
 
 /**
@@ -229,7 +231,7 @@ async function planFulfillment(container: MedusaContainer, order: OrderRow): Pro
     };
     const mine = reservations.filter((r) => r.line_item_id === item.id);
     if (mine.length === 0) {
-      if (item.variant?.manage_inventory) {
+      if (item.variant?.manage_inventory === true) {
         throw new FulfillmentSyncError("NO_RESERVATION", "Dòng hàng quản lý tồn nhưng không còn giữ hàng", {
           line_item_id: item.id,
         });
@@ -239,7 +241,7 @@ async function planFulfillment(container: MedusaContainer, order: OrderRow): Pro
     }
     const required = new Map(
       (item.variant?.inventory_items ?? []).flatMap((ii) =>
-        ii?.inventory_item_id
+        ii && isNonEmpty(ii.inventory_item_id)
           ? [[ii.inventory_item_id, Math.max(1, qty(ii.required_quantity))] as const]
           : [],
       ),
@@ -277,7 +279,8 @@ async function planFulfillment(container: MedusaContainer, order: OrderRow): Pro
     throw new FulfillmentSyncError("NO_ITEMS", "Đơn không có dòng hàng để xuất kho");
   const location =
     plan.stock[0]?.location_id ?? (await sellableLocationOf(container, order.sales_channel_id));
-  if (!location) throw new FulfillmentSyncError("NO_LOCATION", "Không xác định được kho xuất hàng");
+  if (!isNonEmpty(location))
+    throw new FulfillmentSyncError("NO_LOCATION", "Không xác định được kho xuất hàng");
   plan.location_id = location;
   return plan;
 }
@@ -381,11 +384,21 @@ export const markGhnFulfillmentShippedWorkflow = createWorkflow(
 const stockKey = (fulfillmentId: string, e: Pick<StockEntry, "inventory_item_id" | "location_id">) =>
   `xful-${fulfillmentId}-${e.inventory_item_id}-${e.location_id}`;
 
+/** Đủ để hoàn tác `consumeReservations`: id đã xoá mềm + số lượng gốc của reservation đã giảm. */
+interface ConsumedReservations {
+  deleted: string[];
+  reduced: Array<{ id: string; quantity: number }>;
+}
+
 /** Nhả reservation của các dòng đã xuất (trừ đúng phần đã giao; phần dư nếu có giữ nguyên). */
-async function consumeReservations(container: MedusaContainer, entries: StockEntry[]): Promise<void> {
+async function consumeReservations(
+  container: MedusaContainer,
+  entries: StockEntry[],
+): Promise<ConsumedReservations> {
   const inventory = container.resolve(Modules.INVENTORY);
   const toDelete: string[] = [];
   const toUpdate: Array<{ id: string; quantity: number }> = [];
+  const original: Array<{ id: string; quantity: number }> = [];
   for (const e of entries) {
     const rs = await inventory.listReservationItems(
       { line_item_id: e.line_item_id, inventory_item_id: e.inventory_item_id, location_id: e.location_id },
@@ -400,12 +413,34 @@ async function consumeReservations(container: MedusaContainer, entries: StockEnt
         left -= q;
       } else {
         toUpdate.push({ id: r.id, quantity: q - left });
+        original.push({ id: r.id, quantity: q });
         left = 0;
       }
     }
   }
   if (toUpdate.length > 0) await updateReservationsWorkflow(container).run({ input: { updates: toUpdate } });
   if (toDelete.length > 0) await deleteReservationsWorkflow(container).run({ input: { ids: toDelete } });
+  return { deleted: toDelete, reduced: original };
+}
+
+/**
+ * Hoàn tác `consumeReservations` khi bước trừ tồn bị hàng rào DB từ chối (review T-185): khôi phục reservation đã xoá mềm
+ * (module cộng lại reserved_quantity trong cùng transaction) và trả số lượng gốc cho reservation đã giảm — không để đơn
+ * đã có vận đơn mất giữ hàng trong khi stocked chưa trừ. Chạy dưới khóa `inventory_item:*` của applyStock.
+ */
+async function restoreReservations(
+  container: MedusaContainer,
+  consumed: ConsumedReservations,
+): Promise<void> {
+  if (consumed.deleted.length > 0) {
+    // `restoreReservationItems` do MedusaService sinh (bù trừ của deleteReservationsStep cũng gọi nó), chưa có trong kiểu.
+    const inventory = container.resolve(Modules.INVENTORY) as unknown as {
+      restoreReservationItems(ids: string[]): Promise<unknown>;
+    };
+    await inventory.restoreReservationItems(consumed.deleted);
+  }
+  if (consumed.reduced.length > 0)
+    await updateReservationsWorkflow(container).run({ input: { updates: consumed.reduced } });
 }
 
 async function setStocked(container: MedusaContainer, e: StockEntry, stocked: number): Promise<void> {
@@ -496,8 +531,33 @@ export async function applyStock(
           quantity: g.quantity,
         });
       }
-      await consumeReservations(container, g.lines);
-      await setStocked(container, g, after);
+      const consumed = await consumeReservations(container, g.lines);
+      try {
+        await setStocked(container, g, after);
+      } catch (e) {
+        // Hàng rào DB (T-185) từ chối trừ tồn (stocked không đổi): trả lại reservation vừa nhả rồi mới báo lỗi — không để
+        // trạng thái dở "đã nhả giữ, chưa trừ tồn" (hàng thành khả dụng cho đơn khác dù đã có vận đơn).
+        const guard = inventoryGuardKind(e);
+        if (guard === null) throw e;
+        try {
+          await restoreReservations(container, consumed);
+        } catch (restoreError) {
+          container
+            .resolve(ContainerRegistrationKeys.LOGGER)
+            .error(
+              `[fulfillment] Không khôi phục được reservation sau khi trừ tồn bị chặn (fulfillment ${fulfillment.id}, item ${g.inventory_item_id}) — cần người xem`,
+              restoreError instanceof Error ? restoreError : undefined,
+            );
+        }
+        // Ghi đồng thời đè số giữ → tạm, gọi lại được; vượt tồn → dữ liệu lệch, cần người xem.
+        if (guard === "drift") throw new CheckoutError("BUSY_RETRY");
+        throw new FulfillmentSyncError("STOCK_INCONSISTENT", "Tồn không đủ để ghi nhận xuất kho", {
+          inventory_item_id: g.inventory_item_id,
+          location_id: g.location_id,
+          stocked_quantity: before,
+          quantity: g.quantity,
+        });
+      }
       const input = {
         inventory_item_id: g.inventory_item_id,
         location_id: g.location_id,
@@ -591,7 +651,7 @@ export async function ensureNativeFulfillment(
     if (!order || !ful) throw new Error(`Không đọc lại được fulfillment của vận đơn ${shipment.id}`);
   }
   // Fulfillment đã hủy (hãng hủy trước lấy hàng): không trừ tồn nữa — phần đã trừ (nếu có) đi luồng hàng hoàn (T-045).
-  if (!ful.canceled_at) await applyStock(container, ful, audit);
+  if (!isNonEmpty(ful.canceled_at)) await applyStock(container, ful, audit);
   return ful;
 }
 
@@ -616,7 +676,7 @@ export async function syncNativeProgress(
   audit: AuditCtx,
 ): Promise<{ fulfillment_id: string; shipped: boolean; delivered: boolean }> {
   const ful = await ensureNativeFulfillment(container, shipment, audit);
-  if (ful.canceled_at) return { fulfillment_id: ful.id, shipped: false, delivered: false };
+  if (isNonEmpty(ful.canceled_at)) return { fulfillment_id: ful.id, shipped: false, delivered: false };
   let shipped = Boolean(ful.shipped_at);
   let delivered = Boolean(ful.delivered_at);
   const reached = (s: ShipmentState) =>
@@ -624,7 +684,9 @@ export async function syncNativeProgress(
   const isDelivered = shipment.state === "delivered" || shipment.delivered_at !== null;
   if (!shipped && (reached("shipped") || isDelivered)) {
     const order = await loadOrder(container, shipment.order_id);
-    const lineIds = new Set((ful.items ?? []).flatMap((i) => (i?.line_item_id ? [i.line_item_id] : [])));
+    const lineIds = new Set(
+      (ful.items ?? []).flatMap((i) => (i && isNonEmpty(i.line_item_id) ? [i.line_item_id] : [])),
+    );
     const items = (order?.items ?? []).flatMap((i) =>
       i && lineIds.has(i.id) && qty(i.quantity) > 0 ? [{ id: i.id, quantity: qty(i.quantity) }] : [],
     );
@@ -664,14 +726,16 @@ export async function shippedOutQuantities(
     const k = stockKey(ful.id, e);
     if (!applied.has(k)) applied.set(k, Boolean(await ledger.findAdjustmentByKey(k)));
   }
-  const inFulfillment = new Set((ful.items ?? []).flatMap((i) => (i?.line_item_id ? [i.line_item_id] : [])));
+  const inFulfillment = new Set(
+    (ful.items ?? []).flatMap((i) => (i && isNonEmpty(i.line_item_id) ? [i.line_item_id] : [])),
+  );
   for (const item of order.items ?? []) {
     if (!item || !inFulfillment.has(item.id) || qty(item.quantity) <= 0) continue;
     const mine = entries.filter((e) => e.line_item_id === item.id);
     const left =
       mine.length > 0
         ? mine.every((e) => applied.get(stockKey(ful.id, e)) === true)
-        : !item.variant?.manage_inventory;
+        : item.variant?.manage_inventory !== true;
     if (left) lines.set(item.id, qty(item.quantity));
   }
   return { fulfillment: ful, lines };
@@ -685,7 +749,7 @@ export async function cancelUnshippedFulfillment(
   container: MedusaContainer,
   ful: Pick<NativeFulfillmentRow, "id" | "canceled_at" | "shipped_at" | "delivered_at">,
 ): Promise<boolean> {
-  if (ful.canceled_at || ful.shipped_at || ful.delivered_at) return false;
+  if (isNonEmpty(ful.canceled_at) || isNonEmpty(ful.shipped_at) || isNonEmpty(ful.delivered_at)) return false;
   await container.resolve(Modules.FULFILLMENT).cancelFulfillment(ful.id);
   return true;
 }
@@ -704,7 +768,10 @@ export async function shippedFromLocations(
   const byItem = new Map<string, string>();
   let fulfillmentLocation: string | null = null;
   const fs = (order?.fulfillments ?? []).flatMap((f) => (f ? [f] : []));
-  const ordered = [...fs.filter((f) => !f.canceled_at), ...fs.filter((f) => f.canceled_at)];
+  const ordered = [
+    ...fs.filter((f) => !isNonEmpty(f.canceled_at)),
+    ...fs.filter((f) => isNonEmpty(f.canceled_at)),
+  ];
   for (const f of ordered) {
     const hasLine = (f.items ?? []).some((i) => i?.line_item_id === lineItemId);
     for (const e of stockEntriesOf(f.metadata)) {
@@ -712,7 +779,8 @@ export async function shippedFromLocations(
         byItem.set(e.inventory_item_id, e.location_id);
       }
     }
-    if (hasLine && !fulfillmentLocation && f.location_id) fulfillmentLocation = f.location_id;
+    if (hasLine && !isNonEmpty(fulfillmentLocation) && isNonEmpty(f.location_id))
+      fulfillmentLocation = f.location_id;
   }
   return { byItem, fulfillmentLocation };
 }

@@ -1,4 +1,5 @@
-import type { SqlEntityManager } from "@medusajs/framework/mikro-orm/knex";
+import type { Knex, SqlEntityManager } from "@medusajs/framework/mikro-orm/knex";
+import type { Logger } from "@medusajs/framework/types";
 import { generateEntityId, MedusaService } from "@medusajs/framework/utils";
 import {
   decideOnCapture,
@@ -11,7 +12,11 @@ import {
 import {
   ACTIVE_ATTEMPT_STATES,
   COUNTED_COUPON_STATES,
+  OPS_EXCEPTION_ACTIVE_SCOPES,
   OPS_EXCEPTION_KINDS,
+  type JobBreakerState,
+  type JobBreakerTripReason,
+  type OpsExceptionKind,
   type PaymentMethod,
 } from "./models/constants";
 import {
@@ -19,6 +24,7 @@ import {
   CheckoutAttempt,
   CheckoutQuote,
   CouponUsage,
+  JobBreaker,
   OpsException,
   OrderAccessRedemption,
   OrderFinance,
@@ -28,6 +34,7 @@ import {
   RateLimitCounter,
   WebhookInbox,
 } from "./models/checkout-models";
+import { assertOutboxPayload } from "../../lib/outbox/payload";
 import { sampleAt, windowStartMs, type WindowSample } from "../../lib/security/sliding-window";
 
 /** Phần tối thiểu của repository Medusa (MikroOrmBaseRepository) dùng cho câu lệnh nguyên tử. */
@@ -71,6 +78,16 @@ export interface OpsExceptionInput {
   detail?: Record<string, unknown> | null;
 }
 
+/** Đầu vào hủy đơn trong một transaction (khách/cửa hàng — T-021/T-044; chưa xác minh — T-165). */
+export interface CancelOrderInput {
+  order_id: string;
+  from: OrderState;
+  refund_amount: number;
+  display_ref: string;
+  now: Date;
+  reason?: "CUSTOMER_CANCELLED" | "SHOP_CANCELLED";
+}
+
 export interface OutboxClaim {
   id: string;
   event_key: string;
@@ -81,10 +98,114 @@ export interface OutboxClaim {
   attempts: number;
 }
 
+/** Trạng thái một circuit breaker job nền (bảng `job_breaker`, T-097). */
+export interface JobBreakerSnapshot {
+  state: JobBreakerState;
+  consecutive_failures: number;
+  open_until: Date | null;
+  probe_until: Date | null;
+  trip_reason: JobBreakerTripReason | null;
+  /** Số lần đã mở (tích luỹ, không xoá khi đóng) — job xoay vòng ứng viên lượt thử half-open theo số này (T-161). */
+  trip_count: number;
+  /** Sự kiện/đơn gây lỗi tạm gần nhất (xoá khi thành công) — job đẩy nó xuống cuối hàng lượt thử half-open (T-161). */
+  last_failed_event_id: string | null;
+}
+
+const dateOrNull = (v: unknown): Date | null => (v == null ? null : new Date(v as string | Date));
+
+function breakerSnapshot(r: Row): JobBreakerSnapshot {
+  return {
+    state: String(r.state) as JobBreakerState,
+    consecutive_failures: Number(r.consecutive_failures),
+    open_until: dateOrNull(r.open_until),
+    probe_until: dateOrNull(r.probe_until),
+    trip_reason: (r.trip_reason ?? null) as JobBreakerTripReason | null,
+    trip_count: Number(r.trip_count ?? 0),
+    last_failed_event_id: r.last_failed_event_id == null ? null : String(r.last_failed_event_id),
+  };
+}
+
 export type CaptureOutcome =
   { duplicate: true } | { duplicate: false; decision: CaptureDecision; state_before: OrderState };
 
 const json = (value: unknown) => JSON.stringify(value ?? null);
+
+/**
+ * Khoá advisory tuần tự hoá `openOpsExceptionIfNoneActive` (T-158, D-099; dạng khoá D-107): dạng HAI khoá int4
+ * `(hashtext(OPS_EXCEPTION_LOCK_NS), hashtext(<khoá>))` — không gian riêng (`pg_locks.objsubid = 2`), không lẫn với khoá
+ * một bigint `hashtext(...)` của module khác (vd. khoá theo đơn của returns mà trigger x_refund dò ở `objsubid = 1`).
+ */
+export const OPS_EXCEPTION_LOCK_NS = "x-shop:ops-exception";
+/** Chờ khoá advisory tối đa (ms) — người giữ chỉ giữ trong MỘT câu INSERT; quá → ghi dự phòng không khoá (D-105). */
+export const OPS_EXCEPTION_LOCK_TIMEOUT_MS = 5_000;
+/** Trần thời gian mỗi câu trong giao dịch kiểm-rồi-tạo (ms). */
+export const OPS_EXCEPTION_STATEMENT_TIMEOUT_MS = 10_000;
+
+/** Mã lỗi PG khi chờ khoá quá `lock_timeout`. */
+const LOCK_NOT_AVAILABLE = "55P03";
+
+/**
+ * Khoá advisory của một lời gọi `openOpsExceptionIfNoneActive`: không phạm vi → `kind`; có phạm vi → kind + giá trị phạm
+ * vi (JSON khoá đã sắp xếp — thứ tự `active_scope` không đổi khoá).
+ */
+export function opsExceptionLockKey(kind: string, scope: Readonly<Record<string, unknown>> | null): string {
+  if (scope === null) return kind;
+  const ordered = Object.keys(scope)
+    .sort()
+    .map((k) => [k, scope[k]]);
+  return `${kind}:${JSON.stringify(ordered)}`;
+}
+
+/**
+ * Hàng rào D-107: `active_scope` phải đúng dạng đã khai cho kind ở `OPS_EXCEPTION_ACTIVE_SCOPES` (so như tập — thứ tự
+ * không quan trọng; trùng khoá là sai). Trả các khoá theo thứ tự đã khai.
+ */
+function assertDeclaredScope(kind: OpsExceptionKind, activeScope: readonly string[]): readonly string[] {
+  const declared = OPS_EXCEPTION_ACTIVE_SCOPES[kind];
+  if (declared === undefined) {
+    throw new Error(
+      `openOpsExceptionIfNoneActive: kind ${kind} chưa khai dạng phạm vi trong OPS_EXCEPTION_ACTIVE_SCOPES`,
+    );
+  }
+  const given = [...activeScope].sort();
+  const want = [...declared].sort();
+  if (given.length !== want.length || given.some((k, i) => k !== want[i])) {
+    throw new Error(
+      `openOpsExceptionIfNoneActive: kind ${kind} khai phạm vi [${declared.join(",")}], nhận [${activeScope.join(",")}]`,
+    );
+  }
+  return declared;
+}
+
+/**
+ * Giá trị phạm vi lấy từ `detail`. Khoá thiếu (`undefined`) → `null` — VÀ chính `detail` được ghi cũng mang `null` (xem
+ * `openOpsExceptionIfNoneActive`), nên dòng đã ghi khớp lại phạm vi của nó. Chỉ nhận giá trị vô hướng: với object/array,
+ * `@>` là "chứa" chứ không phải "bằng" nên dedupe sai — đó là lỗi lập trình, ném ngay.
+ */
+function scopeFromDetail(
+  activeScope: readonly string[],
+  detail: Record<string, unknown> | null | undefined,
+): Record<string, string | number | boolean | null> {
+  const scope: Record<string, string | number | boolean | null> = {};
+  for (const k of activeScope) {
+    const v = detail?.[k] ?? null;
+    if (v !== null && typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") {
+      throw new TypeError(`active_scope "${k}": giá trị trong detail phải là chuỗi/số/boolean/null`);
+    }
+    scope[k] = v;
+  }
+  return scope;
+}
+
+/**
+ * JSON payload outbox SAU khi đã kiểm (T-149 — BE-JOB-007): kiểm đúng dạng sẽ lưu và worker sẽ nhận (sau JSON, khoá
+ * `undefined` bị bỏ). Sai shape → ném trước khi chạm DB.
+ */
+function outboxJson(type: string, payload: Record<string, unknown>): string {
+  const body = json(payload);
+  assertOutboxPayload(type, JSON.parse(body));
+  return body;
+}
 
 /**
  * Service của module `checkout`: CRUD sinh từ model DSL (MedusaService) + các thao tác cần NGUYÊN TỬ ở Postgres
@@ -104,12 +225,15 @@ class CheckoutModuleService extends MedusaService({
   CouponUsage,
   OrderAccessRedemption,
   RateLimitCounter,
+  JobBreaker,
 }) {
   protected readonly repo_: BaseRepositoryLike;
+  protected readonly logger_: Pick<Logger, "warn"> | undefined;
 
-  constructor(container: { baseRepository: BaseRepositoryLike }, ...rest: unknown[]) {
+  constructor(container: { baseRepository: BaseRepositoryLike; logger?: Logger }, ...rest: unknown[]) {
     super(container, ...rest);
     this.repo_ = container.baseRepository;
+    this.logger_ = container.logger;
   }
 
   private async exec(sql: string, params: unknown[] = [], em?: SqlEntityManager): Promise<Row[]> {
@@ -315,10 +439,12 @@ class CheckoutModuleService extends MedusaService({
     txn_ref: string;
     amount: number;
     expires_at: Date;
+    /** T-170: đúng chuỗi `vnp_CreateDate` sẽ ký vào URL thanh toán (yyyyMMddHHmmss GMT+7); provider khác → null. */
+    vnp_create_date: string | null;
   }): Promise<string> {
     const rows = await this.exec(
-      `INSERT INTO payment_attempt (id, order_id, provider, txn_ref, amount, state, expires_at)
-       VALUES (?, ?, ?, ?, ?, 'created', ?) RETURNING id`,
+      `INSERT INTO payment_attempt (id, order_id, provider, txn_ref, amount, state, expires_at, vnp_create_date)
+       VALUES (?, ?, ?, ?, ?, 'created', ?, ?) RETURNING id`,
       [
         generateEntityId(undefined, "payatt"),
         input.order_id,
@@ -326,6 +452,7 @@ class CheckoutModuleService extends MedusaService({
         input.txn_ref,
         input.amount,
         input.expires_at,
+        input.vnp_create_date,
       ],
     );
     return String(rows[0]?.id);
@@ -355,6 +482,8 @@ class CheckoutModuleService extends MedusaService({
    * workflow bù trừ phần đã tạo.
    */
   async finalizeAttempt(input: FinalizeAttemptInput, quoteSnapshot: unknown): Promise<void> {
+    // Kiểm payload TRƯỚC khi mở transaction (T-149): sai shape là lỗi lập trình, không đụng attempt/đơn.
+    const outboxPayload = outboxJson(input.outbox.type, input.outbox.payload);
     await this.repo_.transaction(async (em) => {
       const fin = await this.exec(
         `UPDATE order_finance
@@ -395,7 +524,7 @@ class CheckoutModuleService extends MedusaService({
           input.outbox.event_key,
           input.order_id,
           input.outbox.type,
-          json(input.outbox.payload),
+          outboxPayload,
         ],
         em,
       );
@@ -439,7 +568,8 @@ class CheckoutModuleService extends MedusaService({
     return {
       id: String(row.id),
       inserted: false,
-      result: row.processed_at ? ((row.result as Record<string, unknown> | null) ?? null) : null,
+      // processed_at là timestamp (Date | null) từ pg — chỉ có/không, không có "rỗng".
+      result: row.processed_at != null ? ((row.result as Record<string, unknown> | null) ?? null) : null,
     };
   }
 
@@ -474,30 +604,94 @@ class CheckoutModuleService extends MedusaService({
   }
 
   /**
-   * Mở ngoại lệ chỉ khi CHƯA có ngoại lệ đang hoạt động (open/in_progress) cùng `kind`. Khác `openOpsException`
-   * (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại. Người gọi tự tuần tự hoá (khoá riêng).
+   * Mở ngoại lệ chỉ khi CHƯA có ngoại lệ đang hoạt động (open/in_progress) cùng `kind` — và, nếu có `active_scope`,
+   * cùng giá trị các khoá đó trong `detail` (vd. `["product_id"]`: mỗi sản phẩm một ngoại lệ đang mở; `[]`/không truyền:
+   * một ngoại lệ cho cả kind). Khác `openOpsException` (dedupe vĩnh viễn theo khoá): xử lý xong mà lỗi tái diễn thì mở lại.
+   *
+   * Dạng phạm vi mỗi kind khai MỘT lần ở `OPS_EXCEPTION_ACTIVE_SCOPES` (D-107): kind chưa khai hoặc `active_scope` khác
+   * dạng đã khai → ném lỗi trước khi chạm DB (hai dạng cho một kind giao nhau về điều kiện nhưng khác khoá).
+   *
+   * Tự tuần tự hoá (T-158, D-099) — người gọi KHÔNG cần khoá riêng: kiểm-rồi-tạo chạy trong MỘT giao dịch giữ
+   * `pg_advisory_xact_lock` theo kind (không phạm vi) hoặc kind + giá trị phạm vi (hai sản phẩm khác nhau không chờ
+   * nhau). INSERT … WHERE NOT EXISTS một mình không chặn hai lời gọi song song. Mọi câu trong giao dịch có trần
+   * `OPS_EXCEPTION_STATEMENT_TIMEOUT_MS`; chờ khoá quá `OPS_EXCEPTION_LOCK_TIMEOUT_MS` (PG 55P03) → log warn (chỉ kind,
+   * tên khoá phạm vi, mã lỗi — không giá trị) rồi ghi dự phòng MỘT lần không khoá trong giao dịch mới (D-105: thà có thể
+   * trùng còn hơn mất dấu); dự phòng cũng lỗi → warn mã lỗi của lần đó (chỉ mã) rồi ném lỗi 55P03 gốc. Timeout đặt bằng
+   * `set_config(..., true)` = cục bộ giao dịch: kết nối trả về pool dùng chung không mang theo (có test probe pool).
+   *
+   * Khoá phạm vi thiếu trong `detail` → ghi `null` cho khoá đó vào `detail` (🟢b review T-156): phạm vi so khớp `null`,
+   * nên dòng đã ghi phải mang `null` (JSON bỏ khoá `undefined`) — nếu không, lần gọi sau không dedupe được.
+   *
+   * Luôn tự mở giao dịch riêng (không nhận `em` của người gọi): `set_config(..., true)` đổi timeout tới hết giao dịch và
+   * khoá `xact` giữ tới commit — chạy trong giao dịch dài của người gọi sẽ giữ khoá suốt giao dịch đó.
    */
-  async openOpsExceptionIfNoneActive(input: OpsExceptionInput, em?: SqlEntityManager): Promise<boolean> {
-    const rows = await this.exec(
-      `INSERT INTO ops_exception (id, kind, dedupe_key, order_id, amount, priority, due_at, detail)
-       SELECT ?, ?::text, ?, ?, ?, ?, ?, ?::jsonb
-        WHERE NOT EXISTS (
-          SELECT 1 FROM ops_exception WHERE kind = ?::text AND state IN ('open', 'in_progress') AND deleted_at IS NULL)
-       ON CONFLICT DO NOTHING RETURNING id`,
-      [
-        generateEntityId(undefined, "opx"),
-        input.kind,
-        input.dedupe_key,
-        input.order_id ?? null,
-        input.amount ?? null,
-        input.priority ?? "normal",
-        input.due_at ?? null,
-        json(input.detail ?? null),
-        input.kind,
-      ],
-      em,
-    );
-    return rows.length === 1;
+  async openOpsExceptionIfNoneActive(
+    input: OpsExceptionInput & { active_scope?: readonly string[] },
+  ): Promise<boolean> {
+    const scopeKeys = assertDeclaredScope(input.kind, input.active_scope ?? []);
+    const scope = scopeKeys.length > 0 ? scopeFromDetail(scopeKeys, input.detail) : null;
+    // Dòng ghi mang đủ khoá phạm vi (thiếu → null) để khớp lại `detail @> scope` ở lần gọi sau.
+    const detail = scope === null ? (input.detail ?? null) : { ...input.detail, ...scope };
+    const lockKey = opsExceptionLockKey(input.kind, scope);
+    // SQL NULL (không phải chuỗi JSON 'null' — `'null'::jsonb IS NULL` là false) = không lọc theo detail.
+    const scopeJson = scope === null ? null : json(scope);
+    const run = (locked: boolean) => async (tx: SqlEntityManager) => {
+      await this.exec(
+        `SELECT set_config('lock_timeout', ?, true), set_config('statement_timeout', ?, true)`,
+        [`${OPS_EXCEPTION_LOCK_TIMEOUT_MS}ms`, `${OPS_EXCEPTION_STATEMENT_TIMEOUT_MS}ms`],
+        tx,
+      );
+      if (locked) {
+        await this.exec(
+          `SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))`,
+          [OPS_EXCEPTION_LOCK_NS, lockKey],
+          tx,
+        );
+      }
+      const rows = await this.exec(
+        `INSERT INTO ops_exception (id, kind, dedupe_key, order_id, amount, priority, due_at, detail)
+         SELECT ?, ?::text, ?, ?, ?, ?, ?, ?::jsonb
+          WHERE NOT EXISTS (
+            SELECT 1 FROM ops_exception WHERE kind = ?::text AND state IN ('open', 'in_progress') AND deleted_at IS NULL
+               AND (?::jsonb IS NULL OR detail @> ?::jsonb))
+         ON CONFLICT DO NOTHING RETURNING id`,
+        [
+          generateEntityId(undefined, "opx"),
+          input.kind,
+          input.dedupe_key,
+          input.order_id ?? null,
+          input.amount ?? null,
+          input.priority ?? "normal",
+          input.due_at ?? null,
+          json(detail),
+          input.kind,
+          scopeJson,
+          scopeJson,
+        ],
+        tx,
+      );
+      return rows.length === 1;
+    };
+    try {
+      return await this.repo_.transaction(run(true));
+    } catch (e) {
+      if ((e as { code?: unknown } | null)?.code !== LOCK_NOT_AVAILABLE) throw e;
+      this.logger_?.warn(
+        `[ops-exception] Chờ khoá mở ngoại lệ quá ${OPS_EXCEPTION_LOCK_TIMEOUT_MS}ms — ghi dự phòng không khoá: ` +
+          `kind=${input.kind} scope=[${scopeKeys.join(",")}] code=${LOCK_NOT_AVAILABLE}`,
+      );
+      try {
+        return await this.repo_.transaction(run(false));
+      } catch (fallbackError) {
+        // Chỉ mã lỗi của lần dự phòng (không message — knex chép giá trị bind vào message); vẫn ném lỗi 55P03 gốc.
+        const code = (fallbackError as { code?: unknown } | null)?.code;
+        this.logger_?.warn(
+          `[ops-exception] Ghi dự phòng không khoá cũng lỗi: kind=${input.kind} scope=[${scopeKeys.join(",")}] ` +
+            `code=${typeof code === "string" && /^[A-Za-z0-9_]{1,32}$/.test(code) ? code : "unknown"}`,
+        );
+        throw e;
+      }
+    }
   }
 
   /** Attempt còn mở (created/pending/unknown) → `to` (failed|unknown) theo máy trạng thái thanh toán. */
@@ -569,12 +763,30 @@ class CheckoutModuleService extends MedusaService({
       const stateBefore = String(fin.state) as OrderState;
       const total = Number(fin.total);
       const decision = decideOnCapture(stateBefore, total, entries, input.amount);
-      await this.exec(
-        `UPDATE payment_attempt SET state = 'captured', provider_txn_no = ?, updated_at = now()
-         WHERE id = ? AND state IN ('created', 'pending', 'unknown', 'authorized')`,
-        [input.provider_txn_id, input.payment_attempt_id],
-        em,
-      );
+      const link = await this.linkAttemptToCapture(em, input.payment_attempt_id, input.provider_txn_id);
+      if (link.result === "conflict") {
+        // Không ghi đè mã đã gắn (T-168): khoản thu này vẫn ghi ledger + quyết định như thường, nhưng hoàn qua cổng/đối
+        // soát không tìm được attempt cho nó → kế toán xử lý tay (RUNBOOK §7).
+        await this.openOpsException(
+          {
+            kind: "payment_unknown",
+            dedupe_key: `attempt_txn_conflict:${input.provider}:${input.provider_txn_id}`,
+            order_id: input.order_id,
+            amount: input.amount,
+            priority: "high",
+            due_at: new Date(input.now.getTime() + 24 * 3600_000),
+            detail: {
+              reason: "attempt_txn_conflict",
+              txn_ref: link.txn_ref,
+              provider_txn_id: input.provider_txn_id,
+              attempt_provider_txn_no: link.provider_txn_no,
+              attempt_state: link.state,
+              order_state: stateBefore,
+            },
+          },
+          em,
+        );
+      }
       const exception = (kind: OpsExceptionInput["kind"], amount: number, priority: "normal" | "high") =>
         this.openOpsException(
           {
@@ -624,6 +836,81 @@ class CheckoutModuleService extends MedusaService({
       }
       return { duplicate: false, decision, state_before: stateBefore } as const;
     });
+  }
+
+  /**
+   * Gắn giao dịch cổng của MỘT khoản thu vừa ghi vào attempt (trong transaction của `applyCapture`, dưới khóa đơn):
+   *  - attempt còn mở → `captured` + `provider_txn_no` (như trước T-168);
+   *  - attempt `failed` CHƯA có mã (đơn đã hủy do hết hạn/nhân viên/bù trừ rồi tiền mới về — AT09) → ghi mã, GIỮ `failed`
+   *    (máy trạng thái: `failed` là kết thúc). Hoàn qua cổng (`providerRequestOf` tìm attempt theo `provider_txn_no`) và
+   *    đối soát VNPAY (join `provider_txn_no = payment_ledger.provider_txn_id`) cần mã này (T-168, D-122);
+   *  - đã mang đúng mã này → không đổi gì (`unchanged`);
+   *  - attempt (`failed` hoặc `captured`) đang mang mã KHÁC (thông báo thất bại có mã, hoặc giao dịch thành công thứ
+   *    hai — AT36) → KHÔNG ghi đè, trả `conflict` để người gọi mở `payment_unknown` `attempt_txn_conflict` (mọi quyết định
+   *    của đơn; ngoại lệ theo quyết định — `overpayment`/`late_payment` — vẫn mở như thường). Khoản thu đó không gắn
+   *    attempt nên không hoàn qua cổng được (`auto` chọn `manual`, T-169) và đối soát không gắn được dòng sao kê vào nó.
+   * Câu UPDATE có điều kiện `provider_txn_no IS NULL` nên hai khoản thu khác mã đua nhau chỉ một bên gắn được.
+   */
+  private async linkAttemptToCapture(
+    em: SqlEntityManager,
+    attemptId: string,
+    providerTxnId: string,
+  ): Promise<
+    | { result: "captured" | "linked" | "unchanged" | "other" }
+    | { result: "conflict"; txn_ref: string; provider_txn_no: string; state: string }
+  > {
+    const captured = await this.exec(
+      `UPDATE payment_attempt SET state = 'captured', provider_txn_no = ?, updated_at = now()
+       WHERE id = ? AND state IN ('created', 'pending', 'unknown', 'authorized') RETURNING id`,
+      [providerTxnId, attemptId],
+      em,
+    );
+    if (captured.length === 1) return { result: "captured" };
+    const linked = await this.exec(
+      `UPDATE payment_attempt SET provider_txn_no = ?, updated_at = now()
+       WHERE id = ? AND state = 'failed' AND provider_txn_no IS NULL RETURNING id`,
+      [providerTxnId, attemptId],
+      em,
+    );
+    if (linked.length === 1) return { result: "linked" };
+    const [row] = await this.exec(
+      `SELECT state, provider_txn_no, txn_ref FROM payment_attempt WHERE id = ?`,
+      [attemptId],
+      em,
+    );
+    if (!row || row.provider_txn_no === providerTxnId) return { result: "unchanged" };
+    // Còn lại: `failed`/`captured` mang mã khác (T-168, T-169 — AT36). Không mã → trạng thái ngoài dự kiến, bỏ qua.
+    if (row.provider_txn_no === null) return { result: "other" };
+    return {
+      result: "conflict",
+      txn_ref: String(row.txn_ref),
+      provider_txn_no: String(row.provider_txn_no),
+      state: String(row.state),
+    };
+  }
+
+  /**
+   * Đóng ngoại lệ `late_payment` đang mở của đơn ĐÃ HỦY khi tiền đã trả lại hết — ledger ròng (Σ capture − Σ refund đã
+   * hoàn) ≤ 0 (T-168). Gọi sau mỗi lần hoàn thành công (idempotent). Hoàn một phần → còn mở.
+   * MỘT câu lệnh = một snapshot: khoản thu đến muộn mới và `late_payment` của nó commit cùng transaction
+   * (`applyCapture`), nên câu này hoặc thấy cả hai (ròng > 0 → không đóng) hoặc không thấy cả hai — không đóng nhầm
+   * ngoại lệ của khoản thu chưa hoàn.
+   */
+  async resolveRefundedLatePayments(orderId: string, resolution: Record<string, unknown>): Promise<number> {
+    const rows = await this.exec(
+      `UPDATE ops_exception
+          SET state = 'resolved', detail = COALESCE(detail, '{}'::jsonb) || ?::jsonb, updated_at = now()
+        WHERE order_id = ? AND kind = 'late_payment' AND state IN ('open', 'in_progress') AND deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM order_finance f
+                       WHERE f.order_id = ? AND f.state = 'cancelled' AND f.deleted_at IS NULL)
+          AND (SELECT COALESCE(SUM(CASE WHEN l.kind = 'capture' THEN l.amount
+                                        WHEN l.kind = 'refund' AND l.state = 'succeeded' THEN -l.amount
+                                        ELSE 0 END), 0)
+                 FROM payment_ledger l WHERE l.order_id = ? AND l.deleted_at IS NULL) <= 0
+       RETURNING id`,
+      [json(resolution), orderId, orderId, orderId],
+    );
+    return rows.length;
   }
 
   /* ------------------------------------------------------------ xác nhận COD (T-026) */
@@ -678,15 +965,65 @@ class CheckoutModuleService extends MedusaService({
 
   /* ------------------------------------------------------------ job (T-012) */
 
-  /** Đơn online còn chờ thanh toán đã quá hạn giữ hàng (biên: now >= hold_expires_at là hết hạn — DATA04). */
+  /**
+   * Đơn online còn chờ thanh toán đã quá hạn giữ hàng (biên: now >= hold_expires_at là hết hạn — DATA04) VÀ đã tới hạn
+   * kiểm lại (`next_check_at` NULL hoặc ≤ now — T-164). Xếp theo hạn xét `COALESCE(next_check_at, hold_expires_at)`
+   * (FIFO): đơn mới quá hạn chờ tối đa ⌈số đơn tới hạn trước nó / limit⌉ lượt — đơn đã hỏi rồi bị hẹn lại xếp sau mọi
+   * đơn có hạn xét sớm hơn mốc hẹn của nó, nên đơn chưa rõ kẹt không chặn đầu hàng mãi.
+   * Mọi so sánh trên timestamptz (UTC tuyệt đối, không phụ thuộc TimeZone phiên).
+   */
   async listExpiredHoldOrderIds(now: Date, limit: number): Promise<string[]> {
     const rows = await this.exec(
       `SELECT order_id FROM order_finance
        WHERE state = 'awaiting_payment' AND hold_expires_at <= ? AND deleted_at IS NULL
-       ORDER BY hold_expires_at LIMIT ?`,
-      [now, limit],
+         AND (next_check_at IS NULL OR next_check_at <= ?)
+       ORDER BY COALESCE(next_check_at, hold_expires_at), hold_expires_at, order_id LIMIT ?`,
+      [now, now, limit],
     );
     return rows.map((r) => String(r.order_id));
+  }
+
+  /**
+   * Tồn đọng đơn quá hạn chưa rõ đang giữ hàng (T-164): còn `awaiting_payment`, quá `hold_expires_at`, và job đã xét mà
+   * chưa ra kết cục — querydr chưa rõ/lỗi (`hold_check_attempts` ≥ 1) HOẶC bị hoãn không hỏi (breaker mở, VNPAY tắt —
+   * không tăng số lần nhưng có `next_check_at`). Đơn quá hạn chưa từng được xét (cả hai trống) không tính.
+   */
+  async countUnknownHoldBacklog(now: Date): Promise<number> {
+    const rows = await this.exec(
+      `SELECT count(*)::int AS n FROM order_finance
+       WHERE state = 'awaiting_payment' AND hold_expires_at <= ? AND deleted_at IS NULL
+         AND (hold_check_attempts >= 1 OR next_check_at IS NOT NULL)`,
+      [now],
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Hẹn kiểm lại đơn quá hạn (T-164) — gọi dưới khóa `order:<id>`. Chỉ khi đơn còn `awaiting_payment` và số lần chưa
+   * rõ vẫn là `fromAttempts` (đọc trước đó — lạc quan: bản chạy khác đã hẹn thì không ghi đè). Trả true nếu đã ghi.
+   */
+  async scheduleHoldRecheck(
+    orderId: string,
+    input: { next_check_at: Date; fromAttempts: number; attempts: number },
+  ): Promise<boolean> {
+    const rows = await this.exec(
+      `UPDATE order_finance SET next_check_at = ?, hold_check_attempts = ?, updated_at = now()
+       WHERE order_id = ? AND state = 'awaiting_payment' AND hold_check_attempts = ? RETURNING id`,
+      [input.next_check_at, input.attempts, orderId, input.fromAttempts],
+    );
+    return rows.length === 1;
+  }
+
+  /**
+   * Bỏ hẹn kiểm lại (T-164): có tin chắc chắn về thanh toán của đơn (IPN giao dịch không thành công) → lượt
+   * `expire-holds` kế tiếp xét ngay thay vì chờ hết backoff. Giữ `hold_check_attempts`.
+   */
+  async clearHoldRecheck(orderId: string): Promise<void> {
+    await this.exec(
+      `UPDATE order_finance SET next_check_at = NULL, updated_at = now()
+       WHERE order_id = ? AND state = 'awaiting_payment' AND next_check_at IS NOT NULL`,
+      [orderId],
+    );
   }
 
   /**
@@ -731,14 +1068,18 @@ class CheckoutModuleService extends MedusaService({
     });
   }
 
-  /** Attempt `preparing` quá lease, hoặc đã nhận bù trừ nhưng chưa xong (`COMPENSATING`) — để job đối chiếu (AT10). */
+  /**
+   * Attempt `preparing` quá lease, hoặc đã nhận bù trừ nhưng chưa xong (`COMPENSATING`) — để job đối chiếu (AT10).
+   * `COMPENSATING` cũng đòi `lease_until < now`: lúc nhận bù trừ lease đã quá hạn (claimStaleAttempt) nên hành vi cũ giữ
+   * nguyên; attempt bù trừ lỗi được `deferStaleAttempt` đẩy lease về sau → không đứng đầu hàng đợi mãi (review T-185).
+   */
   async listStaleAttempts(now: Date, limit: number): Promise<Array<{ id: string; cart_id: string }>> {
     const rows = await this.exec(
       `SELECT id, cart_id FROM checkout_attempt
-       WHERE ((state = 'preparing' AND lease_until < ?) OR (state = 'compensated' AND error_code = 'COMPENSATING'))
+       WHERE ((state = 'preparing' AND lease_until < ?) OR (state = 'compensated' AND error_code = 'COMPENSATING' AND lease_until < ?))
          AND deleted_at IS NULL
        ORDER BY lease_until LIMIT ?`,
-      [now, limit],
+      [now, now, limit],
     );
     return rows.map((r) => ({ id: String(r.id), cart_id: String(r.cart_id) }));
   }
@@ -753,6 +1094,20 @@ class CheckoutModuleService extends MedusaService({
        WHERE id = ? AND ((state = 'preparing' AND lease_until < ?) OR (state = 'compensated' AND error_code = 'COMPENSATING'))
        RETURNING id`,
       [attemptId, now],
+    );
+    return rows.length === 1;
+  }
+
+  /**
+   * Bù trừ của attempt đã nhận (`COMPENSATING`) lỗi → hẹn lượt sau (`lease_until = until`), để attempt khác trong hàng đợi
+   * được xử lý. Attempt còn `preparing` không đụng (lease là của tiến trình submit). Trả true nếu đã hẹn.
+   */
+  async deferStaleAttempt(attemptId: string, until: Date): Promise<boolean> {
+    const rows = await this.exec(
+      `UPDATE checkout_attempt SET lease_until = ?, updated_at = now()
+       WHERE id = ? AND state = 'compensated' AND error_code = 'COMPENSATING'
+       RETURNING id`,
+      [until, attemptId],
     );
     return rows.length === 1;
   }
@@ -856,6 +1211,124 @@ class CheckoutModuleService extends MedusaService({
     );
   }
 
+  /**
+   * Hoãn sự kiện đã nhận mà KHÔNG thử (breaker mở/bóp, T-097): chỉ dời `next_attempt_at`, không tăng `attempts`, không
+   * đổi trạng thái — sự kiện vẫn nằm trong outbox và được nhận lại khi tới hạn (không mất). Sự kiện đã sang trạng thái
+   * khác (sent/dead) thì không đụng.
+   */
+  async deferOutbox(id: string, until: Date): Promise<void> {
+    await this.exec(
+      `UPDATE outbox_event SET next_attempt_at = ?, updated_at = now()
+       WHERE id = ? AND state IN ('pending', 'failed')`,
+      [until, id],
+    );
+  }
+
+  /* ------------------------------------------------------------ circuit breaker job nền (T-097) */
+
+  /**
+   * Trạng thái breaker `key` (đọc mới, ngoài giao dịch). Không có dòng = `closed`, chưa lỗi lần nào (dòng chỉ được tạo
+   * khi có lỗi/mở). Mọi chuyển trạng thái dưới đây là MỘT câu có điều kiện trạng thái cũ → nhiều bản sao cùng gọi thì
+   * đúng một bản thắng (READ COMMITTED: câu UPDATE chờ khoá dòng rồi xét lại WHERE trên bản mới nhất).
+   *
+   * `job_breaker` KHÔNG dùng xoá mềm (review T-097): cột `deleted_at` chỉ do model DSL tự thêm; mọi câu breaker bỏ qua nó
+   * — một khoá = đúng một dòng (UNIQUE `breaker_key` gồm cả dòng có `deleted_at`), nên lọc ở câu này mà không lọc ở câu
+   * kia sẽ làm breaker kẹt (INSERT trùng dòng đã "xoá", UPDATE lại bỏ qua nó).
+   */
+  async readJobBreaker(key: string): Promise<JobBreakerSnapshot | null> {
+    const rows = await this.exec(
+      `SELECT state, consecutive_failures, open_until, probe_until, trip_reason, trip_count, last_failed_event_id
+       FROM job_breaker WHERE breaker_key = ?`,
+      [key],
+    );
+    return rows[0] ? breakerSnapshot(rows[0]) : null;
+  }
+
+  /**
+   * Hết nguội (`open` và `open_until` ≤ now) hoặc lượt thử trước quá hạn (`half_open` và `probe_until` ≤ now) → chuyển
+   * `half_open` với hạn lượt thử `probeUntil`. Trả true = người gọi là lượt thử DUY NHẤT.
+   */
+  async claimJobBreakerProbe(key: string, now: Date, probeUntil: Date): Promise<boolean> {
+    const rows = await this.exec(
+      `UPDATE job_breaker SET state = 'half_open', probe_until = ?, updated_at = now()
+       WHERE breaker_key = ?
+         AND ((state = 'open' AND open_until <= ?) OR (state = 'half_open' AND probe_until <= ?))
+       RETURNING id`,
+      [probeUntil, key, now, now],
+    );
+    return rows.length === 1;
+  }
+
+  /**
+   * Ghi một lỗi tạm của sự kiện `eventId`: tăng số lỗi liên tiếp CHỈ khi khác sự kiện lỗi gần nhất (một sự kiện thử lại
+   * nhiều lần đã có backoff/trần lần riêng — không để một sự kiện hỏng chặn cả adapter). Trả trạng thái SAU khi ghi.
+   */
+  async recordJobBreakerFailure(key: string, eventId: string): Promise<JobBreakerSnapshot> {
+    const rows = await this.exec(
+      `INSERT INTO job_breaker (id, breaker_key, consecutive_failures, last_failed_event_id)
+       VALUES (?, ?, 1, ?)
+       ON CONFLICT (breaker_key) DO UPDATE SET
+         consecutive_failures = job_breaker.consecutive_failures
+           + CASE WHEN job_breaker.last_failed_event_id IS DISTINCT FROM EXCLUDED.last_failed_event_id THEN 1 ELSE 0 END,
+         last_failed_event_id = EXCLUDED.last_failed_event_id,
+         updated_at = now()
+       RETURNING state, consecutive_failures, open_until, probe_until, trip_reason, trip_count, last_failed_event_id`,
+      [generateEntityId(undefined, "jbr"), key, eventId],
+    );
+    return breakerSnapshot(rows[0]!);
+  }
+
+  /**
+   * Lượt gọi thành công: `half_open` → `closed`; `closed` → xoá đếm lỗi. KHÔNG đụng breaker đang `open` (kết quả về muộn
+   * của lượt nhận trước khi mở — không được đóng sớm breaker đã mở vì hết ngân sách/lỗi). Trả true nếu vừa đóng từ
+   * `half_open`.
+   */
+  async recordJobBreakerSuccess(key: string): Promise<boolean> {
+    const rows = await this.exec(
+      `WITH prev AS (
+         SELECT id, state FROM job_breaker
+         WHERE breaker_key = ?
+           AND (state = 'half_open' OR (state = 'closed' AND (consecutive_failures > 0 OR last_failed_event_id IS NOT NULL)))
+         FOR UPDATE)
+       UPDATE job_breaker b SET state = 'closed', consecutive_failures = 0, last_failed_event_id = NULL,
+              open_until = NULL, probe_until = NULL, updated_at = now()
+       FROM prev WHERE b.id = prev.id AND b.state IN ('closed', 'half_open')
+       RETURNING prev.state AS was`,
+      [key],
+    );
+    return rows[0]?.was === "half_open";
+  }
+
+  /**
+   * Mở breaker tới `openUntil` nếu đang ở một trong `from` (không có dòng = `closed`). Trả true = câu này vừa mở (đúng
+   * một bản sao thắng → đúng một ngoại lệ/log mỗi lần mở).
+   */
+  async tripJobBreaker(
+    key: string,
+    reason: JobBreakerTripReason,
+    openUntil: Date,
+    from: readonly ("closed" | "half_open")[],
+  ): Promise<boolean> {
+    const fromClosed = from.includes("closed");
+    const fromHalfOpen = from.includes("half_open");
+    // Không có dòng = closed: tạo dòng closed trước (không đổi ngữ nghĩa) để câu chuyển trạng thái dưới đây có dòng để khoá.
+    if (fromClosed) {
+      await this.exec(
+        `INSERT INTO job_breaker (id, breaker_key) VALUES (?, ?) ON CONFLICT (breaker_key) DO NOTHING`,
+        [generateEntityId(undefined, "jbr"), key],
+      );
+    }
+    const rows = await this.exec(
+      `UPDATE job_breaker SET state = 'open', open_until = ?, probe_until = NULL, trip_reason = ?,
+              trip_count = trip_count + 1, updated_at = now()
+       WHERE breaker_key = ?
+         AND ((state = 'closed' AND ?::boolean) OR (state = 'half_open' AND ?::boolean))
+       RETURNING id`,
+      [openUntil, reason, key, fromClosed, fromHalfOpen],
+    );
+    return rows.length === 1;
+  }
+
   /* ------------------------------------------------------------ đơn sau mua (T-021) */
 
   /**
@@ -914,8 +1387,26 @@ class CheckoutModuleService extends MedusaService({
     return rows.length === 1;
   }
 
-  /** Dọn bộ đếm cửa sổ cũ và dấu đổi token đã hết hạn (token hết hạn không còn đổi được nên dấu không cần nữa). */
-  async purgeOrderAccessRecords(now: Date): Promise<{ counters: number; redemptions: number }> {
+  /**
+   * Dọn bộ đếm cửa sổ cũ và dấu đổi token đã hết hạn (token hết hạn không còn đổi được nên dấu không cần nữa).
+   * `webhookWindows`: chính sách webhook (tên → windowMs) — hàng `webhook.<tên>:%` chỉ cần giữ 2×windowMs (cửa sổ hiện
+   * tại + trước), dọn sớm thay vì 2 ngày; bucket khác giữ 2 ngày.
+   */
+  async purgeOrderAccessRecords(
+    now: Date,
+    webhookWindows: Readonly<Record<string, number>> = {},
+  ): Promise<{ counters: number; redemptions: number }> {
+    let purged = 0;
+    for (const [name, windowMs] of Object.entries(webhookWindows)) {
+      if (!/^[A-Za-z0-9]+$/.test(name) || !Number.isSafeInteger(windowMs) || windowMs <= 0) {
+        throw new RangeError(`Chính sách webhook không hợp lệ: ${name}`);
+      }
+      const rows = await this.exec(
+        `DELETE FROM rate_limit_counter WHERE bucket LIKE ? AND window_start < ? RETURNING id`,
+        [`webhook.${name}:%`, new Date(now.getTime() - 2 * windowMs)],
+      );
+      purged += rows.length;
+    }
     const counters = await this.exec(`DELETE FROM rate_limit_counter WHERE window_start < ? RETURNING id`, [
       new Date(now.getTime() - 2 * 24 * 3600_000),
     ]);
@@ -923,7 +1414,7 @@ class CheckoutModuleService extends MedusaService({
       `DELETE FROM order_access_redemption WHERE expires_at < ? RETURNING id`,
       [new Date(now.getTime() - 24 * 3600_000)],
     );
-    return { counters: counters.length, redemptions: redemptions.length };
+    return { counters: purged + counters.length, redemptions: redemptions.length };
   }
 
   /** Tổng ledger của đơn (dạng LedgerEntry của domain). */
@@ -953,76 +1444,130 @@ class CheckoutModuleService extends MedusaService({
    * (hoàn thật + hủy native ở T-027). Trả false nếu đơn đã rời `from` (nhánh khác thắng). `reason`: khách tự hủy
    * (mặc định) hay cửa hàng hủy (nhân viên `order.cancel` — T-044).
    */
-  async cancelOrderByCustomer(input: {
-    order_id: string;
-    from: OrderState;
-    refund_amount: number;
-    display_ref: string;
-    now: Date;
-    reason?: "CUSTOMER_CANCELLED" | "SHOP_CANCELLED";
-  }): Promise<boolean> {
-    const reason = input.reason ?? "CUSTOMER_CANCELLED";
+  async cancelOrderByCustomer(input: CancelOrderInput): Promise<boolean> {
     const t = orderMachine.transition(input.from, "cancelled");
     if (!t.ok) return false;
+    return this.repo_.transaction((em) => this.cancelOrderIn(em, input));
+  }
+
+  /**
+   * Hủy đơn có thanh toán CHƯA XÁC MINH sau khi nhân viên `payment.override` đối chiếu tay trên cổng merchant (T-165,
+   * D-118) — gọi dưới khóa `order:<id>`. MỘT transaction: như cửa hàng hủy đơn `awaiting_payment` chưa thu
+   * (`cancelOrderByCustomer` với `SHOP_CANCELLED`, attempt mở → failed) + đóng mọi ngoại lệ `payment_unknown` đang mở của
+   * đơn (`resolved`, `detail` thêm cách xử lý, người, mã đối chiếu; `owner` giữ nếu đã có). Đơn đã rời `awaiting_payment`
+   * → `cancelled: false`, không đổi gì. Tiền đến sau (IPN/querydr) đi AT09: `decideOnCapture(cancelled)` → `late_payment`.
+   *
+   * `inTx` (review T-165 🟠1): chạy trong CÙNG transaction sau khi hủy thành công, nhận transaction Knex của nó (cùng
+   * Postgres) và số `payment_unknown` đã đóng — người gọi ghi lệnh hủy theo Idempotency-Key + audit ở đây để hủy, dấu
+   * chống trùng và dấu vết truy vết commit/rollback cùng nhau. `inTx` ném → rollback toàn bộ.
+   */
+  async cancelUnverifiedOrder(
+    input: {
+      order_id: string;
+      display_ref: string;
+      now: Date;
+      actor_id: string;
+      merchant_ref: string;
+    },
+    inTx?: (trx: Knex.Transaction, paymentUnknownClosed: number) => Promise<void>,
+  ): Promise<{ cancelled: boolean; payment_unknown_closed: number }> {
     return this.repo_.transaction(async (em) => {
-      const fin = await this.exec(
-        `UPDATE order_finance SET state = 'cancelled', version = version + 1, updated_at = now()
-         WHERE order_id = ? AND state = ? RETURNING id`,
-        [input.order_id, input.from],
+      const cancelled = await this.cancelOrderIn(em, {
+        order_id: input.order_id,
+        from: "awaiting_payment",
+        refund_amount: 0,
+        display_ref: input.display_ref,
+        now: input.now,
+        reason: "SHOP_CANCELLED",
+      });
+      if (!cancelled) return { cancelled: false, payment_unknown_closed: 0 };
+      const closed = await this.exec(
+        `UPDATE ops_exception
+            SET state = 'resolved', owner = COALESCE(owner, ?),
+                detail = COALESCE(detail, '{}'::jsonb) || ?::jsonb, updated_at = now()
+          WHERE order_id = ? AND kind = 'payment_unknown' AND state IN ('open', 'in_progress') AND deleted_at IS NULL
+         RETURNING id`,
+        [
+          input.actor_id,
+          json({
+            resolution: "cancelled_unverified",
+            resolved_by: input.actor_id,
+            merchant_ref: input.merchant_ref,
+            resolved_at: input.now.toISOString(),
+          }),
+          input.order_id,
+        ],
         em,
       );
-      if (fin.length !== 1) return false;
-      await this.exec(
-        `UPDATE payment_attempt SET state = 'failed', updated_at = now()
-         WHERE order_id = ? AND state IN ('created', 'pending', 'unknown')`,
-        [input.order_id],
-        em,
-      );
-      await this.exec(
-        `UPDATE coupon_usage SET state = 'released', updated_at = now()
-         WHERE order_id = ? AND state IN ('held', 'used')`,
-        [input.order_id],
-        em,
-      );
-      await this.exec(
-        `UPDATE checkout_attempt SET state = 'failed', error_code = ?, updated_at = now()
-         WHERE order_id = ? AND state = 'ready'`,
-        [reason, input.order_id],
-        em,
-      );
-      await this.insertOutbox(
-        `order.cancelled:${input.order_id}`,
-        input.order_id,
-        "order.cancelled",
+      if (inTx) {
+        const trx = em.getTransactionContext<Knex.Transaction>();
+        if (!trx) throw new Error("cancelUnverifiedOrder: thiếu transaction Knex");
+        await inTx(trx, closed.length);
+      }
+      return { cancelled: true, payment_unknown_closed: closed.length };
+    });
+  }
+
+  /** Thân transaction của `cancelOrderByCustomer` (dùng lại trong `cancelUnverifiedOrder`). */
+  private async cancelOrderIn(em: SqlEntityManager, input: CancelOrderInput): Promise<boolean> {
+    const reason = input.reason ?? "CUSTOMER_CANCELLED";
+    const fin = await this.exec(
+      `UPDATE order_finance SET state = 'cancelled', version = version + 1, updated_at = now()
+       WHERE order_id = ? AND state = ? RETURNING id`,
+      [input.order_id, input.from],
+      em,
+    );
+    if (fin.length !== 1) return false;
+    await this.exec(
+      `UPDATE payment_attempt SET state = 'failed', updated_at = now()
+       WHERE order_id = ? AND state IN ('created', 'pending', 'unknown')`,
+      [input.order_id],
+      em,
+    );
+    await this.exec(
+      `UPDATE coupon_usage SET state = 'released', updated_at = now()
+       WHERE order_id = ? AND state IN ('held', 'used')`,
+      [input.order_id],
+      em,
+    );
+    await this.exec(
+      `UPDATE checkout_attempt SET state = 'failed', error_code = ?, updated_at = now()
+       WHERE order_id = ? AND state = 'ready'`,
+      [reason, input.order_id],
+      em,
+    );
+    await this.insertOutbox(
+      `order.cancelled:${input.order_id}`,
+      input.order_id,
+      "order.cancelled",
+      {
+        order_id: input.order_id,
+        reason,
+        from: input.from,
+        refund_amount: input.refund_amount,
+      },
+      em,
+    );
+    if (input.refund_amount > 0) {
+      await this.openOpsException(
         {
+          kind: "refund_request",
+          dedupe_key: `refund_request:${input.order_id}`,
           order_id: input.order_id,
-          reason,
-          from: input.from,
-          refund_amount: input.refund_amount,
+          amount: input.refund_amount,
+          priority: "high",
+          due_at: new Date(input.now.getTime() + 24 * 3600_000),
+          detail: {
+            reason,
+            display_ref: input.display_ref,
+            order_state_before: input.from,
+            native_cancel_pending: true,
+          },
         },
         em,
       );
-      if (input.refund_amount > 0) {
-        await this.openOpsException(
-          {
-            kind: "refund_request",
-            dedupe_key: `refund_request:${input.order_id}`,
-            order_id: input.order_id,
-            amount: input.refund_amount,
-            priority: "high",
-            due_at: new Date(input.now.getTime() + 24 * 3600_000),
-            detail: {
-              reason,
-              display_ref: input.display_ref,
-              order_state_before: input.from,
-              native_cancel_pending: true,
-            },
-          },
-          em,
-        );
-      }
-      return true;
-    });
+    }
+    return true;
   }
 
   async insertOutbox(
@@ -1033,11 +1578,12 @@ class CheckoutModuleService extends MedusaService({
     em?: SqlEntityManager,
     nextAttemptAt: Date | null = null,
   ): Promise<void> {
+    const body = outboxJson(type, payload);
     await this.exec(
       `INSERT INTO outbox_event (id, event_key, aggregate_id, type, payload, state, next_attempt_at)
        VALUES (?, ?, ?, ?, ?::jsonb, 'pending', COALESCE(?, now()))
        ON CONFLICT (event_key) DO NOTHING`,
-      [generateEntityId(undefined, "obx"), eventKey, aggregateId, type, json(payload), nextAttemptAt],
+      [generateEntityId(undefined, "obx"), eventKey, aggregateId, type, body, nextAttemptAt],
       em,
     );
   }
@@ -1047,7 +1593,7 @@ class CheckoutModuleService extends MedusaService({
 export function isUniqueViolation(e: unknown): boolean {
   const seen = new Set<unknown>();
   let cur: unknown = e;
-  while (cur && typeof cur === "object" && !seen.has(cur)) {
+  while (typeof cur === "object" && cur !== null && !seen.has(cur)) {
     seen.add(cur);
     const o = cur as Record<string, unknown>;
     if (o.code === "23505" || /UniqueConstraintViolation/.test(String(o.name))) return true;

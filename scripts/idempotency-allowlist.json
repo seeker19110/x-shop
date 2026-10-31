@@ -1,0 +1,342 @@
+{
+  "$comment": "T-187 (Q-06, ARC-INT-001): route ghi KHÔNG nhận Idempotency-Key — idempotent theo trạng thái (state), theo khoá tự nhiên UNIQUE (natural-key) hoặc không có tác dụng nghiệp vụ trùng lặp (no-business-effect). Mỗi mục: lý do + test song song chứng minh (scripts/check-idempotency.mjs kiểm lời gọi it/test đúng tên, không skip, có lời gọi Promise.all thật và literal chứa đủ đường dẫn route — hoặc `calls` = tên hàm phụ khai trong cùng file chứa đường dẫn, khi test gọi route qua hàm phụ). Route mới thiếu khoá mà không có ở đây → check đỏ; mục không còn route → check đỏ.",
+  "routes": [
+    {
+      "route": "DELETE /admin/x/users/{id}/roles",
+      "kind": "state",
+      "reason": "Thu hồi vai trò đưa tập vai trò về trạng thái đích: vai trò đã không còn → 200 changed=false, không ghi audit lần hai; owner cuối được giữ (LAST_OWNER).",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "thu hồi cùng vai trò ×2 song song → một lần thu hồi (changed true + false), một dòng audit"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/imports/{id}/commit",
+      "kind": "natural-key",
+      "reason": "Idempotent theo import id (S-206): commit chạy trong khoá nhập; đã commit → trả kết quả đã lưu (replayed: true), audit committed đúng một lần; lỗi giữa chừng → gọi lại chạy tiếp an toàn.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/catalog-import.spec.ts",
+          "name": "hai commit đồng thời cùng id → đúng một lần ghi, lần kia trả kết quả đã lưu",
+          "calls": "commit"
+        },
+        {
+          "file": "apps/backend/integration-tests/http/catalog-import.spec.ts",
+          "name": "commit → catalog.import.committed đúng MỘT lần (cả khi gọi lại và đồng thời); còn lỗi → commit_rejected",
+          "calls": "commit"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/imports/preview",
+      "kind": "no-business-effect",
+      "reason": "Chỉ kiểm CSV và lưu bản nháp import_job — không ghi catalog/giá/tồn. Mỗi lần gửi là một bản nháp riêng; tác dụng nghiệp vụ chỉ ở commit (idempotent theo import id). D-139: giữ không khoá (Q-06).",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "preview CSV ×2 song song → hai bản nháp riêng, catalog không đổi (không tác dụng nghiệp vụ)"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/orders/{id}/confirm-cod",
+      "kind": "state",
+      "reason": "Máy trạng thái đơn: placed → confirmed đúng một lần dưới khoá đơn; đã xác nhận → 200 changed=false, không phát order.confirmed lần hai.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "confirm-cod ×2 song song → một lần chuyển confirmed (changed true + false), một sự kiện order.confirmed"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/orders/{id}/shipments",
+      "kind": "natural-key",
+      "reason": "Khoá tự nhiên client_order_code = <display_ref>-S1: đã có vận đơn → 200 cùng vận đơn; timeout → tra theo mã trước khi gửi lại hãng; xuất kho/trừ tồn đúng một lần (T-043).",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "tạo vận đơn lần đầu ×2 song song → một vận đơn, một fulfillment, trừ tồn một lần"
+        },
+        {
+          "file": "apps/backend/integration-tests/http/shipping-fulfillment.spec.ts",
+          "name": "5 lần gọi lại song song sau khi đã có vận đơn → vẫn 1 fulfillment, không trừ thêm",
+          "calls": "createShipment"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/products/{id}/fashion",
+      "kind": "state",
+      "reason": "Đặt (ghi đè) thuộc tính thời trang, bảng size, số đo người mẫu của một sản phẩm dưới khoá sản phẩm; gửi lại cùng nội dung → cùng trạng thái, không tạo bản trùng; khoá bận → 409 BUSY_RETRY.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "đặt thuộc tính thời trang ×2 song song cùng nội dung → đúng một bộ số đo, như gọi một lần"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/refunds/{id}/approve",
+      "kind": "state",
+      "reason": "Máy trạng thái hoàn tiền dưới khoá đơn: requested → approved một lần; đã duyệt → 200 changed=false. Không đụng tiền (tiền chỉ đi ở execute).",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "duyệt hoàn tiền ×2 song song → một lần duyệt (changed true + false), trạng thái approved"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/refunds/{id}/cancel",
+      "kind": "state",
+      "reason": "Hủy yêu cầu hoàn đã thất bại theo máy trạng thái dưới khoá đơn (đối chiếu cổng cùng mã trước khi hủy); đã hủy → 200 changed=false, audit một lần.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/refund-guard.spec.ts",
+          "name": "2 lệnh hủy song song → một changed, một trả nguyên; audit một lần",
+          "calls": "cancel"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/refunds/{id}/execute",
+      "kind": "state",
+      "reason": "Thực hiện hoàn theo máy trạng thái dưới khoá đơn, dùng CÙNG mã yêu cầu với cổng và hỏi cổng trước khi gửi lại — không hoàn trùng (AT16); đã xong → already_succeeded.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/refunds.spec.ts",
+          "name": "3 lệnh thực hiện song song → cổng hoàn đúng một lần",
+          "calls": "execute"
+        },
+        {
+          "file": "apps/backend/integration-tests/http/refund-provider-fallback.spec.ts",
+          "name": "R1: 3 lệnh thực hiện song song khi cổng tắt → cùng 409, một lần chuyển `failed` (một audit)",
+          "calls": "execute"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/refunds/{id}/reject",
+      "kind": "state",
+      "reason": "Từ chối yêu cầu hoàn chưa duyệt theo máy trạng thái dưới khoá đơn, nhả số đang giữ một lần; lần sau thấy đã từ chối (200 trả nguyên hoặc 409 INVALID_STATE).",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "từ chối hoàn tiền ×2 song song → một lần từ chối, số tiền giữ được nhả, trạng thái rejected"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/returns/{id}/approve",
+      "kind": "state",
+      "reason": "Máy trạng thái đổi/trả dưới khoá đơn: requested → approved một lần; đổi size tạo đúng một đơn thay thế + giữ hàng một lần; gọi lại → 200 changed=false.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "đổi size: duyệt ×2 song song → một đơn thay thế, giữ hàng một lần; nhận ×2 song song → cách ly cộng một lần; kiểm định ×2 song song → về kho bán một lần"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/returns/{id}/inspect",
+      "kind": "state",
+      "reason": "Kiểm định theo máy trạng thái dưới khoá đơn: nhập lại tồn bán một lần, mở đúng một yêu cầu hoàn theo giá thực trả; gửi lại cùng kết quả → 200 changed=false.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "trả hàng: kiểm định ×2 song song → nhập lại tồn một lần, đúng một yêu cầu hoàn theo giá thực trả"
+        },
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "đổi size: duyệt ×2 song song → một đơn thay thế, giữ hàng một lần; nhận ×2 song song → cách ly cộng một lần; kiểm định ×2 song song → về kho bán một lần"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/returns/{id}/receive",
+      "kind": "state",
+      "reason": "Nhận hàng trả theo máy trạng thái dưới khoá đơn: kho cách ly cộng đúng một lần, tồn bán không đổi; gửi lại cùng số → 200 changed=false.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "đổi size: duyệt ×2 song song → một đơn thay thế, giữ hàng một lần; nhận ×2 song song → cách ly cộng một lần; kiểm định ×2 song song → về kho bán một lần"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/returns/{id}/reject",
+      "kind": "state",
+      "reason": "Từ chối yêu cầu đổi/trả đang chờ duyệt theo máy trạng thái; lần sau thấy đã từ chối; không mở hoàn tiền, không đổi tồn.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "từ chối yêu cầu trả ×2 song song → một lần từ chối, trạng thái rejected, không mở hoàn"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/settlements/batches",
+      "kind": "natural-key",
+      "reason": "Khoá tự nhiên = băm nội dung chuẩn hoá của chứng từ (+ mã batch hãng): nhập lại → 200 bản đã có + Idempotent-Replayed; cùng mã khác nội dung → 409 BATCH_CONFLICT; nhập trong khoá theo nguồn.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/settlement.spec.ts",
+          "name": "5 lần nhập cùng batch song song → 1 batch (201 + 200×4); hai batch khác nhau cùng đơn song song → một khớp, một thu dư",
+          "calls": "importCsv"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/settlements/discrepancies/{id}/resolve",
+      "kind": "state",
+      "reason": "Chỉ open → resolved một lần (lần sau 409 INVALID_STATE), lịch sử chênh lệch ghi cùng transaction; không động tới tiền.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/settlement.spec.ts",
+          "name": "hai kế toán đóng cùng chênh lệch song song → một 200, một 409; lịch sử chỉ một lần đóng"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/size-charts",
+      "kind": "natural-key",
+      "reason": "Khoá tự nhiên = mã bảng size (UNIQUE code + version): tạo lại cùng mã bị từ chối 4xx, đúng một bảng phiên bản 1; đổi nội dung đi qua /revise.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "tạo bảng size cùng mã ×2 song song → đúng một bảng phiên bản 1, lần kia bị từ chối 4xx"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/size-charts/{code}/revise",
+      "kind": "natural-key",
+      "reason": "Khoá tự nhiên = (mã, nội dung đã chuẩn hoá): nội dung trùng bản hiện hành → 200 trả bản hiện hành, không tạo phiên bản (D-139); khác nội dung → 201 phiên bản mới. Tuần tự hoá theo khoá mã + UNIQUE(code, version): hai request đồng thời cùng nội dung → đúng một phiên bản.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "revise bảng size cùng nội dung ×2 song song → đúng một phiên bản mới, lần kia trả bản hiện hành 200"
+        },
+        {
+          "file": "apps/backend/integration-tests/http/size-chart-revise.spec.ts",
+          "name": "revise cùng nội dung đồng thời ×4 → đúng một phiên bản mới"
+        },
+        {
+          "file": "apps/backend/integration-tests/http/catalog-model.spec.ts",
+          "name": "hai lần revise đồng thời → phiên bản không trùng, đúng một bản hiện hành, sản phẩm trỏ bản hiện hành"
+        }
+      ]
+    },
+    {
+      "route": "POST /admin/x/users/{id}/roles",
+      "kind": "state",
+      "reason": "Cấp vai trò đưa tập vai trò về trạng thái đích: đã có → 200, không tạo bản ghi/audit lần hai.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/rbac.spec.ts",
+          "name": "đồng thời: cấp cùng vai trò 5 lần song song → đúng 1 lần tạo + 1 dòng audit"
+        }
+      ]
+    },
+    {
+      "route": "POST /auth/session",
+      "kind": "state",
+      "reason": "Ghi đè route native (D-059): tạo lại session ID rồi gắn auth context của token đang có; không ghi dữ liệu nghiệp vụ, gọi lại chỉ thay phiên của cùng danh tính.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "POST /auth/session ×2 song song cùng token → cả hai 200 cùng danh tính, không ghi dữ liệu nghiệp vụ"
+        }
+      ]
+    },
+    {
+      "route": "POST /store/x/checkout/attempts/{id}/recheck",
+      "kind": "state",
+      "reason": "Không đổi trạng thái theo tham số trình duyệt: hỏi cổng (querydr) rồi xử lý như IPN — khử trùng theo sự kiện ở webhook_inbox/ledger; tối đa 1 lần/10 giây mỗi lần đặt (khoá Redis).",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "recheck lần đặt ×2 song song → một lần hỏi cổng (200 + 429), đơn xác nhận đúng một khoản thu"
+        }
+      ]
+    },
+    {
+      "route": "POST /store/x/checkout/quote",
+      "kind": "no-business-effect",
+      "reason": "Báo giá do server tính, lưu ảnh chụp quote hạn 10 phút; không giữ hàng, không ghi tiền/đơn/lượt mã giảm giá. Mỗi lần là một quote riêng; tác dụng chỉ qua submit (bắt buộc Idempotency-Key). D-139: giữ không khoá (Q-06).",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "báo giá ×2 song song → hai báo giá cùng tổng và cart_version, không giữ hàng (không tác dụng nghiệp vụ)"
+        }
+      ]
+    },
+    {
+      "route": "POST /store/x/orders/{display_ref}/cancel",
+      "kind": "state",
+      "reason": "Khách hủy theo máy trạng thái dưới khoá đơn: gọi lại trên đơn đã hủy → 200 already_cancelled, nhả hàng/mã một lần, một sự kiện order.cancelled.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/order-lookup.spec.ts",
+          "name": "COD placed: hủy native, nhả reservation, mã released; gọi lại/đồng thời idempotent (một sự kiện hủy)",
+          "calls": "cancel"
+        }
+      ]
+    },
+    {
+      "route": "POST /store/x/orders/{display_ref}/recheck",
+      "kind": "state",
+      "reason": "Hỏi cổng về CÙNG giao dịch (querydr) và xử lý như IPN — khử trùng theo sự kiện; không tạo thanh toán mới; chung khoá tần suất 1 lần/10 giây với recheck của lần đặt.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/idempotency.spec.ts",
+          "name": "recheck trang đơn ×2 song song → một lần hỏi cổng (200 + 429), đơn xác nhận đúng một khoản thu"
+        }
+      ]
+    },
+    {
+      "route": "POST /store/x/orders/lookup",
+      "kind": "no-business-effect",
+      "reason": "Luôn 202 cùng thông điệp; khớp → ghi outbox gửi liên kết tra cứu dùng một lần (15 phút). Không ghi tiền/tồn/đơn; mỗi lần khớp là một liên kết riêng, có trần 5/giờ/SĐT, 10/giờ/mã đơn, 20/giờ/IP; mỗi sự kiện gửi đúng một lần. D-139: giữ không khoá (Q-06).",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/order-lookup.spec.ts",
+          "name": "đồng thời: hai lần tra cứu khớp cùng lúc → hai sự kiện riêng; hai dispatcher song song gửi mỗi sự kiện đúng một lần",
+          "calls": "lookup"
+        }
+      ]
+    },
+    {
+      "route": "POST /store/x/orders/session",
+      "kind": "natural-key",
+      "reason": "Đổi liên kết dùng một lần: dấu đã dùng = UNIQUE SHA-256 token ở DB → hai request đồng thời chỉ một bên thắng; lần sau 404 như token giả.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/order-lookup.spec.ts",
+          "name": "[api1-bola post /store/x/orders/session] đổi liên kết → phiên đơn; dùng lại/giả/hết hạn/sai loại → 404; hai lần đổi đồng thời chỉ một thành công",
+          "calls": "session"
+        }
+      ]
+    },
+    {
+      "route": "POST /x/webhooks/shipping/ghn",
+      "kind": "natural-key",
+      "reason": "Khử trùng theo sự kiện của hãng (khoá duy nhất) và tra lại API hãng trước khi đổi trạng thái; trạng thái chỉ tiến, mốc cũ không lùi; callback lặp/song song → một sự kiện, cách ly/hoàn tiền một lần.",
+      "tests": [
+        {
+          "file": "apps/backend/integration-tests/http/shipping.spec.ts",
+          "name": "dị dạng → 400; vận đơn lạ → 200 bỏ qua; callback lặp song song → 1 sự kiện",
+          "calls": "callback"
+        },
+        {
+          "file": "apps/backend/integration-tests/http/shipping-return-to-sender.spec.ts",
+          "name": "callback lặp + đồng thời → một yêu cầu hàng hoàn, cách ly cộng một lần, một hoàn tiền, đơn hủy một lần",
+          "calls": "callback"
+        }
+      ]
+    }
+  ]
+}

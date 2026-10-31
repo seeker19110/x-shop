@@ -1,6 +1,6 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { payloadHash } from "@x-shop/domain";
+import { payloadHash, isNonEmpty } from "@x-shop/domain";
 import { CheckoutError } from "./errors";
 
 /**
@@ -129,7 +129,7 @@ export async function loadCheckoutCart(
         product_published: it.variant?.product?.status === "published",
         inventory: (it.variant?.inventory_items ?? []).flatMap((link) => {
           const req = toSafeInteger(link?.required_quantity) ?? 1;
-          return link?.inventory_item_id
+          return link && isNonEmpty(link.inventory_item_id)
             ? [{ inventory_item_id: link.inventory_item_id, required_quantity: req }]
             : [];
         }),
@@ -162,9 +162,10 @@ export function assertCartAccess(
   ctx: CartAccessContext,
 ): asserts cart is CheckoutCart {
   const notFound = () => new CheckoutError("NOT_FOUND");
-  if (!cart || cart.completed_at) throw notFound();
-  if (!cart.sales_channel_id || !ctx.salesChannelIds.includes(cart.sales_channel_id)) throw notFound();
-  if (cart.customer_id) {
+  if (!cart || isNonEmpty(cart.completed_at)) throw notFound();
+  if (!isNonEmpty(cart.sales_channel_id) || !ctx.salesChannelIds.includes(cart.sales_channel_id))
+    throw notFound();
+  if (isNonEmpty(cart.customer_id)) {
     if (ctx.actorId !== null && ctx.actorId !== cart.customer_id) throw notFound();
     if (ctx.actorId === null && cart.customer_has_account) throw notFound();
   }

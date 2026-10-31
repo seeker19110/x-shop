@@ -3,6 +3,8 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import {
   codAmount,
   ghn,
+  isNonEmpty,
+  msToSecondsCeil,
   type AddressSnapshot,
   type LedgerEntry,
   type QuoteBreakdown,
@@ -62,6 +64,15 @@ export class ShippingError extends Error {
   ) {
     super(message);
     this.status = STATUS[code];
+  }
+
+  /** Cho job/outbox (T-093): khoá bận, hãng tạm sập, chưa ghi nhận xuất kho được (gọi lại an toàn) là lỗi tạm. */
+  get permanent(): boolean {
+    return !(
+      this.code === "BUSY_RETRY" ||
+      this.code === "PROVIDER_UNAVAILABLE" ||
+      this.code === "FULFILLMENT_BLOCKED"
+    );
   }
 }
 
@@ -126,6 +137,8 @@ export interface CreateShipmentResult {
   /** created = vừa tạo/khôi phục ở hãng · existing = đã có từ trước · pending = chưa rõ kết quả ở hãng (thử lại sau). */
   outcome: "created" | "existing" | "pending";
   shipment: ShipmentRow;
+  /** pending vì hãng trả 429/503 kèm `Retry-After` → số giây hãng yêu cầu chờ (route đưa vào `Retry-After`). */
+  retryAfterSeconds?: number;
 }
 
 interface OrderSnapshot {
@@ -210,7 +223,7 @@ export async function createShipmentForOrder(
 ): Promise<CreateShipmentResult> {
   return withOrderLock(container, orderId, async () => {
     const r = await createShipmentLocked(container, orderId, actorId);
-    if (r.outcome !== "pending" && r.shipment.provider_order_code) {
+    if (r.outcome !== "pending" && isNonEmpty(r.shipment.provider_order_code)) {
       await withFulfillmentErrors(r.shipment, () => syncNativeProgress(container, r.shipment, audit));
     }
     return r;
@@ -265,7 +278,8 @@ async function createShipmentLocked(
   const shipping = shippingOf(container);
   const client = getGhnClient();
   const existing = await shipping.shipmentOfOrder(orderId);
-  if (existing?.provider_order_code) return { outcome: "existing", shipment: existing };
+  if (existing && isNonEmpty(existing.provider_order_code))
+    return { outcome: "existing", shipment: existing };
 
   const ledger = await loadLedger(container, orderId);
   const cod = codAmount(snap.total, ledger);
@@ -297,7 +311,7 @@ async function createShipmentLocked(
         payer: "shop",
         created_by: actorId,
       });
-  if (shipment.provider_order_code) return { outcome: "existing", shipment };
+  if (isNonEmpty(shipment.provider_order_code)) return { outcome: "existing", shipment };
 
   const adopt = async (d: Pick<GhnDetail, "orderCode">, fee: number | null) => ({
     outcome: "created" as const,
@@ -324,11 +338,16 @@ async function createShipmentLocked(
   } catch (e) {
     if (!(e instanceof GhnError)) throw e;
     const found = await lookup();
-    if (found && found !== "unknown") return adopt(found, null);
+    if (found !== null && found !== "unknown") return adopt(found, null);
     if (e.kind === "rejected" && found === null) {
       throw new ShippingError("PROVIDER_REJECTED", e.message);
     }
-    return { outcome: "pending", shipment };
+    // Hãng yêu cầu chờ (429/503 + Retry-After, BE-INT-007) → báo lại cho người gọi thay vì thử lại sớm hơn.
+    return {
+      outcome: "pending",
+      shipment,
+      ...(e.retryAfterMs !== null && { retryAfterSeconds: msToSecondsCeil(e.retryAfterMs) }),
+    };
   }
 }
 
@@ -385,7 +404,7 @@ export async function handleGhnCallback(
   const shipping = shippingOf(container);
   const shipment =
     (await shipping.shipmentByProviderCode(GHN_PROVIDER, cb.orderCode)) ??
-    (cb.clientOrderCode ? await shipping.shipmentByClientCode(cb.clientOrderCode) : null);
+    (isNonEmpty(cb.clientOrderCode) ? await shipping.shipmentByClientCode(cb.clientOrderCode) : null);
   const ev = await shipping.recordEvent({
     provider: GHN_PROVIDER,
     event_key: `${GHN_PROVIDER}:${cb.eventKey}`,
@@ -409,7 +428,7 @@ export async function handleGhnCallback(
       await shipping.markEventApplied(ev.id, current.id, result);
       return { status: 200 as const, body: { ok: true, ...result } };
     }
-    if (!current.provider_order_code) {
+    if (!isNonEmpty(current.provider_order_code)) {
       await shipping.markEventApplied(ev.id, current.id, { ignored: "shipment_not_created" });
       return { status: 200 as const, body: { ok: true, ignored: "shipment_not_created" } };
     }

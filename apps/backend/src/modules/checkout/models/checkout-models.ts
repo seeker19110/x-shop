@@ -2,6 +2,8 @@ import { model } from "@medusajs/framework/utils";
 import {
   ATTEMPT_STATES,
   COUPON_USAGE_STATES,
+  JOB_BREAKER_STATES,
+  JOB_BREAKER_TRIP_REASONS,
   LEDGER_KINDS,
   OPS_EXCEPTION_KINDS,
   OPS_EXCEPTION_STATES,
@@ -36,6 +38,11 @@ export const CheckoutQuote = model
     address: model.json(),
     /** QuoteBreakdown của domain (`computeQuote`). */
     breakdown: model.json(),
+    /**
+     * Báo phí của hãng lúc quote (`ShippingFeeSnapshot` của domain: phí, đầu vào định phí, thời điểm/hạn) — submit dùng
+     * lại khi còn hạn và đầu vào không đổi (T-153). null = quote tạo trước T-153 → submit hỏi lại hãng.
+     */
+    shipping: model.json().nullable(),
     total: model.number(),
     expires_at: model.dateTime(),
   })
@@ -119,6 +126,13 @@ export const OrderFinance = model
     total: model.number(),
     payment_method: model.enum([...PAYMENT_METHODS]),
     hold_expires_at: model.dateTime().nullable(),
+    /**
+     * Backoff kiểm lại của job `expire-holds` (T-164): đơn quá hạn giữ hàng có kết quả querydr chưa rõ/lỗi được hẹn
+     * kiểm lại lúc này (null = đến hạn ngay — mọi đơn mới và dữ liệu trước T-164). `hold_check_attempts` = số lần liên
+     * tiếp chưa rõ/lỗi (cấp số mũ của backoff); không tăng khi breaker hoãn (không gọi querydr).
+     */
+    next_check_at: model.dateTime().nullable(),
+    hold_check_attempts: model.number().default(0),
     cod_confirm_by: model.dateTime().nullable(),
     policy_version: model.text(),
     quote: model.json(),
@@ -134,6 +148,10 @@ export const OrderFinance = model
   .checks([
     { name: "order_finance_total_nonneg", expression: (c) => `${c.total} >= 0` },
     { name: "order_finance_version_pos", expression: (c) => `${c.version} >= 1` },
+    {
+      name: "order_finance_hold_check_attempts_nonneg",
+      expression: (c) => `${c.hold_check_attempts} >= 0`,
+    },
   ]);
 
 /**
@@ -151,6 +169,9 @@ export const PaymentAttempt = model
     payment_url: model.text().nullable(),
     expires_at: model.dateTime(),
     provider_txn_no: model.text().nullable(),
+    // T-170: đúng chuỗi `vnp_CreateDate` của URL thanh toán (yyyyMMddHHmmss GMT+7) — querydr/refund gửi lại làm
+    // `vnp_TransactionDate`. NULL = attempt trước T-170 (fallback `created_at`, RUNBOOK §1.2).
+    vnp_create_date: model.text().nullable(),
   })
   .indexes([
     { name: "IDX_payment_attempt_txn_ref_unique", on: ["txn_ref"], unique: true, where: null },
@@ -160,8 +181,16 @@ export const PaymentAttempt = model
       unique: true,
       where: "state IN ('created', 'pending', 'unknown')",
     },
+    // T-074: trang đơn đọc mọi lượt thanh toán của đơn (index trên chỉ phủ lượt đang mở) — docs/db/explain/.
+    { name: "IDX_payment_attempt_order_id", on: ["order_id"], where: null },
   ])
-  .checks([{ name: "payment_attempt_amount_pos", expression: (c) => `${c.amount} > 0` }]);
+  .checks([
+    { name: "payment_attempt_amount_pos", expression: (c) => `${c.amount} > 0` },
+    {
+      name: "payment_attempt_vnp_create_date_format",
+      expression: (c) => `${c.vnp_create_date} IS NULL OR ${c.vnp_create_date} ~ '^[0-9]{14}$'`,
+    },
+  ]);
 
 /**
  * Sổ cái tiền đã xác minh (đặc tả §6.1): mỗi khoản thu/hoàn là MỘT dòng, không ghi đè. UNIQUE(provider,
@@ -195,7 +224,7 @@ export const WebhookInbox = model
     id: model.id({ prefix: "whin" }).primaryKey(),
     provider: model.text(),
     event_key: model.text(),
-    /** `ipn` | `return` | `query` — nguồn của thông báo. */
+    /** `ipn` | `query` — nguồn của thông báo (CHECK `webhook_inbox_source_check`, T-101). */
     source: model.text().default("ipn"),
     /** Payload đã lọc PII. */
     payload: model.json(),
@@ -229,6 +258,8 @@ export const OutboxEvent = model
   .indexes([
     { name: "IDX_outbox_event_event_key_unique", on: ["event_key"], unique: true, where: null },
     { name: "IDX_outbox_event_state_next", on: ["state", "next_attempt_at"], where: null },
+    // T-074: dòng thời gian của trang đơn đọc sự kiện theo đơn — docs/db/explain/order-view-outbox.txt.
+    { name: "IDX_outbox_event_aggregate_id", on: ["aggregate_id"], where: null },
   ])
   .checks([{ name: "outbox_event_attempts_nonneg", expression: (c) => `${c.attempts} >= 0` }]);
 
@@ -254,6 +285,8 @@ export const OpsException = model
       where: "dedupe_key IS NOT NULL",
     },
     { name: "IDX_ops_exception_state_due", on: ["state", "due_at"], where: null },
+    // T-074: trang đơn/hủy đơn đọc ngoại lệ theo đơn — docs/db/explain/order-view-ops-exceptions.txt.
+    { name: "IDX_ops_exception_order_id", on: ["order_id"], where: null },
   ])
   .checks([
     {
@@ -334,3 +367,41 @@ export const RateLimitCounter = model
     { name: "IDX_rate_limit_counter_window_start", on: ["window_start"], where: null },
   ])
   .checks([{ name: "rate_limit_counter_count_nonneg", expression: (c) => `${c.count} >= 0` }]);
+
+/**
+ * Circuit breaker chi phí của job nền/outbox (T-097, OPS-COST-004) — trạng thái DÙNG CHUNG mọi bản sao (ARC-RES-005):
+ * mọi chuyển trạng thái là MỘT câu UPDATE có điều kiện trạng thái cũ (lib/outbox/breaker.ts) nên đúng một bản sao
+ * thắng mỗi lần mở/thử. `breaker_key` = adapter/bộ xử lý (`notify`, loại sự kiện…). Ngân sách lượt gọi theo ngày đếm ở
+ * `rate_limit_counter` (bucket `breaker.budget:<key>`), không ở đây. Không xoá mềm: `deleted_at` (DSL tự thêm) không
+ * được logic breaker đọc.
+ */
+export const JobBreaker = model
+  .define("job_breaker", {
+    id: model.id({ prefix: "jbr" }).primaryKey(),
+    breaker_key: model.text(),
+    state: model.enum([...JOB_BREAKER_STATES]).default("closed"),
+    /** Số sự kiện KHÁC NHAU lỗi tạm liên tiếp (một sự kiện thử lại nhiều lần chỉ tính một — đã có backoff riêng). */
+    consecutive_failures: model.number().default(0),
+    /** Id outbox của lần lỗi gần nhất (chỉ id — không payload) để không đếm lặp cùng sự kiện. */
+    last_failed_event_id: model.text().nullable(),
+    open_until: model.dateTime().nullable(),
+    probe_until: model.dateTime().nullable(),
+    trip_reason: model.enum([...JOB_BREAKER_TRIP_REASONS]).nullable(),
+    trip_count: model.number().default(0),
+  })
+  .indexes([{ name: "IDX_job_breaker_key_unique", on: ["breaker_key"], unique: true, where: null }])
+  .checks([
+    {
+      name: "job_breaker_consecutive_failures_nonneg",
+      expression: (c) => `${c.consecutive_failures} >= 0`,
+    },
+    { name: "job_breaker_trip_count_nonneg", expression: (c) => `${c.trip_count} >= 0` },
+    {
+      name: "job_breaker_open_has_until",
+      expression: (c) => `${c.state} <> 'open' OR ${c.open_until} IS NOT NULL`,
+    },
+    {
+      name: "job_breaker_half_open_has_probe",
+      expression: (c) => `${c.state} <> 'half_open' OR ${c.probe_until} IS NOT NULL`,
+    },
+  ]);

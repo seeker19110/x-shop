@@ -3,6 +3,7 @@ import { requirePermission } from "../../../../../../lib/access/require-permissi
 import { auditContextOf } from "../../../../../../lib/audit/record";
 import { handleShippingRouteError, presentShipment } from "../../../../../../lib/shipping/http";
 import { createShipmentForOrder } from "../../../../../../lib/shipping/shipments";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/orders/:id/shipments — tạo vận đơn GHN cho đơn đã xác nhận (SPEC-fulfillment S-302, S-303; AT11, AT13,
@@ -14,9 +15,12 @@ import { createShipmentForOrder } from "../../../../../../lib/shipping/shipments
 export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
     const actorId = requirePermission(req, "fulfillment.create");
-    const r = await createShipmentForOrder(req.scope, String(req.params.id), actorId, auditContextOf(req));
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
+    const r = await createShipmentForOrder(req.scope, params.data.id, actorId, auditContextOf(req));
     res.setHeader("Cache-Control", "no-store");
-    if (r.outcome === "pending") res.setHeader("Retry-After", "10");
+    // Không sớm hơn 10 giây; hãng yêu cầu chờ lâu hơn (429 Retry-After) thì theo hãng (T-093).
+    if (r.outcome === "pending") res.setHeader("Retry-After", String(Math.max(10, r.retryAfterSeconds ?? 0)));
     res
       .status(r.outcome === "created" ? 201 : r.outcome === "existing" ? 200 : 202)
       .json({ outcome: r.outcome, shipment: presentShipment(r.shipment) });

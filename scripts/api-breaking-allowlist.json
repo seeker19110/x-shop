@@ -1,0 +1,32 @@
+{
+  "_doc": "Mỗi mục: rule, method, path, location, name, reason (≥ 20 ký tự), evidence (file:dòng hoặc decision:D-NNN). Mục khớp thay đổi nào thì bỏ qua thay đổi đó. Khi PR merge, base đã chứa thay đổi nên script in CẢNH BÁO mục thừa (không đỏ) — hãy xoá mục đó khỏi tệp này (xem đầu scripts/check-api-breaking.mjs).",
+  "entries": [
+    {
+      "rule": "Q6",
+      "method": "GET",
+      "path": "/store/x/products",
+      "location": "param",
+      "name": "page",
+      "reason": "Spec chỉ ghi lại giới hạn đã được server ép: page chỉ nhận 1-4 chữ số nên tối đa 9999, ngoài đó 422.",
+      "evidence": "packages/domain/src/catalog/filter.ts:79 (parseFilter, regex ^\\d{1,4}$, dùng bởi parseListingQuery ở apps/backend/src/lib/catalog/listing.ts:43; route apps/backend/src/api/store/x/products/route.ts:12) — có ở origin/master"
+    },
+    {
+      "rule": "Q6",
+      "method": "GET",
+      "path": "/store/x/search",
+      "location": "param",
+      "name": "page",
+      "reason": "Spec chỉ ghi lại giới hạn đã được server ép: page chỉ nhận 1-4 chữ số nên tối đa 9999, ngoài đó 422.",
+      "evidence": "packages/domain/src/catalog/filter.ts:79 (parseFilter, regex ^\\d{1,4}$, dùng bởi parseListingQuery ở apps/backend/src/lib/catalog/listing.ts:43; route apps/backend/src/api/store/x/search/route.ts:14) — có ở origin/master"
+    },
+    {
+      "rule": "Q6",
+      "method": "GET",
+      "path": "/admin/x/size-charts",
+      "location": "param",
+      "name": "code",
+      "reason": "Route admin có RBAC, chưa có production (T-060) và không có client ngoài; sau phát hành (G7) siết ràng buộc phải theo nhãn breaking.",
+      "evidence": "decision:D-146"
+    }
+  ]
+}

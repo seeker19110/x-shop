@@ -1,14 +1,24 @@
 import { randomUUID } from "node:crypto";
+import { asValue } from "@medusajs/framework/awilix";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import Redis from "ioredis";
+import { isNonEmpty } from "@x-shop/domain";
 import seedXShop, { SEED } from "../../src/scripts/seed";
+import { READINESS_PROBE_TIMEOUT_MS } from "../../src/lib/health/readiness";
+import { RBAC_MODULE } from "../../src/modules/rbac";
+import type RbacModuleService from "../../src/modules/rbac/service";
+import { noThrow, type HttpResponse } from "../helpers/auth";
 
 jest.setTimeout(180 * 1000);
 
 /** Tiền tố khoá mặc định của provider locking-redis (@medusajs/locking-redis). */
 const REDIS_LOCK_PREFIX = "medusa_lock:";
+
+/** Không được lộ ra phản hồi readiness: host/cổng, mã lỗi kết nối, SQL, tên phụ thuộc, phiên bản. */
+const LEAK =
+  /ECONN|ETIMEDOUT|5432|6379|10\.0\.0\.|select|postgres|redis|knex|version|medusa|\bat .*\.(js|ts)/i;
 
 /** Hình tối thiểu đọc từ query.graph (không phụ thuộc kiểu sinh trong .medusa/types). */
 type WithSalesChannels = { id: string; sales_channels?: ReadonlyArray<{ id?: string } | null> | null };
@@ -16,7 +26,10 @@ type LocationRow = WithSalesChannels & { name: string };
 type ApiKeyRow = WithSalesChannels & { title: string; type: string };
 
 const channelIds = (row: WithSalesChannels): string[] =>
-  (row.sales_channels ?? []).flatMap((sc) => (sc?.id ? [sc.id] : []));
+  (row.sales_channels ?? []).flatMap((sc) => {
+    const id = sc?.id;
+    return isNonEmpty(id) ? [id] : [];
+  });
 
 async function snapshot(container: MedusaContainer) {
   const query = container.resolve(ContainerRegistrationKeys.QUERY);
@@ -54,6 +67,83 @@ medusaIntegrationTestRunner({
       it("health native của Medusa vẫn trả 200", async () => {
         const res = await api.get("/health");
         expect(res.status).toBe(200);
+      });
+    });
+
+    describe("GET /x/readyz (OPS-OBS-006, T-079)", () => {
+      /** Thay tạm kết nối Postgres trong container (route resolve theo request) rồi trả lại. */
+      async function withPg<T>(fake: unknown, fn: () => Promise<T>): Promise<T> {
+        const container = getContainer();
+        const real = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+        container.register(ContainerRegistrationKeys.PG_CONNECTION, asValue(fake));
+        try {
+          return await fn();
+        } finally {
+          container.register(ContainerRegistrationKeys.PG_CONNECTION, asValue(real));
+        }
+      }
+
+      it("DB + Redis khỏe → 200 {status:'ready'}, không cache, không lộ chi tiết", async () => {
+        const res = await api.get("/x/readyz", noThrow);
+        expect(res.status).toBe(200);
+        expect(res.data).toEqual({ status: "ready" });
+        expect(res.headers["cache-control"]).toBe("no-store");
+        expect(res.headers["x-powered-by"]).toBeUndefined();
+      });
+
+      it("DB lỗi kết nối → 503 problem+json chung, không lộ thông điệp gốc", async () => {
+        const fake = { raw: () => Promise.reject(new Error("connect ECONNREFUSED 10.0.0.5:5432 select 1")) };
+        const res: HttpResponse = await withPg(fake, () => api.get("/x/readyz", noThrow));
+        expect(res.status).toBe(503);
+        expect(String(res.headers["content-type"])).toMatch(/^application\/problem\+json/);
+        expect(res.headers["cache-control"]).toBe("no-store");
+        expect(res.data).toMatchObject({ status: 503, code: "NOT_READY" });
+        expect(JSON.stringify(res.data)).not.toMatch(LEAK);
+      });
+
+      it("DB treo → 503 trong khoảng một hạn probe (không treo theo pool)", async () => {
+        const fake = { raw: () => new Promise(() => undefined) };
+        const t0 = Date.now();
+        const res: HttpResponse = await withPg(fake, () => api.get("/x/readyz", noThrow));
+        const elapsed = Date.now() - t0;
+        expect(res.status).toBe(503);
+        expect(elapsed).toBeGreaterThanOrEqual(READINESS_PROBE_TIMEOUT_MS - 50);
+        expect(elapsed).toBeLessThan(READINESS_PROBE_TIMEOUT_MS + 2_000);
+      });
+
+      it("Redis hỏng → 503; Redis hồi phục → 200 ngay lượt sau", async () => {
+        const rbac = getContainer().resolve<RbacModuleService>(RBAC_MODULE);
+        const real = rbac.securityStore();
+        const spy = jest.spyOn(rbac, "securityStore").mockReturnValue({
+          ...real,
+          ping: () => Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:6379")),
+        });
+        try {
+          const res = await api.get("/x/readyz", noThrow);
+          expect(res.status).toBe(503);
+          expect(JSON.stringify(res.data)).not.toMatch(LEAK);
+        } finally {
+          spy.mockRestore();
+        }
+        expect((await api.get("/x/readyz", noThrow)).status).toBe(200);
+      });
+
+      it("20 request đồng thời → mọi request 200, probe DB được gộp (ít hơn số request)", async () => {
+        const container = getContainer();
+        const real = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+        let calls = 0;
+        const slow = {
+          raw: (sql: string) => {
+            calls += 1;
+            return new Promise((r) => setTimeout(r, 300)).then(() => real.raw(sql));
+          },
+        };
+        const results: HttpResponse[] = await withPg(slow, () =>
+          Promise.all(Array.from({ length: 20 }, () => api.get("/x/readyz", noThrow))),
+        );
+        expect(results.map((r) => r.status)).toEqual(Array(20).fill(200));
+        expect(calls).toBeGreaterThanOrEqual(1);
+        expect(calls).toBeLessThan(20);
       });
     });
 

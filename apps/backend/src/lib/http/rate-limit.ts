@@ -1,6 +1,12 @@
+import { msToSecondsCeil } from "@x-shop/domain";
+
 /**
  * Giới hạn tần suất nhẹ trong bộ nhớ tiến trình (cửa sổ cố định theo khóa). Dùng cho webhook công khai để chặn dội
- * request rẻ tiền; không thay cho giới hạn ở edge/proxy. Mỗi instance đếm riêng.
+ * request rẻ tiền; không thay cho giới hạn ở edge/proxy. Mỗi instance đếm riêng — chạy N bản sao thì hạn mức thật
+ * thành N× (ARC-RES-005): route mới dùng bộ đếm chung `lib/http/webhook-rate-limit.ts` (T-095), không dùng lớp này.
+ *
+ * @deprecated Không còn mã production nào dùng (T-152: GHN + IPN VNPAY đã chuyển sang bộ đếm chung). Giữ lại làm hàng
+ * rào Retry-After (retry-after.unit.spec.ts); dùng `webhookRateLimit` cho route mới.
  */
 export class FixedWindowLimiter {
   private readonly hits = new Map<string, { windowStart: number; count: number }>();
@@ -21,6 +27,16 @@ export class FixedWindowLimiter {
     }
     cur.count += 1;
     return cur.count <= this.limit;
+  }
+
+  /**
+   * `Retry-After` (giây, làm tròn lên, ≥ 1) cho `key` vừa bị chặn: lúc cửa sổ hiện tại hết. Khoá chưa có cửa sổ → 1.
+   * Phản hồi 429 của chính ta luôn kèm giá trị này (T-093, RFC 6585 §4).
+   */
+  retryAfterSeconds(key: string, now = Date.now()): number {
+    const cur = this.hits.get(key);
+    if (!cur) return 1;
+    return Math.max(1, msToSecondsCeil(cur.windowStart + this.windowMs - now));
   }
 
   private prune(now: number): void {

@@ -38,7 +38,7 @@ export class MockVnpayGateway {
       vnp_TransactionStatus: status,
       vnp_TxnRef: txnRef,
     };
-    const sig = hmacSha512(opts.badSignature ? "sai-khoa" : this.cfg.hashSecret, signData(params));
+    const sig = hmacSha512(opts.badSignature === true ? "sai-khoa" : this.cfg.hashSecret, signData(params));
     return new URLSearchParams({ ...params, vnp_SecureHash: sig });
   }
 

@@ -1,4 +1,5 @@
 import type { MedusaRequest } from "@medusajs/framework/http";
+import { kibToBytes } from "@x-shop/domain";
 
 export type BodyResult =
   | { ok: true; text: string; fileName: string | null; bytes: Buffer }
@@ -39,7 +40,7 @@ export async function readCsvBody(req: MedusaRequest, maxBytes: number): Promise
     };
   }
   // Thân multipart lớn hơn file một chút (ranh giới + header phần).
-  const raw = await readStream(req, isMultipart ? maxBytes + 64 * 1024 : maxBytes);
+  const raw = await readStream(req, isMultipart ? maxBytes + kibToBytes(64) : maxBytes);
   if (raw === null)
     return { ok: false, status: 413, code: "FILE_TOO_LARGE", reason: `Tối đa ${maxBytes} byte` };
   let bytes = raw;
@@ -56,7 +57,7 @@ export async function readCsvBody(req: MedusaRequest, maxBytes: number): Promise
       return { ok: false, status: 422, code: "INVALID_MULTIPART", reason: "Không đọc được multipart" };
     }
     const file = form.get("file");
-    if (!file || typeof file === "string") {
+    if (file === null || typeof file === "string") {
       return { ok: false, status: 422, code: "FILE_MISSING", reason: "Thiếu trường file" };
     }
     bytes = Buffer.from(await file.arrayBuffer());

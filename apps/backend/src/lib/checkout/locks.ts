@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CheckoutError } from "./errors";
+import { secondsToMs } from "@x-shop/domain";
+import { isDraining } from "../lifecycle/shutdown";
 
 /**
  * Khóa phân tán cho checkout trên Locking Module của Medusa (provider Redis) — đặc tả §6.2 "khóa theo tài nguyên, thứ
@@ -8,8 +10,9 @@ import { CheckoutError } from "./errors";
  * Vì sao không dùng thẳng `acquireLockStep`/`locking.execute(keys[])`: provider locking-redis 2.22.1 lấy NHIỀU khóa
  * SONG SONG (`Promise.all` từng key trong `acquire_`) nên thứ tự tăng dần không được bảo đảm (hai checkout giữ chéo
  * nhau → chờ tới timeout), và khi một key thất bại các key đã lấy không được trả lại (rò khóa tới hết hạn). Ở đây:
- *  - lấy TUẦN TỰ theo thứ tự tăng dần (thứ tự toàn cục: `cart:` < `inventory_item:` < `promotion:` do caller gọi theo
- *    lớp, trong mỗi lớp sắp tăng dần) → không deadlock;
+ *  - lấy TUẦN TỰ theo thứ tự tăng dần (thứ tự toàn cục: `cart:` < `order:` < `inventory_item:` < `promotion:` do caller
+ *    gọi theo lớp — mỗi lớp một lời gọi, KHÔNG trộn lớp vì sắp theo mã ký tự đặt `inventory_item:` trước `order:` — trong
+ *    mỗi lớp sắp tăng dần; khóa id thô của Medusa luôn trong cùng; T-224, lib/checkout/inventory-locks.ts) → không deadlock;
  *  - quá hạn chờ (khóa đang bị giữ) → trả lại mọi khóa đã lấy rồi báo `BUSY_RETRY` (409);
  *  - hạ tầng khóa hỏng (Redis mất kết nối/không trả lời — mọi lỗi KHÁC "khóa đang bận", hoặc một lời gọi quá
  *    `callTimeoutMs`) → trả lại khóa đã lấy rồi báo `LOCK_UNAVAILABLE` (503, đặc tả §13.2). KHÔNG có đường lùi khóa
@@ -32,13 +35,19 @@ export interface AcquireOptions {
   scope: string;
   /** Hạn một lời gọi tới provider (mặc định `LOCK_CALL_TIMEOUT_MS`); quá hạn = hạ tầng khóa không trả lời. */
   callTimeoutMs?: number;
+  /**
+   * Đường JOB/subscriber (T-174, D-081 "mọi vòng chờ kiểm isDraining"): mỗi lần thử lại khi khóa bận mà tiến trình đang tắt
+   * → thôi chờ, báo `BUSY_RETRY` như hết hạn (đơn vị để lượt sau), không kéo dài tới `waitMs` vượt trần tắt êm. Mặc định
+   * TẮT: đường request HTTP (IPN, admin) vẫn chờ trọn để xử lý xong request đang chạy (T-094).
+   */
+  abortWhenDraining?: boolean;
 }
 
 /**
  * Hạn mỗi lời gọi acquire/release. Lệnh khóa là một script Lua O(1) — Redis khỏe trả trong vài ms. ioredis mặc định xếp
  * lệnh chờ khi mất kết nối và chỉ báo lỗi sau ~20 lần kết nối lại (~10 giây) → không để khách treo theo nó.
  */
-export const LOCK_CALL_TIMEOUT_MS = 3_000;
+export const LOCK_CALL_TIMEOUT_MS = secondsToMs(3);
 
 class LockCallTimeout extends Error {
   override readonly name = "LockCallTimeout";
@@ -107,7 +116,7 @@ function startRenewal(locking: LockingLike, ownerId: string, keys: string[], ttl
         });
       }
     },
-    Math.max(250, Math.floor((ttlSeconds * 1000) / 3)),
+    Math.max(250, Math.floor(secondsToMs(ttlSeconds) / 3)),
   );
   current.timer.unref?.();
 }
@@ -156,7 +165,7 @@ export async function acquireOrdered(
           break;
         } catch (e) {
           if (!isBusyError(e)) throw lockUnavailable(opts.scope, e);
-          if (Date.now() >= deadline) {
+          if (Date.now() >= deadline || (opts.abortWhenDraining === true && isDraining())) {
             throw new CheckoutError("BUSY_RETRY", undefined, { detail: { lock_scope: opts.scope } });
           }
           await sleep(Math.min(delay * (0.5 + Math.random()), Math.max(1, deadline - Date.now())));
@@ -239,7 +248,7 @@ export async function withOwnedLock<T>(
   });
   try {
     const result = await fn();
-    if (opts.failOnLeaseLoss && leases.get(ownerId)?.lost) {
+    if (opts.failOnLeaseLoss === true && leases.get(ownerId)?.lost === true) {
       throw new CheckoutError("LOCK_UNAVAILABLE", undefined, {
         detail: { lock_scope: opts.scope, lease_lost: true },
         cause: new Error(`lease lost for ${held.join(", ")} while the job was running`),
@@ -249,7 +258,7 @@ export async function withOwnedLock<T>(
   } finally {
     // Đã mất lease → khóa không còn của mình; release theo ownerId vẫn an toàn (Lua chỉ xoá khi đúng chủ).
     const err = await releaseOwnedQuietly(locking, ownerId, held, opts.callTimeoutMs);
-    if (err) opts.onReleaseError?.(err);
+    if (err !== null) opts.onReleaseError?.(err);
   }
 }
 
@@ -287,7 +296,7 @@ export async function releaseOwnedOrWarn(
   label: string,
 ): Promise<void> {
   const err = await releaseOwnedQuietly(locking, ownerId, null);
-  if (err) {
+  if (err !== null) {
     const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : String(err);
     logger.warn(`[${label}] Nhả khóa lỗi/quá hạn (khóa tự hết theo TTL): ${cause}`);
   }
@@ -295,7 +304,8 @@ export async function releaseOwnedOrWarn(
 
 /**
  * Như `releaseOwned` nhưng không bao giờ ném — cho đường bù trừ và bước nhả sau khi đơn đã chốt: lỗi nhả khóa không được
- * kéo đổ một giao dịch đã đúng (khóa tự hết hạn theo TTL). Trả lỗi (nếu có) để caller ghi log.
+ * kéo đổ một giao dịch đã đúng (khóa tự hết hạn theo TTL). Trả lỗi (nếu có) để caller ghi log; nhả xong → đúng `null`
+ * (caller so `!== null`, không dựa vào truthy: giá trị ném "falsy" vẫn là lỗi).
  */
 export async function releaseOwnedQuietly(
   locking: LockingLike,
@@ -316,9 +326,15 @@ export function isLockUnavailable(e: unknown): boolean {
   return e instanceof CheckoutError && e.code === "LOCK_UNAVAILABLE";
 }
 
-/** Số chủ đang có khóa được gia hạn — chỉ để test/giám sát rò khóa. */
-export function activeLeaseCount(): number {
-  return leases.size;
+/**
+ * Số chủ đang có khóa được gia hạn — chỉ để test/giám sát rò khóa. `exceptKeys`: bỏ qua chủ chỉ giữ các khóa này (vd lượt
+ * đồng bộ read model catalog đang chạy hợp lệ do sự kiện kích, không phải rò khóa checkout).
+ */
+export function activeLeaseCount(exceptKeys: readonly string[] = []): number {
+  if (exceptKeys.length === 0) return leases.size;
+  let n = 0;
+  for (const lease of leases.values()) if ([...lease.keys].some((k) => !exceptKeys.includes(k))) n++;
+  return n;
 }
 
 export const lockKeys = {

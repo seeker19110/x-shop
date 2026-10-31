@@ -1,12 +1,14 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { z } from "zod";
 import { maskFreeText } from "../../lib/audit/sanitize";
+import { adminPageQuery } from "../../lib/http/pagination";
 import { REFUND_STATES, RETURN_STATES } from "../../modules/returns/constants";
 import type { ReturnWithLines } from "../../modules/returns/service";
 import { ReturnsError } from "./errors";
 import { checkoutOf, loadOrderContext, returnsOf } from "./order-context";
 import { presentRefund } from "./refunds";
 import { carrierReturnKey, isCarrierReturn, presentReturn } from "./returns";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * Truy vấn CHỈ ĐỌC cho Admin (T-049): danh sách/chi tiết yêu cầu đổi/trả và hàng đợi hoàn tiền theo trạng thái. Không
@@ -22,11 +24,8 @@ type Scope = Pick<MedusaContainer, "resolve">;
 export const RETURN_SOURCES = ["request", "carrier"] as const;
 export type ReturnSource = (typeof RETURN_SOURCES)[number];
 
-const page = {
-  /** Vượt khoảng → 422 (không kẹp ngầm) — cùng quy ước với các danh sách Admin khác (audit, đối soát). */
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).max(100_000).default(0),
-};
+/** Vượt khoảng → 422 (không kẹp ngầm) — cùng quy ước với các danh sách Admin khác (lib/http/pagination.ts). */
+const page = adminPageQuery;
 const id = z.string().trim().min(1).max(128);
 
 export const AdminReturnListQuery = z
@@ -57,7 +56,7 @@ async function displayRefsOf(container: Scope, orderIds: readonly string[]): Pro
   return new Map(fins.map((f) => [f.order_id, f.display_ref]));
 }
 
-const iso = (d: Date | string | null): string | null => (d ? new Date(d).toISOString() : null);
+const iso = (d: Date | string | null): string | null => (isNonEmpty(d) ? new Date(d).toISOString() : null);
 const sourceOf = (ret: Pick<ReturnWithLines, "idempotency_key">): ReturnSource =>
   isCarrierReturn(ret) ? "carrier" : "request";
 

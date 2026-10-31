@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { msToSeconds, minutesToMs } from "@x-shop/domain";
 
 /**
  * Giới hạn tần suất ghi audit cho lần bị từ chối (RBAC deny) — chống ngập audit log khi một actor (lỗi client, script,
@@ -13,7 +14,7 @@ import { createHash } from "node:crypto";
  * Bộ đếm phải nguyên tử và dùng chung giữa các instance (Postgres `rate_limit_counter`). Bộ đếm lỗi → vẫn ghi audit
  * (mất dấu vết bảo mật tệ hơn thêm dòng).
  */
-export const DENY_AUDIT_THROTTLE = { windowMs: 60_000 } as const;
+export const DENY_AUDIT_THROTTLE = { windowMs: minutesToMs(1) } as const;
 
 export interface DenyGroup {
   actorType: string;
@@ -26,6 +27,9 @@ export interface DenyGroup {
 
 /** Bộ đếm cửa sổ cố định: tăng rồi trả số đếm sau khi tăng (≥ 1). */
 export type WindowCounter = (bucket: string, windowMs: number, now: Date) => Promise<number>;
+
+/** Đọc (không tăng) số đếm của cửa sổ cố định chứa `now`; chưa có dòng → 0. */
+export type WindowPeek = (bucket: string, windowMs: number, now: Date) => Promise<number>;
 
 export function denyBucket(g: DenyGroup): string {
   const key = [g.actorType, g.actorId ?? "", g.method, g.routeClass, g.reason].join("\u0000");
@@ -49,7 +53,7 @@ export async function decideDenyAudit(
   now: Date = new Date(),
   onCounterError?: (e: unknown) => void,
 ): Promise<DenyThrottleDecision> {
-  const windowSeconds = DENY_AUDIT_THROTTLE.windowMs / 1000;
+  const windowSeconds = msToSeconds(DENY_AUDIT_THROTTLE.windowMs);
   let n: number;
   try {
     n = await counter(denyBucket(group), DENY_AUDIT_THROTTLE.windowMs, now);
