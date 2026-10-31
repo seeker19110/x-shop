@@ -13,8 +13,9 @@ import { Migration20261026030000 } from "../../src/modules/checkout/migrations/M
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import type { CatalogIndexRow } from "../../src/modules/catalog-index/service";
+import catalogIndexRebuildJob from "../../src/jobs/catalog-index-rebuild";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
-import { pauseAfterPriceRead } from "../helpers/catalog-rebuild";
+import { exclusiveRebuilds, pauseAfterPriceRead } from "../helpers/catalog-rebuild";
 import { createCountScope } from "../helpers/scoped-counter";
 
 jest.setTimeout(300 * 1000);
@@ -143,7 +144,16 @@ medusaIntegrationTestRunner({
       expectedTotal = await sellableRows(db);
     });
 
-    afterEach(() => jest.restoreAllMocks());
+    /**
+     * Thả mọi móc dừng/cửa sổ độc quyền của ca — kể cả khi ca hết hạn giữa chừng (jest bỏ dở thân ca, `finally` của nó
+     * không chạy): lượt xả bị móc dừng mà không thả thì giữ khoá ghi (lease gia hạn mãi) → mọi ca sau chờ khoá ghi tới
+     * hết hạn, cả bộ treo im thay vì đỏ một ca.
+     */
+    const cleanups: Array<() => void> = [];
+    afterEach(() => {
+      for (const release of cleanups.splice(0)) release();
+      jest.restoreAllMocks();
+    });
 
     it("oracle: dữ liệu sinh đủ > 5.000 biến thể có giá", async () => {
       expect(PRICED_VARIANTS).toBeGreaterThan(5_000);
@@ -297,16 +307,26 @@ medusaIntegrationTestRunner({
         seen.value = await atReplace();
         return r;
       });
-      const gate = pauseAfterPriceRead(container, variantId);
-      const run = rebuildCatalogIndex(container);
+      // Job rebuild nền không chen vào giữa: móc dừng ở lần đọc giá ĐẦU TIÊN, phải là của rebuild do ca chạy.
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
       try {
-        await gate.reached;
-        await during();
+        return await ex.run(async () => {
+          const gate = pauseAfterPriceRead(container, variantId);
+          cleanups.push(gate.restore);
+          const run = rebuildCatalogIndex(container);
+          try {
+            await gate.reached;
+            await during();
+          } finally {
+            gate.restore();
+          }
+          const result = await run.finally(() => spy.mockRestore());
+          return { result, atReplace: seen.value };
+        });
       } finally {
-        gate.restore();
+        ex.close();
       }
-      const result = await run.finally(() => spy.mockRestore());
-      return { result, atReplace: seen.value };
     };
 
     it("T-167: sửa giá trong lúc rebuild đang đọc nguồn → lượt xả ghi ngay (khoá ghi không bị rebuild giữ), rebuild không ghi đè bằng ảnh chụp cũ", async () => {
@@ -435,72 +455,130 @@ medusaIntegrationTestRunner({
       await syncCatalogProducts(container, [pid]);
     });
 
-    it("T-167 (review 🔴1): đồng bộ đọc nguồn TRƯỚC mốc rebuild nhưng ghi SAU mốc → thay đổi không phát sự kiện trước mốc không bị mất", async () => {
-      await baseline();
-      const svc = index();
-      const pid = "prod_SCALE00900";
-      const vid = firstVariant(pid);
-      const [before] = await pricesOf(vid);
-      const NEW = before! + 11_000;
-      let reachedWrite!: () => void;
-      const writeReached = new Promise<void>((r) => (reachedWrite = r));
-      let releaseWrite!: () => void;
-      const writeGate = new Promise<void>((r) => (releaseWrite = r));
-      const replaceProducts = svc.replaceProducts.bind(svc);
-      jest.spyOn(svc, "replaceProducts").mockImplementation(async (ids, rows) => {
-        if (ids.includes(pid)) {
-          reachedWrite();
-          await writeGate;
-        }
-        return replaceProducts(ids, rows);
-      });
-      let sinceTaken!: (s: string) => void;
-      const sinceP = new Promise<string>((r) => (sinceTaken = r));
-      const clock = svc.clockNow.bind(svc);
-      jest.spyOn(svc, "clockNow").mockImplementation(async () => {
-        const s = await clock();
-        sinceTaken(s);
-        return s;
-      });
-      const replace = svc.replaceAll.bind(svc);
-      let atReplace: { price: number[]; dirty: boolean } | undefined;
-      jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
-        const r = await replace(rows, since);
-        atReplace = { price: await pricesOf(vid), dirty: await isDirty(pid) };
-        return r;
-      });
+    /**
+     * Ca review 🔴1: đồng bộ đọc nguồn TRƯỚC mốc rebuild nhưng ghi SAU mốc. Lượt xả bị dừng GIỮ khoá ghi tới khi rebuild
+     * CỦA CA lấy mốc → ca giữ độc quyền rebuild (`exclusiveRebuilds`). `backgroundJob`: giả lập tick của job rebuild thật
+     * (mỗi 30 phút) tới đúng lúc rebuild của baseline đang giữ khoá rebuild — khe 04:00/22:00 của hai lần treo cả bộ: job
+     * chờ khoá, giành ngay khi baseline nhả, trước khi ca dừng lượt xả. `job` = kết quả job ("ok" | lỗi) hoặc null; bọc
+     * trong object để không bị await gộp (job chỉ chạy được sau khi cửa sổ đóng).
+     */
+    const syncBeforeSinceCase = async (
+      backgroundJob: boolean,
+    ): Promise<{ job: Promise<unknown> | null; jobSettledInWindow: boolean }> => {
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
       try {
-        // 1) Lượt đồng bộ pid đã ĐỌC nguồn (giá cũ), dừng ngay trước replaceProducts (đang giữ khoá ghi).
-        // Lượt xả nền (job mỗi phút) cũng có thể lấy dấu này trước — móc trên replaceProducts dừng bất kỳ lượt nào ghi pid;
-        // lượt xả của ca chờ khoá (không đếm nó xử lý bao nhiêu).
-        await svc.markDirty([pid]);
-        const drain = drainCatalogIndex(container, { waitMs: 20_000 });
-        await writeReached;
-        // 2) Thay đổi KHÔNG phát sự kiện (price list tới giờ, bảng màu/size, link kho↔kênh): nguồn đổi, không dấu.
-        await setSourcePrice(vid, NEW);
-        const changedAt = (await db.raw(`SELECT clock_timestamp()::text AS t`)).rows[0].t as string;
-        // 3) Rebuild định kỳ (job */30) bắt đầu SAU thay đổi.
-        const run = rebuildCatalogIndex(container);
-        const since = await sinceP;
-        expect(
-          (await db.raw(`SELECT ?::timestamptz < ?::timestamptz AS ok`, [changedAt, since])).rows[0].ok,
-        ).toBe(true);
-        // 4) Lượt đồng bộ ghi (mốc ≥ since) bằng dữ liệu đọc TRƯỚC thay đổi, rồi xoá dấu.
-        releaseWrite();
-        await drain;
-        const result = await run;
-        expect(result.kept).toBe(1);
-        // Bản giữ lại (cũ) được đánh dấu bẩn lại cùng giao dịch replaceAll → lượt xả đọc nguồn mới nhất.
-        expect(atReplace).toEqual({ price: [before], dirty: true });
-        await settle();
-        expect(await pricesOf(vid)).toEqual([NEW]);
+        return await ex.run(async () => {
+          const svc = index();
+          const bg: { job: Promise<unknown> | null; settled: boolean; settledInWindow: boolean } = {
+            job: null,
+            settled: false,
+            settledInWindow: false,
+          };
+          if (backgroundJob) {
+            const clockReal = svc.clockNow.bind(svc);
+            const kick = jest.spyOn(svc, "clockNow").mockImplementationOnce(async () => {
+              // Đang trong rebuild của baseline (giữ khoá rebuild); job chạy NGOÀI ngữ cảnh ca như worker job.
+              bg.job = ex
+                .outside(() => catalogIndexRebuildJob(container))
+                .then(
+                  () => "ok",
+                  (e: unknown) => e,
+                )
+                .finally(() => (bg.settled = true));
+              return clockReal();
+            });
+            await baseline();
+            kick.mockRestore();
+            expect(bg.job).not.toBeNull();
+          } else {
+            await baseline();
+          }
+          const pid = "prod_SCALE00900";
+          const vid = firstVariant(pid);
+          const [before] = await pricesOf(vid);
+          const NEW = before! + 11_000;
+          let reachedWrite!: () => void;
+          const writeReached = new Promise<void>((r) => (reachedWrite = r));
+          let releaseWrite!: () => void;
+          const writeGate = new Promise<void>((r) => (releaseWrite = r));
+          cleanups.push(() => releaseWrite());
+          const replaceProducts = svc.replaceProducts.bind(svc);
+          jest.spyOn(svc, "replaceProducts").mockImplementation(async (ids, rows) => {
+            if (ids.includes(pid)) {
+              reachedWrite();
+              await writeGate;
+            }
+            return replaceProducts(ids, rows);
+          });
+          let sinceTaken!: (s: string) => void;
+          const sinceP = new Promise<string>((r) => (sinceTaken = r));
+          const clock = svc.clockNow.bind(svc);
+          jest.spyOn(svc, "clockNow").mockImplementation(async () => {
+            const s = await clock();
+            sinceTaken(s);
+            return s;
+          });
+          const replace = svc.replaceAll.bind(svc);
+          let atReplace: { price: number[]; dirty: boolean } | undefined;
+          jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+            const r = await replace(rows, since);
+            atReplace = { price: await pricesOf(vid), dirty: await isDirty(pid) };
+            return r;
+          });
+          try {
+            // 1) Lượt đồng bộ pid đã ĐỌC nguồn (giá cũ), dừng ngay trước replaceProducts (đang giữ khoá ghi).
+            // Lượt xả nền (job mỗi phút) cũng có thể lấy dấu này trước — móc trên replaceProducts dừng bất kỳ lượt nào ghi pid;
+            // lượt xả của ca chờ khoá (không đếm nó xử lý bao nhiêu).
+            await svc.markDirty([pid]);
+            const drain = drainCatalogIndex(container, { waitMs: 20_000 });
+            await writeReached;
+            // 2) Thay đổi KHÔNG phát sự kiện (price list tới giờ, bảng màu/size, link kho↔kênh): nguồn đổi, không dấu.
+            await setSourcePrice(vid, NEW);
+            const changedAt = (await db.raw(`SELECT clock_timestamp()::text AS t`)).rows[0].t as string;
+            // 3) Rebuild định kỳ (job */30) bắt đầu SAU thay đổi.
+            const run = rebuildCatalogIndex(container);
+            const since = await sinceP;
+            expect(
+              (await db.raw(`SELECT ?::timestamptz < ?::timestamptz AS ok`, [changedAt, since])).rows[0].ok,
+            ).toBe(true);
+            // 4) Lượt đồng bộ ghi (mốc ≥ since) bằng dữ liệu đọc TRƯỚC thay đổi, rồi xoá dấu.
+            releaseWrite();
+            await drain;
+            const result = await run;
+            // Rebuild của ca xong, cửa sổ còn mở: job nền chưa được giành khoá rebuild (chưa xong, chưa lỗi).
+            bg.settledInWindow = bg.settled;
+            expect(result.kept).toBe(1);
+            // Bản giữ lại (cũ) được đánh dấu bẩn lại cùng giao dịch replaceAll → lượt xả đọc nguồn mới nhất.
+            expect(atReplace).toEqual({ price: [before], dirty: true });
+            await settle();
+            expect(await pricesOf(vid)).toEqual([NEW]);
+          } finally {
+            releaseWrite();
+            jest.restoreAllMocks();
+            await setSourcePrice(vid, before!);
+            await syncCatalogProducts(container, [pid]);
+          }
+          return { job: bg.job, jobSettledInWindow: bg.settledInWindow };
+        });
       } finally {
-        releaseWrite();
-        jest.restoreAllMocks();
-        await setSourcePrice(vid, before!);
-        await syncCatalogProducts(container, [pid]);
+        ex.close();
       }
+    };
+
+    it("T-167 (review 🔴1): đồng bộ đọc nguồn TRƯỚC mốc rebuild nhưng ghi SAU mốc → thay đổi không phát sự kiện trước mốc không bị mất", async () => {
+      await expect(syncBeforeSinceCase(false)).resolves.toEqual({ job: null, jobSettledInWindow: false });
     });
+
+    it("ca biên: job rebuild định kỳ tới giữa ca review 🔴1 (baseline đang giữ khoá rebuild) → không vòng chờ khoá, ca xanh, job chạy xong sau cửa sổ", async () => {
+      const { job, jobSettledInWindow } = await syncBeforeSinceCase(true);
+      // Trước khi sửa: job giữ khoá rebuild chờ khoá ghi do lượt xả bị dừng giữ → ca hết hạn 300 s, cả bộ treo.
+      expect(jobSettledInWindow).toBe(false);
+      // Cửa sổ đóng → job giành khoá rebuild như thường, rebuild xong (không bỏ job, không BUSY_RETRY).
+      await expect(job).resolves.toBe("ok");
+      await settle();
+    });
+
     it("T-167: hai rebuild đồng thời chạy tuần tự (mỗi lần thay là MỘT ảnh chụp, không xen lúc đọc); ảnh chụp cũ hơn ảnh chụp đã áp bị bỏ", async () => {
       const svc = index();
       const order: string[] = [];
