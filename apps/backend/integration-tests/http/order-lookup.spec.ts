@@ -16,7 +16,6 @@ import {
   type NotificationAdapter,
   type OutgoingMessage,
 } from "../../src/lib/notify/adapters";
-import { currentLogContext } from "../../src/lib/log/logger";
 import { issueOrderToken, ORDER_ACCESS_CONFIG, readOrderToken } from "../../src/lib/orders/access";
 import { validateOutboxPayload } from "../../src/lib/outbox/payload";
 import {
@@ -30,6 +29,7 @@ import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
 import { NOTIFY_MODULE } from "../../src/modules/notify";
 import type NotifyModuleService from "../../src/modules/notify/service";
+import { createCountScope } from "../helpers/scoped-counter";
 import { checkoutClient, CONTACT, DEV_VNPAY, ipn, type Api, type Res } from "../helpers/checkout-api";
 import {
   createPromotion,
@@ -493,29 +493,9 @@ medusaIntegrationTestRunner({
       it("đồng đều qua HTTP: không có đơn và sai SĐT → cùng số truy vấn, so sánh hằng thời gian, số lần HMAC; không outbox; cùng phản hồi", async () => {
         const o = await place([["Trắng/M", 1]], "cod");
         const s = service();
-        // Spy gắn trên service/`node:crypto` dùng chung cả tiến trình: job nền (outbox-dispatch mỗi 10 s đọc
-        // `listOrderFinances({ order_id })` + `hitRateCounter("breaker.budget:…")` cho sự kiện `order.placed_pending` của
-        // chính đơn vừa đặt) chạy chồng lên request thì đếm lẫn → CI 24d227c nhận `find: 2`. Chỉ đếm lời gọi nằm TRONG
-        // ngữ cảnh của request đang đo: middleware `requestLogContext` mở AsyncLocalStorage với `trace_id` = `x-request-id`
-        // (lib/log/http.ts); lời gọi ngoài request (job, test) không mang `trace_id` đó. Ngữ cảnh mất → đếm 0 → `find: 1` đỏ.
-        // Giới hạn: việc của request mà chạy trong ngữ cảnh tạo NGOÀI request (worker/queue/singleflight dùng chung) sẽ bị
-        // tính vào `outside` → rò kiểu đó lọt. Đường tra cứu hiện không có mẫu này; đưa vào thì phải đổi cách đo.
-        let traceSeq = 0;
-        let measuring: string | null = null;
-        const scopedCounter = <T extends object>(target: T, method: keyof T & string) => {
-          const host = target as unknown as Record<string, (...args: unknown[]) => unknown>;
-          const original = host[method]!;
-          const counter = { inRequest: 0, outside: 0 };
-          const spy = jest.spyOn(host, method).mockImplementation(function (
-            this: unknown,
-            ...args: unknown[]
-          ) {
-            if (measuring !== null && currentLogContext()?.trace_id === measuring) counter.inRequest += 1;
-            else counter.outside += 1;
-            return original.apply(this, args);
-          });
-          return { counter, spy };
-        };
+        // Đếm theo trace_id của request đang đo, không lẫn job nền (giới hạn: xem helpers/scoped-counter.ts).
+        const scope = createCountScope("lookup-uniform");
+        const scopedCounter = scope.counter;
         const spies = {
           find: scopedCounter(s, "listOrderFinances"),
           rate: scopedCounter(s, "hitRateCounter"),
@@ -525,29 +505,25 @@ medusaIntegrationTestRunner({
           compare: scopedCounter(nodeCrypto, "timingSafeEqual"),
           hmac: scopedCounter(nodeCrypto, "createHmac"),
         };
-        const outsideCalls = () => Object.values(spies).reduce((n, x) => n + x.counter.outside, 0);
+        const outsideCalls = scope.outsideCalls;
         const counted = async (body: unknown, alongside: () => Promise<unknown> = async () => undefined) => {
-          for (const { counter } of Object.values(spies))
-            Object.assign(counter, { inRequest: 0, outside: 0 });
-          const traceId = `lookup-uniform-${process.pid}-${++traceSeq}`;
-          measuring = traceId;
-          try {
-            const [r] = await Promise.all([
+          const traceId = scope.nextTraceId();
+          const r = (await scope.measure(traceId, async () => {
+            const [res] = await Promise.all([
               api.post("/store/x/orders/lookup", body, cfg({ "x-request-id": traceId })) as Promise<Res<J>>,
               alongside(),
             ]);
-            return {
-              status: r.status,
-              body: JSON.stringify(r.data),
-              find: spies.find.counter.inRequest,
-              rate: spies.rate.counter.inRequest,
-              outbox: spies.outbox.counter.inRequest,
-              compare: spies.compare.counter.inRequest,
-              hmac: spies.hmac.counter.inRequest,
-            };
-          } finally {
-            measuring = null;
-          }
+            return res;
+          })) as Res<J>;
+          return {
+            status: r.status,
+            body: JSON.stringify(r.data),
+            find: spies.find.counter.inRequest,
+            rate: spies.rate.counter.inRequest,
+            outbox: spies.outbox.counter.inRequest,
+            compare: spies.compare.counter.inRequest,
+            hmac: spies.hmac.counter.inRequest,
+          };
         };
         try {
           const notFound = await counted({ display_ref: "XS-ZZZZZZ", phone: CONTACT.phone });

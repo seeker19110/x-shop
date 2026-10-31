@@ -15,6 +15,7 @@ import type CatalogIndexModuleService from "../../src/modules/catalog-index/serv
 import type { CatalogIndexRow } from "../../src/modules/catalog-index/service";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
 import { pauseAfterPriceRead } from "../helpers/catalog-rebuild";
+import { createCountScope } from "../helpers/scoped-counter";
 
 jest.setTimeout(300 * 1000);
 
@@ -712,10 +713,11 @@ medusaIntegrationTestRunner({
       expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
 
       // Chưa đến hạn: drain không đọc nguồn (không lặp nóng).
-      const graph = jest.spyOn(container.resolve(ContainerRegistrationKeys.QUERY), "graph");
-      const before = graph.mock.calls.length;
-      await drainCatalogIndex(container);
-      expect(graph.mock.calls.length).toBe(before);
+      // Chỉ đếm lời gọi nằm trong lần drain của test — job catalog-index-drain chạy nền không được lẫn vào.
+      const scope = createCountScope("catalog-drain");
+      const graph = scope.counter(container.resolve(ContainerRegistrationKeys.QUERY), "graph");
+      await scope.measureInProcess(() => drainCatalogIndex(container));
+      expect(graph.counter.inRequest).toBe(0);
       expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
 
       // Đến hạn mà giá vẫn hỏng: thử lại, attempts tăng, hẹn lùi tiếp.
