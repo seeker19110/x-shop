@@ -11,6 +11,7 @@
  */
 import { Agent, createServer, request } from "node:http";
 import { PORTS } from "./env.mjs";
+import { oneLine } from "./log-safe.mjs";
 
 const UPSTREAMS = [
   { name: "a", port: PORTS.backend },
@@ -34,13 +35,6 @@ function probe(port) {
     req.end();
   });
 }
-
-/** Log injection: bỏ xuống dòng/ký tự điều khiển khỏi giá trị do client/upstream điều khiển. */
-const oneLine = (v) =>
-  [...String(v)]
-    .map((c) => (c.charCodeAt(0) < 0x20 ? " " : c))
-    .join("")
-    .replace(/\n|\r/g, " ");
 
 function json(res, status, body) {
   res
