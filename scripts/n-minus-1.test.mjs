@@ -1272,6 +1272,42 @@ test("medusaLockChange: lockfile hỏng/rỗng/thiếu một phía → chạy (f
   }
 });
 
+test("medusaLockChange: lockfile v6 (khoá /@medusajs/a@1.0.0) → chạy (fail-safe)", () => {
+  const v6 =
+    "lockfileVersion: '6.0'\n\npackages:\n\n  /@medusajs/a@1.0.0:\n    resolution: {integrity: sha512-x}\n";
+  const ok = lock({ medusa: { a: "1.0.0" } });
+  for (const v of [v6, v6.replace("'6.0'", "5.4")]) {
+    assert.throws(() => medusaPackages(v), /lockfileVersion/);
+    for (const [x, y] of [
+      [v, ok],
+      [ok, v],
+      [v, v],
+    ]) {
+      const r = medusaLockChange(x, y);
+      assert.equal(r.run, true);
+      assert.match(r.warning, /fail-safe/);
+    }
+  }
+});
+
+test("medusaLockChange: lockfile có dấu xung đột merge → chạy (fail-safe)", () => {
+  const ok = lock({ medusa: { a: "1.0.0" } });
+  for (const mark of ["<<<<<<< HEAD", "=======", ">>>>>>> main"]) {
+    const bad = ok.replace("packages:", `${mark}\npackages:`);
+    assert.throws(() => medusaPackages(bad), /xung đột/);
+    const r = medusaLockChange(ok, bad);
+    assert.equal(r.run, true);
+    assert.match(r.warning, /fail-safe/);
+  }
+});
+
+test("medusaPackages: pnpm-lock.yaml thật của repo (v9) vẫn parse được tập @medusajs", () => {
+  const real = readFileSync(join(here, "../pnpm-lock.yaml"), "utf8");
+  const set = medusaPackages(real);
+  assert.ok(set.size > 0);
+  for (const k of set) assert.match(k, /^@medusajs\/[^@/]+@\d/);
+});
+
 test("medusaLockChange: CRLF + chú thích Unicode không làm hỏng so sánh", () => {
   const l = `${lock({ medusa: { framework: "2.22.1" } }).replace(/\n/g, "\r\n")}# ghi chú tiếng Việt: đổi trả\r\n`;
   assert.equal(medusaLockChange(l, l).run, false);

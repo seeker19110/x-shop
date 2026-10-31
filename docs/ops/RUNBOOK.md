@@ -339,7 +339,7 @@ last_drilled: chưa diễn tập (chưa có cơ chế deploy — §8.1).
   job; lockfile hỏng/thiếu một phía → chạy (fail-safe) + `::warning::`. PR nâng Medusa kèm migration tùy biến sẽ ra mã 2 "schema
   lệch" vì cây N−1 chạy migration lõi cũ — tách nâng Medusa ra PR riêng. **Khoảng trống còn lại (T-195):** (1) phiên bản Medusa đổi
   mà tập `@medusajs/*` trong lockfile không đổi (không có trường hợp thật: `overrides`/peer cũng sinh khoá mới ở lockfile; nếu pnpm
-  đổi định dạng lockfile → parse hỏng → chạy) — chỉ gói ngoài `@medusajs/*` (vd `@mikro-orm/*`, `pg`) đổi thì KHÔNG kích dù có thể
+  đổi định dạng lockfile → `lockfileVersion` không phải 9.x hoặc có dấu xung đột merge → parse ném lỗi → chạy) — chỉ gói ngoài `@medusajs/*` (vd `@mikro-orm/*`, `pg`) đổi thì KHÔNG kích dù có thể
   ảnh hưởng schema; (2) job chỉ kiểm cái đo được: sau khi kích do nâng Medusa, N−1 (lõi cũ) so schema `public` với HEAD (lõi mới) —
   migration lõi chỉ THÊM bảng mới → chỉ log "chỉ có ở schema HEAD" (`diffSchemas.onlyHead`, không đỏ); migration lõi ĐỔI/XOÁ
   cột, ràng buộc, index hay bảng lõi đã có → "schema lệch" mã 2 và **không có cách miễn** (`N1_ALLOW` chỉ miễn ca test; phần phủ chỉ

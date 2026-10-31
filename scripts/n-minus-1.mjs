@@ -152,7 +152,7 @@ const DEP_FIELDS = ["dependencies", "devDependencies", "optionalDependencies"];
  * Tập "tên@phiên-bản" của mọi gói `@medusajs/*` trong nội dung pnpm-lock.yaml (lockfile v9), CHỈ phân tích dòng (không
  * phụ thuộc gói ngoài: bước detect chạy trước `pnpm install`). Nguồn: khoá cấp 2 dưới `packages:`/`snapshots:` và
  * `version:` của từng gói dưới `importers:`. Hậu tố peer `(…)` bị cắt từ dấu `(` đầu tiên TRƯỚC khi tách tên —
- * peer đổi (react, zod…) không làm đổi tập. Không giống lockfile v9 (thiếu `lockfileVersion`/`packages:`) → ném lỗi
+ * peer đổi (react, zod…) không làm đổi tập. Không giống lockfile v9 (thiếu `lockfileVersion`/`packages:`, `lockfileVersion` không phải 9.x, hoặc có dấu xung đột merge) → ném lỗi
  * (người gọi chọn fail-safe).
  */
 export function medusaPackages(text) {
@@ -174,10 +174,13 @@ export function medusaPackages(text) {
   let field = "";
   let dep = null;
   for (const line of lines) {
+    if (/^(?:<{7}|={7}|>{7})/.test(line)) throw new Error("pnpm-lock.yaml có dấu xung đột merge");
     if (!line.trim() || line.trimStart().startsWith("#")) continue;
     const top = /^([A-Za-z][A-Za-z0-9]*):/.exec(line);
     if (top) {
       section = top[1];
+      if (section === "lockfileVersion" && !/^['"]?9\./.test(line.slice(top[0].length).trim()))
+        throw new Error(`lockfileVersion không phải 9.x: ${line.trim()}`);
       hasVersion ||= section === "lockfileVersion";
       hasPackages ||= section === "packages";
       field = "";
