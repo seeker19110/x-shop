@@ -1290,6 +1290,18 @@ test("medusaLockChange: lockfile v6 (khoá /@medusajs/a@1.0.0) → chạy (fail-
   }
 });
 
+test("medusaPackages: lockfileVersion 9.x có/không nháy (\"9.0\", 9.0, '9.1') → cho qua, không fail-safe", () => {
+  const ok = lock({ medusa: { framework: "2.22.1" } });
+  for (const v of [`"9.0"`, "9.0", `'9.1'`]) {
+    const text = ok.replace("lockfileVersion: '9.0'", `lockfileVersion: ${v}`);
+    assert.ok(text.startsWith(`lockfileVersion: ${v}\n`), v);
+    assert.deepEqual([...medusaPackages(text)], ["@medusajs/framework@2.22.1"], v);
+    const same = medusaLockChange(text, ok);
+    assert.equal(same.run, false, v);
+    assert.equal(same.warning, undefined, v);
+  }
+});
+
 test("medusaLockChange: lockfile có dấu xung đột merge → chạy (fail-safe)", () => {
   const ok = lock({ medusa: { a: "1.0.0" } });
   for (const mark of ["<<<<<<< HEAD", "=======", ">>>>>>> main"]) {

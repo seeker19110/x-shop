@@ -27,6 +27,9 @@ import {
   isFixTitle,
   isTestFile,
   classifyFailure,
+  firstFrameInOwn,
+  framePath,
+  hookFrame,
   importBindings,
   parseJestLikeJson,
   parseJunit,
@@ -37,6 +40,7 @@ import {
   reportArgs,
   reproducedCases,
   runArgv,
+  summaryCell,
 } from "./check-fix-pr.mjs";
 
 const BODY = "## Bằng chứng\nĐỏ trước: pnpm test foo — đỏ\nXanh sau: pnpm test foo — xanh\n";
@@ -656,7 +660,7 @@ test("regressionVerdict: base đỏ không ở mức case (0 case / lỗi nạp 
     { cases: [], loadErrors: [], readError: "ENOENT" },
     // file khác đỏ do nạp, case còn lại xanh
     { cases: [caseOf(1, "passed")], loadErrors: [PLAN2.groups[1].files[0]], readError: null },
-    // case đỏ vì export mới chưa có trên base / vì hook cha lỗi
+    // case đỏ vì export mới chưa có trên base / vì hook lỗi
     { cases: [{ ...caseOf(1, "broken"), why: "nạp" }], loadErrors: [], readError: null },
     { cases: [{ ...caseOf(1, "broken"), why: "hook" }], loadErrors: [], readError: null },
   ];
@@ -814,7 +818,7 @@ test("tổng", () => assert.equal(lib.sum([1, 2]), 3));
   );
   const r = runRegression(dir, base, head);
   assert.equal(r.status, 1, r.stdout + r.stderr);
-  assert.match(r.stderr, /đỏ không ở mức case.*1 case đỏ do export\/binding import chưa có/);
+  assert.match(r.stderr, /đỏ không ở mức case.*1 case đỏ do export\/binding import\/module chưa có/);
   assertBackOnWork(dir);
 });
 
@@ -860,7 +864,7 @@ test("--regression I/O: lỗi giữa chừng (không chạy được runner) →
   assertBackOnWork(dir);
 });
 
-// ───────────────── case đỏ không ở mức case: export mới chưa có trên base, hook cha lỗi (report thật, rút gọn) ─────────────────
+// ───────────────── case đỏ không ở mức case: export mới chưa có trên base, hook lỗi (report thật, rút gọn) ─────────────────────
 
 // vitest 5.0.5 (`--reporter=json`): test gọi export mới → case chạy và fail với TypeError, file không lỗi nạp.
 const VITEST_NEW_EXPORT = JSON.stringify({
@@ -887,7 +891,7 @@ const VITEST_NEW_EXPORT = JSON.stringify({
           status: "failed",
           title: "lớp mới",
           failureMessages: [
-            "TypeError: __vite_ssr_import_1__.default.Money is not a constructor\n    at /repo/x:1:1",
+            "TypeError: __vite_ssr_import_1__.default.Money is not a constructor\n    at /repo/packages/domain/src/zz.test.ts:7:9",
           ],
         },
         {
@@ -1018,12 +1022,24 @@ let r = require('2fa');
 });
 
 test("classifyFailure: `(0 , X.Y)` biên dịch → nạp; `X.Y`/`X.default.Y` chỉ khi X là binding import; lỗi khác → null", () => {
+  const own = { top: "/repo", files: ["src/a.test.ts"] };
   assert.equal(
-    classifyFailure("TypeError: (0 , __vite_ssr_import_0__.newFn) is not a function\n at x"),
+    classifyFailure(
+      "TypeError: (0 , __vite_ssr_import_0__.newFn) is not a function\n    at /repo/src/a.test.ts:1:1",
+      new Set(),
+      own,
+    ),
     "nạp",
   );
   assert.equal(classifyFailure("TypeError: (0 , _src.Money) is not a constructor"), "nạp");
-  assert.equal(classifyFailure("TypeError: __vite_ssr_import_3__.default.f is not a function"), "nạp");
+  assert.equal(
+    classifyFailure(
+      "TypeError: __vite_ssr_import_3__.default.f is not a function\n    at /repo/src/a.test.ts:2:2",
+      new Set(),
+      own,
+    ),
+    "nạp",
+  );
   assert.equal(classifyFailure("TypeError: m.newFn is not a function"), null);
   assert.equal(classifyFailure("TypeError: m.newFn is not a function", new Set(["m"])), "nạp");
   assert.equal(
@@ -1111,7 +1127,7 @@ test("regressionVerdict: case đỏ trên base chỉ vì export mới (report th
   assert.equal(r.ok, false);
   assert.match(
     r.errors[0],
-    /đỏ không ở mức case \(nạp\/hook\/quá hạn\).*2 case đỏ do export\/binding import chưa có/,
+    /đỏ không ở mức case \(nạp\/hook\/quá hạn\).*2 case đỏ do export\/binding import\/module chưa có/,
   );
 });
 
@@ -1122,4 +1138,410 @@ test("parseJunit: `&` không có `;` gần → giữ nguyên; `;` xa hơn 11 ký
   const t0 = Date.now();
   assert.equal(parseJunit(big, "a").cases[0].name.length, 400_001);
   assert.ok(Date.now() - t0 < 1000, `quá chậm: ${Date.now() - t0} ms`);
+});
+
+// ───────────────── T-234: thành viên/static mới, module mới, hook (D-154), frame đầu (report thật, rút gọn) ─────────────────
+
+// Stack thật của vitest 5.0.5 / jest 29.7.0 + @swc/jest / node 22 (đường dẫn rút về /repo; dòng runner giữ nguyên dạng).
+const VD = "file:///repo/node_modules/.pnpm/vitest@5.0.5/node_modules/vitest/dist/chunks/run.BPv-BBRv.js";
+const VR = "/repo/packages/domain/src";
+const CIRCUS = "/repo/node_modules/.pnpm/jest-circus@29.7.0/node_modules/jest-circus/build";
+const JR = "/repo/apps/backend/src/lib/__tests__";
+const vCase = (title, msg) => ({
+  ancestorTitles: ["t234"],
+  title,
+  status: "failed",
+  failureMessages: [msg],
+});
+const T234_VITEST = JSON.stringify({
+  testResults: [
+    {
+      name: `${VR}/t.test.ts`,
+      status: "failed",
+      message: "",
+      assertionResults: [
+        vCase(
+          "api.newMethod",
+          `TypeError: __vite_ssr_import_0__.api.newMethod is not a function\n    at ${VR}/t.test.ts:2:40\n    at ${VD}:1632:35`,
+        ),
+        vCase(
+          "Money.fromK",
+          `TypeError: __vite_ssr_import_0__.Money.fromK is not a function\n    at ${VR}/t.test.ts:2:49`,
+        ),
+        vCase(
+          "fake gọi export mới",
+          `TypeError: (0 , __vite_ssr_import_1__.newFn) is not a function\n    at makeFake (${VR}/__tests__/fake.ts:3:10)\n    at ${VR}/t.test.ts:9:3`,
+        ),
+        vCase(
+          "plugin utc",
+          `TypeError: __vite_ssr_import_0__.default.utc is not a function\n    at format (${VR}/src-plugin.ts:2:47)\n    at ${VR}/t.test.ts:2:33`,
+        ),
+        vCase(
+          "items",
+          `TypeError: cart.items is not a function\n    at ${VR}/t.test.ts:2:60\n    at ${VD}:1632:35`,
+        ),
+        vCase(
+          "dyn",
+          `Error: Cannot find module '/newfile' imported from ${VR}/t.test.ts\n    at reviveInvokeError (file:///repo/node_modules/.pnpm/vite@8.3.5/node_modules/vite/dist/node/module-runner.js:556:14)`,
+        ),
+        vCase(
+          "beforeEach lỗi",
+          `Error: bug parse 1\n    at parse (${VR}/src.ts:4:50)\n    at ${VR}/t.test.ts:3:24\n    at ${VD}:1632:35\n    at wrapper (${VD}:1992:37)\n    at ${VD}:3318:20`,
+        ),
+        vCase(
+          "afterEach lỗi",
+          `Error: bug parse 2\n    at parse (${VR}/src.ts:2:9)\n    at ${VR}/t.test.ts:33:5\n    at ${VD}:1632:35\n    at wrapper (${VD}:2019:37)`,
+        ),
+        vCase(
+          "beforeEach async (giới hạn)",
+          `Error: bug parse 1\n    at parse (${VR}/src.ts:2:9)\n    at ${VR}/t.test.ts:16:9\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)`,
+        ),
+        vCase(
+          "hàm tên wrapper trong test",
+          `Error: bug parse 8\n    at parse (${VR}/src.ts:2:9)\n    at wrapper (${VR}/t.test.ts:87:12)\n    at ${VR}/t.test.ts:90:12\n    at ${VD}:1632:35\n    at ${VD}:2801:26`,
+        ),
+        vCase("không stack", "TypeError: __vite_ssr_import_0__.api.newMethod is not a function"),
+      ],
+    },
+  ],
+});
+const T234_JEST = JSON.stringify({
+  testResults: [
+    {
+      name: `${JR}/t.unit.spec.ts`,
+      status: "failed",
+      message: "",
+      assertionResults: [
+        vCase(
+          "api.newMethod",
+          `TypeError: _src.api.newMethod is not a function\n    at Object.<anonymous> (${JR}/t.unit.spec.ts:2:39)`,
+        ),
+        vCase(
+          "Money.fromK",
+          `TypeError: _src.Money.fromK is not a function\n    at Object.<anonymous> (${JR}/t.unit.spec.ts:2:44)`,
+        ),
+        vCase(
+          "plugin utc",
+          "TypeError: _plugin.default.utc is not a function\n    at utc (/repo/apps/backend/src/lib/src-plugin.ts:2:47)",
+        ),
+        vCase(
+          "items",
+          `TypeError: cart.items is not a function\n    at Object.<anonymous> (${JR}/t.unit.spec.ts:2:60)`,
+        ),
+        vCase(
+          "dyn",
+          "Error: Cannot find module './newfile' from 't.unit.spec.ts'\n    at Resolver._throwModNotFoundError (/repo/node_modules/.pnpm/jest-resolve@29.7.0/node_modules/jest-resolve/build/resolver.js:427:11)",
+        ),
+        vCase(
+          "afterEach lỗi",
+          `Error: bug parse 2\n    at parse (/repo/apps/backend/src/lib/src.ts:2:9)\n    at Object.<anonymous> (${JR}/t.unit.spec.ts:32:10)\n` +
+            `    at Promise.then.completed (${CIRCUS}/utils.js:298:28)\n    at new Promise (<anonymous>)\n` +
+            `    at callAsyncCircusFn (${CIRCUS}/utils.js:231:10)\n    at _callCircusHook (${CIRCUS}/run.js:281:40)\n` +
+            `    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTest (${CIRCUS}/run.js:254:5)`,
+        ),
+        vCase(
+          "afterEach async (giới hạn)",
+          `Error: bug parse 2\n    at parse (/repo/apps/backend/src/lib/src.ts:2:9)\n    at Object.<anonymous> (${JR}/t.unit.spec.ts:41:10)`,
+        ),
+      ],
+    },
+  ],
+});
+// node 22 junit: `await import()` file/gói không có → cause `Error [ERR_MODULE_NOT_FOUND]`; assertion trích chuỗi đó.
+const JUNIT_MODULE = `<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="dyn missing file" time="0.0016" classname="test" failure="Cannot find module '/repo/scripts/newfile.mjs' imported from /repo/scripts/miss.test.mjs">
+		<failure type="testCodeFailure" message="Cannot find module '/repo/scripts/newfile.mjs' imported from /repo/scripts/miss.test.mjs">
+[Error [ERR_TEST_FAILURE]: Cannot find module '/repo/scripts/newfile.mjs' imported from /repo/scripts/miss.test.mjs] {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/scripts/newfile.mjs' imported from /repo/scripts/miss.test.mjs
+      at finalizeResolution (node:internal/modules/esm/resolve:274:11) {
+    code: 'ERR_MODULE_NOT_FOUND',
+    url: 'file:///repo/scripts/newfile.mjs'
+  }
+}
+		</failure>
+	</testcase>
+	<testcase name="dyn missing pkg" time="0.0010" classname="test" failure="Cannot find package 'no-such-pkg-xyz' imported from /repo/scripts/miss.test.mjs">
+		<failure type="testCodeFailure" message="Cannot find package 'no-such-pkg-xyz' imported from /repo/scripts/miss.test.mjs">
+[Error [ERR_TEST_FAILURE]: Cannot find package 'no-such-pkg-xyz' imported from /repo/scripts/miss.test.mjs] {
+  cause: Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'no-such-pkg-xyz' imported from /repo/scripts/miss.test.mjs
+      at Object.getPackageJSONURL (node:internal/modules/package_json_reader:314:9) {
+    code: 'ERR_MODULE_NOT_FOUND'
+  }
+}
+		</failure>
+	</testcase>
+	<testcase name="msg mentions it" time="0.0009" classname="test" failure="Expected values to be strictly equal:">
+		<failure type="testCodeFailure" message="Expected values to be strictly equal:">
+[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:] {
+  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + &quot;Cannot find module './x' ERR_MODULE_NOT_FOUND&quot;
+}
+		</failure>
+	</testcase>
+</testsuites>
+`;
+const statuses = (r) => r.cases.map((c) => [c.name.replace(/^t234 > /, ""), c.status, c.why]);
+
+test("parseJestLikeJson (vitest thật, T-234): thành viên/static/module mới, hook sync → broken; src/biến cục bộ/async → failed", () => {
+  const support = ["packages/domain/src/__tests__/fake.ts"];
+  const r = parseReport("vitest-json", T234_VITEST, { top: TOP, support });
+  assert.deepEqual(statuses(r), [
+    ["api.newMethod", "broken", "nạp"],
+    ["Money.fromK", "broken", "nạp"],
+    ["fake gọi export mới", "broken", "nạp"], // frame đầu ở file hỗ trợ của PR
+    ["plugin utc", "failed", undefined], // frame đầu ở mã nguồn: lỗi thật (plugin chưa đăng ký), không đỏ oan
+    ["items", "failed", undefined],
+    ["dyn", "broken", "nạp"],
+    ["beforeEach lỗi", "broken", "hook"],
+    ["afterEach lỗi", "broken", "hook"],
+    ["beforeEach async (giới hạn)", "failed", undefined], // GIỚI HẠN ghi ở hookFrame: stack async mất frame runner
+    ["hàm tên wrapper trong test", "failed", undefined], // `wrapper` không nằm trong vitest/dist
+    ["không stack", "failed", undefined], // không có frame → không chứng minh được lỗi ném từ test
+  ]);
+  // Không khai file hỗ trợ → frame đầu ở fake.ts không thuộc PR → không coi là nạp.
+  assert.equal(parseJestLikeJson(T234_VITEST, TOP).cases[2].status, "failed");
+});
+
+test("parseJestLikeJson (jest thật, T-234): `_src.X.y` khi `_src` là binding → nạp; `_plugin` không phải binding của test → failed", () => {
+  const file = "apps/backend/src/lib/__tests__/t.unit.spec.ts";
+  const bindings = new Map([[file, importBindings('import { api, Money } from "./src";')]]);
+  const r = parseReport("jest-json", T234_JEST, { top: TOP, bindings });
+  assert.deepEqual(statuses(r), [
+    ["api.newMethod", "broken", "nạp"],
+    ["Money.fromK", "broken", "nạp"],
+    ["plugin utc", "failed", undefined],
+    ["items", "failed", undefined],
+    ["dyn", "broken", "nạp"],
+    ["afterEach lỗi", "broken", "hook"],
+    ["afterEach async (giới hạn)", "failed", undefined],
+  ]);
+  // Không biết nguồn file test → `_src` không phải binding đã biết → giữ failed.
+  const noSrc = parseJestLikeJson(T234_JEST, TOP).cases.slice(0, 2);
+  assert.deepEqual(
+    noSrc.map((c) => c.status),
+    ["failed", "failed"],
+  );
+});
+
+test("parseJunit (node thật, T-234): ERR_MODULE_NOT_FOUND (file và gói) → nạp; assertion trích chuỗi đó → failed", () => {
+  assert.deepEqual(
+    parseJunit(JUNIT_MODULE, "scripts/miss.test.mjs").cases.map((c) => [c.name, c.status, c.why]),
+    [
+      ["dyn missing file", "broken", "nạp"],
+      ["dyn missing pkg", "broken", "nạp"],
+      ["msg mentions it", "failed", undefined],
+    ],
+  );
+});
+
+test("classifyFailure (T-234): `X.a.Y` chỉ nạp khi X do trình biên dịch sinh; biến cục bộ/namespace node → null", () => {
+  const own = { top: "/repo", files: ["src/a.test.ts"] };
+  const inTest = "\n    at /repo/src/a.test.ts:2:40";
+  const swc = new Set(["_src", "lib"]);
+  for (const msg of [
+    `TypeError: __vite_ssr_import_0__.api.newMethod is not a function${inTest}`,
+    `TypeError: __vite_ssr_import_0__.Money.fromK is not a constructor${inTest}`,
+    `TypeError: __vite_ssr_import_2__.default.Money.fromK is not a function${inTest}`,
+    `TypeError: __vi_import_0__.api.f is not a function${inTest}`,
+    "TypeError: _src.Money.fromK is not a function",
+    "TypeError: _src.default.api.newMethod is not a function",
+  ]) {
+    assert.equal(classifyFailure(msg, swc, own), "nạp", msg);
+  }
+  for (const [msg, b] of [
+    // Biến cục bộ `cart` (không phải binding import) — ca bắt buộc không đỏ oan.
+    ["TypeError: cart.items is not a function", importBindings('import { createCart } from "./src";')],
+    ["TypeError: cart.items.map is not a function", new Set(["cart", "_src"])], // gốc không do trình biên dịch sinh
+    ["TypeError: lib.api.newMethod is not a function", swc], // namespace node (không biên dịch) → không mở rộng
+    ["TypeError: _src.api.newMethod is not a function", new Set()], // `_src` không phải binding của file test
+    ["TypeError: _x.a.b.c is not a function", new Set(["_x"])], // 4 đoạn: ngoài dạng
+  ]) {
+    assert.equal(classifyFailure(msg, b, own), null, msg);
+  }
+});
+
+test("classifyFailure (T-234): `Cannot find module './…'|'/…'` và `[ERR_MODULE_NOT_FOUND]` → nạp; gói/assertion/không ở đầu → null", () => {
+  for (const msg of [
+    "Error: Cannot find module './newfile' from 's8-dyn.unit.spec.ts'",
+    "Error: Cannot find module '../lib/x' from 'a.unit.spec.ts'",
+    "Error: Cannot find module '/newfile' imported from /repo/a.test.ts",
+    "Cannot find module './x'",
+    "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/x.mjs' imported from /repo/a.test.mjs",
+    "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'zod' imported from /repo/a.test.mjs",
+  ]) {
+    assert.equal(classifyFailure(msg), "nạp", msg);
+  }
+  for (const msg of [
+    "Error: Cannot find module 'lodash' from 'a.unit.spec.ts'", // gói, không phải file mới của PR
+    "AssertionError: expected 'Cannot find module './x'' to be 'ok'",
+    "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ 'Cannot find module './x' ERR_MODULE_NOT_FOUND'",
+    "Error: boom\nCannot find module './x'", // không ở dòng lỗi
+    "Error: wrap: Cannot find module './x'",
+    "Error [ERR_TEST_FAILURE]: Cannot find package 'zod'",
+  ]) {
+    assert.equal(classifyFailure(msg), null, msg);
+  }
+});
+
+test("classifyFailure (T-234): `__vite_ssr_import_N__` chỉ nạp khi frame `at` đầu tiên ở file test/hỗ trợ của PR", () => {
+  const own = { top: "/repo/", files: ["src/a.test.ts", "src/__tests__/fake.ts"] };
+  const none = new Set();
+  const msg = (frames) => `TypeError: __vite_ssr_import_0__.default.utc is not a function\n${frames}`;
+  assert.equal(classifyFailure(msg("    at /repo/src/a.test.ts:1:1"), none, own), "nạp");
+  assert.equal(classifyFailure(msg("    at make (/repo/src/__tests__/fake.ts:3:1)"), none, own), "nạp");
+  assert.equal(classifyFailure(msg("    at x (file:///repo/src/a.test.ts:1:1)"), none, own), "nạp");
+  // Frame đầu ở src (frame sau mới ở test) → lỗi thật từ mã nguồn, không đỏ oan.
+  const fromSrc = msg("    at format (/repo/src/p.ts:2:4)\n    at /repo/src/a.test.ts:2:3");
+  assert.equal(classifyFailure(fromSrc, none, own), null);
+  const anon = msg("    at new Promise (<anonymous>)\n    at /repo/src/a.test.ts:2:3");
+  assert.equal(classifyFailure(anon, none, own), null);
+  assert.equal(classifyFailure(msg(""), none, own), null);
+  assert.equal(classifyFailure(msg("    at /repo/src/a.test.ts:1:1")), null); // không khai `own`
+  const call = "TypeError: (0 , __vite_ssr_import_0__.f) is not a function\n    at f (/repo/src/p.ts:1:1)";
+  assert.equal(classifyFailure(call, none, own), null);
+  // Binding không phải vitest không bị ràng buộc frame (jest/node: điều kiện là `bindings`).
+  assert.equal(
+    classifyFailure("TypeError: (0 , _src.f) is not a function\n    at f (/repo/src/p.ts:1:1)"),
+    "nạp",
+  );
+});
+
+test("framePath/firstFrameInOwn: vị trí frame, `file://`, thư mục có ' (', frame không phải file", () => {
+  assert.equal(framePath("at /repo/a.test.ts:2:40"), "/repo/a.test.ts");
+  assert.equal(framePath("at fn (/repo/My (x)/a.ts:1:2)"), "/repo/My (x)/a.ts");
+  assert.equal(framePath("at Object.<anonymous> (/repo/a.ts:1:2)"), "/repo/a.ts");
+  assert.equal(
+    framePath("at TestContext.<anonymous> (file:///repo/a%20b.test.mjs:4:49)"),
+    "/repo/a b.test.mjs",
+  );
+  assert.equal(framePath("at /repo/a.ts"), "/repo/a.ts");
+  assert.equal(framePath("at C:\\r\\a.test.ts:1:1"), "C:/r/a.test.ts");
+  for (const f of [
+    "at new Promise (<anonymous>)",
+    "at process.processTicksAndRejections (node:internal/process/task_queues:105:5)",
+    "at x (file://host/a.ts:1:1)",
+    "at ",
+    "",
+    undefined,
+  ]) {
+    assert.equal(framePath(f), "", String(f));
+  }
+  const own = { top: "/repo", files: ["src/a.test.ts"] };
+  assert.equal(firstFrameInOwn("E\n    at /repo/src/a.test.ts:1:1", own), true);
+  assert.equal(firstFrameInOwn("E\n    at /repo/src/b.ts:1:1\n    at /repo/src/a.test.ts:1:1", own), false);
+  assert.equal(firstFrameInOwn("E: không có frame", own), false);
+  assert.equal(firstFrameInOwn("E\r\n    at x (/repo/src/a.test.ts:1:1)\r\n", own), true); // CRLF
+  assert.equal(firstFrameInOwn("E\n    at /repo/src/a.test.ts:1:1", undefined), false);
+});
+
+test("hookFrame (D-154): jest `_callCircusHook`, vitest `wrapper` trong vitest/dist → hook; thân test/hàm trùng tên → không", () => {
+  const circus = `E\n    at x (${CIRCUS}/utils.js:1:1)\n    at _callCircusHook (${CIRCUS}/run.js:281:40)`;
+  assert.equal(hookFrame(circus), true);
+  assert.equal(hookFrame(`E\n    at /repo/a.test.ts:3:24\n    at wrapper (${VD}:1992:37)`), true);
+  assert.equal(hookFrame(`E\n    at wrapper (/repo/src/a.test.ts:1:1)\n    at ${VD}:2801:26`), false);
+  assert.equal(
+    hookFrame(`E\n    at /repo/a.test.ts:2:38\n    at ${VD}:1632:35\n    at ${VD}:2801:26`),
+    false,
+  );
+  // Chuỗi trong thông điệp (không phải dòng frame) không tính.
+  assert.equal(hookFrame("Error: _callCircusHook at wrapper (/node_modules/vitest/dist/x.js)"), false);
+  assert.equal(hookFrame(""), false);
+  assert.equal(hookFrame(undefined), false);
+});
+
+test("regressionVerdict (D-154): base chỉ đỏ do hook beforeEach/afterEach → đỏ, lời nhắn 'hook lỗi' (không 'hook cha')", () => {
+  const plan = planRegression(["packages/domain/src/t.test.ts"]);
+  const hookOnly = parseJestLikeJson(T234_VITEST, TOP).cases.filter((c) => c.why === "hook");
+  assert.equal(hookOnly.length, 2);
+  const base = [{ runner: "vitest-domain", ok: false, note: "exit 1", loadErrors: [], cases: hookOnly }];
+  const head = [
+    {
+      runner: "vitest-domain",
+      ok: true,
+      note: "exit 0",
+      loadErrors: [],
+      cases: hookOnly.map((c) => ({ file: c.file, name: c.name, status: "passed" })),
+    },
+  ];
+  const r = regressionVerdict({ plan, head, base });
+  assert.equal(r.ok, false);
+  assert.match(r.errors[0], /2 case đỏ do hook lỗi/);
+  assert.doesNotMatch(r.errors[0], /hook cha|beforeAll/);
+  assert.equal(regressionVerdict({ plan, exempt: true, head, base }).ok, true);
+});
+
+test("summaryCell: số case đỏ gồm cả broken (nạp/hook), tách riêng; thiếu kết quả → —", () => {
+  const c = (status, why) => ({ file: "a", name: status, status, ...(why ? { why } : {}) });
+  assert.equal(
+    summaryCell({
+      ok: false,
+      note: "exit 1",
+      cases: [c("failed"), c("broken", "nạp"), c("broken", "hook"), c("passed")],
+    }),
+    "đỏ (exit 1; 3/4 case đỏ, 2 không ở mức case (nạp/hook))",
+  );
+  assert.equal(
+    summaryCell({ ok: false, note: "exit 1", cases: [c("broken", "nạp")] }),
+    "đỏ (exit 1; 1/1 case đỏ, 1 không ở mức case (nạp/hook))",
+  );
+  assert.equal(summaryCell({ ok: true, note: "exit 0", cases: [c("passed")] }), "xanh (exit 0; 0/1 case đỏ)");
+  assert.equal(summaryCell({ ok: false, note: "quá hạn 10 phút" }), "đỏ (quá hạn 10 phút; 0/0 case đỏ)");
+  assert.equal(summaryCell(null), "—");
+  assert.equal(summaryCell(undefined), "—");
+});
+
+test("classifyFailure/hookFrame/framePath: đầu vào bệnh lý lớn chạy tuyến tính (chống ReDoS)", () => {
+  const n = 100_000;
+  const own = { top: "/repo", files: ["a.test.ts"] };
+  const t0 = Date.now();
+  for (const x of [
+    `TypeError: ${"a.".repeat(n)}x is not a function`,
+    `TypeError: __vite_ssr_import_0__${".a".repeat(n)} is not a function\n${"    at x\n".repeat(n)}`,
+    `TypeError: ${"a".repeat(n)}.default${".default".repeat(n)} is not`,
+    `TypeError: (0 , ${"$".repeat(n)}.${"_".repeat(n)}`,
+    `Cannot find module '${".".repeat(n)}`,
+    `${"a".repeat(n)} [${"A".repeat(n)}`,
+    `${"a.".repeat(n)}: Cannot find module`,
+    `${"a".repeat(n)} [ERR_MODULE_NOT_FOUND]${"]".repeat(n)}`,
+    `E\n${"    at wrapper (".repeat(n)}`,
+    `E\n${"\n".repeat(n)}`,
+  ]) {
+    classifyFailure(x, new Set(["_src"]), own);
+    hookFrame(x);
+    firstFrameInOwn(x, own);
+  }
+  framePath(`at ${" (".repeat(n)})`);
+  framePath(`at x${":1".repeat(n)}`);
+  framePath(`at file://${"%".repeat(n)}`);
+  assert.ok(Date.now() - t0 < 2000, `quá chậm: ${Date.now() - t0} ms`);
+});
+
+test("classifyFailure/parseReport: không giữ trạng thái giữa các lần gọi (xen kẽ, song song cho cùng kết quả)", async () => {
+  const own = { top: "/repo", files: ["src/a.test.ts"] };
+  const b = new Set(["_src"]);
+  const inputs = [
+    "TypeError: __vite_ssr_import_0__.api.newMethod is not a function\n    at /repo/src/a.test.ts:1:1",
+    "TypeError: cart.items is not a function",
+    "Error: Cannot find module './x' from 'a.ts'",
+    "TypeError: _src.Money.fromK is not a function",
+    "TypeError: (0 , __vite_ssr_import_0__.f) is not a function\n    at f (/repo/src/p.ts:1:1)",
+  ];
+  const once = inputs.map((m) => classifyFailure(m, b, own));
+  assert.deepEqual(once, ["nạp", null, "nạp", "nạp", null]);
+  const mixed = [...inputs, ...inputs.toReversed(), ...inputs].map((m) => classifyFailure(m, b, own));
+  assert.deepEqual(mixed, [...once, ...once.toReversed(), ...once]);
+  const support = ["packages/domain/src/__tests__/fake.ts"];
+  const runs = await Promise.all(
+    Array.from({ length: 20 }, (_, i) =>
+      Promise.resolve().then(() =>
+        i % 2 === 0
+          ? statuses(parseReport("vitest-json", T234_VITEST, { top: TOP, support }))
+          : statuses(parseReport("jest-json", T234_JEST, { top: TOP })),
+      ),
+    ),
+  );
+  for (let i = 2; i < runs.length; i++) assert.deepEqual(runs[i], runs[i % 2]);
 });
