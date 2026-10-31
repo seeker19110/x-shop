@@ -147,7 +147,7 @@ export function validateAllowlist(list) {
   return errors;
 }
 
-export const DEFAULT_ROOTS = ["apps/storefront/src", "apps/backend/src"];
+export const DEFAULT_ROOTS = ["apps/storefront/src", "apps/storefront/messages", "apps/backend/src"];
 
 /** Quét các thư mục gốc; trả { violations, errors }. */
 export function scan(root, roots = DEFAULT_ROOTS, allowlist = []) {

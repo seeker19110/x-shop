@@ -1,0 +1,84 @@
+{
+  "layout": {
+    "siteName": "X-Shop",
+    "titleTemplate": "%s | X-Shop",
+    "description": "Cửa hàng thời trang X-Shop.",
+    "skipToContent": "Bỏ qua tới nội dung"
+  },
+  "header": {
+    "brand": "X-SHOP",
+    "categoriesNav": "Danh mục",
+    "search": "Tìm kiếm",
+    "menuOpen": "Mở menu danh mục"
+  },
+  "mobileMenu": {
+    "title": "Danh mục",
+    "close": "Đóng menu",
+    "navLabel": "Danh mục (menu di động)",
+    "empty": "Chưa có danh mục."
+  },
+  "footer": {
+    "sellerHeading": "Đơn vị bán hàng",
+    "policyNav": "Chính sách",
+    "policyHeading": "Chính sách",
+    "copyright": "© X-Shop"
+  },
+  "static": {
+    "seller": {
+      "name": "[Tên đơn vị bán — chủ shop điền]",
+      "address": "[Địa chỉ đơn vị bán — chủ shop điền]",
+      "taxCode": "[Mã số thuế / giấy phép kinh doanh — chủ shop điền]",
+      "contact": "[Email/điện thoại hỗ trợ — chủ shop điền]"
+    },
+    "policy": {
+      "pendingBadge": "Chưa chính thức.",
+      "pendingNotice": "Nội dung chờ chủ shop duyệt — trang này là bản giữ chỗ, chưa phải điều khoản chính thức.",
+      "shipping": {
+        "linkLabel": "Chính sách giao hàng",
+        "title": "Chính sách giao hàng",
+        "description": "Thời gian, phí và phạm vi giao hàng của shop.",
+        "scopeHeading": "Phạm vi và thời gian",
+        "scopeText": "[Chủ shop điền: khu vực giao hàng và thời gian dự kiến.]",
+        "feeHeading": "Phí giao hàng",
+        "feeText": "Phí giao hàng được tính và hiển thị ở bước thanh toán trước khi bạn xác nhận đơn.",
+        "inspectHeading": "Kiểm tra hàng khi nhận",
+        "inspectText": "[Chủ shop điền: điều kiện kiểm hàng khi nhận.]"
+      },
+      "returns": {
+        "linkLabel": "Đổi trả và hoàn tiền",
+        "title": "Đổi trả và hoàn tiền",
+        "description": "Điều kiện đổi trả và cách hoàn tiền.",
+        "conditionsHeading": "Điều kiện đổi trả",
+        "conditionsText": "[Chủ shop điền: thời hạn, tình trạng sản phẩm, chi phí vận chuyển đổi trả.]",
+        "refundHeading": "Hoàn tiền",
+        "refundText": "[Chủ shop điền: phương thức và thời gian hoàn tiền theo từng cách thanh toán.]"
+      },
+      "privacy": {
+        "linkLabel": "Chính sách bảo mật",
+        "title": "Chính sách bảo mật",
+        "description": "Cách shop thu thập và bảo vệ dữ liệu cá nhân.",
+        "dataHeading": "Dữ liệu chúng tôi thu thập",
+        "dataText": "[Chủ shop điền: danh mục dữ liệu, mục đích, thời gian lưu trữ.]",
+        "rightsHeading": "Quyền của bạn",
+        "rightsText": "[Chủ shop điền: quyền truy cập, chỉnh sửa, xóa dữ liệu và cách liên hệ.]"
+      }
+    },
+    "notFound": {
+      "title": "Không tìm thấy trang",
+      "description": "Đường dẫn bạn mở không tồn tại hoặc đã được chuyển.",
+      "home": "Về trang chủ"
+    },
+    "offline": {
+      "title": "Bạn đang ngoại tuyến",
+      "emptyTitle": "Không có kết nối mạng",
+      "emptyDescription": "Bạn chưa thể xem trang này, đặt hàng hoặc thanh toán khi ngoại tuyến. Các trang công khai đã xem có thể hiển thị dữ liệu cũ. Hãy kiểm tra kết nối rồi thử lại — đơn hàng và giỏ hàng của bạn sẽ được xác nhận lại với hệ thống khi có mạng.",
+      "retry": "Thử lại"
+    },
+    "error": {
+      "title": "Đã có sự cố",
+      "description": "Có sự cố tạm thời khi tải trang này. Vui lòng thử lại; nếu vẫn lỗi, hãy quay lại sau ít phút.",
+      "globalDescription": "Hệ thống gặp sự cố tạm thời. Vui lòng thử lại; nếu vẫn lỗi, hãy quay lại sau ít phút.",
+      "retry": "Thử lại"
+    }
+  }
+}

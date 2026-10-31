@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { t } from "../../lib/i18n";
 
 export const metadata: Metadata = {
-  title: "Bạn đang ngoại tuyến",
+  title: t("static.offline.title"),
   robots: { index: false, follow: false },
 };
 
@@ -11,11 +12,11 @@ export const metadata: Metadata = {
 export default function OfflinePage() {
   return (
     <>
-      <h1 className="visually-hidden">Bạn đang ngoại tuyến</h1>
+      <h1 className="visually-hidden">{t("static.offline.title")}</h1>
       <EmptyState
-        title="Không có kết nối mạng"
-        description="Bạn chưa thể xem trang này, đặt hàng hoặc thanh toán khi ngoại tuyến. Các trang công khai đã xem có thể hiển thị dữ liệu cũ. Hãy kiểm tra kết nối rồi thử lại — đơn hàng và giỏ hàng của bạn sẽ được xác nhận lại với hệ thống khi có mạng."
-        action={<Button href="/">Thử lại</Button>}
+        title={t("static.offline.emptyTitle")}
+        description={t("static.offline.emptyDescription")}
+        action={<Button href="/">{t("static.offline.retry")}</Button>}
       />
     </>
   );

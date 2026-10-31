@@ -2,6 +2,7 @@
 
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
+import { t } from "../lib/i18n";
 
 /**
  * Biên lỗi cấp trang (UX-STATE-005): chỉ thông điệp chung + đường thử lại. KHÔNG hiển thị `error.message`/stack/digest
@@ -11,9 +12,9 @@ export default function AppError({ reset }: { error: Error & { digest?: string }
   return (
     <div role="alert">
       <EmptyState
-        title="Đã có sự cố"
-        description="Có sự cố tạm thời khi tải trang này. Vui lòng thử lại; nếu vẫn lỗi, hãy quay lại sau ít phút."
-        action={<Button onClick={reset}>Thử lại</Button>}
+        title={t("static.error.title")}
+        description={t("static.error.description")}
+        action={<Button onClick={reset}>{t("static.error.retry")}</Button>}
       />
     </div>
   );
