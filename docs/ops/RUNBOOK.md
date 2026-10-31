@@ -38,6 +38,16 @@ Phản hồi lỗi của backend (problem+json) có `trace_id`; log server ghi c
 | Mất Redis (§3)         | 2026-10-25    | cùng script, bước 5                                                  |
 | Deploy (§8)            | chưa diễn tập | chưa có cơ chế deploy/hạ tầng                                        |
 | Rollback ứng dụng (§5) | chưa diễn tập | cần cơ chế deploy; cần trước khi lên production lần đầu (WF-REL-004) |
+| Cổng thanh toán lỗi (§1) | chưa diễn tập | chưa chạy qua cổng thật, chỉ mock trong test tích hợp |
+| Hãng vận chuyển lỗi (§2) | chưa diễn tập | chưa có tài khoản/khoá GHN thật |
+| Ảnh lỗi / CDN (§6) | chưa diễn tập | chưa có CDN/kho ảnh thật |
+| Tiền đến sau khi hủy (§7) | chưa diễn tập | chỉ chạy trong test tích hợp `late-payment` |
+| Xoay secret (§9) | chưa diễn tập | chưa có kho bí mật production |
+| Lộ bí mật (§10) | chưa diễn tập | chưa diễn tập sự cố bảo mật |
+| Staging / preview (§11) | chưa diễn tập | chưa có môi trường staging/preview |
+| Outbox `dead` (§12) | chưa diễn tập | chỉ chạy trong test tích hợp `outbox-redrive` |
+| Catalog lệch (§13) | chưa diễn tập | chỉ chạy trong test tích hợp `catalog-model` |
+| Circuit breaker job (§14) | chưa diễn tập | test đơn vị `breaker` + test tích hợp `outbox-breaker` |
 | Xoay secret (§9)       | chưa diễn tập | cần môi trường staging                                               |
 | Lộ bí mật (§10)        | chưa diễn tập | tập bàn giấy khi có staging                                          |
 | Redrive outbox (§12)   | chưa diễn tập | lệnh SQL chưa chạy trên DB thật                                      |

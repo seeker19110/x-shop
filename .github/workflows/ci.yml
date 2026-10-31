@@ -171,6 +171,10 @@ jobs:
         run: pnpm check:data-map
       - name: Cấu trúc ADR — `node scripts/check-adr.mjs`
         run: node scripts/check-adr.mjs
+      # x-shop (T-233, WF-DOC-008): mỗi mục RUNBOOK `## N.` có `last_drilled:` (ngày thật hoặc "chưa diễn tập <lý do>");
+      # quá 6 tháng chỉ cảnh báo, thiếu/sai định dạng/ngày tương lai thì đỏ.
+      - name: Ngày diễn tập RUNBOOK — `node scripts/check-runbook.mjs` (WF-DOC-008)
+        run: node scripts/check-runbook.mjs
       # x-shop (T-210, ARC-ADR-004): thêm kiểm — ADR đã accepted ở ref gốc chỉ được đổi dòng Status/liên kết, không xoá. Cần
       # lịch sử nhánh đích: checkout của job đã `fetch-depth: 0`. Ref gốc: ĐÚNG biểu thức của bước check-migrations.
       - name: ADR đã accepted bất biến — `pnpm check:adr:immutable` (ARC-ADR-004)
@@ -181,7 +185,7 @@ jobs:
             && github.event.before) || 'HEAD~1' }}
         run: pnpm check:adr:immutable
       - name: Test của các script kiểm tài liệu
-        run: pnpm check:openapi:test && pnpm check:data-map:test && pnpm check:adr:test
+        run: pnpm check:openapi:test && pnpm check:data-map:test && pnpm check:adr:test && node --test scripts/check-runbook.test.mjs
       - name: Ranh giới module + vòng phụ thuộc — `pnpm depcruise` (ARC-MOD-004/005)
         run: pnpm depcruise
       - name: SQL nối chuỗi ngoài allowlist — `pnpm check:sql-safety` (BASE-SEC-007)
