@@ -932,7 +932,7 @@ const JEST_NEW_EXPORT = JSON.stringify({
           status: "failed",
           title: "namespace",
           failureMessages: [
-            "TypeError: _money.round is not a function\n    at Object.<anonymous> (/repo/x:5:1)",
+            "TypeError: _money.round is not a function\n    at Object.<anonymous> (/repo/apps/backend/src/lib/__tests__/zz.unit.spec.ts:5:1)",
           ],
         },
         {
@@ -1031,7 +1031,14 @@ test("classifyFailure: `(0 , X.Y)` biên dịch → nạp; `X.Y`/`X.default.Y` c
     ),
     "nạp",
   );
-  assert.equal(classifyFailure("TypeError: (0 , _src.Money) is not a constructor"), "nạp");
+  assert.equal(
+    classifyFailure(
+      "TypeError: (0 , _src.Money) is not a constructor\n    at Object.<anonymous> (/repo/src/a.test.ts:3:1)",
+      new Set(),
+      own,
+    ),
+    "nạp",
+  );
   assert.equal(
     classifyFailure(
       "TypeError: __vite_ssr_import_3__.default.f is not a function\n    at /repo/src/a.test.ts:2:2",
@@ -1043,7 +1050,11 @@ test("classifyFailure: `(0 , X.Y)` biên dịch → nạp; `X.Y`/`X.default.Y` c
   assert.equal(classifyFailure("TypeError: m.newFn is not a function"), null);
   assert.equal(classifyFailure("TypeError: m.newFn is not a function", new Set(["m"])), "nạp");
   assert.equal(
-    classifyFailure("TypeError: _money.default.K is not a constructor", new Set(["_money"])),
+    classifyFailure(
+      "TypeError: _money.default.K is not a constructor\n    at /repo/src/a.test.ts:4:1",
+      new Set(["_money"]),
+      own,
+    ),
     "nạp",
   );
   for (const msg of [
@@ -1102,8 +1113,6 @@ test("parseJunit (node thật): cancelledByParent → broken/hook; cause TypeErr
       ["lỗi thật", "failed", undefined],
     ],
   );
-  const hook = JUNIT_HOOK_DYN.replace('type="cancelledByParent"', 'type="hookFailure"');
-  assert.equal(parseJunit(hook, "scripts/dyn.test.mjs").cases[0].why, "hook");
   assert.equal(parseJunit(JUNIT_HOOK_DYN, "scripts/dyn.test.mjs").cases[1].status, "failed");
   assert.throws(() => parseJunit('<testsuites><testcase name="a"><failure>x', "a"), /failure không đóng/);
 });
@@ -1346,8 +1355,8 @@ test("classifyFailure (T-234): `X.a.Y` chỉ nạp khi X do trình biên dịch 
     `TypeError: __vite_ssr_import_0__.Money.fromK is not a constructor${inTest}`,
     `TypeError: __vite_ssr_import_2__.default.Money.fromK is not a function${inTest}`,
     `TypeError: __vi_import_0__.api.f is not a function${inTest}`,
-    "TypeError: _src.Money.fromK is not a function",
-    "TypeError: _src.default.api.newMethod is not a function",
+    `TypeError: _src.Money.fromK is not a function${inTest}`,
+    `TypeError: _src.default.api.newMethod is not a function${inTest}`,
   ]) {
     assert.equal(classifyFailure(msg, swc, own), "nạp", msg);
   }
@@ -1402,11 +1411,38 @@ test("classifyFailure (T-234): `__vite_ssr_import_N__` chỉ nạp khi frame `at
   assert.equal(classifyFailure(msg("    at /repo/src/a.test.ts:1:1")), null); // không khai `own`
   const call = "TypeError: (0 , __vite_ssr_import_0__.f) is not a function\n    at f (/repo/src/p.ts:1:1)";
   assert.equal(classifyFailure(call, none, own), null);
-  // Binding không phải vitest không bị ràng buộc frame (jest/node: điều kiện là `bindings`).
-  assert.equal(
-    classifyFailure("TypeError: (0 , _src.f) is not a function\n    at f (/repo/src/p.ts:1:1)"),
-    "nạp",
-  );
+  // `(0 , X.f)` với X không do trình biên dịch sinh (không `_`, không vitest) không bị ràng buộc frame.
+  assert.equal(classifyFailure("TypeError: (0 , lib.f) is not a function"), "nạp");
+});
+
+test("classifyFailure (review T-234): gốc `_x` của @swc/jest cũng phải có frame đầu ở file test/hỗ trợ; ném từ src → null", () => {
+  const tf = "apps/backend/src/x/__tests__/t.unit.spec.ts";
+  const own = { top: "/repo", files: [tf, "apps/backend/src/x/__tests__/fake.ts"] };
+  const b = new Set(["_api", "_src"]);
+  const src = "\n    at total (/repo/apps/backend/src/x/service.ts:3:20)";
+  const tst = `\n    at Object.<anonymous> (/repo/${tf}:5:10)`;
+  // Ca tái hiện của reviewer: src và test cùng import "./api" → cùng tên `_api`; lỗi thật ném từ service.ts.
+  for (const head of [
+    "TypeError: _api.api.method is not a function", // `_x.a.Y`
+    "TypeError: _api.method is not a function", // `_x.Y`
+    "TypeError: _api.default.method is not a function", // `_x.default.Y`
+    "TypeError: (0 , _api.method) is not a function", // `(0 , _x.f)`
+  ]) {
+    assert.equal(classifyFailure(`${head}${src}${tst}`, b, own), null, head);
+    assert.equal(classifyFailure(`${head}${tst}${src}`, b, own), "nạp", head);
+    assert.equal(classifyFailure(head, b, own), null, `${head} (không stack)`);
+  }
+  const fake = "\n    at makeFake (/repo/apps/backend/src/x/__tests__/fake.ts:2:3)";
+  assert.equal(classifyFailure(`TypeError: _src.Money.fromK is not a function${fake}`, b, own), "nạp");
+  // Report jest thật (exp/j3-base.json, s9-plugin) khi test import thêm "./plugin": `_plugin` thành binding của test
+  // nhưng lỗi ném từ src-plugin.ts → vẫn failed (không đỏ oan).
+  const file = "apps/backend/src/lib/__tests__/t.unit.spec.ts";
+  const bindings = new Map([
+    [file, importBindings('import plugin from "./plugin";\nimport { format } from "./src-plugin";')],
+  ]);
+  assert.ok(bindings.get(file).has("_plugin"));
+  const plugin = parseReport("jest-json", T234_JEST, { top: TOP, bindings });
+  assert.equal(statuses(plugin)[2][1], "failed");
 });
 
 test("framePath/firstFrameInOwn: vị trí frame, `file://`, thư mục có ' (', frame không phải file", () => {
@@ -1526,7 +1562,7 @@ test("classifyFailure/parseReport: không giữ trạng thái giữa các lần 
     "TypeError: __vite_ssr_import_0__.api.newMethod is not a function\n    at /repo/src/a.test.ts:1:1",
     "TypeError: cart.items is not a function",
     "Error: Cannot find module './x' from 'a.ts'",
-    "TypeError: _src.Money.fromK is not a function",
+    "TypeError: _src.Money.fromK is not a function\n    at Object.<anonymous> (/repo/src/a.test.ts:2:1)",
     "TypeError: (0 , __vite_ssr_import_0__.f) is not a function\n    at f (/repo/src/p.ts:1:1)",
   ];
   const once = inputs.map((m) => classifyFailure(m, b, own));
@@ -1544,4 +1580,79 @@ test("classifyFailure/parseReport: không giữ trạng thái giữa các lần 
     ),
   );
   for (let i = 2; i < runs.length; i++) assert.deepEqual(runs[i], runs[i % 2]);
+});
+
+// Output thật của node 22.22.0 `node --test --test-reporter=junit` (review T-234: beforeEach/afterEach lỗi → `hookFailed`),
+// chỉ rút đường dẫn về /repo và bớt frame nội bộ của node.
+const JUNIT_HOOK_EACH = `<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testsuite name="be" time="0.001499" disabled="0" errors="0" tests="1" failures="1" skipped="0" hostname="vm">
+		<testcase name="t" time="0.000644" classname="test" failure="failed running beforeEach hook">
+			<failure type="hookFailed" message="failed running beforeEach hook">
+Error [ERR_TEST_FAILURE]: failed running beforeEach hook
+    at async Promise.all (index 0) {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'hookFailed',
+  cause: Error: bug parse 1
+      at parse (file:///repo/scripts/src.mjs:1:49)
+      at TestContext.&lt;anonymous> (file:///repo/scripts/h.test.mjs:4:43)
+      at TestHook.runInAsyncScope (node:async_hooks:214:14)
+      at Suite.runHook (node:internal/test_runner/test:965:20)
+}
+			</failure>
+		</testcase>
+	</testsuite>
+	<testsuite name="ae" time="0.001286" disabled="0" errors="0" tests="1" failures="1" skipped="0" hostname="vm">
+		<testcase name="t" time="0.001170" classname="test" failure="failed running afterEach hook">
+			<failure type="hookFailed" message="failed running afterEach hook">
+Error [ERR_TEST_FAILURE]: failed running afterEach hook
+    at async Promise.all (index 0) {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'hookFailed',
+  cause: Error: bug parse 1
+      at parse (file:///repo/scripts/src.mjs:1:49)
+      at TestContext.&lt;anonymous> (file:///repo/scripts/h.test.mjs:5:42)
+      at Suite.runHook (node:internal/test_runner/test:965:20)
+}
+			</failure>
+		</testcase>
+	</testsuite>
+	<testsuite name="real" time="0.001209" disabled="0" errors="0" tests="1" failures="1" skipped="0" hostname="vm">
+		<testcase name="t" time="0.000957" classname="test" failure="Expected values to be strictly equal:2 !== 3">
+			<failure type="testCodeFailure" message="Expected values to be strictly equal:2 !== 3">
+Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:
+
+2 !== 3
+
+    at new Promise (&lt;anonymous>) {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  2 !== 3
+
+      at TestContext.&lt;anonymous> (file:///repo/scripts/h.test.mjs:6:49)
+}
+			</failure>
+		</testcase>
+	</testsuite>
+	<!-- tests 3 -->
+</testsuites>
+`;
+
+test("parseJunit (node 22 thật, D-154): beforeEach/afterEach lỗi → `hookFailed` → broken/hook; assertion → failed", () => {
+  assert.deepEqual(
+    parseJunit(JUNIT_HOOK_EACH, "scripts/h.test.mjs").cases.map((c) => [c.name, c.status, c.why]),
+    [
+      ["be > t", "broken", "hook"],
+      ["ae > t", "broken", "hook"],
+      ["real > t", "failed", undefined],
+    ],
+  );
+  // `failure type` lạ (không phải giá trị node ghi) không được coi là hook.
+  const odd = JUNIT_HOOK_EACH.replaceAll('type="hookFailed"', 'type="hookFailure"');
+  assert.deepEqual(
+    parseJunit(odd, "scripts/h.test.mjs").cases.map((c) => c.status),
+    ["failed", "failed", "failed"],
+  );
 });

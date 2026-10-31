@@ -172,7 +172,8 @@ jobs:
   # chạy trên mã base + file test của HEAD phải đỏ Ở MỨC TEST CASE (D-153: ≥ 1 case cùng file + tên fail trên base, pass trên
   # HEAD; đỏ không ở mức case — lỗi nạp file, case gọi export/binding import/module chưa có trên base, hook lỗi (D-154: mọi
   # hook), quá hạn — → đỏ). Giới hạn (D-155): vitest/jest nhận hook lỗi qua stack, nên hook async lỗi SAU `await` đầu tiên
-  # (stack mất frame của runner) không nhận ra — case đó vẫn tính là tái hiện; node --test nhận đủ qua JUnit `failure type`.
+  # (stack mất frame của runner) không nhận ra — case đó vẫn tính là tái hiện; node --test nhận qua JUnit `failure type`
+  # (`hookFailed` cho beforeEach/afterEach, `cancelledByParent` cho case con khi `before` lỗi — node 22).
   # Runner theo vị trí file: vitest (storefront, domain), jest unit (backend), node --test
   # (scripts/, e2e/*.test.mjs); file test không runner nào/không job CI nào chạy → đỏ "không chạy ở đâu". Test tích hợp backend
   # và E2E KHÔNG chạy ở đây (cảnh báo): mỗi suite dựng app Medusa trên Postgres/Redis + vai trò DB — thêm service vào job này
