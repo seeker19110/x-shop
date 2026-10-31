@@ -1101,3 +1101,10 @@
 - Chọn: Workflow hằng đêm (schedule + workflow_dispatch, không chạy PR): Postgres service, perf-dataset.mjs → explain-hot-paths.mjs, đỏ khi Seq Scan/hồi quy, artefact 14 ngày
 - Lý do (tiêu chí chất lượng cuối): Đúng hơn (tiêu chí 1): hồi quy index bị bắt tự động trong ≤ 24 giờ thay vì chờ mốc tay; không làm chậm PR (tiêu chí 4/5); đường lùi là tắt schedule
 - Đường lùi: Xoá .github/workflows/perf-nightly.yml, quay về D-056
+
+### D-157 · 2026-10-31T18:26:09+00:00 · T-198 thay D-119: coverage tích hợp (8 shard) đỏ vì phạm vi đo có src/admin/** (UI trình duyệt, 0% qua HTTP) — phạm vi đo?
+
+- Phương án: (1) Coverage tích hợp bỏ src/admin/** (đo 93,82/83,70); src/admin vẫn đo + ratchet ở coverage unit (jsdom); nâng baseline integration từ artefact CI đầu tiên · (2) Chỉ bỏ .tsx (91,78 < 91,85) rồi viết thêm test cho phần .ts hở · (3) Giữ phạm vi, job đỏ tới khi có test (chặn mọi PR)
+- Chọn: Coverage tích hợp bỏ src/admin/** (đo 93,82/83,70); src/admin vẫn đo + ratchet ở coverage unit (jsdom); nâng baseline integration từ artefact CI đầu tiên
+- Lý do (tiêu chí chất lượng cuối): Đúng (tiêu chí 1): mỗi bộ đo vùng nó chạy tới, không vùng nào thoát đo — src/admin đã nằm trong collectCoverageFrom của test:coverage (unit, ratchet); không hạ baseline (LOOP-CI-001), còn nâng lên; phương án 3 chặn mọi PR vì lý do đo sai chỗ
+- Đường lùi: Bỏ cờ --collectCoverageFrom riêng của test:integration:coverage; tắt job integration-coverage
