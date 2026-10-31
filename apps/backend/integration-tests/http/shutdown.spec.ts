@@ -24,6 +24,38 @@ const { Client } = createRequire(require.resolve("@medusajs/framework"))("pg") a
 };
 
 const BACKEND_DIR = join(__dirname, "../..");
+
+type RedisClient = {
+  set(k: string, v: string, mode: "EX", s: number): Promise<unknown>;
+  get(k: string): Promise<string | null>;
+  del(k: string): Promise<number>;
+  client(sub: "LIST"): Promise<string>;
+  quit(): Promise<unknown>;
+};
+const Redis = createRequire(join(BACKEND_DIR, "package.json"))("ioredis") as new (
+  url: string,
+  opts?: Record<string, unknown>,
+) => RedisClient;
+
+interface BullJob {
+  id?: string;
+  attemptsMade: number;
+  getState(): Promise<string>;
+  remove(): Promise<void>;
+}
+interface BullQueue {
+  add(name: string, data: unknown, opts: Record<string, unknown>): Promise<BullJob>;
+  getJob(id: string): Promise<BullJob | undefined>;
+  getWaitingCount(): Promise<number>;
+  getActiveCount(): Promise<number>;
+  close(): Promise<void>;
+}
+const { Queue } = createRequire(require.resolve("@medusajs/framework"))("bullmq") as {
+  Queue: new (name: string, opts: Record<string, unknown>) => BullQueue;
+};
+/** Hàng đợi sự kiện của event-bus-redis (tên + prefix mặc định của @medusajs/event-bus-redis 2.22.1). */
+const eventsQueue = (connection: RedisClient) =>
+  new Queue("events-queue", { prefix: "RedisEventBusService", connection });
 const CLI = require.resolve("@medusajs/cli/cli.js", { paths: [BACKEND_DIR] });
 const ADMIN_DB_URL = process.env.DATABASE_URL!;
 const SHUTDOWN_JWT_SECRET = "x-shop-shutdown-test-only-jwt-secret-0123456789";
@@ -465,32 +497,13 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
   it("SIGTERM khi lượt xả catalog đang chờ khoá: không giành khoá/đồng bộ giữa lúc tắt → thoát 0 trong trần", async () => {
     const TIMEOUT = 15_000;
     const redisUrl = process.env.REDIS_URL!;
-    type RedisClient = {
-      set(k: string, v: string, mode: "EX", s: number): Promise<unknown>;
-      get(k: string): Promise<string | null>;
-      del(k: string): Promise<number>;
-      quit(): Promise<unknown>;
-    };
-    const Redis = createRequire(join(BACKEND_DIR, "package.json"))("ioredis") as new (
-      url: string,
-      opts?: Record<string, unknown>,
-    ) => RedisClient;
-    const { Queue } = createRequire(require.resolve("@medusajs/framework"))("bullmq") as {
-      Queue: new (
-        name: string,
-        opts: Record<string, unknown>,
-      ) => {
-        add(name: string, data: unknown, opts: Record<string, unknown>): Promise<unknown>;
-        close(): Promise<void>;
-      };
-    };
     const LOCK = "medusa_lock:x-shop:catalog-index";
     const FOREIGN = `foreign-${randomUUID()}`;
     const PRODUCT = `prod_t137_${randomUUID().slice(0, 8)}`;
     const be = await startBackend({ SHUTDOWN_DRAIN_DELAY_MS: "1000", SHUTDOWN_TIMEOUT_MS: String(TIMEOUT) });
     const redis = new Redis(redisUrl);
     const queueConn = new Redis(redisUrl, { maxRetriesPerRequest: null });
-    const queue = new Queue("events-queue", { prefix: "RedisEventBusService", connection: queueConn });
+    const queue = eventsQueue(queueConn);
     const db = new Client({ connectionString: DB_URL });
     await db.connect();
     const tableLock = new Client({ connectionString: DB_URL });
@@ -542,6 +555,146 @@ describe("tắt êm — tiến trình medusa start thật (T-094)", () => {
       await tableLock.end().catch(() => undefined);
       await db.end().catch(() => undefined);
       await redis.del(LOCK).catch(() => 0);
+      await queue.close().catch(() => undefined);
+      await queueConn.quit().catch(() => undefined);
+      await redis.quit().catch(() => undefined);
+    }
+  });
+
+  /**
+   * T-192 (ARC-RES-009): SIGTERM khi một job BullMQ ĐANG CHẠY và một job khác CHƯA ĐƯỢC NHẬN — job thật của event bus
+   * (`events-queue`, subscriber catalog-index-sync) trên tiến trình `medusa start` thật. Job A bị giữ giữa chừng: câu INSERT
+   * dấu bẩn của nó chờ một dòng cùng khoá chính mà test đã chèn trong giao dịch chưa commit (chỉ chặn đúng khoá đó, không
+   * chặn đọc của job phút). Worker event bus chạy tuần tự (concurrency mặc định 1) nên job B nằm `waiting`. Mọi bước chờ
+   * theo tín hiệu, không ngủ cố định:
+   *  1. A `active` VÀ có backend Postgres của tiến trình con đang chờ khoá với câu INSERT đó → A đã bắt đầu, đang dở;
+   *  2. SIGTERM → chờ worker BullMQ của workflow engine (rảnh, đang chặn BZPOPMIN) rời Redis. Medusa gọi MỌI hook
+   *     `onApplicationPrepareShutdown` trong cùng một lượt đồng bộ (MedusaModule.onApplicationPrepareShutdown, promiseAll)
+   *     → khi worker đó rời đi thì `worker.close()` của event bus chắc chắn đã được gọi: không lấy job mới nữa. Nhả khoá
+   *     sớm hơn thì A xong khi worker chưa đóng → BullMQ lấy luôn B (moveToCompleted kèm fetchNext) — test sai, không phải
+   *     ứng dụng sai;
+   *  3. nhả khoá (ROLLBACK) → A chạy nốt: dấu bẩn của A được ghi, A `completed`;
+   *  4. tiến trình thoát 0 trong trần; B vẫn `waiting` trên Redis, attemptsMade 0, chưa ghi gì (không mất, không chạy dở).
+   */
+  it("SIGTERM khi job BullMQ đang chạy: job đó chạy xong, job chưa nhận còn nguyên trong hàng đợi Redis → thoát 0", async () => {
+    const DRAIN = 500;
+    const TIMEOUT = 20_000;
+    const redisUrl = process.env.REDIS_URL!;
+    const redisDb = process.env.XS_TEST_REDIS_DB ?? (new URL(redisUrl).pathname.slice(1) || "0");
+    // Tên client BullMQ của worker hàng đợi chính workflow engine: `<prefix mặc định bull>:<base64 tên hàng đợi>`.
+    const WORKFLOW_WORKER = `bull:${Buffer.from("medusa-workflows").toString("base64")}`;
+    const PRODUCT_A = `prod_t192a_${randomUUID().slice(0, 8)}`;
+    const PRODUCT_B = `prod_t192b_${randomUUID().slice(0, 8)}`;
+    const be = await startBackend({
+      SHUTDOWN_DRAIN_DELAY_MS: String(DRAIN),
+      SHUTDOWN_TIMEOUT_MS: String(TIMEOUT),
+    });
+    const redis = new Redis(redisUrl);
+    const queueConn = new Redis(redisUrl, { maxRetriesPerRequest: null });
+    const queue = eventsQueue(queueConn);
+    const db = new Client({ connectionString: DB_URL });
+    await db.connect();
+    const rowLock = new Client({ connectionString: DB_URL });
+    await rowLock.connect();
+    const jobs: BullJob[] = [];
+    const step = <T>(what: string, ms: number, fn: () => Promise<T | undefined>) =>
+      waitFor(what, ms, fn).catch((err: unknown) => {
+        throw new Error(`${(err as Error).message}\n${be.output().slice(-4000)}`);
+      });
+    const dirty = async (id: string) =>
+      Number(
+        (await db.query("SELECT count(*)::int AS n FROM catalog_index_dirty WHERE product_id = $1", [id]))
+          .rows[0]!.n,
+      );
+    const blockedInserts = async () =>
+      Number(
+        (
+          await db.query(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'
+                AND query ILIKE '%INSERT INTO catalog_index_dirty%'`,
+          )
+        ).rows[0]!.n,
+      );
+    /** Số kết nối worker workflow engine trên ĐÚNG Redis DB của lần chạy này (lần chạy khác có thể chung máy chủ Redis). */
+    const workflowWorkers = async () =>
+      (await redis.client("LIST"))
+        .split("\n")
+        .map(
+          (line) =>
+            new Map(
+              line
+                .trim()
+                .split(" ")
+                .map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]),
+            ),
+        )
+        .filter((c) => c.get("name") === WORKFLOW_WORKER && c.get("db") === redisDb).length;
+    const event = (id: string) =>
+      queue.add(
+        "product.updated",
+        { data: { id }, metadata: {} },
+        { attempts: 1, removeOnComplete: false, removeOnFail: false },
+      );
+    try {
+      await rowLock.query("BEGIN");
+      await rowLock.query(
+        "INSERT INTO catalog_index_dirty (product_id, marked_at) VALUES ($1, clock_timestamp())",
+        [PRODUCT_A],
+      );
+      const a = await event(PRODUCT_A);
+      jobs.push(a);
+      await step("job A đang chạy dở (active + chờ khoá Postgres)", 30_000, async () =>
+        (await a.getState()) === "active" && (await blockedInserts()) > 0 ? true : undefined,
+      );
+      const b = await event(PRODUCT_B);
+      jobs.push(b);
+      expect(await b.getState()).toBe("waiting");
+      expect(await queue.getActiveCount()).toBe(1);
+      expect(await queue.getWaitingCount()).toBe(1);
+      await step("worker workflow engine đã kết nối Redis", 30_000, async () =>
+        (await workflowWorkers()) > 0 ? true : undefined,
+      );
+
+      const t0 = Date.now();
+      be.child.kill("SIGTERM");
+      await step(
+        "hook onApplicationPrepareShutdown đã chạy (worker workflow rời Redis)",
+        TIMEOUT,
+        async () => ((await workflowWorkers()) === 0 ? true : undefined),
+      );
+      // Worker event bus đang chờ A: A vẫn dở, tiến trình chưa thoát.
+      expect(await a.getState()).toBe("active");
+      expect(be.child.exitCode).toBeNull();
+      expect(await dirty(PRODUCT_A)).toBe(0);
+
+      await rowLock.query("ROLLBACK");
+      const exit = await Promise.race([be.exited, sleep(TIMEOUT + 5_000).then(() => null)]);
+      if (exit?.code !== 0) {
+        throw new Error(
+          `thoát ${JSON.stringify(exit && { ...exit, ms: exit.at - t0 })}\n${be.output().slice(-6000)}`,
+        );
+      }
+      expect(exit).toMatchObject({ code: 0, signal: null });
+      expect(exit.at - t0).toBeLessThan(TIMEOUT);
+
+      // Job đang chạy: chạy xong (kết quả ghi xuống DB, trạng thái completed trên Redis).
+      expect(await dirty(PRODUCT_A)).toBe(1);
+      expect(await (await queue.getJob(a.id!))!.getState()).toBe("completed");
+      // Job chưa nhận: còn nguyên trong hàng đợi, chưa chạy lần nào, chưa ghi gì.
+      const bAfter = await queue.getJob(b.id!);
+      expect(bAfter).toBeDefined();
+      expect(await bAfter!.getState()).toBe("waiting");
+      expect(bAfter!.attemptsMade).toBe(0);
+      expect(await queue.getWaitingCount()).toBe(1);
+      expect(await queue.getActiveCount()).toBe(0);
+      expect(await dirty(PRODUCT_B)).toBe(0);
+      expect(shutdownLines(be.output()).some((l) => l.level === "error")).toBe(false);
+    } finally {
+      await rowLock.query("ROLLBACK").catch(() => undefined);
+      await rowLock.end().catch(() => undefined);
+      await db.end().catch(() => undefined);
+      for (const j of jobs) await j.remove().catch(() => undefined);
       await queue.close().catch(() => undefined);
       await queueConn.quit().catch(() => undefined);
       await redis.quit().catch(() => undefined);
