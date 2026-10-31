@@ -3,9 +3,10 @@ import { redirect } from "next/navigation";
 import { CheckoutForm } from "../../../components/checkout/CheckoutForm";
 import { loadCartView } from "../../../lib/cart/service";
 import { getProvinces } from "../../../lib/checkout/address";
+import { t } from "../../../lib/i18n";
 
 export const metadata: Metadata = {
-  title: "Thanh toán",
+  title: t("checkout.pageTitle"),
   robots: { index: false, follow: false },
 };
 

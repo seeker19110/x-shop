@@ -1,12 +1,13 @@
 import type { MetadataRoute } from "next";
+import { t } from "../lib/i18n";
 
 /** Giá trị màu khớp token `--background` / `--accent` ở src/styles/tokens.css (test pwa kiểm khớp). */
 export const MANIFEST_BACKGROUND = "#faf8f4";
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "X-Shop — Thời trang Việt Nam",
+    name: t("pwa.manifest.name"),
     short_name: "X-Shop",
-    description: "Cửa hàng thời trang X-Shop: mua nhanh trên điện thoại, không cần tài khoản.",
+    description: t("pwa.manifest.description"),
     lang: "vi",
     dir: "ltr",
     id: "/",

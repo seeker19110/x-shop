@@ -4,6 +4,7 @@ import { useId } from "react";
 import styles from "./ColorSwatch.module.css";
 import { cx } from "./cx";
 import { isNonEmpty } from "../../lib/presence";
+import { t } from "../../lib/i18n";
 
 export interface SwatchOption {
   value: string;
@@ -24,14 +25,21 @@ export interface ColorSwatchGroupProps {
 }
 
 /** Nhóm swatch chọn màu: trạng thái chọn = viền dày + dấu ✓ (không chỉ màu). */
-export function ColorSwatchGroup({ options, value, onChange, legend = "Màu" }: ColorSwatchGroupProps) {
+export function ColorSwatchGroup({
+  options,
+  value,
+  onChange,
+  legend = t("ui.colorSwatch.legend"),
+}: ColorSwatchGroupProps) {
   const uid = useId();
   const selected = options.find((o) => o.value === value);
   return (
     <div className={styles.root}>
       <p className={styles.head} id={`${uid}-label`}>
         <span className={styles.legend}>{legend}</span>
-        {selected ? <span className={styles.selectedName}>: {selected.name}</span> : null}
+        {selected ? (
+          <span className={styles.selectedName}>{t("ui.colorSwatch.selected", { name: selected.name })}</span>
+        ) : null}
       </p>
       <div role="group" aria-labelledby={`${uid}-label`} className={styles.group}>
         {options.map((o) => {
@@ -42,14 +50,14 @@ export function ColorSwatchGroup({ options, value, onChange, legend = "Màu" }: 
               key={o.value}
               type="button"
               aria-pressed={isSelected}
-              aria-label={unavailable ? `${o.name} (hết hàng)` : o.name}
+              aria-label={unavailable ? t("ui.colorSwatch.unavailable", { name: o.name }) : o.name}
               className={cx(styles.swatch, isSelected && styles.selected, unavailable && styles.unavailable)}
               onClick={() => onChange(o.value)}
             >
               <Swatch option={o} className={styles.fill} />
               {isSelected ? (
                 <span aria-hidden="true" className={styles.tick}>
-                  ✓
+                  {t("ui.glyph.check")}
                 </span>
               ) : null}
             </button>

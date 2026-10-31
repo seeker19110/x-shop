@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { InlineError } from "../ui/InlineError";
 import styles from "./Checkout.module.css";
 import { isNonEmpty } from "../../lib/presence";
+import { t } from "../../lib/i18n";
 
 export interface FieldControlProps {
   id: string;
@@ -29,7 +30,7 @@ export function Field({ name, label, required = false, hint, error, children }: 
     <div className={styles.field}>
       <label htmlFor={id} className={styles.label}>
         {label}
-        {required ? null : <span className={styles.optional}> (không bắt buộc)</span>}
+        {required ? null : <span className={styles.optional}>{t("checkout.field.optional")}</span>}
       </label>
       {isNonEmpty(hint) ? (
         <p id={hintId ?? undefined} className={styles.hint}>

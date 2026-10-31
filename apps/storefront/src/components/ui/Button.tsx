@@ -6,6 +6,7 @@ import styles from "./Button.module.css";
 import { cx } from "./cx";
 import { VisuallyHidden } from "./VisuallyHidden";
 import { safeHref } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost";
 export type ButtonSize = "md" | "lg";
@@ -36,7 +37,7 @@ export function Button(props: ButtonProps) {
     variant = "primary",
     size = "md",
     loading = false,
-    loadingLabel = "Đang xử lý",
+    loadingLabel = t("ui.loading.busy"),
     fullWidth = false,
     children,
     className,

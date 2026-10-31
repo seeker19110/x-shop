@@ -9,6 +9,7 @@ import { PurchaseAnalytics } from "./PurchaseAnalytics";
 import { purchaseEventOf } from "./purchase-event";
 import styles from "./Order.module.css";
 import { isNonEmpty } from "../../lib/presence";
+import { t } from "../../lib/i18n";
 
 function Block({ block, id }: { block: StatusBlock; id: string }) {
   return (
@@ -39,9 +40,12 @@ export function OrderDetail({ order, now = new Date() }: { order: OrderDetails; 
       <PurchaseAnalytics event={purchaseEventOf(order)} />
       <div>
         <h1 id="don-hang-tieu-de" className={styles.title}>
-          Đơn hàng <span className={styles.ref}>{order.ref}</span>
+          {t("orders.heading")}
+          <span className={styles.ref}>{order.ref}</span>
         </h1>
-        <p className={styles.muted}>Đặt lúc {formatOrderTime(order.createdAt)}</p>
+        <p className={styles.muted}>
+          {t("orders.detail.placedAt", { time: formatOrderTime(order.createdAt) })}
+        </p>
       </div>
 
       <ul className={styles.blocks}>
@@ -59,38 +63,40 @@ export function OrderDetail({ order, now = new Date() }: { order: OrderDetails; 
 
       {p.showReorder ? (
         <div className={styles.section}>
-          <h2>Đặt lại đơn</h2>
-          <p>
-            Hàng giữ cho đơn này đã được trả về kho. Bạn có thể chọn lại sản phẩm và đặt đơn mới — giá và tồn
-            kho sẽ được kiểm tra lại trước khi bạn xác nhận.
-          </p>
+          <h2>{t("orders.detail.reorderTitle")}</h2>
+          <p>{t("orders.detail.reorderText")}</p>
           <div className={styles.actions}>
             <Button href="/tim-kiem" variant="secondary">
-              Chọn lại sản phẩm
+              {t("orders.detail.reorderButton")}
             </Button>
           </div>
         </div>
       ) : null}
 
       <section className={styles.section} aria-labelledby="tien-trinh">
-        <h2 id="tien-trinh">Tiến trình</h2>
+        <h2 id="tien-trinh">{t("orders.detail.timelineTitle")}</h2>
         <ol className={styles.timeline}>
-          {order.timeline.map((t, i) => (
-            <li key={`${t.kind}-${i}`}>
-              <time dateTime={t.at}>{formatOrderTime(t.at)}</time> — {t.label}
+          {order.timeline.map((entry, i) => (
+            <li key={`${entry.kind}-${i}`}>
+              <time dateTime={entry.at}>{formatOrderTime(entry.at)}</time>
+              {t("orders.detail.timelineSep")}
+              {entry.label}
             </li>
           ))}
         </ol>
       </section>
 
       <section className={styles.section} aria-labelledby="san-pham">
-        <h2 id="san-pham">Sản phẩm</h2>
+        <h2 id="san-pham">{t("orders.detail.productsTitle")}</h2>
         <ul className={styles.lines}>
           {order.lines.map((l, i) => (
             <li key={i} className={styles.line}>
               <span>
                 {l.title}
-                {isNonEmpty(l.variantTitle) ? ` — ${l.variantTitle}` : ""} × {l.quantity}
+                {isNonEmpty(l.variantTitle)
+                  ? t("orders.detail.lineVariant", { variant: l.variantTitle })
+                  : ""}
+                {t("orders.detail.lineQuantity", { quantity: l.quantity })}
               </span>
               <span>{formatVnd(l.total)}</span>
             </li>
@@ -98,40 +104,44 @@ export function OrderDetail({ order, now = new Date() }: { order: OrderDetails; 
         </ul>
         <dl className={styles.lines}>
           <div className={styles.totalRow}>
-            <dt>Tạm tính</dt>
+            <dt>{t("orders.detail.subtotal")}</dt>
             <dd>{formatVnd(order.totals.subtotal)}</dd>
           </div>
           {order.totals.discountTotal > 0 ? (
             <div className={styles.totalRow}>
-              <dt>Giảm giá</dt>
-              <dd>−{formatVnd(order.totals.discountTotal)}</dd>
+              <dt>{t("orders.detail.discount")}</dt>
+              <dd>{t("orders.detail.minusAmount", { amount: formatVnd(order.totals.discountTotal) })}</dd>
             </div>
           ) : null}
           <div className={styles.totalRow}>
-            <dt>Phí giao hàng</dt>
+            <dt>{t("orders.detail.shipping")}</dt>
             <dd>{formatVnd(order.totals.shippingTotal)}</dd>
           </div>
           <div className={cx(styles.totalRow, styles.grandTotal)}>
-            <dt>Tổng cộng</dt>
+            <dt>{t("orders.detail.total")}</dt>
             <dd>{formatVnd(order.totals.total)}</dd>
           </div>
         </dl>
       </section>
 
       <section className={styles.section} aria-labelledby="nguoi-nhan">
-        <h2 id="nguoi-nhan">Người nhận</h2>
+        <h2 id="nguoi-nhan">{t("orders.detail.recipientTitle")}</h2>
+        <p>{t("orders.detail.recipient", { name: order.contact.name, phone: order.contact.phone })}</p>
         <p>
-          {order.contact.name} · {order.contact.phone}
-        </p>
-        <p>
-          {order.address.line}, {order.address.wardName}, {order.address.provinceName}
+          {t("orders.detail.address", {
+            line: order.address.line,
+            ward: order.address.wardName,
+            province: order.address.provinceName,
+          })}
         </p>
       </section>
 
       <section className={styles.section} aria-labelledby="ho-tro">
-        <h2 id="ho-tro">Cần hỗ trợ?</h2>
+        <h2 id="ho-tro">{t("orders.detail.supportTitle")}</h2>
         <p>
-          Mã tham chiếu đơn: <strong>{order.ref}</strong>. Liên hệ: {SELLER.contact}.
+          {t("orders.detail.supportRef")}
+          <strong>{order.ref}</strong>
+          {t("orders.detail.supportContact", { contact: SELLER.contact })}
         </p>
       </section>
     </section>

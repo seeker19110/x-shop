@@ -7,6 +7,7 @@ import type { OrderResult } from "../../lib/orders/types";
 import { Button } from "../ui/Button";
 import { Dialog } from "../ui/Dialog";
 import styles from "./Order.module.css";
+import { t } from "../../lib/i18n";
 
 export interface OrderActionsProps {
   orderRef: string;
@@ -19,11 +20,11 @@ export interface OrderActionsProps {
 function failureMessage(r: OrderResult): string {
   switch (r.kind) {
     case "network":
-      return "Mất kết nối — chưa xác định được kết quả. Vui lòng kiểm tra mạng rồi thử lại.";
+      return t("orders.actions.network");
     case "rate_limited":
-      return `Bạn vừa kiểm tra xong. Vui lòng thử lại sau ${r.retryAfterS} giây.`;
+      return t("orders.actions.recheckWait", { seconds: r.retryAfterS });
     case "not_found":
-      return "Phiên xem đơn đã hết hạn. Vui lòng tra cứu lại đơn hàng.";
+      return t("orders.actions.sessionExpired");
     case "error":
       return r.message;
     default:
@@ -53,8 +54,8 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
         setMessage({
           text:
             r.order.paymentState === "paid"
-              ? "Đã xác nhận thanh toán."
-              : "Chưa có xác nhận thanh toán từ cổng. Nếu bạn đã thanh toán, vui lòng chờ thêm ít phút rồi kiểm tra lại.",
+              ? t("orders.actions.paidConfirmed")
+              : t("orders.actions.notPaidYet"),
           error: false,
         });
         router.refresh();
@@ -77,9 +78,7 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
       if (r.kind === "ok") {
         setMessage({
           text:
-            r.refundRequested === true
-              ? "Đơn đã được hủy. Chúng tôi đã ghi nhận yêu cầu hoàn tiền và sẽ liên hệ với bạn."
-              : "Đơn đã được hủy.",
+            r.refundRequested === true ? t("orders.actions.cancelledRefund") : t("orders.actions.cancelled"),
           error: false,
         });
         router.refresh();
@@ -87,7 +86,7 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
         setMessage({
           text:
             r.kind === "error" && r.code === "PAYMENT_PENDING"
-              ? "Đang xác nhận thanh toán với cổng nên chưa hủy được. Vui lòng thử lại sau ít phút."
+              ? t("orders.actions.paymentPending")
               : failureMessage(r),
           error: true,
         });
@@ -107,10 +106,10 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
           <Button
             onClick={recheck}
             loading={busy === "recheck"}
-            loadingLabel="Đang kiểm tra"
+            loadingLabel={t("orders.actions.rechecking")}
             disabled={busy !== null}
           >
-            Kiểm tra lại
+            {t("orders.actions.recheck")}
           </Button>
         ) : null}
         {canCancel ? (
@@ -120,7 +119,7 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
             onClick={() => setConfirmOpen(true)}
             disabled={busy !== null}
           >
-            Hủy đơn
+            {t("orders.actions.cancel")}
           </Button>
         ) : null}
       </div>
@@ -130,17 +129,15 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
       <Dialog
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
-        title={`Hủy đơn ${orderRef}?`}
+        title={t("orders.actions.dialogTitle", { ref: orderRef })}
         returnFocusRef={cancelBtn}
       >
         <p>
-          Bạn sắp hủy đơn <strong>{orderRef}</strong>. Thao tác này không thể hoàn tác.
+          {t("orders.actions.dialogIntro")}
+          <strong>{orderRef}</strong>
+          {t("orders.actions.dialogWarn")}
         </p>
-        <p>
-          {paid
-            ? "Đơn đã được thanh toán. Sau khi hủy, chúng tôi sẽ hoàn tiền theo chính sách hoàn tiền."
-            : "Sau khi hủy, hàng giữ cho đơn sẽ được trả lại kho và không thể khôi phục đơn này."}
-        </p>
+        <p>{paid ? t("orders.actions.dialogPaid") : t("orders.actions.dialogUnpaid")}</p>
         <div className={styles.actions}>
           <Button
             variant="secondary"
@@ -148,10 +145,10 @@ export function OrderActions({ orderRef, canRecheck, canCancel, paid }: OrderAct
             onClick={() => setConfirmOpen(false)}
             disabled={busy === "cancel"}
           >
-            Giữ đơn
+            {t("orders.actions.keep")}
           </Button>
-          <Button onClick={cancel} loading={busy === "cancel"} loadingLabel="Đang hủy">
-            Xác nhận hủy
+          <Button onClick={cancel} loading={busy === "cancel"} loadingLabel={t("orders.actions.cancelling")}>
+            {t("orders.actions.confirmCancel")}
           </Button>
         </div>
       </Dialog>

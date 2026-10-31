@@ -17,8 +17,8 @@ interface Props {
 }
 
 function shorten(text: string, max = 160): string {
-  const t = text.replace(/\s+/g, " ").trim();
-  return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= max ? compact : `${compact.slice(0, max - 1).trimEnd()}…`;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {

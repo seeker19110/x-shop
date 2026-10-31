@@ -10,6 +10,7 @@ import { fixtureList, fixtureProduct, fixtureSearch } from "./source-fixtures";
 import { CatalogError, type ProductDetail, type ProductListResponse, type SearchResponse } from "./types";
 import { isNonEmpty } from "../presence";
 import { LIST_TAGS, productTags } from "./revalidate";
+import { t } from "../i18n";
 
 /**
  * Client catalog phía server (không import vào client component): chọn nguồn bằng `XS_DATA_SOURCE`.
@@ -96,7 +97,7 @@ async function backendGet<T>(
       },
     );
   } catch {
-    throw new CatalogError("UNAVAILABLE", "Không kết nối được máy chủ dữ liệu.");
+    throw new CatalogError("UNAVAILABLE", t("catalog.errors.unavailable"));
   }
   if (res.ok) return (await res.json()) as T;
   let problem: { code?: string; detail?: string } = {};
@@ -105,10 +106,11 @@ async function backendGet<T>(
   } catch {
     // thân không phải JSON: dùng thông báo chung bên dưới
   }
-  if (res.status === 404) throw new CatalogError("NOT_FOUND", problem.detail ?? "Không tìm thấy.", 404);
+  if (res.status === 404)
+    throw new CatalogError("NOT_FOUND", problem.detail ?? t("catalog.errors.notFound"), 404);
   if (res.status === 422) {
     const code = problem.code === "INVALID_RANGE" ? "INVALID_RANGE" : "VALIDATION";
-    throw new CatalogError(code, problem.detail ?? "Tham số không hợp lệ.", 422);
+    throw new CatalogError(code, problem.detail ?? t("catalog.errors.validation"), 422);
   }
   if (res.status === 429) {
     // Backend giới hạn tốc độ (vd. tìm kiếm theo IP): giữ nguyên 429 + Retry-After để route chuyển tiếp cho client,
@@ -116,12 +118,12 @@ async function backendGet<T>(
     const raw = res.headers.get("retry-after")?.trim() ?? "";
     throw new CatalogError(
       "UNAVAILABLE",
-      "Quá nhiều yêu cầu, thử lại sau.",
+      t("catalog.errors.tooManyRequests"),
       429,
       /^\d{1,9}$/.test(raw) ? Number(raw) : null,
     );
   }
-  throw new CatalogError("UNAVAILABLE", "Máy chủ dữ liệu đang gặp sự cố.", res.status);
+  throw new CatalogError("UNAVAILABLE", t("catalog.errors.serverError"), res.status);
 }
 
 function backendBase(): string {
@@ -141,7 +143,7 @@ export async function listProducts(
 ): Promise<ProductListResponse> {
   if (resolveDataSource() === "fixtures") {
     if (filter.priceMin !== null && filter.priceMax !== null && filter.priceMin > filter.priceMax) {
-      throw new CatalogError("INVALID_RANGE", "Giá thấp nhất lớn hơn giá cao nhất.", 422);
+      throw new CatalogError("INVALID_RANGE", t("catalog.errors.invalidRange"), 422);
     }
     return fixtureList(filter, { category: opts.category, pageSize: opts.pageSize ?? CATALOG_PAGE_SIZE });
   }
@@ -157,7 +159,7 @@ export async function search(
 ): Promise<SearchResponse> {
   if (resolveDataSource() === "fixtures") {
     if (filter.priceMin !== null && filter.priceMax !== null && filter.priceMin > filter.priceMax) {
-      throw new CatalogError("INVALID_RANGE", "Giá thấp nhất lớn hơn giá cao nhất.", 422);
+      throw new CatalogError("INVALID_RANGE", t("catalog.errors.invalidRange"), 422);
     }
     return fixtureSearch(filter, { pageSize: opts.pageSize ?? CATALOG_PAGE_SIZE });
   }

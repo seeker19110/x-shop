@@ -1,8 +1,8 @@
+import { t } from "../i18n";
 /** Thông báo trang tra cứu đơn theo tham số `?loi=`/`?tu=` (redirect nội bộ). */
 const NOTICES: Record<string, string> = {
-  "lien-ket": "Liên kết xem đơn đã hết hạn hoặc đã được dùng. Vui lòng tra cứu lại để nhận liên kết mới.",
-  "thanh-toan":
-    "Chúng tôi đang xác nhận thanh toán với cổng VNPAY — bạn không cần thanh toán lại. Tra cứu đơn để xem kết quả.",
+  "lien-ket": t("orders.notice.link"),
+  "thanh-toan": t("orders.notice.payment"),
 };
 
 /**

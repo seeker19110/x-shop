@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS, clientFetch } from "../../lib/client-fetch";
 import { CART_CHANGED_EVENT } from "../../lib/cart/events";
+import { t } from "../../lib/i18n";
 
 /**
  * Số lượng giỏ ở header. Trang vẫn tĩnh/cache được: số được lấy sau khi tải từ `/api/cart/count` (private, no-store)
@@ -39,7 +40,7 @@ export function CartBadge({ initial = 0, className }: { initial?: number; classN
       <span aria-hidden="true" className={className}>
         {count}
       </span>
-      <span className="visually-hidden">{`Giỏ hàng, ${count} sản phẩm`}</span>
+      <span className="visually-hidden">{t("cart.badge", { count })}</span>
     </>
   );
 }

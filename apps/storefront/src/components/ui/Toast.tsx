@@ -12,6 +12,7 @@ import {
 } from "react";
 import styles from "./Toast.module.css";
 import { cx } from "./cx";
+import { t } from "../../lib/i18n";
 
 /**
  * Vùng thông báo aria-live="polite": luôn có trong DOM, chỉ đổi nội dung;
@@ -57,8 +58,8 @@ export function ToastProvider({ children, durationMs = 6000 }: { children: React
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
 
   const dismiss = useCallback((id: number) => {
-    const t = timers.current.get(id);
-    if (t) clearTimeout(t);
+    const timer = timers.current.get(id);
+    if (timer) clearTimeout(timer);
     timers.current.delete(id);
     setItems((xs) => xs.filter((x) => x.id !== id));
   }, []);
@@ -78,7 +79,7 @@ export function ToastProvider({ children, durationMs = 6000 }: { children: React
   useEffect(() => {
     const map = timers.current;
     return () => {
-      for (const t of map.values()) clearTimeout(t);
+      for (const timer of map.values()) clearTimeout(timer);
       map.clear();
     };
   }, []);
@@ -89,16 +90,16 @@ export function ToastProvider({ children, durationMs = 6000 }: { children: React
     <ToastContext.Provider value={api}>
       {children}
       <div role="status" aria-live="polite" className={styles.region}>
-        {items.map((t) => (
-          <div key={t.id} className={styles.toast}>
-            <span>{t.message}</span>
+        {items.map((item) => (
+          <div key={item.id} className={styles.toast}>
+            <span>{item.message}</span>
             <button
               type="button"
               className={styles.dismiss}
-              aria-label="Đóng thông báo"
-              onClick={() => dismiss(t.id)}
+              aria-label={t("ui.toast.close")}
+              onClick={() => dismiss(item.id)}
             >
-              <span aria-hidden="true">×</span>
+              <span aria-hidden="true">{t("ui.glyph.close")}</span>
             </button>
           </div>
         ))}

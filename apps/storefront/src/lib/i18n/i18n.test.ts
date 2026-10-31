@@ -82,3 +82,47 @@ describe("khoá nội suy của danh mục/tìm kiếm/PDP (T-220)", () => {
     expect(() => t("product.notice.sizeSoldOut", { size: "M" })).toThrow(/thiếu tham số "color"/);
   });
 });
+
+describe("khoá có nội suy của lát giỏ/checkout/đơn (T-221)", () => {
+  it("giữ nguyên chữ, dấu câu và tham số 0/Unicode", () => {
+    expect(t("cart.title", { count: 0 })).toBe("Giỏ hàng (0)");
+    expect(t("cart.badge", { count: 3 })).toBe("Giỏ hàng, 3 sản phẩm");
+    expect(t("cart.service.maxLines", { max: 50 })).toBe(
+      "Giỏ hàng tối đa 50 dòng. Hãy xóa bớt trước khi thêm.",
+    );
+    expect(t("cart.service.added", { name: "Áo sơ mi lụa — Đen / M" })).toBe(
+      "Đã thêm Áo sơ mi lụa — Đen / M vào giỏ.",
+    );
+    expect(t("cart.issue.priceChanged", { from: "100.000 ₫", to: "120.000 ₫" })).toBe(
+      "Giá đã thay đổi từ 100.000 ₫ thành 120.000 ₫. Hãy cập nhật giá để tiếp tục.",
+    );
+    expect(t("checkout.totals.minus", { amount: "10.000 ₫" })).toBe("− 10.000 ₫");
+    expect(t("orders.detail.minusAmount", { amount: "10.000 ₫" })).toBe("−10.000 ₫");
+    expect(t("checkout.banner.stockNone", { title: "Áo", requested: 2 })).toBe(
+      "Áo: đã hết hàng (bạn chọn 2).",
+    );
+    expect(t("checkout.banner.changedNew", { to: "2 ₫", from: "1 ₫" })).toBe(
+      "Tổng tiền mới: 2 ₫ (trước đó 1 ₫). Vui lòng kiểm tra rồi bấm “Xác nhận tổng mới và đặt hàng” — chúng tôi không thu thêm khi bạn chưa đồng ý.",
+    );
+    expect(t("orders.present.payment.holdUntil", { time: "01:00 01/01/2026" })).toBe(
+      'Hàng được giữ đến 01:00 01/01/2026. Nếu bạn đã thanh toán, không cần thanh toán lại — bấm "Kiểm tra lại" để cập nhật.',
+    );
+    expect(t("orders.detail.address", { line: "1 Phố A", ward: "Phường B", province: "Hà Nội" })).toBe(
+      "1 Phố A, Phường B, Hà Nội",
+    );
+  });
+
+  it("đoạn nối giữ khoảng trắng đầu/cuối (ghép với thẻ JSX kế bên)", () => {
+    expect(t("orders.heading")).toBe("Đơn hàng ");
+    expect(t("orders.actions.dialogIntro")).toBe("Bạn sắp hủy đơn ");
+    expect(t("orders.detail.lineQuantity", { quantity: 2 })).toBe(" × 2");
+    expect(t("orders.detail.timelineSep")).toBe(" — ");
+  });
+
+  it("thiếu tham số: ném lỗi ở dev/test, production thay bằng rỗng", () => {
+    expect(() => t("cart.service.quantityRange")).toThrow(/thiếu tham số "max"/);
+    expect(() => t("orders.present.payment.codDetail", {})).toThrow(/thiếu tham số "amount"/);
+    vi.stubEnv("NODE_ENV", "production");
+    expect(t("cart.badge", {})).toBe("Giỏ hàng,  sản phẩm");
+  });
+});

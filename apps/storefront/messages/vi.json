@@ -154,6 +154,21 @@
       "next": "Trang sau",
       "page": "Trang {page}",
       "gap": "…"
+    },
+    "errors": {
+      "unavailable": "Không kết nối được máy chủ dữ liệu.",
+      "notFound": "Không tìm thấy.",
+      "validation": "Tham số không hợp lệ.",
+      "tooManyRequests": "Quá nhiều yêu cầu, thử lại sau.",
+      "serverError": "Máy chủ dữ liệu đang gặp sự cố.",
+      "invalidRange": "Giá thấp nhất lớn hơn giá cao nhất."
+    },
+    "card": {
+      "soldOut": "Hết hàng",
+      "discount": "Giảm {percent}%",
+      "colors": "Màu có sẵn",
+      "moreBadge": "+{count}",
+      "moreText": "và {count} màu khác"
     }
   },
   "search": {
@@ -229,6 +244,336 @@
         "title": "Đổi trả",
         "text": "Điều kiện đổi trả được công bố đầy đủ trước khi mua.",
         "linkLabel": "Chi tiết đổi trả"
+      }
+    }
+  },
+  "ui": {
+    "glyph": {
+      "close": "×",
+      "check": "✓",
+      "alert": "!"
+    },
+    "chip": {
+      "listLabel": "Bộ lọc đang áp",
+      "clearAll": "Xóa tất cả"
+    },
+    "colorSwatch": {
+      "legend": "Màu",
+      "unavailable": "{name} (hết hàng)",
+      "selected": ": {name}"
+    },
+    "dialog": {
+      "close": "Đóng"
+    },
+    "loading": {
+      "content": "Đang tải nội dung…",
+      "busy": "Đang xử lý"
+    },
+    "sizeSelector": {
+      "legend": "Size",
+      "guide": "Hướng dẫn chọn size",
+      "soldOut": "hết hàng"
+    },
+    "toast": {
+      "close": "Đóng thông báo"
+    },
+    "breadcrumb": {
+      "label": "Đường dẫn"
+    },
+    "price": {
+      "from": "Từ {price}",
+      "discounted": "Giá gốc {original}, giá hiện tại {current}"
+    }
+  },
+  "cart": {
+    "service": {
+      "disabled": "Giỏ hàng chưa khả dụng ở môi trường này. Vui lòng quay lại sau.",
+      "unavailable": "Không kết nối được máy chủ. Vui lòng thử lại sau ít phút.",
+      "unconfirmed": "Chưa xác nhận được thao tác với giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
+      "halfAdd": "Đã thêm phân loại mới nhưng chưa gỡ dòng cũ, vui lòng kiểm tra giỏ.",
+      "halfRefresh": "Đã gỡ dòng cũ nhưng chưa thêm lại, vui lòng kiểm tra giỏ.",
+      "unknown": "Không xác định được giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
+      "outOfStockQty": "Số lượng yêu cầu vượt quá tồn kho hiện có. Vui lòng giảm số lượng.",
+      "lineNotFound": "Không tìm thấy dòng trong giỏ. Hãy tải lại trang.",
+      "updateFailed": "Không cập nhật được giỏ hàng. Vui lòng thử lại.",
+      "productGone": "Sản phẩm này hiện không còn bán.",
+      "invalidChoice": "Lựa chọn không hợp lệ. Vui lòng chọn lại màu và size.",
+      "variantSoldOut": "Phiên bản này đã hết hàng. Vui lòng chọn màu/size khác.",
+      "maxLines": "Giỏ hàng tối đa {max} dòng. Hãy xóa bớt trước khi thêm.",
+      "maxQuantity": "Mỗi sản phẩm tối đa {max} trong giỏ.",
+      "added": "Đã thêm {name} vào giỏ.",
+      "invalidLine": "Dòng giỏ hàng không hợp lệ.",
+      "quantityRange": "Số lượng phải từ 1 đến {max}.",
+      "quantityUpdated": "Đã cập nhật số lượng.",
+      "removed": "Đã xóa sản phẩm khỏi giỏ.",
+      "keepChoice": "Giữ nguyên lựa chọn.",
+      "changedTo": "Đã đổi sang {name}.",
+      "priceUpdated": "Đã cập nhật giá."
+    },
+    "issue": {
+      "unavailable": "Sản phẩm này hiện không còn bán. Vui lòng xóa khỏi giỏ.",
+      "variantGone": "Phiên bản này không còn bán. Hãy chọn màu/size khác hoặc xóa khỏi giỏ.",
+      "outOfStock": "Phiên bản này đã hết hàng. Hãy chọn màu/size khác hoặc xóa khỏi giỏ.",
+      "priceChanged": "Giá đã thay đổi từ {from} thành {to}. Hãy cập nhật giá để tiếp tục."
+    },
+    "defaultTitle": "Sản phẩm",
+    "badge": "Giỏ hàng, {count} sản phẩm",
+    "empty": {
+      "title": "Giỏ hàng của bạn đang trống",
+      "description": "Hãy chọn sản phẩm bạn thích, chúng tôi sẽ giữ giỏ cho bạn.",
+      "action": "Tiếp tục mua sắm"
+    },
+    "title": "Giỏ hàng ({count})",
+    "line": {
+      "color": "Màu",
+      "size": "Size",
+      "chooseColor": "Chọn màu",
+      "chooseSize": "Chọn size",
+      "colorMissingSize": "Màu {color} không có size {size} — vui lòng chọn lại size.",
+      "sizeSoldOut": "{label} (hết hàng)",
+      "quantityGroup": "Số lượng {title}",
+      "decrease": "Giảm số lượng {title}",
+      "increase": "Tăng số lượng {title}",
+      "minusGlyph": "−",
+      "plusGlyph": "+",
+      "remove": "Xóa",
+      "removeFor": " {title}",
+      "refreshPrice": "Cập nhật giá"
+    },
+    "summary": {
+      "title": "Tóm tắt",
+      "subtotal": "Tạm tính",
+      "note": "Phí vận chuyển và mã giảm giá được tính ở bước thanh toán.",
+      "checkout": "Thanh toán",
+      "blocked": "Có {count} sản phẩm cần xử lý (đổi phiên bản, cập nhật giá hoặc xóa) trước khi thanh toán.",
+      "guest": "Mua không cần tài khoản."
+    },
+    "pageTitle": "Giỏ hàng"
+  },
+  "checkout": {
+    "errors": {
+      "unavailable": "Không kết nối được máy chủ. Vui lòng thử lại sau ít phút.",
+      "quoteFailed": "Không tính được tổng tiền. Vui lòng kiểm tra lại thông tin.",
+      "placeFailed": "Không đặt được hàng. Vui lòng thử lại.",
+      "attemptUnknown": "Không xác định được đơn hàng.",
+      "attemptAborted": "Lần đặt hàng trước bị gián đoạn. Vui lòng kiểm tra lại giỏ hàng và đặt lại.",
+      "cartEmpty": "Giỏ hàng đang trống hoặc đã hết hạn. Vui lòng chọn sản phẩm lại.",
+      "invalidRequest": "Yêu cầu đặt hàng không hợp lệ. Vui lòng tải lại trang.",
+      "attemptNotFound": "Không tìm thấy lần đặt hàng."
+    },
+    "field": {
+      "optional": " (không bắt buộc)"
+    },
+    "orderLines": {
+      "label": "Sản phẩm trong đơn hàng",
+      "quantity": "Số lượng: {quantity}"
+    },
+    "payment": {
+      "cod": "Thanh toán khi nhận hàng (COD)",
+      "vnpay": "Thanh toán online qua VNPAY"
+    },
+    "totals": {
+      "calculating": "Đang tính…",
+      "enterAddress": "Nhập địa chỉ để tính",
+      "subtotal": "Tiền hàng",
+      "discountWithCode": "Giảm giá (mã {code})",
+      "discount": "Giảm giá",
+      "minus": "− {amount}",
+      "shipping": "Phí vận chuyển",
+      "shippingDiscount": "Giảm phí vận chuyển",
+      "grand": "Tổng phải trả",
+      "method": "Thanh toán"
+    },
+    "form": {
+      "title": "Thanh toán",
+      "guestStrong": "Mua không cần tài khoản.",
+      "guestRest": "Bạn không cần đăng nhập hay tạo tài khoản để đặt hàng.",
+      "summaryLabel": "Tóm tắt đơn hàng",
+      "summaryToggle": "{action} đơn hàng ({count} sản phẩm)",
+      "summaryHide": "Ẩn",
+      "summaryShow": "Xem",
+      "totalUpdated": "Tổng tiền đã cập nhật: {total}.",
+      "waitQuote": "Đang tính tổng tiền. Vui lòng đợi trong giây lát rồi bấm Đặt hàng.",
+      "stillProcessing": "Đơn vẫn đang được xử lý. Vui lòng đợi và kiểm tra lại sau ít giây.",
+      "defaultTitle": "Sản phẩm",
+      "submitConfirm": "Xác nhận tổng mới và đặt hàng",
+      "submit": "Đặt hàng",
+      "redirecting": "Đang chuyển…",
+      "policyNote": "Bằng việc đặt hàng, bạn đồng ý với chính sách giao hàng và đổi trả của cửa hàng.",
+      "sideTitle": "Đơn hàng của bạn",
+      "editCart": "Chỉnh sửa giỏ hàng",
+      "totalsLabel": "Tổng tiền"
+    },
+    "banner": {
+      "changedNew": "Tổng tiền mới: {to} (trước đó {from}). Vui lòng kiểm tra rồi bấm “Xác nhận tổng mới và đặt hàng” — chúng tôi không thu thêm khi bạn chưa đồng ý.",
+      "changedSame": "Tổng tiền: {to}. Vui lòng kiểm tra rồi bấm “Xác nhận tổng mới và đặt hàng” — chúng tôi không thu thêm khi bạn chưa đồng ý.",
+      "changedPending": "Đang cập nhật tổng tiền mới. Vui lòng kiểm tra rồi bấm Đặt hàng lại.",
+      "reviewCart": "Xem lại giỏ hàng",
+      "stockSome": "{title}: chỉ còn {available} (bạn chọn {requested}).",
+      "stockNone": "{title}: đã hết hàng (bạn chọn {requested}).",
+      "fixCart": "Sửa giỏ hàng",
+      "backToCart": "Quay lại giỏ hàng",
+      "network": "Mất kết nối khi đặt hàng. Thông tin của bạn vẫn được giữ nguyên — hãy bấm “Đặt hàng” lại để thử tiếp. Đơn sẽ không bị tạo trùng.",
+      "unavailable": "Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít phút",
+      "kept": "Thông tin của bạn vẫn được giữ nguyên; đơn sẽ không bị tạo trùng.",
+      "retry": "Thử lại",
+      "busy": "Hệ thống đang bận xử lý nhiều đơn. Vui lòng bấm “Đặt hàng” lại sau giây lát; đơn sẽ không bị tạo trùng.",
+      "processingStrong": "Đơn của bạn vẫn đang được xử lý.",
+      "processingRest": "Vui lòng KHÔNG đặt lại.",
+      "reference": "Mã tham chiếu: {id}",
+      "recheck": "Kiểm tra lại"
+    },
+    "contact": {
+      "legend": "1. Liên hệ",
+      "name": "Họ và tên",
+      "phone": "Số điện thoại",
+      "phoneHint": "Dùng để xác nhận đơn và giao hàng.",
+      "email": "Email",
+      "emailHint": "Nhận thông báo đơn hàng qua email."
+    },
+    "shipping": {
+      "legend": "2. Giao hàng",
+      "province": "Tỉnh/thành phố",
+      "chooseProvince": "Chọn tỉnh/thành phố",
+      "ward": "Phường/xã",
+      "wardsEmpty": "Chưa có danh sách phường/xã cho tỉnh/thành này. Vui lòng chọn tỉnh/thành khác.",
+      "wardsError": "Không tải được danh sách phường/xã.",
+      "chooseProvinceFirst": "Chọn tỉnh/thành phố trước",
+      "loading": "Đang tải…",
+      "chooseWard": "Chọn phường/xã",
+      "reloadWards": "Thử tải lại",
+      "line": "Số nhà, tên đường",
+      "lineHint": "Ví dụ: 12 Phố Điện Biên Phủ, tòa A, căn 305."
+    },
+    "paymentStep": {
+      "legend": "3. Thanh toán",
+      "groupLabel": "Phương thức thanh toán",
+      "codHint": "Bạn trả tiền mặt cho nhân viên giao hàng khi nhận hàng.",
+      "vnpayHint": "Bạn sẽ được chuyển sang cổng VNPAY để thanh toán. Đơn được giữ hàng trong thời gian có hạn.",
+      "discount": "Mã giảm giá",
+      "apply": "Áp dụng",
+      "applied": "Đang áp dụng mã {code}. ",
+      "remove": "Bỏ mã"
+    },
+    "pageTitle": "Thanh toán"
+  },
+  "pwa": {
+    "offlineBanner": "Bạn đang ngoại tuyến — dữ liệu có thể đã cũ. Chưa thể đặt hàng hoặc thanh toán cho đến khi có mạng.",
+    "manifest": {
+      "name": "X-Shop — Thời trang Việt Nam",
+      "description": "Cửa hàng thời trang X-Shop: mua nhanh trên điện thoại, không cần tài khoản."
+    }
+  },
+  "orders": {
+    "pageTitle": "Đơn hàng của bạn",
+    "viewTitle": "Xem đơn hàng",
+    "lookupTitle": "Tra cứu đơn hàng",
+    "heading": "Đơn hàng ",
+    "needAuth": "Bạn cần xác thực để xem đơn này. Nhập mã đơn và số điện thoại đặt hàng — chúng tôi sẽ gửi liên kết xem đơn tới liên hệ đã dùng khi đặt.",
+    "rateLimited": "Bạn đã thao tác quá nhiều lần. Vui lòng thử lại sau {seconds} giây.",
+    "loadFailed": "Chưa tải được trạng thái đơn hàng. Vui lòng kiểm tra kết nối và tải lại trang.",
+    "reload": "Tải lại",
+    "lookupIntro": "Vì lý do bảo mật, mã đơn và số điện thoại không đủ để hiển thị đơn. Chúng tôi sẽ gửi liên kết xem đơn (hiệu lực 15 phút, dùng một lần) tới số điện thoại/email đã dùng khi đặt hàng.",
+    "redeemIntro": "Bấm nút dưới đây để mở đơn hàng của bạn trên thiết bị này.",
+    "redeemInvalid": "Liên kết không hợp lệ.",
+    "notice": {
+      "link": "Liên kết xem đơn đã hết hạn hoặc đã được dùng. Vui lòng tra cứu lại để nhận liên kết mới.",
+      "payment": "Chúng tôi đang xác nhận thanh toán với cổng VNPAY — bạn không cần thanh toán lại. Tra cứu đơn để xem kết quả."
+    },
+    "lookup": {
+      "refLabel": "Mã đơn hàng",
+      "refPlaceholder": "XS-ABC123",
+      "phoneLabel": "Số điện thoại đặt hàng",
+      "sending": "Đang gửi",
+      "submit": "Gửi liên kết xem đơn",
+      "refRequired": "Vui lòng nhập mã đơn hàng",
+      "phoneRequired": "Vui lòng nhập số điện thoại",
+      "fallbackSent": "Nếu thông tin đúng, chúng tôi đã gửi liên kết xem đơn tới số điện thoại/email đã dùng khi đặt hàng.",
+      "unavailable": "Tra cứu đơn tạm thời chưa khả dụng.",
+      "invalid": "Thông tin chưa hợp lệ",
+      "tooMany": "Bạn đã thử quá nhiều lần. Vui lòng thử lại sau.",
+      "sendFailed": "Không gửi được yêu cầu lúc này. Vui lòng thử lại sau ít phút."
+    },
+    "fetchError": "Không tải được thông tin đơn lúc này. Vui lòng thử lại sau ít phút.",
+    "defaultTitle": "Sản phẩm",
+    "actions": {
+      "network": "Mất kết nối — chưa xác định được kết quả. Vui lòng kiểm tra mạng rồi thử lại.",
+      "recheckWait": "Bạn vừa kiểm tra xong. Vui lòng thử lại sau {seconds} giây.",
+      "sessionExpired": "Phiên xem đơn đã hết hạn. Vui lòng tra cứu lại đơn hàng.",
+      "paidConfirmed": "Đã xác nhận thanh toán.",
+      "notPaidYet": "Chưa có xác nhận thanh toán từ cổng. Nếu bạn đã thanh toán, vui lòng chờ thêm ít phút rồi kiểm tra lại.",
+      "cancelledRefund": "Đơn đã được hủy. Chúng tôi đã ghi nhận yêu cầu hoàn tiền và sẽ liên hệ với bạn.",
+      "cancelled": "Đơn đã được hủy.",
+      "paymentPending": "Đang xác nhận thanh toán với cổng nên chưa hủy được. Vui lòng thử lại sau ít phút.",
+      "recheck": "Kiểm tra lại",
+      "rechecking": "Đang kiểm tra",
+      "cancel": "Hủy đơn",
+      "dialogTitle": "Hủy đơn {ref}?",
+      "dialogIntro": "Bạn sắp hủy đơn ",
+      "dialogWarn": ". Thao tác này không thể hoàn tác.",
+      "dialogPaid": "Đơn đã được thanh toán. Sau khi hủy, chúng tôi sẽ hoàn tiền theo chính sách hoàn tiền.",
+      "dialogUnpaid": "Sau khi hủy, hàng giữ cho đơn sẽ được trả lại kho và không thể khôi phục đơn này.",
+      "keep": "Giữ đơn",
+      "cancelling": "Đang hủy",
+      "confirmCancel": "Xác nhận hủy"
+    },
+    "detail": {
+      "placedAt": "Đặt lúc {time}",
+      "reorderTitle": "Đặt lại đơn",
+      "reorderText": "Hàng giữ cho đơn này đã được trả về kho. Bạn có thể chọn lại sản phẩm và đặt đơn mới — giá và tồn kho sẽ được kiểm tra lại trước khi bạn xác nhận.",
+      "reorderButton": "Chọn lại sản phẩm",
+      "timelineTitle": "Tiến trình",
+      "timelineSep": " — ",
+      "productsTitle": "Sản phẩm",
+      "lineVariant": " — {variant}",
+      "lineQuantity": " × {quantity}",
+      "subtotal": "Tạm tính",
+      "discount": "Giảm giá",
+      "minusAmount": "−{amount}",
+      "shipping": "Phí giao hàng",
+      "total": "Tổng cộng",
+      "recipientTitle": "Người nhận",
+      "recipient": "{name} · {phone}",
+      "address": "{line}, {ward}, {province}",
+      "supportTitle": "Cần hỗ trợ?",
+      "supportRef": "Mã tham chiếu đơn: ",
+      "supportContact": ". Liên hệ: {contact}."
+    },
+    "present": {
+      "placement": {
+        "title": "Đặt đơn",
+        "placed": "Đã nhận đơn — chờ xác nhận",
+        "placedCod": "Nhân viên sẽ gọi xác nhận qua số {phone} trước {time}.",
+        "awaitingPayment": "Đã nhận đơn — chờ thanh toán",
+        "confirmed": "Đơn đã được xác nhận",
+        "completed": "Đơn đã hoàn tất",
+        "cancelled": "Đơn đã hủy",
+        "holdExpired": "Đơn hủy tự động vì quá thời hạn thanh toán.",
+        "customerCancelled": "Bạn đã hủy đơn này."
+      },
+      "payment": {
+        "title": "Thanh toán",
+        "cod": "Thanh toán khi nhận hàng",
+        "codDetail": "Số tiền cần trả khi nhận hàng: {amount}.",
+        "paid": "Đã thanh toán {amount}",
+        "refundPending": "Đang xử lý hoàn tiền",
+        "refundDetail": "Chúng tôi đã nhận {amount} và sẽ hoàn lại theo chính sách hoàn tiền.",
+        "expired": "Hết thời hạn thanh toán",
+        "expiredDetail": "Không có khoản tiền nào được ghi nhận cho đơn này.",
+        "void": "Không phát sinh thanh toán",
+        "pending": "Đang xác nhận thanh toán",
+        "holdOver": "Thời gian giữ hàng đã hết — hệ thống đang kiểm tra kết quả cuối cùng với cổng thanh toán. Bạn không cần thanh toán lại.",
+        "holdUntil": "Hàng được giữ đến {time}. Nếu bạn đã thanh toán, không cần thanh toán lại — bấm \"Kiểm tra lại\" để cập nhật.",
+        "noHold": "Nếu bạn đã thanh toán, không cần thanh toán lại — bấm \"Kiểm tra lại\" để cập nhật."
+      },
+      "shipment": {
+        "title": "Giao hàng",
+        "unfulfilled": "Chưa giao — đơn sẽ được chuẩn bị sau khi xác nhận",
+        "picking": "Đang chuẩn bị hàng",
+        "packed": "Đã đóng gói, chờ bàn giao vận chuyển",
+        "shipped": "Đang giao hàng",
+        "delivered": "Đã giao hàng",
+        "cancelledNone": "Không giao (đơn đã hủy)"
       }
     }
   }

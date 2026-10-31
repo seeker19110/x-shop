@@ -3,6 +3,7 @@ import type { ProductDetail } from "../catalog/types";
 import { formatVnd } from "../format-vnd";
 import type { CartLineView, CartView, LineChoices, LineIssue } from "./types";
 import { isNonEmpty } from "../presence";
+import { t } from "../i18n";
 
 /** Các trường giỏ lấy từ Medusa Store API (`?fields=`) — chỉ những gì storefront dùng. */
 export const CART_FIELDS = [
@@ -86,25 +87,25 @@ export function issueFor(
 ): LineIssue | null {
   if (detail === undefined) return null; // không kiểm được: backend vẫn kiểm lại lúc báo giá/đặt hàng
   if (detail === null) {
-    return { code: "UNAVAILABLE", message: "Sản phẩm này hiện không còn bán. Vui lòng xóa khỏi giỏ." };
+    return { code: "UNAVAILABLE", message: t("cart.issue.unavailable") };
   }
   const v = detail.variants.find((x) => x.variant_id === variantId);
   if (!v) {
     return {
       code: "VARIANT_GONE",
-      message: "Phiên bản này không còn bán. Hãy chọn màu/size khác hoặc xóa khỏi giỏ.",
+      message: t("cart.issue.variantGone"),
     };
   }
   if (!v.in_stock) {
     return {
       code: "OUT_OF_STOCK",
-      message: "Phiên bản này đã hết hàng. Hãy chọn màu/size khác hoặc xóa khỏi giỏ.",
+      message: t("cart.issue.outOfStock"),
     };
   }
   if (v.price !== unitPrice) {
     return {
       code: "PRICE_CHANGED",
-      message: `Giá đã thay đổi từ ${formatVnd(unitPrice)} thành ${formatVnd(v.price)}. Hãy cập nhật giá để tiếp tục.`,
+      message: t("cart.issue.priceChanged", { from: formatVnd(unitPrice), to: formatVnd(v.price) }),
     };
   }
   return null;
@@ -119,7 +120,7 @@ export function buildCartView(raw: RawCart | null, lookup: ProductLookup, backen
     const unitPrice = int(it.unit_price);
     const variantId = it.variant_id ?? null;
     const variant = detail?.variants.find((v) => v.variant_id === variantId);
-    const title = it.product_title ?? it.title ?? "Sản phẩm";
+    const title = it.product_title ?? it.title ?? t("cart.defaultTitle");
     return [
       {
         id: it.id,

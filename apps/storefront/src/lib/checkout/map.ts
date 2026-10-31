@@ -11,6 +11,7 @@ import type {
 } from "./types";
 import { isNonEmpty } from "../presence";
 import { secondsToMs } from "../units";
+import { t } from "../i18n";
 
 /**
  * Ánh xạ phản hồi THẬT của `/store/x/checkout/*` (xem `__fixtures__/` — lấy từ backend chạy thật) sang kiểu storefront.
@@ -107,7 +108,7 @@ export function mapQuote(raw: unknown): QuoteView | null {
   };
 }
 
-const UNAVAILABLE_MSG = "Không kết nối được máy chủ. Vui lòng thử lại sau ít phút.";
+const UNAVAILABLE_MSG = t("checkout.errors.unavailable");
 
 export function mapQuoteResponse(status: number, body: unknown): QuoteResult {
   if (status === 200 && isObj(body)) {
@@ -119,7 +120,7 @@ export function mapQuoteResponse(status: number, body: unknown): QuoteResult {
     return { ok: false, code: "UNAVAILABLE", message: UNAVAILABLE_MSG };
   }
   const code = str(body.code);
-  const message = str(body.detail, "Không tính được tổng tiền. Vui lòng kiểm tra lại thông tin.");
+  const message = str(body.detail, t("checkout.errors.quoteFailed"));
   const known: QuoteErrorCode[] = [
     "CART_EMPTY",
     "VALIDATION",
@@ -183,7 +184,7 @@ export function mapSubmitResponse(
       : { kind: "network" };
   }
   const code = str(body.code);
-  const message = str(body.detail, "Không đặt được hàng. Vui lòng thử lại.");
+  const message = str(body.detail, t("checkout.errors.placeFailed"));
   if ((CHANGED as readonly string[]).includes(code)) {
     return { kind: "changed", code: code as ChangedCode, message, quote: mapQuote(body.quote) };
   }
@@ -221,7 +222,7 @@ export function mapAttemptResponse(status: number, body: unknown): PollResult {
     return {
       kind: "failed",
       code: str(body.code, "ERROR"),
-      message: str(body.detail, "Không xác định được đơn hàng."),
+      message: str(body.detail, t("checkout.errors.attemptUnknown")),
     };
   }
   const state = str(body.state);
@@ -235,8 +236,8 @@ export function mapAttemptResponse(status: number, body: unknown): PollResult {
     const code = state === "compensated" ? "ATTEMPT_ABORTED" : str(err.code, "ERROR");
     const message =
       state === "compensated"
-        ? "Lần đặt hàng trước bị gián đoạn. Vui lòng kiểm tra lại giỏ hàng và đặt lại."
-        : str(err.message, "Không đặt được hàng. Vui lòng thử lại.");
+        ? t("checkout.errors.attemptAborted")
+        : str(err.message, t("checkout.errors.placeFailed"));
     return { kind: "failed", code, message };
   }
   return { kind: "pending" };

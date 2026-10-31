@@ -14,6 +14,7 @@ import {
 import { buildCartView, CART_FIELDS, type ProductLookup, type RawCart, type RawCartLine } from "./view";
 import { isNonEmpty } from "../presence";
 import { minutesToMs } from "../units";
+import { t } from "../i18n";
 
 /**
  * Nghiệp vụ giỏ ở server: id giỏ ở cookie HttpOnly, thao tác qua Medusa Store API native (`/store/carts`,
@@ -22,23 +23,14 @@ import { minutesToMs } from "../units";
 
 const fail = (code: CartErrorCode, message: string): CartActionResult => ({ ok: false, code, message });
 
-const DISABLED = fail("CART_DISABLED", "Giỏ hàng chưa khả dụng ở môi trường này. Vui lòng quay lại sau.");
-const UNAVAILABLE = fail("UNAVAILABLE", "Không kết nối được máy chủ. Vui lòng thử lại sau ít phút.");
-const CART_UNCONFIRMED = fail(
-  "CART_UNKNOWN",
-  "Chưa xác nhận được thao tác với giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
-);
-const CART_HALF_ADD = fail(
-  "CART_UNKNOWN",
-  "Đã thêm phân loại mới nhưng chưa gỡ dòng cũ, vui lòng kiểm tra giỏ.",
-);
-const CART_HALF_REFRESH = fail("CART_UNKNOWN", "Đã gỡ dòng cũ nhưng chưa thêm lại, vui lòng kiểm tra giỏ.");
+const DISABLED = fail("CART_DISABLED", t("cart.service.disabled"));
+const UNAVAILABLE = fail("UNAVAILABLE", t("cart.service.unavailable"));
+const CART_UNCONFIRMED = fail("CART_UNKNOWN", t("cart.service.unconfirmed"));
+const CART_HALF_ADD = fail("CART_UNKNOWN", t("cart.service.halfAdd"));
+const CART_HALF_REFRESH = fail("CART_UNKNOWN", t("cart.service.halfRefresh"));
 /** Chờ trước khi đọc lại lần 2: request ghi bị client bỏ (8 s) có thể còn chạy và commit muộn ở server. */
 const SETTLE_MS = 1500;
-const CART_UNKNOWN = fail(
-  "CART_UNKNOWN",
-  "Không xác định được giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
-);
+const CART_UNKNOWN = fail("CART_UNKNOWN", t("cart.service.unknown"));
 
 export const cartEnabled = (): boolean => resolveDataSource() === "backend";
 
@@ -142,11 +134,11 @@ export function describeStoreError(e: unknown): CartActionResult {
   if (e instanceof StoreApiError) {
     if (e.status === 0 || e.status >= 500) return UNAVAILABLE;
     if (/inventory|stock/i.test(e.message)) {
-      return fail("OUT_OF_STOCK", "Số lượng yêu cầu vượt quá tồn kho hiện có. Vui lòng giảm số lượng.");
+      return fail("OUT_OF_STOCK", t("cart.service.outOfStockQty"));
     }
-    if (e.status === 404) return fail("NOT_FOUND", "Không tìm thấy dòng trong giỏ. Hãy tải lại trang.");
+    if (e.status === 404) return fail("NOT_FOUND", t("cart.service.lineNotFound"));
   }
-  return fail("INVALID_INPUT", "Không cập nhật được giỏ hàng. Vui lòng thử lại.");
+  return fail("INVALID_INPUT", t("cart.service.updateFailed"));
 }
 
 const ID_RE = /^[\w-]{1,128}$/;
@@ -252,17 +244,17 @@ async function checkVariant(
   } catch {
     return { ok: false, result: UNAVAILABLE };
   }
-  if (!product) return { ok: false, result: fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.") };
+  if (!product) return { ok: false, result: fail("NOT_FOUND", t("cart.service.productGone")) };
   const v = product.variants.find((x) => x.variant_id === variantId);
   if (!v)
     return {
       ok: false,
-      result: fail("INVALID_INPUT", "Lựa chọn không hợp lệ. Vui lòng chọn lại màu và size."),
+      result: fail("INVALID_INPUT", t("cart.service.invalidChoice")),
     };
   if (!v.in_stock) {
     return {
       ok: false,
-      result: fail("OUT_OF_STOCK", "Phiên bản này đã hết hàng. Vui lòng chọn màu/size khác."),
+      result: fail("OUT_OF_STOCK", t("cart.service.variantSoldOut")),
     };
   }
   return { ok: true, product };
@@ -283,7 +275,7 @@ export async function addItem(input: {
     quantity < 1 ||
     quantity > 10
   ) {
-    return fail("INVALID_INPUT", "Lựa chọn không hợp lệ. Vui lòng chọn lại màu và size.");
+    return fail("INVALID_INPUT", t("cart.service.invalidChoice"));
   }
   if (!cartEnabled()) return DISABLED;
   try {
@@ -292,10 +284,10 @@ export async function addItem(input: {
     const cart = await loadOrCreateCart();
     const existing = (cart.items ?? []).find((i) => i?.variant_id === variantId) ?? undefined;
     if (!existing && (cart.items ?? []).length >= MAX_LINES) {
-      return fail("LIMIT", `Giỏ hàng tối đa ${MAX_LINES} dòng. Hãy xóa bớt trước khi thêm.`);
+      return fail("LIMIT", t("cart.service.maxLines", { max: MAX_LINES }));
     }
     if (qtyOf(existing ?? undefined) + quantity > MAX_LINE_QUANTITY) {
-      return fail("LIMIT", `Mỗi sản phẩm tối đa ${MAX_LINE_QUANTITY} trong giỏ.`);
+      return fail("LIMIT", t("cart.service.maxQuantity", { max: MAX_LINE_QUANTITY }));
     }
     const before = variantQty(cart, variantId);
     const w = await writeConfirmed(
@@ -311,7 +303,7 @@ export async function addItem(input: {
     if ("result" in w) return w.result;
     return await ok(
       cart.id,
-      `Đã thêm ${labelOf(checked.product, variantId)} vào giỏ.`,
+      t("cart.service.added", { name: labelOf(checked.product, variantId) }),
       w.applied ?? undefined,
     );
   } catch (e) {
@@ -324,13 +316,13 @@ async function withLine(
   fn: (cartId: string, line: RawCartLine, cart: RawCart) => Promise<CartActionResult>,
 ): Promise<CartActionResult> {
   if (typeof lineId !== "string" || !ID_RE.test(lineId))
-    return fail("INVALID_INPUT", "Dòng giỏ hàng không hợp lệ.");
+    return fail("INVALID_INPUT", t("cart.service.invalidLine"));
   if (!cartEnabled()) return DISABLED;
   try {
     const id = await readCartId();
     const cart = isNonEmpty(id) ? await fetchRawCart(id) : null;
     const line = cart ? findLine(cart, lineId) : undefined;
-    if (!cart || !line) return fail("NOT_FOUND", "Không tìm thấy dòng trong giỏ. Hãy tải lại trang.");
+    if (!cart || !line) return fail("NOT_FOUND", t("cart.service.lineNotFound"));
     return await fn(cart.id, line, cart);
   } catch (e) {
     return describeStoreError(e);
@@ -339,7 +331,9 @@ async function withLine(
 
 export function setQuantity(lineId: string, quantity: number): Promise<CartActionResult> {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_LINE_QUANTITY) {
-    return Promise.resolve(fail("INVALID_INPUT", `Số lượng phải từ 1 đến ${MAX_LINE_QUANTITY}.`));
+    return Promise.resolve(
+      fail("INVALID_INPUT", t("cart.service.quantityRange", { max: MAX_LINE_QUANTITY })),
+    );
   }
   return withLine(lineId, async (cartId, line) => {
     const w = await writeConfirmed(
@@ -355,7 +349,7 @@ export function setQuantity(lineId: string, quantity: number): Promise<CartActio
       },
     );
     if ("result" in w) return w.result;
-    return ok(cartId, "Đã cập nhật số lượng.", w.applied ?? undefined);
+    return ok(cartId, t("cart.service.quantityUpdated"), w.applied ?? undefined);
   });
 }
 
@@ -371,23 +365,23 @@ export function removeLine(lineId: string): Promise<CartActionResult> {
   return withLine(lineId, async (cartId, line) => {
     const w = await deleteLine(cartId, line.id);
     if ("result" in w) return w.result;
-    return ok(cartId, "Đã xóa sản phẩm khỏi giỏ.", w.applied ?? undefined);
+    return ok(cartId, t("cart.service.removed"), w.applied ?? undefined);
   });
 }
 
 /** Đổi màu/size = thay biến thể của dòng (thêm biến thể mới với số lượng cũ, rồi gỡ dòng cũ). */
 export function changeVariant(lineId: string, variantId: string): Promise<CartActionResult> {
   if (typeof variantId !== "string" || !ID_RE.test(variantId)) {
-    return Promise.resolve(fail("INVALID_INPUT", "Lựa chọn không hợp lệ. Vui lòng chọn lại màu và size."));
+    return Promise.resolve(fail("INVALID_INPUT", t("cart.service.invalidChoice")));
   }
   return withLine(lineId, async (cartId, line, cart) => {
-    if (!isNonEmpty(line.product_handle)) return fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.");
-    if (line.variant_id === variantId) return ok(cartId, "Giữ nguyên lựa chọn.");
+    if (!isNonEmpty(line.product_handle)) return fail("NOT_FOUND", t("cart.service.productGone"));
+    if (line.variant_id === variantId) return ok(cartId, t("cart.service.keepChoice"));
     const checked = await checkVariant(line.product_handle, variantId);
     if (!checked.ok) return checked.result;
     const target = (cart.items ?? []).find((i) => i?.variant_id === variantId) ?? undefined;
     if (qtyOf(target ?? undefined) + qtyOf(line) > MAX_LINE_QUANTITY) {
-      return fail("LIMIT", `Mỗi sản phẩm tối đa ${MAX_LINE_QUANTITY} trong giỏ.`);
+      return fail("LIMIT", t("cart.service.maxQuantity", { max: MAX_LINE_QUANTITY }));
     }
     // Thêm trước, gỡ sau: nếu thêm lỗi (hết hàng) dòng cũ còn nguyên.
     const targetBefore = qtyOf(target ?? undefined);
@@ -404,7 +398,11 @@ export function changeVariant(lineId: string, variantId: string): Promise<CartAc
     if ("result" in add) return add.result;
     const del = await secondStep(() => deleteLine(cartId, line.id), CART_HALF_ADD);
     if ("result" in del) return del.result;
-    return ok(cartId, `Đã đổi sang ${labelOf(checked.product, variantId)}.`, del.applied ?? undefined);
+    return ok(
+      cartId,
+      t("cart.service.changedTo", { name: labelOf(checked.product, variantId) }),
+      del.applied ?? undefined,
+    );
   });
 }
 
@@ -412,7 +410,7 @@ export function changeVariant(lineId: string, variantId: string): Promise<CartAc
 export function refreshLinePrice(lineId: string): Promise<CartActionResult> {
   return withLine(lineId, async (cartId, line, cart) => {
     if (!isNonEmpty(line.product_handle) || !isNonEmpty(line.variant_id))
-      return fail("NOT_FOUND", "Sản phẩm này hiện không còn bán.");
+      return fail("NOT_FOUND", t("cart.service.productGone"));
     const checked = await checkVariant(line.product_handle, line.variant_id);
     if (!checked.ok) return checked.result;
     const del = await deleteLine(cartId, line.id);
@@ -435,7 +433,7 @@ export function refreshLinePrice(lineId: string): Promise<CartActionResult> {
       CART_HALF_REFRESH,
     );
     if ("result" in add) return add.result;
-    return ok(cartId, "Đã cập nhật giá.", add.applied ?? undefined);
+    return ok(cartId, t("cart.service.priceUpdated"), add.applied ?? undefined);
   });
 }
 

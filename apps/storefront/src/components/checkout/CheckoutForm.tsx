@@ -26,6 +26,7 @@ import { PAYMENT_LABEL, Totals } from "./Totals";
 import { clientFetch } from "../../lib/client-fetch";
 import { isNonEmpty } from "../../lib/presence";
 import { safePaymentUrl } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export interface CheckoutFormProps {
   lines: readonly CheckoutLine[];
@@ -170,7 +171,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
       if (mySeq !== quoteSeq.current) return; // kết quả cũ
       if (r.ok) {
         if (lastTotal.current !== null && lastTotal.current !== r.quote.total) {
-          setAnnounce(`Tổng tiền đã cập nhật: ${formatVnd(r.quote.total)}.`);
+          setAnnounce(t("checkout.form.totalUpdated", { total: formatVnd(r.quote.total) }));
         }
         lastTotal.current = r.quote.total;
         setQuote(r.quote);
@@ -202,14 +203,14 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
     if (!quote) return;
     const ms = Date.parse(quote.expiresAt) - Date.now();
     if (!Number.isFinite(ms)) return;
-    const t = setTimeout(
+    const timer = setTimeout(
       () => {
         setExpiredId(quote.id);
         setTick((n) => n + 1);
       },
       Math.max(ms, 0) + 50,
     );
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [quote]);
 
   useEffect(() => {
@@ -314,7 +315,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
     }
     if (!quote || !quoteFresh || quoting) {
       setTick((n) => n + 1);
-      setAnnounce("Đang tính tổng tiền. Vui lòng đợi trong giây lát rồi bấm Đặt hàng.");
+      setAnnounce(t("checkout.form.waitQuote"));
       return;
     }
     setBanner(null);
@@ -355,7 +356,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
       else if (p.kind === "failed") {
         keeper.current.reset();
         setBanner({ kind: "error", message: p.message, cart: false });
-      } else setAnnounce("Đơn vẫn đang được xử lý. Vui lòng đợi và kiểm tra lại sau ít giây.");
+      } else setAnnounce(t("checkout.form.stillProcessing"));
     } finally {
       inFlight.current = false;
       setPhase((p) => (p === "redirecting" ? p : "idle"));
@@ -369,18 +370,18 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
   };
 
   const busy = phase !== "idle";
-  const titleOf = (id: string) => lines.find((l) => l.id === id)?.title ?? "Sản phẩm";
-  const submitLabel = confirmFrom !== null ? "Xác nhận tổng mới và đặt hàng" : "Đặt hàng";
+  const titleOf = (id: string) => lines.find((l) => l.id === id)?.title ?? t("checkout.form.defaultTitle");
+  const submitLabel = confirmFrom !== null ? t("checkout.form.submitConfirm") : t("checkout.form.submit");
 
   return (
     <form noValidate onSubmit={onSubmit} className={styles.layout} aria-busy={busy || undefined}>
       <div className={styles.main}>
-        <h1 className={styles.title}>Thanh toán</h1>
+        <h1 className={styles.title}>{t("checkout.form.title")}</h1>
         <p className={styles.guest}>
-          <strong>Mua không cần tài khoản.</strong> Bạn không cần đăng nhập hay tạo tài khoản để đặt hàng.
+          <strong>{t("checkout.form.guestStrong")}</strong> {t("checkout.form.guestRest")}
         </p>
 
-        <section className={styles.mobileSummary} aria-label="Tóm tắt đơn hàng">
+        <section className={styles.mobileSummary} aria-label={t("checkout.form.summaryLabel")}>
           <button
             type="button"
             className={styles.summaryToggle}
@@ -388,7 +389,12 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
             aria-controls="tom-tat-don-hang"
             onClick={() => setSummaryOpen((o) => !o)}
           >
-            <span>{`${summaryOpen ? "Ẩn" : "Xem"} đơn hàng (${itemCount} sản phẩm)`}</span>
+            <span>
+              {t("checkout.form.summaryToggle", {
+                action: summaryOpen ? t("checkout.form.summaryHide") : t("checkout.form.summaryShow"),
+                count: itemCount,
+              })}
+            </span>
             <span>{quote ? formatVnd(quote.total) : formatVnd(subtotal)}</span>
           </button>
           <div id="tom-tat-don-hang" className={styles.summaryPanel} data-open={summaryOpen}>
@@ -417,15 +423,16 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                 {banner.to !== null ? (
                   <p>
                     {banner.from !== null && banner.from !== banner.to
-                      ? `Tổng tiền mới: ${formatVnd(banner.to)} (trước đó ${formatVnd(banner.from)}). `
-                      : `Tổng tiền: ${formatVnd(banner.to)}. `}
-                    Vui lòng kiểm tra rồi bấm “Xác nhận tổng mới và đặt hàng” — chúng tôi không thu thêm khi
-                    bạn chưa đồng ý.
+                      ? t("checkout.banner.changedNew", {
+                          to: formatVnd(banner.to),
+                          from: formatVnd(banner.from),
+                        })
+                      : t("checkout.banner.changedSame", { to: formatVnd(banner.to) })}
                   </p>
                 ) : (
-                  <p>Đang cập nhật tổng tiền mới. Vui lòng kiểm tra rồi bấm Đặt hàng lại.</p>
+                  <p>{t("checkout.banner.changedPending")}</p>
                 )}
-                {banner.cart ? <Link href="/gio-hang">Xem lại giỏ hàng</Link> : null}
+                {banner.cart ? <Link href="/gio-hang">{t("checkout.banner.reviewCart")}</Link> : null}
               </>
             ) : null}
             {banner.kind === "stock" ? (
@@ -437,49 +444,47 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                   {banner.lines.map((s) => (
                     <li key={`${s.lineItemId}-${s.variantId}`}>
                       {s.available > 0
-                        ? `${titleOf(s.lineItemId)}: chỉ còn ${s.available} (bạn chọn ${s.requested}).`
-                        : `${titleOf(s.lineItemId)}: đã hết hàng (bạn chọn ${s.requested}).`}
+                        ? t("checkout.banner.stockSome", {
+                            title: titleOf(s.lineItemId),
+                            available: s.available,
+                            requested: s.requested,
+                          })
+                        : t("checkout.banner.stockNone", {
+                            title: titleOf(s.lineItemId),
+                            requested: s.requested,
+                          })}
                     </li>
                   ))}
                 </ul>
-                <Link href="/gio-hang">Sửa giỏ hàng</Link>
+                <Link href="/gio-hang">{t("checkout.banner.fixCart")}</Link>
               </>
             ) : null}
             {banner.kind === "error" ? (
               <>
                 <p>{banner.message}</p>
-                {banner.cart ? <Link href="/gio-hang">Quay lại giỏ hàng</Link> : null}
+                {banner.cart ? <Link href="/gio-hang">{t("checkout.banner.backToCart")}</Link> : null}
               </>
             ) : null}
-            {banner.kind === "network" ? (
-              <p>
-                Mất kết nối khi đặt hàng. Thông tin của bạn vẫn được giữ nguyên — hãy bấm “Đặt hàng” lại để
-                thử tiếp. Đơn sẽ không bị tạo trùng.
-              </p>
-            ) : null}
+            {banner.kind === "network" ? <p>{t("checkout.banner.network")}</p> : null}
             {banner.kind === "unavailable" ? (
               <>
-                <p>Hệ thống tạm thời không nhận đơn, vui lòng thử lại sau ít phút</p>
-                <p>Thông tin của bạn vẫn được giữ nguyên; đơn sẽ không bị tạo trùng.</p>
+                <p>{t("checkout.banner.unavailable")}</p>
+                <p>{t("checkout.banner.kept")}</p>
                 <Button type="submit" variant="secondary" loading={busy}>
-                  Thử lại
+                  {t("checkout.banner.retry")}
                 </Button>
               </>
             ) : null}
-            {banner.kind === "busy" ? (
-              <p>
-                Hệ thống đang bận xử lý nhiều đơn. Vui lòng bấm “Đặt hàng” lại sau giây lát; đơn sẽ không bị
-                tạo trùng.
-              </p>
-            ) : null}
+            {banner.kind === "busy" ? <p>{t("checkout.banner.busy")}</p> : null}
             {banner.kind === "processing" ? (
               <>
                 <p>
-                  <strong>Đơn của bạn vẫn đang được xử lý.</strong> Vui lòng KHÔNG đặt lại.
+                  <strong>{t("checkout.banner.processingStrong")}</strong>{" "}
+                  {t("checkout.banner.processingRest")}
                 </p>
-                <p>{`Mã tham chiếu: ${banner.attemptId}`}</p>
+                <p>{t("checkout.banner.reference", { id: banner.attemptId })}</p>
                 <Button type="button" variant="secondary" onClick={recheck} loading={busy}>
-                  Kiểm tra lại
+                  {t("checkout.banner.recheck")}
                 </Button>
               </>
             ) : null}
@@ -487,8 +492,8 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
         ) : null}
 
         <fieldset className={styles.group}>
-          <legend>1. Liên hệ</legend>
-          <Field name="name" label="Họ và tên" required error={errors.name}>
+          <legend>{t("checkout.contact.legend")}</legend>
+          <Field name="name" label={t("checkout.contact.name")} required error={errors.name}>
             {(c) => (
               <input
                 {...c}
@@ -508,9 +513,9 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
           </Field>
           <Field
             name="phone"
-            label="Số điện thoại"
+            label={t("checkout.contact.phone")}
             required
-            hint="Dùng để xác nhận đơn và giao hàng."
+            hint={t("checkout.contact.phoneHint")}
             error={errors.phone}
           >
             {(c) => (
@@ -531,7 +536,12 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
               />
             )}
           </Field>
-          <Field name="email" label="Email" hint="Nhận thông báo đơn hàng qua email." error={errors.email}>
+          <Field
+            name="email"
+            label={t("checkout.contact.email")}
+            hint={t("checkout.contact.emailHint")}
+            error={errors.email}
+          >
             {(c) => (
               <input
                 {...c}
@@ -552,8 +562,8 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
         </fieldset>
 
         <fieldset className={styles.group}>
-          <legend>2. Giao hàng</legend>
-          <Field name="province" label="Tỉnh/thành phố" required error={errors.province}>
+          <legend>{t("checkout.shipping.legend")}</legend>
+          <Field name="province" label={t("checkout.shipping.province")} required error={errors.province}>
             {(c) => (
               <select
                 {...c}
@@ -570,7 +580,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                   clearError("ward");
                 }}
               >
-                <option value="">Chọn tỉnh/thành phố</option>
+                <option value="">{t("checkout.shipping.chooseProvince")}</option>
                 {provinces.map((p) => (
                   <option key={p.code} value={p.code}>
                     {p.name}
@@ -581,16 +591,15 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
           </Field>
           <Field
             name="ward"
-            label="Phường/xã"
+            label={t("checkout.shipping.ward")}
             required
             hint={
               wardsView.status === "ready" && wardsView.list.length === 0
-                ? "Chưa có danh sách phường/xã cho tỉnh/thành này. Vui lòng chọn tỉnh/thành khác."
+                ? t("checkout.shipping.wardsEmpty")
                 : undefined
             }
             error={
-              errors.ward ??
-              (wardsView.status === "error" ? "Không tải được danh sách phường/xã." : undefined)
+              errors.ward ?? (wardsView.status === "error" ? t("checkout.shipping.wardsError") : undefined)
             }
           >
             {(c) => (
@@ -611,10 +620,10 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                 >
                   <option value="">
                     {provinceCode === ""
-                      ? "Chọn tỉnh/thành phố trước"
+                      ? t("checkout.shipping.chooseProvinceFirst")
                       : wardsView.status === "loading"
-                        ? "Đang tải…"
-                        : "Chọn phường/xã"}
+                        ? t("checkout.shipping.loading")
+                        : t("checkout.shipping.chooseWard")}
                   </option>
                   {wardsView.list.map((w) => (
                     <option key={w.code} value={w.code}>
@@ -631,7 +640,7 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                       setWardsTick((n) => n + 1);
                     }}
                   >
-                    Thử tải lại
+                    {t("checkout.shipping.reloadWards")}
                   </Button>
                 ) : null}
               </>
@@ -639,9 +648,9 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
           </Field>
           <Field
             name="line"
-            label="Số nhà, tên đường"
+            label={t("checkout.shipping.line")}
             required
-            hint="Ví dụ: 12 Phố Điện Biên Phủ, tòa A, căn 305."
+            hint={t("checkout.shipping.lineHint")}
             error={errors.line}
           >
             {(c) => (
@@ -664,8 +673,8 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
         </fieldset>
 
         <fieldset className={styles.group}>
-          <legend>3. Thanh toán</legend>
-          <div role="radiogroup" aria-label="Phương thức thanh toán" className={styles.radios}>
+          <legend>{t("checkout.paymentStep.legend")}</legend>
+          <div role="radiogroup" aria-label={t("checkout.paymentStep.groupLabel")} className={styles.radios}>
             {(Object.keys(PAYMENT_LABEL) as PaymentMethod[]).map((m) => (
               <label key={m} className={styles.radio}>
                 <input
@@ -680,11 +689,9 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
             ))}
           </div>
           <p className={styles.hint}>
-            {payment === "cod"
-              ? "Bạn trả tiền mặt cho nhân viên giao hàng khi nhận hàng."
-              : "Bạn sẽ được chuyển sang cổng VNPAY để thanh toán. Đơn được giữ hàng trong thời gian có hạn."}
+            {payment === "cod" ? t("checkout.paymentStep.codHint") : t("checkout.paymentStep.vnpayHint")}
           </p>
-          <Field name="discount" label="Mã giảm giá" error={errors.discount}>
+          <Field name="discount" label={t("checkout.paymentStep.discount")} error={errors.discount}>
             {(c) => (
               <div className={styles.discountRow}>
                 <input
@@ -705,14 +712,14 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                   }}
                 />
                 <Button type="button" variant="secondary" onClick={applyCode}>
-                  Áp dụng
+                  {t("checkout.paymentStep.apply")}
                 </Button>
               </div>
             )}
           </Field>
           {isNonEmpty(appliedCode) ? (
             <p className={styles.hint}>
-              {`Đang áp dụng mã ${appliedCode}. `}
+              {t("checkout.paymentStep.applied", { code: appliedCode })}
               <button
                 type="button"
                 className={styles.linkButton}
@@ -721,13 +728,13 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
                   setDiscountInput("");
                 }}
               >
-                Bỏ mã
+                {t("checkout.paymentStep.remove")}
               </button>
             </p>
           ) : null}
         </fieldset>
 
-        <section aria-label="Tổng tiền" className={styles.confirm}>
+        <section aria-label={t("checkout.form.totalsLabel")} className={styles.confirm}>
           <Totals
             cartSubtotal={subtotal}
             quote={quoteFresh ? quote : null}
@@ -741,19 +748,17 @@ export function CheckoutForm({ lines, subtotal, provinces }: CheckoutFormProps) 
             loading={phase === "submitting"}
             disabled={phase === "redirecting"}
           >
-            {phase === "redirecting" ? "Đang chuyển…" : submitLabel}
+            {phase === "redirecting" ? t("checkout.form.redirecting") : submitLabel}
           </Button>
-          <p className={styles.hint}>
-            Bằng việc đặt hàng, bạn đồng ý với chính sách giao hàng và đổi trả của cửa hàng.
-          </p>
+          <p className={styles.hint}>{t("checkout.form.policyNote")}</p>
         </section>
       </div>
 
-      <aside className={styles.sideSummary} aria-label="Tóm tắt đơn hàng">
-        <h2>Đơn hàng của bạn</h2>
+      <aside className={styles.sideSummary} aria-label={t("checkout.form.summaryLabel")}>
+        <h2>{t("checkout.form.sideTitle")}</h2>
         <OrderLines lines={lines} />
         <p>
-          <Link href="/gio-hang">Chỉnh sửa giỏ hàng</Link>
+          <Link href="/gio-hang">{t("checkout.form.editCart")}</Link>
         </p>
       </aside>
     </form>

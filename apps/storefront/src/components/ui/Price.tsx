@@ -2,6 +2,7 @@ import { formatVnd } from "../../lib/format-vnd";
 import styles from "./Price.module.css";
 import { cx } from "./cx";
 import { VisuallyHidden } from "./VisuallyHidden";
+import { t } from "../../lib/i18n";
 
 export interface PriceProps {
   /** Giá hiện tại (hoặc giá thấp nhất khi có `max`), số nguyên VND. */
@@ -26,14 +27,16 @@ export function Price({ current, original, max, className }: PriceProps) {
   if (isRange) {
     return (
       <span className={cx(styles.price, className)}>
-        <span className={styles.current}>{`Từ ${formatVnd(current)}`}</span>
+        <span className={styles.current}>{t("ui.price.from", { price: formatVnd(current) })}</span>
       </span>
     );
   }
   if (original != null && original > current) {
     return (
       <span className={cx(styles.price, className)}>
-        <VisuallyHidden>{`Giá gốc ${formatVnd(original)}, giá hiện tại ${formatVnd(current)}`}</VisuallyHidden>
+        <VisuallyHidden>
+          {t("ui.price.discounted", { original: formatVnd(original), current: formatVnd(current) })}
+        </VisuallyHidden>
         <span aria-hidden="true" className={styles.current}>
           {formatVnd(current)}
         </span>

@@ -23,6 +23,7 @@ import { InlineError } from "../ui/InlineError";
 import styles from "./Cart.module.css";
 import { isNonEmpty } from "../../lib/presence";
 import { safeImgSrc } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export interface CartContentsProps {
   cart: CartView;
@@ -76,9 +77,9 @@ export function CartContents({ cart }: CartContentsProps) {
   if (cart.lines.length === 0) {
     return (
       <EmptyState
-        title="Giỏ hàng của bạn đang trống"
-        description="Hãy chọn sản phẩm bạn thích, chúng tôi sẽ giữ giỏ cho bạn."
-        action={<Button href="/tim-kiem">Tiếp tục mua sắm</Button>}
+        title={t("cart.empty.title")}
+        description={t("cart.empty.description")}
+        action={<Button href="/tim-kiem">{t("cart.empty.action")}</Button>}
       />
     );
   }
@@ -89,7 +90,7 @@ export function CartContents({ cart }: CartContentsProps) {
     <div className={styles.layout}>
       <section aria-labelledby="gio-hang-tieu-de" className={styles.lines}>
         <h1 id="gio-hang-tieu-de" ref={headingRef} tabIndex={-1} className={styles.title}>
-          {`Giỏ hàng (${cart.itemCount})`}
+          {t("cart.title", { count: cart.itemCount })}
         </h1>
         <p role="status" aria-live="polite" className="visually-hidden">
           {announce}
@@ -141,7 +142,7 @@ export function CartContents({ cart }: CartContentsProps) {
                   {c && c.colors.length > 0 && c.sizes.length > 0 ? (
                     <div className={styles.choices}>
                       <label>
-                        <span className={styles.fieldLabel}>Màu</span>
+                        <span className={styles.fieldLabel}>{t("cart.line.color")}</span>
                         <select
                           className={styles.select}
                           value={c.color ?? ""}
@@ -154,14 +155,14 @@ export function CartContents({ cart }: CartContentsProps) {
                               const sz = c.sizes.find((x) => x.value === c.size)?.label ?? "";
                               setLineError(
                                 line.id,
-                                `Màu ${name} không có size ${sz} — vui lòng chọn lại size.`,
+                                t("cart.line.colorMissingSize", { color: name, size: sz }),
                               );
                               return;
                             }
                             run(line.id, () => changeLineVariant(line.id, target.id));
                           }}
                         >
-                          {c.color === null ? <option value="">Chọn màu</option> : null}
+                          {c.color === null ? <option value="">{t("cart.line.chooseColor")}</option> : null}
                           {c.colors.map((o) => (
                             <option key={o.value} value={o.value}>
                               {o.label}
@@ -170,7 +171,7 @@ export function CartContents({ cart }: CartContentsProps) {
                         </select>
                       </label>
                       <label>
-                        <span className={styles.fieldLabel}>Size</span>
+                        <span className={styles.fieldLabel}>{t("cart.line.size")}</span>
                         <select
                           className={styles.select}
                           value={c.size ?? ""}
@@ -182,7 +183,7 @@ export function CartContents({ cart }: CartContentsProps) {
                             if (target) run(line.id, () => changeLineVariant(line.id, target.id));
                           }}
                         >
-                          {c.size === null ? <option value="">Chọn size</option> : null}
+                          {c.size === null ? <option value="">{t("cart.line.chooseSize")}</option> : null}
                           {sizesForColor.map((o) => {
                             const v = c.variants.find((x) => x.color === c.color && x.size === o.value);
                             return (
@@ -191,7 +192,9 @@ export function CartContents({ cart }: CartContentsProps) {
                                 value={o.value}
                                 disabled={v?.inStock === false && o.value !== c.size}
                               >
-                                {v?.inStock === false ? `${o.label} (hết hàng)` : o.label}
+                                {v?.inStock === false
+                                  ? t("cart.line.sizeSoldOut", { label: o.label })
+                                  : o.label}
                               </option>
                             );
                           })}
@@ -201,25 +204,29 @@ export function CartContents({ cart }: CartContentsProps) {
                   ) : null}
 
                   <div className={styles.qtyRow}>
-                    <div role="group" aria-label={`Số lượng ${line.title}`} className={styles.qty}>
+                    <div
+                      role="group"
+                      aria-label={t("cart.line.quantityGroup", { title: line.title })}
+                      className={styles.qty}
+                    >
                       <button
                         type="button"
                         className={styles.qtyBtn}
-                        aria-label={`Giảm số lượng ${line.title}`}
+                        aria-label={t("cart.line.decrease", { title: line.title })}
                         disabled={busy || line.quantity <= 1}
                         onClick={() => run(line.id, () => updateLineQuantity(line.id, line.quantity - 1))}
                       >
-                        <span aria-hidden="true">−</span>
+                        <span aria-hidden="true">{t("cart.line.minusGlyph")}</span>
                       </button>
                       <span className={styles.qtyValue}>{line.quantity}</span>
                       <button
                         type="button"
                         className={styles.qtyBtn}
-                        aria-label={`Tăng số lượng ${line.title}`}
+                        aria-label={t("cart.line.increase", { title: line.title })}
                         disabled={busy || line.quantity >= MAX_LINE_QUANTITY}
                         onClick={() => run(line.id, () => updateLineQuantity(line.id, line.quantity + 1))}
                       >
-                        <span aria-hidden="true">+</span>
+                        <span aria-hidden="true">{t("cart.line.plusGlyph")}</span>
                       </button>
                     </div>
                     <button
@@ -228,7 +235,10 @@ export function CartContents({ cart }: CartContentsProps) {
                       disabled={busy}
                       onClick={() => run(line.id, () => removeCartLine(line.id), { focusHeading: true })}
                     >
-                      Xóa<span className="visually-hidden">{` ${line.title}`}</span>
+                      {t("cart.line.remove")}
+                      <span className="visually-hidden">
+                        {t("cart.line.removeFor", { title: line.title })}
+                      </span>
                     </button>
                   </div>
 
@@ -241,7 +251,7 @@ export function CartContents({ cart }: CartContentsProps) {
                           loading={busy}
                           onClick={() => run(line.id, () => refreshCartLine(line.id))}
                         >
-                          Cập nhật giá
+                          {t("cart.line.refreshPrice")}
                         </Button>
                       ) : null}
                     </div>
@@ -261,30 +271,28 @@ export function CartContents({ cart }: CartContentsProps) {
 
       <aside aria-labelledby="tom-tat-tieu-de" className={styles.summary}>
         <h2 id="tom-tat-tieu-de" className={styles.summaryTitle}>
-          Tóm tắt
+          {t("cart.summary.title")}
         </h2>
         <dl className={styles.totals}>
           <div>
-            <dt>Tạm tính</dt>
+            <dt>{t("cart.summary.subtotal")}</dt>
             <dd>{formatVnd(cart.subtotal)}</dd>
           </div>
         </dl>
-        <p className={styles.note}>Phí vận chuyển và mã giảm giá được tính ở bước thanh toán.</p>
+        <p className={styles.note}>{t("cart.summary.note")}</p>
         {cart.blocked ? (
           <>
             <Button fullWidth size="lg" disabled aria-describedby="chan-thanh-toan">
-              Thanh toán
+              {t("cart.summary.checkout")}
             </Button>
-            <InlineError id="chan-thanh-toan">
-              {`Có ${issueCount} sản phẩm cần xử lý (đổi phiên bản, cập nhật giá hoặc xóa) trước khi thanh toán.`}
-            </InlineError>
+            <InlineError id="chan-thanh-toan">{t("cart.summary.blocked", { count: issueCount })}</InlineError>
           </>
         ) : (
           <Button fullWidth size="lg" href="/thanh-toan">
-            Thanh toán
+            {t("cart.summary.checkout")}
           </Button>
         )}
-        <p className={styles.note}>Mua không cần tài khoản.</p>
+        <p className={styles.note}>{t("cart.summary.guest")}</p>
       </aside>
     </div>
   );

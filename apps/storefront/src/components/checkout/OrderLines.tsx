@@ -3,6 +3,7 @@ import { formatVnd } from "../../lib/format-vnd";
 import styles from "./Checkout.module.css";
 import { isNonEmpty } from "../../lib/presence";
 import { safeImgSrc } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export interface CheckoutLine {
   id: string;
@@ -18,7 +19,7 @@ export interface CheckoutLine {
 /** Danh sách sản phẩm trong đơn (order summary). Không có id cố định để dùng được nhiều nơi. */
 export function OrderLines({ lines }: { lines: readonly CheckoutLine[] }) {
   return (
-    <ul className={styles.orderLines} aria-label="Sản phẩm trong đơn hàng">
+    <ul className={styles.orderLines} aria-label={t("checkout.orderLines.label")}>
       {lines.map((l) => (
         <li key={l.id} className={styles.orderLine}>
           <div className={styles.orderThumb}>
@@ -29,7 +30,7 @@ export function OrderLines({ lines }: { lines: readonly CheckoutLine[] }) {
           <div className={styles.orderInfo}>
             <p>{l.title}</p>
             {isNonEmpty(l.variantLabel) ? <p className={styles.muted}>{l.variantLabel}</p> : null}
-            <p className={styles.muted}>{`Số lượng: ${l.quantity}`}</p>
+            <p className={styles.muted}>{t("checkout.orderLines.quantity", { quantity: l.quantity })}</p>
           </div>
           <p className={styles.orderPrice}>{formatVnd(l.lineTotal)}</p>
         </li>

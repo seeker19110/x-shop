@@ -4,9 +4,10 @@ import { LookupForm } from "../../../components/orders/LookupForm";
 import { ORDER_REF_RE } from "../../../lib/orders/map";
 import { isNonEmpty } from "../../../lib/presence";
 import { lookupNotice } from "../../../lib/orders/notices";
+import { t } from "../../../lib/i18n";
 
 export const metadata: Metadata = {
-  title: "Tra cứu đơn hàng",
+  title: t("orders.lookupTitle"),
   robots: { index: false, follow: true },
 };
 
@@ -24,13 +25,10 @@ export default async function LookupPage({
   return (
     <section className={styles.page} aria-labelledby="tra-cuu-tieu-de">
       <h1 id="tra-cuu-tieu-de" className={styles.title}>
-        Tra cứu đơn hàng
+        {t("orders.lookupTitle")}
       </h1>
       {isNonEmpty(notice) ? <p className={styles.section}>{notice}</p> : null}
-      <p>
-        Vì lý do bảo mật, mã đơn và số điện thoại không đủ để hiển thị đơn. Chúng tôi sẽ gửi liên kết xem đơn
-        (hiệu lực 15 phút, dùng một lần) tới số điện thoại/email đã dùng khi đặt hàng.
-      </p>
+      <p>{t("orders.lookupIntro")}</p>
       <LookupForm defaultRef={ORDER_REF_RE.test(ma) ? ma : ""} />
     </section>
   );

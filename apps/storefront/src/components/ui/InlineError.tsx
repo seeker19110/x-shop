@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import styles from "./InlineError.module.css";
 import { cx } from "./cx";
+import { t } from "../../lib/i18n";
 
 export interface InlineErrorProps {
   children: ReactNode;
@@ -15,7 +16,7 @@ export function InlineError({ children, id, alert = false, className }: InlineEr
   return (
     <p id={id} role={alert ? "alert" : undefined} className={cx(styles.error, className)}>
       <span aria-hidden="true" className={styles.icon}>
-        !
+        {t("ui.glyph.alert")}
       </span>
       <span>{children}</span>
     </p>

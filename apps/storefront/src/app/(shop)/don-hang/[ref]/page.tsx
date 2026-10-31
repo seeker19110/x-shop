@@ -5,9 +5,10 @@ import styles from "../../../../components/orders/Order.module.css";
 import { Button } from "../../../../components/ui/Button";
 import { ORDER_REF_RE } from "../../../../lib/orders/map";
 import { fetchOrder } from "../../../../lib/orders/service";
+import { t } from "../../../../lib/i18n";
 
 export const metadata: Metadata = {
-  title: "Đơn hàng của bạn",
+  title: t("orders.pageTitle"),
   robots: { index: false, follow: false },
 };
 
@@ -27,28 +28,26 @@ export default async function OrderPage({ params }: { params: Promise<{ ref: str
   return (
     <section className={styles.page} aria-labelledby="don-hang-tieu-de">
       <h1 id="don-hang-tieu-de" className={styles.title}>
-        Đơn hàng <span className={styles.ref}>{ref}</span>
+        {t("orders.heading")}
+        <span className={styles.ref}>{ref}</span>
       </h1>
       {r.kind === "not_found" ? (
         <>
-          <p>
-            Bạn cần xác thực để xem đơn này. Nhập mã đơn và số điện thoại đặt hàng — chúng tôi sẽ gửi liên kết
-            xem đơn tới liên hệ đã dùng khi đặt.
-          </p>
+          <p>{t("orders.needAuth")}</p>
           <div className={styles.actions}>
-            <Button href={`/tra-cuu-don?ma=${encodeURIComponent(ref)}`}>Tra cứu đơn hàng</Button>
+            <Button href={`/tra-cuu-don?ma=${encodeURIComponent(ref)}`}>{t("orders.lookupTitle")}</Button>
           </div>
         </>
       ) : (
         <>
           <p role="alert" className={styles.alert}>
             {r.kind === "rate_limited"
-              ? `Bạn đã thao tác quá nhiều lần. Vui lòng thử lại sau ${r.retryAfterS} giây.`
-              : "Chưa tải được trạng thái đơn hàng. Vui lòng kiểm tra kết nối và tải lại trang."}
+              ? t("orders.rateLimited", { seconds: r.retryAfterS })
+              : t("orders.loadFailed")}
           </p>
           <div className={styles.actions}>
             <Button href={`/don-hang/${encodeURIComponent(ref)}`} variant="secondary">
-              Tải lại
+              {t("orders.reload")}
             </Button>
           </div>
         </>

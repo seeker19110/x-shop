@@ -55,7 +55,7 @@ export default async function HomePage() {
       <section aria-labelledby="hero-tieu-de" className={styles.hero}>
         <picture className={styles.heroPicture}>
           <source media="(min-width: 48em)" srcSet={safeSrcSet(desktop.srcSet ?? desktop.src)} />
-          <img {...mobile} alt="" className={styles.heroImage} />
+          <img {...mobile} alt={mobile.alt} className={styles.heroImage} />
         </picture>
         <div className={styles.heroCopy}>
           <h1 id="hero-tieu-de" className={styles.heroTitle}>
