@@ -1094,3 +1094,10 @@
 - Chọn: Giữ tín hiệu frame vitest/dist wrapper như jest _callCircusHook, ghi giới hạn hook async
 - Lý do (tiêu chí chất lượng cuối): Đơn giản, test được (tiêu chí 3); lỗ còn lại hẹp (hook async lỗi sau await) và nhất quán với giới hạn của jest; mất tín hiệu thì về failed (không đỏ oan); fix-no-test là đường thoát
 - Đường lùi: Thêm reporter vitest riêng thành task mới
+
+### D-156 · 2026-10-31T16:06:17+00:00 · T-197 thay D-056: chạy EXPLAIN đường nóng (dataset ~8 phút) tự động ở đâu?
+
+- Phương án: (1) Workflow hằng đêm (schedule + workflow_dispatch, không chạy PR): Postgres service, perf-dataset.mjs → explain-hot-paths.mjs, đỏ khi Seq Scan/hồi quy, artefact 14 ngày · (2) Giữ D-056: chỉ test hàm thuần trong gate, EXPLAIN chạy tay mỗi mốc · (3) Thêm vào gate PR (+8 phút mỗi PR)
+- Chọn: Workflow hằng đêm (schedule + workflow_dispatch, không chạy PR): Postgres service, perf-dataset.mjs → explain-hot-paths.mjs, đỏ khi Seq Scan/hồi quy, artefact 14 ngày
+- Lý do (tiêu chí chất lượng cuối): Đúng hơn (tiêu chí 1): hồi quy index bị bắt tự động trong ≤ 24 giờ thay vì chờ mốc tay; không làm chậm PR (tiêu chí 4/5); đường lùi là tắt schedule
+- Đường lùi: Xoá .github/workflows/perf-nightly.yml, quay về D-056
