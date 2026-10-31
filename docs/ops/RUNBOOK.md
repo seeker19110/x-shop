@@ -875,3 +875,77 @@ trước.
    ```
 
    Breaker mở lại sau khi đóng → ngoại lệ mới; lặp lại nhiều lần trong ngày → leo thang cho kỹ thuật (§0).
+
+## 15. Vacuum: dòng chết tích tụ / tuổi XID cao (wraparound)
+
+last_drilled: chưa diễn tập trên DB vận hành — `check-vacuum.mjs` mới chạy trên Postgres 16 cục bộ (2026-10-31); tham số autovacuum riêng kiểm bằng test tích hợp `autovacuum-params`.
+
+Mô hình thật (T-196, DB-PERF-008): bốn bảng ghi nhiều có tham số autovacuum riêng (migration checkout `Migration20261031090000`,
+audit `Migration20261031090100`; giá trị và nguồn PostgreSQL 16 ghi trong chú thích hai file đó):
+
+| Bảng                 | vacuum_scale_factor | analyze_scale_factor | vacuum_cost_limit |
+| -------------------- | ------------------- | -------------------- | ----------------- |
+| `outbox_event`       | 0.02                | 0.02                 | 400               |
+| `rate_limit_counter` | 0.01                | 0.05                 | 400               |
+| `webhook_inbox`      | 0.05                | 0.05                 | 400               |
+| `audit_log`          | 0.1                 | 0.05                 | 200               |
+
+Mặc định toàn cụm (bảng khác): 0.2 / 0.1 / 200. Đổi giá trị = migration MỚI (không `ALTER TABLE` tay ở production — lệch với mã).
+
+`scripts/ops/check-vacuum.mjs` chỉ đọc (`SHOW autovacuum`, `pg_database`, `pg_stat_user_tables`); chạy được bằng vai trò ứng dụng:
+
+```bash
+DATABASE_URL="$DATABASE_URL" node scripts/ops/check-vacuum.mjs   # exit 0 ổn · 1 vượt ngưỡng · 2 lỗi kết nối/truy vấn
+```
+
+- **Khi nào chạy:** hằng ngày (cron/job giám sát — cảnh báo khi exit ≠ 0; chưa có hạ tầng giám sát thì người trực chạy tay mỗi sáng),
+  trước migration lớn, sau sự cố DB, và khi job outbox/tra cứu chậm bất thường.
+- **Ngưỡng** (hằng số đầu file, đổi qua review): `autovacuum` phải `on`; `age(datfrozenxid)` của MỌI database trong cụm ≤ 400 000 000
+  (= 2 × `autovacuum_freeze_max_age` mặc định 200 triệu — vượt nghĩa là vacuum chống wraparound không theo kịp; máy chủ tự cảnh báo khi
+  còn 40 triệu XID tới mốc 2^31 và từ chối ghi khi còn 3 triệu); mỗi bảng ở trên `n_dead_tup / n_live_tup` ≤ 0.2 (xét khi
+  `n_dead_tup` ≥ 1 000). Cụm đặt `autovacuum_freeze_max_age` khác mặc định → nâng `MAX_XID_AGE` cho lớn hơn giá trị đó.
+- **Exit 2:** sửa kết nối trước (biến môi trường, mạng, DB sống — §4), rồi chạy lại. **`không có trong pg_stat_user_tables`**: sai DB
+  hoặc chưa migrate — kiểm `DATABASE_URL` trỏ đúng DB ứng dụng.
+
+Xử lý khi exit 1 (theo dòng `FAIL`):
+
+1. `autovacuum = off` → bật lại (`autovacuum = on` trong cấu hình máy chủ / tham số của dịch vụ managed, rồi `SELECT pg_reload_conf();`).
+   Không tắt autovacuum "để nhanh hơn".
+2. Tìm thứ giữ "đường chân trời" xmin — nguyên nhân thường gặp nhất khiến vacuum chạy mà không dọn được dòng chết / không đóng băng được:
+
+   ```sql
+   SELECT pid, usename, state, now() - xact_start AS tuoi_giao_dich, backend_xmin, left(query, 80) AS query
+     FROM pg_stat_activity WHERE backend_xmin IS NOT NULL ORDER BY age(backend_xmin) DESC LIMIT 10;
+   SELECT slot_name, active, xmin, catalog_xmin FROM pg_replication_slots;
+   SELECT gid, prepared, owner FROM pg_prepared_xacts;
+   SELECT relname, n_dead_tup, n_live_tup, last_autovacuum, last_autoanalyze, autovacuum_count
+     FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;
+   SELECT pid, relid::regclass, phase, heap_blks_scanned, heap_blks_total FROM pg_stat_progress_vacuum;
+   ```
+
+   Giao dịch mở lâu / `idle in transaction`: xác định nguồn (job, phiên psql quên đóng) rồi kết thúc nó (`SELECT pg_terminate_backend(<pid>);`
+   — chỉ khi chắc không phải migration/backup đang chạy). Slot replication không `active` mà giữ `xmin`: hỏi chủ hạ tầng trước khi xoá slot.
+   **Không huỷ** vacuum đang chạy có `(to prevent wraparound)` trong `pg_stat_activity.query`.
+
+3. Dòng chết vượt ngưỡng sau khi gỡ nguyên nhân ở bước 2: chạy vacuum tay bằng vai trò owner (`MIGRATION_DATABASE_URL`, xshop_migrator —
+   vai trò ứng dụng không VACUUM được bảng nó không sở hữu):
+
+   ```sql
+   VACUUM (VERBOSE, ANALYZE) "<bảng>";
+   ```
+
+   Không dùng `VACUUM FULL` trong giờ bán hàng (khoá ACCESS EXCLUSIVE, viết lại cả bảng — chặn mọi đọc/ghi).
+4. Tuổi XID vượt ngưỡng: tìm bảng già nhất của database đó (câu của tài liệu PostgreSQL §25.1.5), gỡ nguyên nhân như bước 2, rồi đóng băng:
+
+   ```sql
+   SELECT c.oid::regclass AS bang, greatest(age(c.relfrozenxid), age(t.relfrozenxid)) AS tuoi
+     FROM pg_class c LEFT JOIN pg_class t ON c.reltoastrelid = t.oid
+    WHERE c.relkind IN ('r', 'm') ORDER BY 2 DESC LIMIT 10;
+   VACUUM (FREEZE, VERBOSE) <bảng>;
+   ```
+
+   Database không phải của ứng dụng (`postgres`, `template0/1`, DB khác trong cụm) hoặc bảng catalog hệ thống → cần superuser/nhà cung cấp:
+   leo thang cho kỹ thuật (§0) ngay — wraparound dừng ghi CẢ cụm.
+
+5. Xác nhận: chạy lại `check-vacuum.mjs` → exit 0. Lặp lại trong tuần cho cùng bảng → tham số chưa hợp với tải thật: đề xuất migration mới
+   (giảm scale factor / tăng cost_limit) kèm số đo `pg_stat_user_tables`, qua review.
