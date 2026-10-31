@@ -5,6 +5,7 @@ import type { IAuthModuleService, MedusaContainer } from "@medusajs/framework/ty
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { secondsToMs } from "@x-shop/domain";
 import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
 import { RESET_RESPONSE_MS, RESET_WORK_MAX_DELAY_MS } from "../../src/lib/admin-security/reset-password";
 import { cleanupUnlinkedIdentityForInvite } from "../../src/lib/admin-security/invite-guard";
@@ -31,6 +32,18 @@ interface RawRes {
   json: Record<string, unknown>;
   text: string;
 }
+
+/**
+ * Bộ đếm cửa sổ trượt (lib/security/sliding-window.ts) cộng cửa sổ trước × phần còn lại: chuỗi request vắt qua ranh giới
+ * cửa sổ đếm thấp hơn số request một chút → 429 đến trễ hơn ngưỡng (ca chập chờn khi chạy cắt mốc :00/:15/:30/:45). Còn
+ * dưới `budgetMs` tới ranh giới → chờ qua ranh giới rồi mới gửi.
+ */
+const clearOfWindowEdge = async (requests: number) => {
+  const budgetMs = secondsToMs(requests + 15);
+  const windowMs = secondsToMs(AUTH_RATE_LIMITS.windowSeconds);
+  const leftMs = windowMs - (Date.now() % windowMs);
+  if (leftMs < budgetMs) await new Promise((r) => setTimeout(r, leftMs + secondsToMs(1)));
+};
 
 let ipSeq = 0;
 const newIp = () => `203.0.${Math.floor(++ipSeq / 250)}.${(ipSeq % 250) + 1}`;
@@ -466,6 +479,7 @@ medusaIntegrationTestRunner({
 
       it("register theo email (mọi IP) và theo IP (mọi email) → 429", async () => {
         const email = unknownEmail();
+        await clearOfWindowEdge(AUTH_RATE_LIMITS.register.perIdentity + AUTH_RATE_LIMITS.register.perIp + 4);
         for (let i = 0; i < AUTH_RATE_LIMITS.register.perIdentity; i++) {
           expect((await post("/auth/user/emailpass/register", { email, password })).status).toBe(400);
         }
@@ -513,6 +527,7 @@ medusaIntegrationTestRunner({
       it("IPv6 gộp /64 (T-148): sai mật khẩu với XFF xoay trong một /64 → 429 đúng ngưỡng IP; /64 khác vẫn thử được", async () => {
         const net = newV6Net();
         const n = AUTH_RATE_LIMITS.login.perIp;
+        await clearOfWindowEdge(n + 3);
         const bad = () => ({ email: unknownEmail(), password: "sai-mat-khau-0123" });
         for (let i = 0; i < n; i++) {
           const r = await post("/auth/user/emailpass", bad(), { "x-forwarded-for": net(i) });
@@ -560,6 +575,7 @@ medusaIntegrationTestRunner({
       it("đăng ký: XFF xoay trong /64 → 429 ở `register.perIp`; IPv4 không đổi — IP liền kề không chung bộ đếm", async () => {
         const net = newV6Net();
         const n = AUTH_RATE_LIMITS.register.perIp;
+        await clearOfWindowEdge(n + 3);
         for (let i = 0; i < n; i++) {
           const r = await post(
             "/auth/user/emailpass/register",
@@ -744,6 +760,7 @@ medusaIntegrationTestRunner({
       it("theo IP (mọi email): IPv6 xoay trong /64 vẫn chung IP → 429 ở `reset.perIp`; /64 khác vẫn 201", async () => {
         const net = newV6Net();
         const n = AUTH_RATE_LIMITS.reset.perIp;
+        await clearOfWindowEdge(n + 3);
         for (let i = 0; i < n; i++) {
           const r = await post(RESET, { identifier: unknownEmail() }, { "x-forwarded-for": net(i) });
           expect({ i, status: r.status }).toEqual({ i, status: 201 });
