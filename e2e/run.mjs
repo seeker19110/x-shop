@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { playwrightArgs } from "./args.mjs";
 import {
   ADMIN_DB_URL,
   backendEnv,
@@ -128,7 +129,7 @@ async function main() {
   await flushRedis();
 
   log("chạy Playwright");
-  const pw = spawn("pnpm", ["exec", "playwright", "test", ...process.argv.slice(2)], {
+  const pw = spawn("pnpm", ["exec", "playwright", "test", ...playwrightArgs(process.argv.slice(2))], {
     cwd: root,
     env: { ...process.env, E2E_PUBLISHABLE_KEY: key },
     stdio: "inherit",

@@ -19,8 +19,21 @@ const STATIC_ROUTES = [
   "/thanh-toan",
 ];
 
+/**
+ * Độ tràn ngang (px). `/thanh-toan` với giỏ trống trả vỏ trang rồi Next chuyển tiếp sang `/gio-hang` ở client (redirect
+ * khi streaming) — ngữ cảnh trang bị huỷ giữa chừng. Đó là điều hướng đúng của sản phẩm, không phải lỗi: coi lần đo
+ * hỏng là "chưa ổn định" (Infinity → poll thử lại) và đo lại trên trang đích; giá trị cuối vẫn phải ≤ 0.
+ */
 async function overflow(page: Page): Promise<number> {
-  return page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  try {
+    return await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("Execution context was destroyed"))
+      return Number.POSITIVE_INFINITY;
+    throw e;
+  }
 }
 
 test("không cuộn ngang ở 320px trên mọi route trong sitemap + trang tĩnh", async ({ page, request }) => {
