@@ -1,5 +1,6 @@
 import { parseFilter, type CatalogFilter, type FilterParseIssue } from "@x-shop/domain";
 import { cache } from "react";
+import { t } from "../i18n";
 import { listProducts, search } from "./client";
 import { CatalogError, type ProductListResponse, type SearchSuggestion } from "./types";
 
@@ -26,10 +27,10 @@ export interface Listing {
 
 function messageFor(e: unknown): string {
   if (e instanceof CatalogError) {
-    if (e.code === "INVALID_RANGE") return "Không thể lọc: giá thấp nhất lớn hơn giá cao nhất.";
-    if (e.code === "VALIDATION") return "Một số điều kiện lọc không hợp lệ. Hãy chỉnh lại bộ lọc.";
+    if (e.code === "INVALID_RANGE") return t("catalog.listingError.invalidRange");
+    if (e.code === "VALIDATION") return t("catalog.listingError.validation");
   }
-  return "Không tải được danh sách sản phẩm. Vui lòng thử lại sau ít phút.";
+  return t("catalog.listingError.unavailable");
 }
 
 /**
@@ -45,7 +46,7 @@ export const loadListing = cache(
         filter,
         issues,
         result: null,
-        error: "Không thể lọc: giá thấp nhất lớn hơn giá cao nhất.",
+        error: t("catalog.listingError.invalidRange"),
         suggestions: [],
       };
     }

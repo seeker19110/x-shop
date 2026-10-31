@@ -210,6 +210,10 @@ const I18N_ALLOWLIST_FILES = [
   "apps/storefront/src/app/global-error.tsx",
   "apps/storefront/src/app/offline/**/*.tsx",
   "apps/storefront/src/app/(shop)/{bao-mat,giao-hang,doi-tra-hoan-tien}/**/*.tsx",
+  // T-220 (lát 2): danh mục, tìm kiếm, PDP.
+  "apps/storefront/src/app/(shop)/{danh-muc,tim-kiem,san-pham}/**/*.tsx",
+  "apps/storefront/src/components/catalog/**/*.tsx",
+  "apps/storefront/src/components/product/**/*.tsx",
 ];
 const I18N_TEXT_ATTRS =
   "/^(aria-(label|description|placeholder|roledescription|valuetext)|title|alt|placeholder|label|description|closeLabel)$/";

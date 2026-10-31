@@ -29,6 +29,7 @@ import {
   type Selection,
 } from "./selection";
 import { formatVnd } from "../../lib/format-vnd";
+import { t } from "../../lib/i18n";
 import { isNonEmpty } from "../../lib/presence";
 import { safeHref } from "../../lib/safe-url";
 
@@ -108,7 +109,7 @@ export function ProductExperience({ product, initial, children }: ProductExperie
 
   const onCta = () => {
     if (cta.kind === "choose-size") {
-      const msg = "Vui lòng chọn size trước khi thêm vào giỏ.";
+      const msg = t("product.notice.chooseSizeFirst");
       setSizeError(msg);
       setNotice(msg);
       focusSizes();
@@ -198,15 +199,15 @@ export function ProductExperience({ product, initial, children }: ProductExperie
           {added ? (
             <p className={styles.notice}>
               <Link href="/gio-hang" prefetch={false}>
-                Xem giỏ hàng
+                {t("product.viewCart")}
               </Link>
             </p>
           ) : null}
 
-          <ul className={styles.summary} aria-label="Giao hàng và đổi trả">
+          <ul className={styles.summary} aria-label={t("product.summary.label")}>
             {PDP_SUMMARY.map((s) => (
               <li key={s.title}>
-                <strong>{s.title}.</strong> {s.text}{" "}
+                <strong>{t("product.summary.titleSuffix", { title: s.title })}</strong> {s.text}{" "}
                 <Link href={safeHref(s.href)} prefetch={false}>
                   {s.linkLabel}
                 </Link>
@@ -221,7 +222,11 @@ export function ProductExperience({ product, initial, children }: ProductExperie
       <StickyCta
         target={buyRef}
         label={cta.label}
-        priceLabel={price.max !== null ? `Từ ${formatVnd(price.current)}` : formatVnd(price.current)}
+        priceLabel={
+          price.max !== null
+            ? t("product.sticky.priceFrom", { price: formatVnd(price.current) })
+            : formatVnd(price.current)
+        }
         disabled={cta.disabled}
         loading={pending}
         onClick={onCta}

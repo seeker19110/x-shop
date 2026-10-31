@@ -57,3 +57,28 @@ describe("vi.json", () => {
     }
   });
 });
+
+describe("khoá nội suy của danh mục/tìm kiếm/PDP (T-220)", () => {
+  it("giữ nguyên chữ gốc, kể cả tham số 0 và Unicode", () => {
+    expect(t("catalog.count", { total: 0 })).toBe("0 sản phẩm");
+    expect(t("catalog.pageEmptyDescription", { total: 25, pages: 3 })).toBe(
+      "Bộ lọc hiện có 25 sản phẩm, trong 3 trang.",
+    );
+    expect(t("catalog.chip.priceRange", { min: "100.000 ₫", max: "200.000 ₫" })).toBe(
+      "Giá: 100.000 ₫ – 200.000 ₫",
+    );
+    expect(t("catalog.issue.invalidParam", { param: "Số trang", reason: "invalid" })).toBe(
+      "Số trang không hợp lệ (invalid) — đã bỏ qua.",
+    );
+    expect(t("search.headingWithQuery", { q: "áo {x}" })).toBe("Kết quả cho “áo {x}”");
+    expect(t("product.sizeChart.model", { parts: "cao 170 cm", size: "M" })).toBe(
+      "Người mẫu cao 170 cm, mặc size M.",
+    );
+    expect(t("product.gallery.zoomLabel", { index: 1, count: 3, alt: "Áo" })).toBe("Phóng ảnh 1/3: Áo");
+  });
+
+  it("thiếu tham số: ném lỗi ở dev/test", () => {
+    expect(() => t("catalog.filters.viewCount")).toThrow(/thiếu tham số "count"/);
+    expect(() => t("product.notice.sizeSoldOut", { size: "M" })).toThrow(/thiếu tham số "color"/);
+  });
+});

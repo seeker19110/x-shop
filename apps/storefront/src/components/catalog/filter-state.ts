@@ -1,5 +1,6 @@
 import { formatVnd, type CatalogFilter, type FilterParseIssue } from "@x-shop/domain";
 import type { Facets } from "../../lib/catalog/types";
+import { t, type MessageKey } from "../../lib/i18n";
 import { hrefFor } from "./filter-url";
 
 export { hrefFor, withoutConditions } from "./filter-url";
@@ -41,37 +42,43 @@ export function chipsFor(
   const chips: FilterChip[] = [];
   const add = (key: string, label: string) =>
     chips.push({ key, label, href: hrefFor(basePath, withoutCondition(filter, key)) });
-  if (opts.includeQuery === true && filter.q !== null) add("q", `Từ khóa: ${filter.q}`);
-  for (const v of filter.colors) add(`color:${v}`, `Màu: ${labelOf(facets?.color, v, v)}`);
-  for (const v of filter.sizes) add(`size:${v}`, `Size: ${labelOf(facets?.size, v, v.toUpperCase())}`);
-  for (const v of filter.materials) add(`material:${v}`, `Chất liệu: ${labelOf(facets?.material, v, v)}`);
+  if (opts.includeQuery === true && filter.q !== null) add("q", t("catalog.chip.query", { value: filter.q }));
+  for (const v of filter.colors)
+    add(`color:${v}`, t("catalog.chip.color", { value: labelOf(facets?.color, v, v) }));
+  for (const v of filter.sizes)
+    add(`size:${v}`, t("catalog.chip.size", { value: labelOf(facets?.size, v, v.toUpperCase()) }));
+  for (const v of filter.materials)
+    add(`material:${v}`, t("catalog.chip.material", { value: labelOf(facets?.material, v, v) }));
   if (filter.priceMin !== null || filter.priceMax !== null) {
     const { priceMin: lo, priceMax: hi } = filter;
     add(
       "price",
       lo !== null && hi !== null
-        ? `Giá: ${formatVnd(lo)} – ${formatVnd(hi)}`
+        ? t("catalog.chip.priceRange", { min: formatVnd(lo), max: formatVnd(hi) })
         : lo !== null
-          ? `Giá: từ ${formatVnd(lo)}`
-          : `Giá: đến ${formatVnd(hi!)}`,
+          ? t("catalog.chip.priceFrom", { min: formatVnd(lo) })
+          : t("catalog.chip.priceTo", { max: formatVnd(hi!) }),
     );
   }
-  if (filter.inStock) add("in_stock", "Còn hàng");
+  if (filter.inStock) add("in_stock", t("catalog.chip.inStock"));
   return chips;
 }
 
-const PARAM_LABEL: Record<string, string> = {
-  price_min: "Giá thấp nhất",
-  price_max: "Giá cao nhất",
-  page: "Số trang",
+const PARAM_LABEL: Record<string, MessageKey> = {
+  price_min: "catalog.issue.param.priceMin",
+  price_max: "catalog.issue.param.priceMax",
+  page: "catalog.issue.param.page",
 };
 
 /** Câu báo lỗi nhẹ (tiếng Việt) cho tham số URL sai; trang vẫn hiển thị với phần hợp lệ. */
 export function describeIssues(issues: readonly FilterParseIssue[]): string[] {
   return issues.map((i) =>
     i.reason === "invalid_range"
-      ? "Giá thấp nhất đang lớn hơn giá cao nhất — hãy chỉnh lại khoảng giá."
-      : `${PARAM_LABEL[i.param] ?? i.param} không hợp lệ (${i.reason}) — đã bỏ qua.`,
+      ? t("catalog.issue.invalidRange")
+      : t("catalog.issue.invalidParam", {
+          param: Object.hasOwn(PARAM_LABEL, i.param) ? t(PARAM_LABEL[i.param]!) : i.param,
+          reason: i.reason,
+        }),
   );
 }
 

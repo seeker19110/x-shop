@@ -2,14 +2,15 @@
 
 import type { RefObject } from "react";
 import type { ModelMeasurement, SizeChart } from "../../lib/catalog/types";
+import { t } from "../../lib/i18n";
 import { Dialog } from "../ui/Dialog";
 import styles from "./Product.module.css";
 
 /** Dòng mô tả người mẫu — chỉ khi có dữ liệu gắn với bộ ảnh thật (PDP04: không tạo thông tin giả). */
 export function modelSentence(m: ModelMeasurement): string {
-  const parts = [`cao ${m.height_cm} cm`];
-  if (m.bust_cm !== null) parts.push(`ngực ${m.bust_cm} cm`);
-  return `Người mẫu ${parts.join(", ")}, mặc size ${m.wearing_size.toUpperCase()}.`;
+  const parts = [t("product.sizeChart.heightPart", { cm: m.height_cm })];
+  if (m.bust_cm !== null) parts.push(t("product.sizeChart.bustPart", { cm: m.bust_cm }));
+  return t("product.sizeChart.model", { parts: parts.join(", "), size: m.wearing_size.toUpperCase() });
 }
 
 /** Bảng size (cm) trong `Dialog`: khóa focus, Esc đóng, trả focus về nút mở. */
@@ -30,13 +31,13 @@ export function SizeChartDialog({
     <Dialog
       open={open}
       onClose={onClose}
-      title="Bảng size"
+      title={t("product.sizeChart.title")}
       returnFocusRef={returnFocusRef}
-      closeLabel="Đóng bảng size"
+      closeLabel={t("product.sizeChart.close")}
     >
       <div className={styles.chartScroll}>
         <table className={styles.chart}>
-          <caption>{`Số đo tính bằng ${chart.unit}`}</caption>
+          <caption>{t("product.sizeChart.caption", { unit: chart.unit })}</caption>
           <thead>
             <tr>
               {chart.columns.map((c) => (
@@ -64,9 +65,7 @@ export function SizeChartDialog({
         </table>
       </div>
       {model ? <p className={styles.modelNote}>{modelSentence(model)}</p> : null}
-      <p className={styles.note}>
-        Số đo là kích thước sản phẩm/cơ thể tham khảo theo cm; không dùng cân nặng để suy ra size.
-      </p>
+      <p className={styles.note}>{t("product.sizeChart.note")}</p>
     </Dialog>
   );
 }

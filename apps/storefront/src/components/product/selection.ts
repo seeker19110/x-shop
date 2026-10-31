@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import type { ModelMeasurement, ProductDetail, ProductImage, ProductVariant } from "../../lib/catalog/types";
 
 /**
@@ -71,8 +72,8 @@ export function selectColor(
   return {
     selection: { color, size: null },
     notice: v
-      ? `Size ${s} đã hết hàng ở màu ${c} — vui lòng chọn lại size`
-      : `Màu ${c} không có size ${s} — vui lòng chọn lại size`,
+      ? t("product.notice.sizeSoldOut", { size: s, color: c })
+      : t("product.notice.colorMissingSize", { color: c, size: s }),
   };
 }
 
@@ -125,18 +126,18 @@ export interface Cta {
 /** CTA phản ánh đúng tình trạng (PDP05): "Chọn size" / "Hết hàng" / "Thêm vào giỏ". */
 export function ctaFor(p: ProductDetail, sel: Selection): Cta {
   if (sel.color === null) {
-    return { kind: "choose-color", label: "Chọn màu", disabled: false, variant: null };
+    return { kind: "choose-color", label: t("product.cta.chooseColor"), disabled: false, variant: null };
   }
   const variant = findVariant(p, sel);
   if (variant) {
     return variant.in_stock
-      ? { kind: "add", label: "Thêm vào giỏ", disabled: false, variant }
-      : { kind: "sold-out", label: "Hết hàng", disabled: true, variant };
+      ? { kind: "add", label: t("product.cta.add"), disabled: false, variant }
+      : { kind: "sold-out", label: t("product.cta.soldOut"), disabled: true, variant };
   }
   // Chưa chọn size: cả màu đã hết hàng thì nói thẳng "Hết hàng" thay vì bắt chọn size vô ích.
   if (!colorInStock(p, sel.color))
-    return { kind: "sold-out", label: "Hết hàng", disabled: true, variant: null };
-  return { kind: "choose-size", label: "Chọn size", disabled: false, variant: null };
+    return { kind: "sold-out", label: t("product.cta.soldOut"), disabled: true, variant: null };
+  return { kind: "choose-size", label: t("product.cta.chooseSize"), disabled: false, variant: null };
 }
 
 /** Ảnh của màu đang chọn (+ ảnh dùng chung); không có ảnh theo màu → toàn bộ ảnh. */

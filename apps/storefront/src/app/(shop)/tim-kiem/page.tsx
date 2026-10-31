@@ -4,6 +4,7 @@ import { SearchBox } from "../../../components/catalog/SearchBox";
 import { CATALOG_PAGE_SIZE } from "../../../lib/catalog/client";
 import { loadListing, toQueryString, type RawParams } from "../../../lib/catalog/listing";
 import { catalogMetadata } from "../../../lib/seo/catalog-meta";
+import { t } from "../../../lib/i18n";
 import { isNonEmpty } from "../../../lib/presence";
 
 interface Props {
@@ -17,8 +18,8 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
   return catalogMetadata({
     basePath: BASE,
     filter,
-    title: isNonEmpty(filter.q) ? `Tìm kiếm: ${filter.q}` : "Tìm kiếm",
-    description: "Tìm sản phẩm theo tên, mã SKU hoặc danh mục.",
+    title: isNonEmpty(filter.q) ? t("search.titleWithQuery", { q: filter.q }) : t("search.title"),
+    description: t("search.description"),
     total: result?.total ?? null,
     pageSize: result?.page_size ?? CATALOG_PAGE_SIZE,
     search: true, // mọi URL tìm kiếm: noindex,follow
@@ -34,7 +35,7 @@ export default async function SearchPage({ searchParams }: Props) {
   return (
     <CatalogView
       basePath={BASE}
-      heading={isNonEmpty(filter.q) ? `Kết quả cho “${filter.q}”` : "Tất cả sản phẩm"}
+      heading={isNonEmpty(filter.q) ? t("search.headingWithQuery", { q: filter.q }) : t("search.headingAll")}
       header={<SearchBox defaultValue={filter.q} />}
       filter={filter}
       issues={issues}

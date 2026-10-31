@@ -80,5 +80,156 @@
       "globalDescription": "Hệ thống gặp sự cố tạm thời. Vui lòng thử lại; nếu vẫn lỗi, hãy quay lại sau ít phút.",
       "retry": "Thử lại"
     }
+  },
+  "catalog": {
+    "breadcrumbHome": "Trang chủ",
+    "categoryNotFound": "Không tìm thấy danh mục",
+    "categoryDescription": "Mua {name} tại X-Shop: lọc theo màu, size, giá và còn hàng.",
+    "pageTitle": "{title} – Trang {page}",
+    "count": "{total} sản phẩm",
+    "noData": "Chưa có số liệu",
+    "listHeading": "Danh sách sản phẩm",
+    "loadError": "Không tải được danh sách sản phẩm. Vui lòng thử lại.",
+    "retry": "Thử lại",
+    "pageEmptyTitle": "Trang này không có sản phẩm",
+    "pageEmptyDescription": "Bộ lọc hiện có {total} sản phẩm, trong {pages} trang.",
+    "goFirstPage": "Về trang 1",
+    "noResultsTitle": "Không tìm thấy sản phẩm phù hợp",
+    "noResultsKeptConditions": "Các điều kiện bạn chọn được giữ nguyên. Gỡ từng điều kiện bên dưới để mở rộng kết quả.",
+    "noResultsTryOther": "Hãy thử từ khóa khác hoặc xem các danh mục dưới đây.",
+    "removeListLabel": "Gỡ điều kiện",
+    "removeFilter": "Bỏ lọc: {label}",
+    "suggestedCategories": "Danh mục gợi ý",
+    "listingError": {
+      "invalidRange": "Không thể lọc: giá thấp nhất lớn hơn giá cao nhất.",
+      "validation": "Một số điều kiện lọc không hợp lệ. Hãy chỉnh lại bộ lọc.",
+      "unavailable": "Không tải được danh sách sản phẩm. Vui lòng thử lại sau ít phút."
+    },
+    "chip": {
+      "query": "Từ khóa: {value}",
+      "color": "Màu: {value}",
+      "size": "Size: {value}",
+      "material": "Chất liệu: {value}",
+      "priceRange": "Giá: {min} – {max}",
+      "priceFrom": "Giá: từ {min}",
+      "priceTo": "Giá: đến {max}",
+      "inStock": "Còn hàng"
+    },
+    "issue": {
+      "invalidRange": "Giá thấp nhất đang lớn hơn giá cao nhất — hãy chỉnh lại khoảng giá.",
+      "invalidParam": "{param} không hợp lệ ({reason}) — đã bỏ qua.",
+      "param": {
+        "priceMin": "Giá thấp nhất",
+        "priceMax": "Giá cao nhất",
+        "page": "Số trang"
+      }
+    },
+    "filters": {
+      "openButton": "Bộ lọc ({count})",
+      "title": "Bộ lọc",
+      "close": "Đóng bộ lọc",
+      "viewResults": "Xem kết quả",
+      "viewCount": "Xem {count} sản phẩm",
+      "clear": "Xóa lựa chọn trong bộ lọc",
+      "apply": "Áp dụng bộ lọc",
+      "color": "Màu",
+      "size": "Size",
+      "material": "Chất liệu",
+      "price": "Giá (₫)",
+      "from": "Từ",
+      "to": "Đến",
+      "inStockOnly": "Chỉ hiện còn hàng",
+      "facetCount": "({count})"
+    },
+    "sort": {
+      "label": "Sắp xếp",
+      "apply": "Áp dụng",
+      "newest": "Mới nhất",
+      "priceAsc": "Giá tăng dần",
+      "priceDesc": "Giá giảm dần"
+    },
+    "pagination": {
+      "label": "Phân trang",
+      "prev": "Trang trước",
+      "next": "Trang sau",
+      "page": "Trang {page}",
+      "gap": "…"
+    }
+  },
+  "search": {
+    "title": "Tìm kiếm",
+    "titleWithQuery": "Tìm kiếm: {q}",
+    "description": "Tìm sản phẩm theo tên, mã SKU hoặc danh mục.",
+    "headingWithQuery": "Kết quả cho “{q}”",
+    "headingAll": "Tất cả sản phẩm",
+    "inputLabel": "Tìm theo tên, mã SKU hoặc danh mục",
+    "suggestLabel": "Gợi ý tìm kiếm",
+    "submit": "Tìm",
+    "suggestStatus": "{count} gợi ý. Dùng phím mũi tên lên xuống để chọn, Enter để tìm, Esc để đóng."
+  },
+  "product": {
+    "notFound": "Không tìm thấy sản phẩm",
+    "descriptionFallback": "{title} tại X-Shop.",
+    "breadcrumbHome": "Trang chủ",
+    "error": {
+      "title": "Không tải được sản phẩm",
+      "description": "Có sự cố tạm thời khi tải thông tin sản phẩm. Vui lòng thử lại.",
+      "retry": "Thử lại"
+    },
+    "gallery": {
+      "swipeHint": "Vuốt ngang để xem {count} ảnh",
+      "label": "Ảnh sản phẩm",
+      "zoomLabel": "Phóng ảnh {index}/{count}: {alt}",
+      "zoomTitle": "Phóng ảnh",
+      "zoomClose": "Đóng ảnh"
+    },
+    "details": {
+      "heading": "Chi tiết sản phẩm",
+      "material": "Chất liệu",
+      "composition": "Thành phần",
+      "stretch": "Độ co giãn",
+      "fit": "Form",
+      "care": "Bảo quản",
+      "origin": "Xuất xứ"
+    },
+    "sizeChart": {
+      "title": "Bảng size",
+      "close": "Đóng bảng size",
+      "caption": "Số đo tính bằng {unit}",
+      "note": "Số đo là kích thước sản phẩm/cơ thể tham khảo theo cm; không dùng cân nặng để suy ra size.",
+      "model": "Người mẫu {parts}, mặc size {size}.",
+      "heightPart": "cao {cm} cm",
+      "bustPart": "ngực {cm} cm"
+    },
+    "sticky": {
+      "label": "Mua nhanh",
+      "priceFrom": "Từ {price}"
+    },
+    "cta": {
+      "chooseColor": "Chọn màu",
+      "add": "Thêm vào giỏ",
+      "soldOut": "Hết hàng",
+      "chooseSize": "Chọn size"
+    },
+    "notice": {
+      "chooseSizeFirst": "Vui lòng chọn size trước khi thêm vào giỏ.",
+      "sizeSoldOut": "Size {size} đã hết hàng ở màu {color} — vui lòng chọn lại size",
+      "colorMissingSize": "Màu {color} không có size {size} — vui lòng chọn lại size"
+    },
+    "viewCart": "Xem giỏ hàng",
+    "summary": {
+      "label": "Giao hàng và đổi trả",
+      "titleSuffix": "{title}.",
+      "shipping": {
+        "title": "Giao hàng",
+        "text": "Phí và thời gian giao hàng hiển thị ở bước thanh toán, trước khi bạn xác nhận đơn.",
+        "linkLabel": "Chi tiết giao hàng"
+      },
+      "returns": {
+        "title": "Đổi trả",
+        "text": "Điều kiện đổi trả được công bố đầy đủ trước khi mua.",
+        "linkLabel": "Chi tiết đổi trả"
+      }
+    }
   }
 }

@@ -17,16 +17,16 @@ export const POLICY_LINKS = [
 /** Tóm tắt giao hàng/đổi trả đặt gần CTA ở PDP (PDP05): chỉ nói điều đã chắc chắn, chi tiết ở trang chính sách. */
 export const PDP_SUMMARY = [
   {
-    title: "Giao hàng",
-    text: "Phí và thời gian giao hàng hiển thị ở bước thanh toán, trước khi bạn xác nhận đơn.",
+    title: t("product.summary.shipping.title"),
+    text: t("product.summary.shipping.text"),
     href: "/giao-hang",
-    linkLabel: "Chi tiết giao hàng",
+    linkLabel: t("product.summary.shipping.linkLabel"),
   },
   {
-    title: "Đổi trả",
-    text: "Điều kiện đổi trả được công bố đầy đủ trước khi mua.",
+    title: t("product.summary.returns.title"),
+    text: t("product.summary.returns.text"),
     href: "/doi-tra-hoan-tien",
-    linkLabel: "Chi tiết đổi trả",
+    linkLabel: t("product.summary.returns.linkLabel"),
   },
 ] as const;
 
