@@ -3,6 +3,8 @@
 # đổi API/config mà không chạm tài liệu → cảnh báo. Tách khỏi `ci.yml` như `pr-title.yml`: nghe `edited` (sửa thân PR) nhưng chỉ
 # chạy vài giây, không chạy lại CI nặng. Không phải required check của ruleset mẫu. Dữ liệu từ PR (thân, tiêu đề) đi qua `env:`,
 # không nội suy `${{ }}` vào lệnh shell (chống injection).
+# Job `regression` (T-209, FE-TEST-006) là ngoại lệ về thời gian: chỉ với PR `fix:` có test chạy được, nó cài phụ thuộc và chạy
+# lại test mới/sửa của PR trên HEAD (phải xanh) và trên commit base (phải đỏ); PR khác xong sau bước kế hoạch (vài giây).
 name: pr-policy
 
 on:
@@ -162,3 +164,58 @@ jobs:
           set -euo pipefail
           node --test scripts/check-dependabot.test.mjs
           node scripts/check-dependabot.mjs
+
+  # FE-TEST-006, QA-STRAT-005 (T-209): test tái hiện lỗi phải TỰ CHỨNG MINH "đỏ trước, xanh sau", không chỉ khai trong mô tả.
+  # PR fix (tiêu đề hoặc một commit `fix:`/`fix(...)`): test mới/sửa của PR (`git diff base...head`) chạy trên HEAD phải xanh,
+  # chạy trên mã base + file test của HEAD phải đỏ (≥ 1 lệnh fail; mọi lệnh xanh → "test không tái hiện lỗi"). Runner theo
+  # vị trí file: vitest (storefront, domain), jest unit (backend), node --test (scripts/, e2e/*.test.mjs). Test tích hợp backend
+  # và E2E KHÔNG chạy ở đây (cảnh báo): mỗi suite dựng app Medusa trên Postgres/Redis + vai trò DB — thêm service vào job này
+  # thì mọi sự kiện pr-policy (cả `edited`) đều khởi động service; job `gate` của ci.yml đã chạy chúng trên HEAD. Không có test
+  # → đỏ, trừ ngoại lệ chung của check-fix-pr: nhãn `fix-no-test` + 'Ngoại lệ test: <lý do>'. Logic + test:
+  # scripts/check-fix-pr.mjs `--regression`. Job riêng (không gộp `policy`) để kiểm thân PR vẫn báo trong vài giây.
+  # HEAD = `GITHUB_SHA` (merge commit của PR — đúng mã sẽ vào master); base = tip nhánh đích (fetch-depth 0, không cần fetch).
+  regression:
+    name: regression
+    runs-on: ubuntu-latest
+    # Trần thời gian (không phải ngưỡng chất lượng): cài phụ thuộc không cache (~3–5 phút) + test đổi của PR chạy hai lần
+    # (HEAD, base); mỗi lệnh test có hạn riêng 10 phút trong script.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # cần commit base và lịch sử base..head
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - id: plan
+        name: Kế hoạch — PR fix? test nào, runner nào — `check-fix-pr.mjs --regression --dry-run`
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$PR_AUTHOR" == *"[bot]" ]] || [[ "$PR_TITLE" == 'Revert "'* ]]; then
+            echo "Bỏ qua (bot / revert)."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          node --test scripts/check-fix-pr.test.mjs
+          node scripts/check-fix-pr.mjs --regression --dry-run --base "$BASE_SHA" --head "$GITHUB_SHA"
+      - if: steps.plan.outputs.run == 'true'
+        name: Cài phụ thuộc — đúng khoá `setup:` của xt.yaml
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile
+      - if: steps.plan.outputs.run == 'true'
+        name: Test của PR — xanh trên HEAD, đỏ trên base — `check-fix-pr.mjs --regression`
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/check-fix-pr.mjs --regression --base "$BASE_SHA" --head "$GITHUB_SHA"
