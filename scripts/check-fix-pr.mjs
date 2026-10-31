@@ -386,16 +386,20 @@ export function firstFrameInOwn(message, own) {
  * - Mọi dạng với X do trình biên dịch sinh — `__vite_ssr_import_N__` (vitest) hoặc `_x` (@swc/jest/babel) — chỉ là nạp khi
  *   frame `at` đầu tiên nằm trong `own` (`firstFrameInOwn`): mã nguồn base cũng được biên dịch ra cùng dạng tên binding
  *   (vd plugin chưa đăng ký → `__vite_ssr_import_0__.default.utc`/`_plugin.default.utc` ném từ src; src và test cùng import
- *   "./api" → cùng `_api`), lỗi đó là lỗi thật cần tái hiện, không phải test gọi API mới. JUnit của node chỉ chuyển dòng
- *   `cause:` (không frame) nên binding node đặt tên bắt đầu bằng `_` không bao giờ là nạp (lệch về phía đạt — hiếm).
+ *   "./api" → cùng `_api`), lỗi đó là lỗi thật cần tái hiện, không phải test gọi API mới.
+ * - `own.compiled === false` (node --test: mã chạy nguyên bản, không trình biên dịch nào sinh tên `_x`): gốc `_x` chỉ là
+ *   tên người đặt (`import * as _src`) → xử lý như mọi binding import (`_x.Y` → nạp khi có trong `bindings`; `_x.a.Y` → null),
+ *   không cần frame. Chỉ gốc vitest còn ràng buộc frame.
  * - Dòng lỗi `Cannot find module './…'|'/…'` hoặc `… [ERR_MODULE_NOT_FOUND]:` → nạp.
- * @param {string} message @param {Set<string>} [bindings] @param {{top?: string, files?: Iterable<string>}} [own]
+ * @param {string} message @param {Set<string>} [bindings]
+ * @param {{top?: string, files?: Iterable<string>, compiled?: boolean}} [own]
  * @returns {"nạp" | null}
  */
 export function classifyFailure(message, bindings = new Set(), own = {}) {
   const msg = String(message ?? "");
   if (MODULE_NOT_FOUND_RE.test(msg) || ERR_MODULE_NOT_FOUND_RE.test(msg)) return "nạp";
-  const compiled = (x) => VITE_IMPORT_RE.test(x) || x.startsWith("_");
+  const swc = own?.compiled !== false;
+  const compiled = (x) => VITE_IMPORT_RE.test(x) || (swc && x.startsWith("_"));
   const fromOwn = () => firstFrameInOwn(msg, own);
   const call = COMPILED_IMPORT_CALL_RE.exec(msg);
   if (call !== null) return !compiled(call[1]) || fromOwn() ? "nạp" : null;
@@ -404,7 +408,7 @@ export function classifyFailure(message, bindings = new Set(), own = {}) {
   const [, root, member] = m;
   if (VITE_IMPORT_RE.test(root)) return fromOwn() ? "nạp" : null;
   if (!bindings.has(root)) return null;
-  if (root.startsWith("_")) return fromOwn() ? "nạp" : null;
+  if (compiled(root)) return fromOwn() ? "nạp" : null;
   return member === undefined ? "nạp" : null;
 }
 
@@ -583,7 +587,10 @@ export function parseJunit(xml, file, bindings = new Set()) {
     else {
       const tc = { file: norm(file), name: c.name, status: c.status };
       if (c.status === "failed") {
-        const why = HOOK_FAILURE_TYPES.has(c.type) ? "hook" : classifyFailure(c.first, bindings);
+        // node chạy mã nguyên bản: không có binding do trình biên dịch sinh (`compiled: false`), không cần frame.
+        const why = HOOK_FAILURE_TYPES.has(c.type)
+          ? "hook"
+          : classifyFailure(c.first, bindings, { compiled: false });
         if (why !== null) Object.assign(tc, { status: "broken", why });
       }
       cases.push(tc);

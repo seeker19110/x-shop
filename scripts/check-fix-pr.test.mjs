@@ -1656,3 +1656,36 @@ test("parseJunit (node 22 thật, D-154): beforeEach/afterEach lỗi → `hookFa
     ["failed", "failed", "failed"],
   );
 });
+
+test("parseJunit (review vòng 2): node `import * as _src` gọi export mới → nạp (không cần frame); `_src.a.Y` → failed", () => {
+  // Dạng body JUnit thật của node 22 (`m.newFn is not a function`), đổi tên binding thành `_src`.
+  const xml = JUNIT_HOOK_DYN.replaceAll("m.newFn", "_src.newFn")
+    .replace('failure="x.y is not a function"', 'failure="_src.api.newMethod is not a function"')
+    .replace(
+      "cause: TypeError: x.y is not a function",
+      "cause: TypeError: _src.api.newMethod is not a function",
+    );
+  const file = "scripts/dyn.test.mjs";
+  const bindings = new Map([[file, importBindings('import * as _src from "./src.mjs";')]]);
+  assert.ok(bindings.get(file).has("_src"));
+  const r = parseReport("junit", xml, { file, bindings });
+  assert.deepEqual(
+    r.cases.map((c) => [c.name, c.status, c.why]),
+    [
+      ["hook > under failing before", "broken", "hook"],
+      ["dyn missing export", "broken", "nạp"],
+      ["lỗi thật", "failed", undefined], // `_src.api.newMethod`: gốc người đặt tên, 3 đoạn → không mở rộng
+    ],
+  );
+  // Trực tiếp: `compiled: false` bỏ ràng buộc frame cho `_x`, vitest vẫn ràng buộc.
+  const b = new Set(["_src"]);
+  assert.equal(classifyFailure("TypeError: _src.newFn is not a function", b, { compiled: false }), "nạp");
+  assert.equal(classifyFailure("TypeError: _src.newFn is not a function", b), null); // jest: không frame → null
+  assert.equal(classifyFailure("TypeError: _src.api.f is not a function", b, { compiled: false }), null);
+  assert.equal(
+    classifyFailure("TypeError: _src.newFn is not a function", new Set(), { compiled: false }),
+    null,
+  );
+  const vite = "TypeError: __vite_ssr_import_0__.f is not a function";
+  assert.equal(classifyFailure(vite, b, { compiled: false }), null);
+});
