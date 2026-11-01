@@ -11,6 +11,7 @@ import {
   CATALOG_REBUILD_LOCK,
   drainCatalogIndex,
   rebuildCatalogIndex,
+  rebuildCatalogIndexForJob,
   REBUILD_MARK,
 } from "../indexer";
 import type { ProductSource } from "../product-source";
@@ -225,6 +226,32 @@ describe("job rebuild catalog khi tắt giữa lúc chờ khoá (T-237)", () => 
       throw new Error("db down");
     });
     await expect(catalogIndexRebuildJob(container)).rejects.toThrow("db down");
+  });
+});
+
+describe("rebuildCatalogIndexForJob — hết hạn chờ khi KHÔNG tắt (T-237)", () => {
+  /** `LOCK_WAIT_MS` của indexer.ts (không export): 5 phút. */
+  const LOCK_WAIT_MS = 5 * 60_000;
+  afterEach(() => jest.useRealTimers());
+
+  it("không tắt, khoá rebuild bận quá LOCK_WAIT_MS → reject BUSY_RETRY (không nuốt thành null), không log info, không chạy rebuild", async () => {
+    jest.useFakeTimers();
+    const { container, owners, index, logger, listProducts } = setup({ holdRebuild: true });
+    const p = rebuildCatalogIndexForJob(container).catch((e: unknown) => ({ rejected: e }));
+    let settled = false;
+    void p.then(() => (settled = true));
+    await jest.advanceTimersByTimeAsync(LOCK_WAIT_MS - 1_000);
+    expect(settled).toBe(false); // còn trong hạn chờ: vẫn chờ khoá
+    await jest.advanceTimersByTimeAsync(2_000);
+    const out = await p;
+    expect(out).toEqual({ rejected: expect.objectContaining({ code: "BUSY_RETRY" }) });
+    expect(shutdownState().draining).toBe(false);
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(listProducts).not.toHaveBeenCalled();
+    expect(index.clockNow).not.toHaveBeenCalled();
+    expect(owners.get(CATALOG_REBUILD_LOCK)).toBe(OTHER);
+    expect(activeLeaseCount()).toBe(0);
   });
 });
 
