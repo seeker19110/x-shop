@@ -160,7 +160,8 @@ medusaIntegrationTestRunner({
       "probe công khai %s không lộ version/chi tiết phụ thuộc",
       async (p) => {
         const res = (await api.get(p, noThrow)) as { data: unknown };
-        const body = JSON.stringify(res.data ?? "");
+        // Bỏ `trace_id`: UUID ngẫu nhiên có thể chứa "5432"/"6379" → đỏ giả.
+        const body = JSON.stringify(res.data ?? "", (k, v: unknown) => (k === "trace_id" ? undefined : v));
         expect(body).not.toMatch(
           /ECONN|5432|6379|select|postgres|redis|knex|version|medusa|\bat .*\.(js|ts)/i,
         );

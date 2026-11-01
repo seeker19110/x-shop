@@ -19,6 +19,9 @@ const REDIS_LOCK_PREFIX = "medusa_lock:";
 /** Không được lộ ra phản hồi readiness: host/cổng, mã lỗi kết nối, SQL, tên phụ thuộc, phiên bản. */
 const LEAK =
   /ECONN|ETIMEDOUT|5432|6379|10\.0\.0\.|select|postgres|redis|knex|version|medusa|\bat .*\.(js|ts)/i;
+/** Thân phản hồi để dò LEAK, bỏ `trace_id`: UUID ngẫu nhiên có thể chứa "5432"/"6379" (đỏ giả ~0,1 %/lần). */
+const leakProbe = (data: unknown): string =>
+  JSON.stringify(data, (k, v: unknown) => (k === "trace_id" ? undefined : v));
 
 /** Hình tối thiểu đọc từ query.graph (không phụ thuộc kiểu sinh trong .medusa/types). */
 type WithSalesChannels = { id: string; sales_channels?: ReadonlyArray<{ id?: string } | null> | null };
@@ -98,7 +101,7 @@ medusaIntegrationTestRunner({
         expect(String(res.headers["content-type"])).toMatch(/^application\/problem\+json/);
         expect(res.headers["cache-control"]).toBe("no-store");
         expect(res.data).toMatchObject({ status: 503, code: "NOT_READY" });
-        expect(JSON.stringify(res.data)).not.toMatch(LEAK);
+        expect(leakProbe(res.data)).not.toMatch(LEAK);
       });
 
       it("DB treo → 503 trong khoảng một hạn probe (không treo theo pool)", async () => {
@@ -121,7 +124,7 @@ medusaIntegrationTestRunner({
         try {
           const res = await api.get("/x/readyz", noThrow);
           expect(res.status).toBe(503);
-          expect(JSON.stringify(res.data)).not.toMatch(LEAK);
+          expect(leakProbe(res.data)).not.toMatch(LEAK);
         } finally {
           spy.mockRestore();
         }
