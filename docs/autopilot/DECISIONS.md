@@ -1143,3 +1143,10 @@
 - Chọn: min − biên dao động quan sát được, làm tròn xuống 0,1: lines 93,83−0,02→93,8; branches 83,91−0,07→83,8
 - Lý do (tiêu chí chất lượng cuối): Đúng (tiêu chí 1): baseline phải chịu được nhiễu đo đã quan sát, nếu không CI đỏ ngẫu nhiên như sau T-236; vẫn nâng so với 93,7/83,6 và qua Gate T-239 (≥ 93,75/83,65); tinh chỉnh quy tắc D-160 thành công thức có ghi trong file
 - Đường lùi: Đặt lại theo công thức khi có thêm mẫu cùng SHA
+
+### D-163 · 2026-11-01T08:19:28+00:00 · D-162 nâng baseline integration lên 93,8/83,8 từ 2 mẫu ở c0d2f71 nhưng cây commit đã có T-240 (đổi đường chờ khoá, chưa đo CI); lines chỉ dư 12 dòng so với dao động 10–20 dòng; sau merge không hạ lại được (ratchet --against). Giữ hay lùi?
+
+- Phương án: (1) Lùi về 93,7/83,6 (bỏ D-162), mở lại T-239; nâng khi có ≥ 2 (tốt nhất 3) mẫu CI ở SHA cuối, tính bằng số đếm dòng/nhánh, ghi tử/mẫu và SHA · (2) Giữ 93,8/83,8
+- Chọn: Lùi về 93,7/83,6 (bỏ D-162), mở lại T-239; nâng khi có ≥ 2 (tốt nhất 3) mẫu CI ở SHA cuối, tính bằng số đếm dòng/nhánh, ghi tử/mẫu và SHA
+- Lý do (tiêu chí chất lượng cuối): An toàn và giữ đường lùi (tiêu chí 1–2): baseline phải đo trên đúng cây sẽ merge và chịu được nhiễu; nâng sau merge là một chiều; không ép baseline cho khớp Gate T-239 — vế Gate đọc chính số vừa ghi là tự thoả
+- Đường lùi: Nâng lại theo công thức D-162 khi có mẫu đủ ở SHA cuối
