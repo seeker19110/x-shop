@@ -1150,3 +1150,17 @@
 - Chọn: Lùi về 93,7/83,6 (bỏ D-162), mở lại T-239; nâng khi có ≥ 2 (tốt nhất 3) mẫu CI ở SHA cuối, tính bằng số đếm dòng/nhánh, ghi tử/mẫu và SHA
 - Lý do (tiêu chí chất lượng cuối): An toàn và giữ đường lùi (tiêu chí 1–2): baseline phải đo trên đúng cây sẽ merge và chịu được nhiễu; nâng sau merge là một chiều; không ép baseline cho khớp Gate T-239 — vế Gate đọc chính số vừa ghi là tự thoả
 - Đường lùi: Nâng lại theo công thức D-162 khi có mẫu đủ ở SHA cuối
+
+### D-164 · 2026-11-01T14:39:25+00:00 · T-239: hai mẫu CI cùng code (run 41307132420 lần 1/2 @f5fe35a, chỉ khác 218d408 ở PROGRESS/.gitleaksignore): lines 35679/38013=93,860 và 35673/38013=93,844; branches 6336/7551=83,909 và 6328/7537=83,959. Đặt baseline integration bao nhiêu?
+
+- Phương án: (1) Theo công thức D-162 (min − độ lệch, làm tròn 0,01): 93,82/83,85 · (2) 93,8/83,8 (làm tròn 0,1) · (3) 93,75/83,75 — biên ≈ 2× dao động quan sát (lines dư ~36 dòng, branches dư ~0,16 điểm) · (4) Giữ 93,7/83,6, để T-239 mở
+- Chọn: 93,75/83,75 — biên ≈ 2× dao động quan sát (lines dư ~36 dòng, branches dư ~0,16 điểm)
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: ratchet chỉ tăng, sau merge không hạ được nên baseline phải chịu được dao động thật (lines 10–20 dòng, branches tới 0,07 điểm giữa các lần cùng SHA); 93,8 chỉ dư ~17 dòng, 83,85 dư ~5 nhánh — dễ đỏ ngẫu nhiên trên master. (2) đường lùi: chọn thấp hơn công thức, nâng tiếp được khi có thêm mẫu. (3) vẫn khóa phần lớn mức tăng so với 93,7/83,6 và đạt Gate T-239 (≥93,75/83,65) mà không ép: 93,75 thấp hơn kết quả công thức 93,82.
+- Đường lùi: Sửa coverage-baseline.json về 93,7/83,6 (hạ cần ghi quyết định mới; trước merge PR #20 thì revert commit)
+
+### D-165 · 2026-11-01T15:18:13+00:00 · Review D-164 (🔴 có tái hiện): branches tích hợp chỉ đạt 83,9 nhờ phủ ảo khi gộp shard — istanbul CoverageMap.merge (addNearestContainerHits) cộng hit của range class vào nhánh trong hàm mà shard đó không gọi; 66 nhánh ảo ở f5fe35a, 48 ở 7f3a900, bỏ đi cả hai là 83,08; số ảo đổi theo cách chia shard (thêm 1 suite http đổi 27/63 suite). Lines không bị (0 statement ảo). Giữ 93,75/83,75?
+
+- Phương án: (1) Giữ 93,75/83,75 (D-164) · (2) Lines 93,75, branches giữ 83,6; mở lại T-239, thêm task sửa cách gộp nhánh rồi mới nâng branches · (3) Giữ cả 93,7/83,6
+- Chọn: Lines 93,75, branches giữ 83,6; mở lại T-239, thêm task sửa cách gộp nhánh rồi mới nâng branches
+- Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: 83,75 dựa trên phủ ảo, PR thêm suite http kế tiếp (T-203…T-205, T-186) có thể làm quality đỏ trên master và sau merge không hạ được (--against). Lines là phủ thật, dư ~35 dòng so với dao động cùng SHA 6–10 dòng, nên nâng. (2) đường lùi: không nâng branches thì không khoá thêm điều chưa thật. Ghi chú rủi ro: kể cả 83,6 cũng cao hơn phủ thật 83,08 — sửa cách gộp sau merge sẽ cần hạ baseline branches, việc đó cần chủ dự án duyệt (LOOP-CI-001), không tự hạ.
+- Đường lùi: Đặt lại branches 83,75 trong coverage-baseline.json khi cách gộp shard đã sửa và đo lại ≥ 2 mẫu

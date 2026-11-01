@@ -1,11 +1,10 @@
 # PROGRESS.md — x-shop (webapp shop thời trang)
 
 ## Đang làm
-- Đợt 3 PLAN-2 (mục L, D-129) trên nhánh `claude/festive-wozniak-fwg3eg`, PR #20 đang mở, chờ chủ dự án merge. Các task agent tự làm được trong PR này đã xong, chỉ còn `T-239`.
-- `T-239`: nâng baseline coverage tích hợp (D-162 → D-163). Chỉ nâng khi có ≥ 2 mẫu CI (job `integration-coverage-merge`) trên cùng tree code. Tính từ số dòng/nhánh và ghi SHA. Gate của task ở `docs/autopilot/PLAN-2.md`, yêu cầu ≥ 93,75/83,65. Không ép baseline cho khớp Gate: mẫu không đủ biên thì để mở.
+- Đợt 3 PLAN-2 (mục L, D-129) trên nhánh `claude/festive-wozniak-fwg3eg`, PR #20 đang mở, chờ chủ dự án merge. Còn mở: `T-239` (lines đã nâng 93,75; branches giữ 83,6 vì phủ ảo khi gộp shard — D-165) chờ `T-241` sửa cách gộp nhánh coverage.
 
 ## Tiếp theo
-1. `T-239`: lấy coverage của 2 lần chạy CI trên `218d408` (một lần chạy + một lần rerun). Baseline = min − độ lệch quan sát, làm tròn xuống. Đủ ngưỡng Gate thì commit `coverage-baseline.json`, `loop record`. Không đủ thì `loop defer`.
+1. `T-241` (sửa `scripts/coverage-merge.mjs`, không cộng hit range chứa cho nhánh của hàm shard không gọi) → đo lại ≥ 2 mẫu CI → `T-239` nâng branches. Phủ thật hiện ~83,08 < sàn 83,6: nếu đo lại thấp hơn thì hạ sàn cần chủ dự án duyệt — nên quyết trước khi merge PR #20 (master chưa có baseline, `--against` chưa khoá).
 2. Sau khi PR #20 merge, cắt lại nhánh làm việc từ master, mỗi lát một PR, có người rà:
    - `T-186` migration bigint cột tiền (D-140, có sẵn 3 commit ở nhánh riêng);
    - `T-203` consent → `T-204` thời hạn lưu → `T-205` DSAR (D-158, PII, merge cần người);
@@ -21,9 +20,9 @@
    Xem trạng thái máy: `python3 .xtemplates/scripts/xt.py loop status`.
 
 ## Quyết định
-- Toàn bộ quyết định ở `docs/autopilot/DECISIONS.md` (D-001…D-163); quyết định kiến trúc ở `docs/adr/`.
+- Toàn bộ quyết định ở `docs/autopilot/DECISIONS.md` (D-001…D-165); quyết định kiến trúc ở `docs/adr/`.
 - Gần nhất:
-  - D-160…D-163: baseline coverage tích hợp 93,7/83,6. Không nâng theo một mẫu hay theo mẫu của tree khác.
+  - D-160…D-165: baseline coverage tích hợp 93,75/83,6 (lines từ 2 mẫu CI cùng code `f5fe35a`; branches không nâng vì phủ ảo khi gộp shard). Không nâng theo một mẫu, theo tree khác, hay theo số đo gộp chưa sửa.
   - Hàng rào đỏ giả khi dò rò rỉ: `integration-tests/helpers/leak-probe.ts`. Tầng 1 tách và kiểm định dạng `trace_id`/`span_id` (sai thì ném lỗi). Tầng 2 dò regex phần còn lại. `probeRequestLog` dò cả dòng của ngữ cảnh khác, không bỏ qua dòng nào. Có unit test riêng (`leak-probe.unit.spec`).
 - Tiền là số nguyên VND. Logic tiền/tồn/trạng thái chỉ nằm ở `packages/domain` và workflow backend.
 
