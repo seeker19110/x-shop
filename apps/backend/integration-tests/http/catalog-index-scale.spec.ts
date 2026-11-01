@@ -695,6 +695,8 @@ medusaIntegrationTestRunner({
       const SOURCE =
         /\b(from|join)\s+"?(product|product_variant|price|price_set|price_list|inventory_item|inventory_level|reservation_item|product_category|sales_channel)"?(\s|$)/i;
       expect(inLock.filter((s) => SOURCE.test(s))).toEqual([]);
+      // Cận dưới: lọc ngữ cảnh ca hỏng (heldBy không bao giờ đặt) thì inLock rỗng và các assert trên/dưới qua suông.
+      expect(inLock.length).toBeGreaterThanOrEqual(Math.ceil(expectedTotal / 500));
       expect(inLock.length).toBeLessThanOrEqual(Math.ceil(expectedTotal / 500) + 12);
       // Đo 2026-10-27 (5.605 dòng): 21 câu trong khoá (BEGIN, 6 câu write log/chốt, DELETE, 12 INSERT, COMMIT, đếm cuối)
       // trên 252 câu cả lượt (8 %); trước T-167: mọi câu trong khoá, gồm 391 câu đọc nguồn.
