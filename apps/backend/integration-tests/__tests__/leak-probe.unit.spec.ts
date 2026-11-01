@@ -93,6 +93,15 @@ describe("probeLogLines", () => {
     );
   });
 
+  it("span toàn số 0 và UUID chữ hoa bị từ chối (theo log-schema / randomUUID)", () => {
+    expect(() => probeLogLines(rec({ span_id: "0000000000000000" }))).toThrow(/span_id/);
+    expect(() => probeLogLines(rec({ trace_id: UUID_6379.toUpperCase() }))).toThrow(/UUID v4/);
+  });
+
+  it("expectedTraceId ngắn không bị cắt khỏi message (không che chuỗi cần dò)", () => {
+    expect(probeLogLines('{"message":"a 9431"}', { expectedTraceId: "9431" }).rest).toContain("9431");
+  });
+
   it("rỗng / không có ID → rest rỗng, không ném", () => {
     expect(probeLogLines("")).toEqual({ traceIds: [], spanIds: [], rest: "" });
     expect(probeLogLines([])).toEqual({ traceIds: [], spanIds: [], rest: "" });

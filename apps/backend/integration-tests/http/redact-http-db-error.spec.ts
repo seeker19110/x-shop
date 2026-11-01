@@ -27,7 +27,19 @@ const LEAKS = /(?<![\w:.])(?:180|9431|78|95)(?![\w:])|61\.5|Nguyễn|0912345678|
  */
 function scrubLog(logged: string, responseBody: unknown): string {
   const { traceId } = probeProblemBody(responseBody);
-  return probeLogLines(logged, { expectedTraceId: traceId }).rest;
+  // stdout chụp cả bản ghi của ngữ cảnh khác (job/subscriber chạy song song, trace_id khác) — chúng không thuộc request
+  // này, để lại sẽ làm probe ném "khác expectedTraceId" (đỏ giả). Bản ghi không có trace_id và dòng không phải JSON giữ nguyên.
+  const ownLines = logged.split("\n").filter((line) => {
+    try {
+      const rec: unknown = JSON.parse(line);
+      if (typeof rec !== "object" || rec === null) return true;
+      const id = (rec as { trace_id?: unknown }).trace_id;
+      return id === undefined || id === traceId;
+    } catch {
+      return true;
+    }
+  });
+  return probeLogLines(ownLines.join("\n"), { expectedTraceId: traceId }).rest;
 }
 
 medusaIntegrationTestRunner({

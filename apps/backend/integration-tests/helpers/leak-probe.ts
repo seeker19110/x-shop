@@ -9,8 +9,8 @@
  * ID ra và KIỂM ĐỊNH DẠNG (sai → ném lỗi, test đỏ); tầng 2 chỉ dò regex trên phần còn lại.
  */
 
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SPAN_ID = /^[0-9a-f]{16}$/;
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/; // randomUUID luôn chữ thường
+const SPAN_ID = /^(?!0{16}$)[0-9a-f]{16}$/; // như docs/ops/log-schema.json: không toàn số 0
 
 export interface ProblemProbeOptions {
   /** Giá trị `x-request-id` test đã gửi: khi có, `trace_id` phải đúng bằng giá trị này (thay cho UUID v4). */
@@ -68,6 +68,7 @@ export function probeLogLines(logged: string | readonly string[], opts: LogProbe
   const kept: string[] = [];
   for (const line of text.split("\n")) {
     let parsed: unknown;
+    // Ghi chú: JSON.parse giữ khoá cuối khi trùng khoá; logger dự án dùng JSON.stringify(object) nên không sinh khoá trùng.
     try {
       parsed = JSON.parse(line);
     } catch {
@@ -93,9 +94,14 @@ export function probeLogLines(logged: string | readonly string[], opts: LogProbe
     kept.push(JSON.stringify(rest));
   }
   let rest = kept.join("\n");
+  // Chỉ cắt ID đủ dài khỏi message: x-request-id ngắn (vd "9431") cắt đi sẽ che đúng chuỗi cần dò.
+  const MIN_SCRUB_LEN = 16;
   const expected =
-    opts.expectedTraceId !== undefined && opts.expectedTraceId !== "" ? [opts.expectedTraceId] : [];
+    opts.expectedTraceId !== undefined && opts.expectedTraceId.length >= MIN_SCRUB_LEN
+      ? [opts.expectedTraceId]
+      : [];
   for (const id of new Set([...traceIds, ...expected])) {
+    if (id.length < MIN_SCRUB_LEN) continue;
     rest = rest.split(id).join("<trace_id>");
   }
   return { traceIds, spanIds, rest };
