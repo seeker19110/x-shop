@@ -1,4 +1,4 @@
-import { probeLogLines, probeProblemBody } from "../helpers/leak-probe";
+import { probeLogLines, probeProblemBody, probeRequestLog } from "../helpers/leak-probe";
 
 const LEAK = /5432|6379|9431/;
 // UUID v4 hợp lệ có chứa đúng các chuỗi bị dò (tái hiện hai lần đỏ giả).
@@ -106,5 +106,43 @@ describe("probeLogLines", () => {
     expect(probeLogLines("")).toEqual({ traceIds: [], spanIds: [], rest: "" });
     expect(probeLogLines([])).toEqual({ traceIds: [], spanIds: [], rest: "" });
     expect(probeLogLines([rec({ msg: "Nguyễn" })]).rest).toContain("Nguyễn");
+  });
+});
+
+describe("probeRequestLog", () => {
+  const rec = (o: Record<string, unknown>) => `${JSON.stringify(o)}\n`;
+  const body = { status: 500, trace_id: UUID_9431 };
+  const OTHER = "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f";
+
+  it("dòng của request + dòng ngữ cảnh khác hợp lệ → ID bị cắt, không khớp nhầm", () => {
+    const rest = probeRequestLog(
+      rec({ msg: "boom", trace_id: UUID_9431, span_id: SPAN_5432 }) +
+        rec({ msg: "job", trace_id: UUID_6379 }),
+      body,
+    );
+    expect(rest).not.toMatch(LEAK);
+    expect(rest).toContain("job");
+  });
+
+  it("ngữ cảnh khác có trace_id hỏng (đột biến String(err)) → ném, không bỏ qua", () => {
+    expect(() => probeRequestLog(rec({ msg: "x", trace_id: "Error: connect 5432" }), body)).toThrow(
+      /UUID v4/,
+    );
+    expect(() => probeRequestLog(rec({ msg: "x", trace_id: "[object Object]" }), body)).toThrow(/UUID v4/);
+  });
+
+  it("dòng nhắc trace_id của phản hồi nhưng mang trace_id khác / không có → ném", () => {
+    expect(() => probeRequestLog(rec({ msg: `500 ${UUID_9431}`, trace_id: OTHER }), body)).toThrow(
+      /nhắc trace_id/,
+    );
+    expect(() => probeRequestLog(rec({ msg: `500 ${UUID_9431}` }), body)).toThrow(/nhắc trace_id/);
+  });
+
+  it("rò rỉ trong dòng ngữ cảnh khác vẫn bị dò", () => {
+    expect(probeRequestLog(rec({ msg: "Nguyễn 9431", trace_id: OTHER }), body)).toMatch(/Nguyễn 9431/);
+  });
+
+  it("thân phản hồi thiếu trace_id → ném", () => {
+    expect(() => probeRequestLog("", { status: 500 })).toThrow(/trace_id/);
   });
 });

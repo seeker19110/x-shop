@@ -106,3 +106,36 @@ export function probeLogLines(logged: string | readonly string[], opts: LogProbe
   }
   return { traceIds, spanIds, rest };
 }
+
+/**
+ * stdout chụp quanh MỘT request trả problem+json: tách + kiểm `trace_id`/`span_id` rồi trả phần còn lại để dò rò rỉ.
+ * - Dòng mang đúng `trace_id` của phản hồi (hoặc không có `trace_id`) kiểm với `expectedTraceId`.
+ * - Dòng của ngữ cảnh khác (job/subscriber song song) KHÔNG bị bỏ: vẫn phải UUID v4 / span 16 hex, ID vẫn bị cắt,
+ *   message vẫn được dò (đã sửa ba lần ở đây — 4ef9966, 8dc3195, 12a11da — nên có unit test riêng).
+ * - Dòng nhắc `trace_id` của phản hồi mà mang `trace_id` khác/không có → ném (lỗi của request ghi lệch ngữ cảnh).
+ */
+export function probeRequestLog(logged: string, responseBody: unknown): string {
+  const { traceId } = probeProblemBody(responseBody);
+  // stdout chụp cả bản ghi của ngữ cảnh khác (job/subscriber chạy song song, trace_id khác). Không bỏ chúng (sẽ che
+  // đúng lúc thiết kế bị phá — lỗi của request ghi với trace_id lệch): tách hai nhóm; nhóm khác ngữ cảnh vẫn phải có
+  // trace_id UUID v4 hợp lệ và vẫn bị dò, chỉ không ép bằng trace_id của phản hồi.
+  const own: string[] = [];
+  const other: string[] = [];
+  for (const line of logged.split("\n")) {
+    let id: unknown;
+    try {
+      const rec: unknown = JSON.parse(line);
+      id = typeof rec === "object" && rec !== null ? (rec as { trace_id?: unknown }).trace_id : undefined;
+    } catch {
+      id = undefined;
+    }
+    if (id !== traceId && traceId !== undefined && line.includes(traceId)) {
+      throw new Error(`dòng nhắc trace_id của phản hồi nhưng mang trace_id=${JSON.stringify(id)}`);
+    }
+    (id === undefined || id === traceId ? own : other).push(line);
+  }
+  return [
+    probeLogLines(own.join("\n"), { expectedTraceId: traceId }).rest,
+    probeLogLines(other.join("\n")).rest,
+  ].join("\n");
+}

@@ -8,7 +8,7 @@ import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import { adminHeaders, noThrow, storeHeaders } from "../helpers/auth";
 import { createTestProduct } from "../helpers/catalog";
-import { probeLogLines, probeProblemBody } from "../helpers/leak-probe";
+import { probeRequestLog } from "../helpers/leak-probe";
 import { FASHION_MODULE } from "../../src/modules/fashion";
 import type FashionModuleService from "../../src/modules/fashion/service";
 
@@ -19,34 +19,11 @@ jest.setTimeout(180 * 1000);
  * object thường (không phải Error) mang `message` của knex; `describeError` từng `JSON.stringify` trước khi che nên `\"`
  * làm mẫu SQL không khớp và toàn bộ số/chuỗi lọt log. Khẳng định: stdout của logger không còn giá trị đã chèn.
  */
-const LEAKS = /(?<![\w:.])(?:180|9431|78|95)(?![\w:])|61\.5|Nguyễn|0912345678|fmm_01J/;
+const LEAKS = /(?<![\w:.])(?:180|9431|78|95)(?![\w:])|(?<!\d)61\.5(?!\d)|Nguyễn|0912345678|fmm_01J/;
 
-/**
- * Log để dò LEAKS/MEASURE_LEAK: tách + kiểm định dạng `trace_id` (phải đúng mã trong phản hồi) và `span_id` (16 hex)
- * rồi dò phần còn lại — UUID/span ngẫu nhiên có thể chứa "9431" → đỏ giả (helpers/leak-probe.ts).
- */
-function scrubLog(logged: string, responseBody: unknown): string {
-  const { traceId } = probeProblemBody(responseBody);
-  // stdout chụp cả bản ghi của ngữ cảnh khác (job/subscriber chạy song song, trace_id khác). Không bỏ chúng (sẽ che
-  // đúng lúc thiết kế bị phá — lỗi của request ghi với trace_id lệch): tách hai nhóm; nhóm khác ngữ cảnh vẫn phải có
-  // trace_id UUID v4 hợp lệ và vẫn bị dò, chỉ không ép bằng trace_id của phản hồi.
-  const own: string[] = [];
-  const other: string[] = [];
-  for (const line of logged.split("\n")) {
-    let id: unknown;
-    try {
-      const rec: unknown = JSON.parse(line);
-      id = typeof rec === "object" && rec !== null ? (rec as { trace_id?: unknown }).trace_id : undefined;
-    } catch {
-      id = undefined;
-    }
-    (id === undefined || id === traceId ? own : other).push(line);
-  }
-  return [
-    probeLogLines(own.join("\n"), { expectedTraceId: traceId }).rest,
-    probeLogLines(other.join("\n")).rest,
-  ].join("\n");
-}
+/** Log để dò LEAKS/MEASURE_LEAK — xem `probeRequestLog` (helpers/leak-probe.ts). `61\.5` có biên chữ số: `duration_ms`
+ * của bản ghi truy cập (vd 161.537) từng khớp nhầm. */
+const scrubLog = probeRequestLog;
 
 medusaIntegrationTestRunner({
   testSuite: ({ api, getContainer }) => {
