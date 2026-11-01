@@ -27,8 +27,17 @@ const LOCK_WAIT_MS = minutesToMs(5);
 /** Lease khóa của sync/rebuild — gia hạn nền khi còn chạy; tiến trình chết thì tự hết sau ≤ 30 giây. */
 const WRITE_LOCK_TTL_SECONDS = 30;
 const LOCK_SCOPE = "catalog-index";
+const isBusyRetry = (e: unknown): boolean => (e as { code?: unknown } | null)?.code === "BUSY_RETRY";
 
-const withIndexLock = <T>(container: MedusaContainer, fn: () => Promise<T>): Promise<T> =>
+/**
+ * `abortWhenDraining` (T-237, D-081): đường job/nền thôi chờ khoá khi tiến trình đang tắt (BUSY_RETRY, không chạy `fn`)
+ * thay vì chờ tới `LOCK_WAIT_MS`. Mặc định tắt (đồng bộ gọi trực tiếp, CLI).
+ */
+const withIndexLock = <T>(
+  container: MedusaContainer,
+  fn: () => Promise<T>,
+  opts: { abortWhenDraining?: boolean } = {},
+): Promise<T> =>
   withOwnedLock(
     container.resolve(Modules.LOCKING),
     CATALOG_INDEX_LOCK,
@@ -36,6 +45,7 @@ const withIndexLock = <T>(container: MedusaContainer, fn: () => Promise<T>): Pro
       waitMs: LOCK_WAIT_MS,
       ttlSeconds: WRITE_LOCK_TTL_SECONDS,
       scope: LOCK_SCOPE,
+      abortWhenDraining: opts.abortWhenDraining === true,
       onReleaseError: (e) =>
         container
           .resolve(ContainerRegistrationKeys.LOGGER)
@@ -351,7 +361,10 @@ export const CATALOG_REBUILD_LOCK = `${CATALOG_INDEX_LOCK}:rebuild`;
  *   bản mới ngay khi khoá ghi nhả;
  * - ảnh chụp cũ hơn ảnh chụp đã áp → bỏ (`superseded`).
  */
-async function rebuildOutsideLock(container: MedusaContainer): Promise<RebuildResult> {
+async function rebuildOutsideLock(
+  container: MedusaContainer,
+  abortWhenDraining: boolean,
+): Promise<RebuildResult> {
   const index = indexService(container);
   const since = await index.clockNow();
   const ctx = await loadIndexContext(container);
@@ -391,11 +404,15 @@ async function rebuildOutsideLock(container: MedusaContainer): Promise<RebuildRe
     await notifyCatalogChanged(container, { all: true });
     return { ...base, rows: 0, kept: 0, superseded: false };
   }
-  const { res, stored } = await withIndexLock(container, async () => {
-    const r = await index.replaceAll(rows, since);
-    // Đang giữ khoá ghi → không ai khác ghi bảng giữa lúc thay và lúc đếm.
-    return { res: r, stored: r.applied ? await index.countRows() : 0 };
-  });
+  const { res, stored } = await withIndexLock(
+    container,
+    async () => {
+      const r = await index.replaceAll(rows, since);
+      // Đang giữ khoá ghi → không ai khác ghi bảng giữa lúc thay và lúc đếm.
+      return { res: r, stored: r.applied ? await index.countRows() : 0 };
+    },
+    { abortWhenDraining },
+  );
   if (!res.applied) {
     logger.info(
       `[catalog-index] Rebuild (bắt đầu ${since}) không ghi: ảnh chụp mới hơn đã thay bảng trước — không ghi đè.`,
@@ -437,6 +454,12 @@ export async function syncCatalogProducts(container: MedusaContainer, productIds
 export interface RebuildOptions {
   /** Chờ tối đa (ms) khi đang có rebuild khác chạy; mặc định `LOCK_WAIT_MS`. Quá hạn → `BUSY_RETRY`. */
   waitMs?: number;
+  /**
+   * Đường job/nền (T-237, D-081 "mọi vòng chờ kiểm isDraining"): đang chờ khoá rebuild HOẶC khoá ghi index mà tiến trình
+   * đang tắt → thôi chờ, ném `BUSY_RETRY` (bảng cũ giữ nguyên, khoá đã lấy được nhả) thay vì giữ tiến trình tới 2 ×
+   * `LOCK_WAIT_MS`. Mặc định tắt: CLI (`medusa exec`, seed) chờ trọn.
+   */
+  abortWhenDraining?: boolean;
 }
 
 /**
@@ -454,13 +477,32 @@ export async function rebuildCatalogIndex(
       waitMs: Math.max(0, opts.waitMs ?? LOCK_WAIT_MS),
       ttlSeconds: WRITE_LOCK_TTL_SECONDS,
       scope: LOCK_SCOPE,
+      abortWhenDraining: opts.abortWhenDraining === true,
       onReleaseError: (e) =>
         container
           .resolve(ContainerRegistrationKeys.LOGGER)
           .warn(`[catalog-index] Nhả khoá rebuild lỗi/quá hạn (lease tự hết): ${(e as Error).message}`),
     },
-    () => rebuildOutsideLock(container),
+    () => rebuildOutsideLock(container, opts.abortWhenDraining === true),
   );
+}
+
+/**
+ * Rebuild của job định kỳ (`x-catalog-index-rebuild`): như `rebuildCatalogIndex` nhưng thôi chờ khoá khi tiến trình đang
+ * tắt (T-237). Thôi vì đang tắt → log INFO, trả `null` (không ném: job không bị ghi nhận thất bại, không log error) — bảng
+ * cũ giữ nguyên, lần chạy sau/tiến trình khác rebuild. Lỗi khác (kể cả BUSY_RETRY do hết hạn chờ khi KHÔNG tắt) ném lên
+ * như trước.
+ */
+export async function rebuildCatalogIndexForJob(container: MedusaContainer): Promise<RebuildResult | null> {
+  try {
+    return await rebuildCatalogIndex(container, { abortWhenDraining: true });
+  } catch (e) {
+    if (!isBusyRetry(e) || !isDraining()) throw e;
+    container
+      .resolve(ContainerRegistrationKeys.LOGGER)
+      .info("[catalog-index] Đang tắt — thôi chờ khoá rebuild, bảng cũ giữ nguyên; lần chạy sau rebuild.");
+    return null;
+  }
 }
 /** Ký hiệu "cần rebuild toàn phần" trong hàng đợi sản phẩm bẩn. */
 export const REBUILD_MARK = "*";
@@ -534,8 +576,6 @@ export async function markCatalogDirty(container: MedusaContainer, productIds: s
   await indexService(container).markDirty(productIds);
 }
 
-const isBusyRetry = (e: unknown): boolean => (e as { code?: unknown } | null)?.code === "BUSY_RETRY";
-
 /**
  * Rebuild do dấu '*' trong hàng đợi — KHÔNG chờ khi rebuild khác đang chạy: lượt xả chờ ~1 phút thì sản phẩm bẩn của tiến
  * trình này (lượt hẹn gộp, `scheduleCatalogDrain`) cũng chờ theo. Rebuild đang chạy có thể đã đọc nguồn TRƯỚC thay đổi
@@ -544,10 +584,18 @@ const isBusyRetry = (e: unknown): boolean => (e as { code?: unknown } | null)?.c
  */
 async function rebuildForDrain(container: MedusaContainer): Promise<boolean> {
   try {
-    await rebuildCatalogIndex(container, { waitMs: 0 });
+    // Lượt xả chạy từ job/lượt hẹn nền, không phải request → thôi chờ khoá ghi khi đang tắt (T-237).
+    await rebuildCatalogIndex(container, { waitMs: 0, abortWhenDraining: true });
     return true;
   } catch (e) {
     if (!isBusyRetry(e) && !isLockUnavailable(e)) throw e;
+    if (isBusyRetry(e) && isDraining()) {
+      // Thôi chờ vì đang tắt (D-081): không phải sự cố — giữ dấu '*' cho tiến trình khác/lần chạy sau.
+      container
+        .resolve(ContainerRegistrationKeys.LOGGER)
+        .info("[catalog-index] Đang tắt — thôi rebuild theo dấu '*', giữ dấu cho lần chạy sau.");
+      return false;
+    }
     container
       .resolve(ContainerRegistrationKeys.LOGGER)
       .warn(

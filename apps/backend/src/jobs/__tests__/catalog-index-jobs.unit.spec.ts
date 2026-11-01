@@ -17,7 +17,7 @@ const mockRebuild = jest.fn(async () => ({}));
 jest.mock("../../lib/catalog/indexer", () => ({
   markExpiredPrices: (...a: unknown[]) => mockMarkExpired(...(a as [])),
   drainCatalogIndexForJob: (...a: unknown[]) => mockDrainForJob(...(a as [])),
-  rebuildCatalogIndex: (...a: unknown[]) => mockRebuild(...(a as [])),
+  rebuildCatalogIndexForJob: (...a: unknown[]) => mockRebuild(...(a as [])),
 }));
 
 const container = {} as MedusaContainer;
@@ -29,7 +29,7 @@ beforeEach(() => {
 afterAll(() => resetShutdownStateForTest());
 
 describe("job catalog khi đang tắt", () => {
-  it("bình thường: job xả đánh dấu giá hết hạn rồi xả; job rebuild chạy rebuild", async () => {
+  it("bình thường: job xả đánh dấu giá hết hạn rồi xả; job rebuild chạy rebuild (bản cho job, thôi chờ khoá khi tắt — T-237)", async () => {
     await catalogIndexDrainJob(container);
     await catalogIndexRebuildJob(container);
     expect(mockMarkExpired).toHaveBeenCalledTimes(1);

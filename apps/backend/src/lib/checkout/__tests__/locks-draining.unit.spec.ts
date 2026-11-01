@@ -1,6 +1,6 @@
 import { CheckoutError } from "../errors";
 import { resetShutdownStateForTest, shutdownState } from "../../lifecycle/shutdown";
-import { acquireOrdered, activeLeaseCount, releaseOwned, type LockingLike } from "../locks";
+import { acquireOrdered, activeLeaseCount, releaseOwned, withOwnedLock, type LockingLike } from "../locks";
 
 /**
  * T-174/D-081: vòng chờ khóa của JOB (`abortWhenDraining`) thôi chờ khi tiến trình đang tắt; đường request (không truyền
@@ -115,5 +115,109 @@ describe("acquireOrdered và tắt êm (T-174)", () => {
     await l.release("k1", { ownerId: "OTHER" });
     expect(await settle(p, 1_000)).toEqual(["k1"]);
     await releaseOwned(l, "req", null);
+  });
+});
+
+/**
+ * T-237: `withOwnedLock` truyền tiếp `abortWhenDraining` xuống vòng chờ khóa — trước đây tuỳ chọn bị bỏ rơi nên job dùng
+ * `withOwnedLock` (rebuild catalog) chờ trọn `waitMs` (tới 5 phút) khi đang tắt.
+ */
+describe("withOwnedLock và tắt êm (T-237)", () => {
+  const owned = (extra: { abortWhenDraining?: boolean } = {}) => ({
+    waitMs: WAIT,
+    ttlSeconds: 30,
+    scope: "catalog-index",
+    ownerPrefix: "job",
+    ...extra,
+  });
+
+  it("abortWhenDraining: bật cờ tắt giữa lúc chờ → BUSY_RETRY sớm, không chạy fn, khóa của chủ khác giữ nguyên", async () => {
+    const l = await heldByOther();
+    const fn = jest.fn(async () => "ran");
+    const start = Date.now();
+    const p = withOwnedLock(l, "k1", owned({ abortWhenDraining: true }), fn).catch((e: unknown) => e);
+    await jest.advanceTimersByTimeAsync(300);
+    shutdownState().draining = true;
+    const err = await settle(p, 1_000);
+    expect((err as CheckoutError).code).toBe("BUSY_RETRY");
+    expect(Date.now() - start).toBeLessThan(1_000);
+    expect(fn).not.toHaveBeenCalled();
+    expect(l.owners.get("k1")).toBe("OTHER");
+  });
+
+  it("abortWhenDraining + đã đang tắt trước khi gọi, khóa bận → thôi ngay ở lần thử đầu (không ngủ backoff)", async () => {
+    const l = await heldByOther();
+    shutdownState().draining = true;
+    const fn = jest.fn(async () => "ran");
+    const start = Date.now();
+    const err = await withOwnedLock(l, "k1", owned({ abortWhenDraining: true }), fn).catch((e: unknown) => e);
+    expect((err as CheckoutError).code).toBe("BUSY_RETRY");
+    expect(Date.now() - start).toBe(0);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("abortWhenDraining + đang tắt nhưng khóa rảnh → vẫn lấy và chạy fn (chỉ thôi CHỜ, không từ chối khóa rảnh), nhả sau", async () => {
+    const l = new FakeLocking();
+    shutdownState().draining = true;
+    await expect(withOwnedLock(l, "k1", owned({ abortWhenDraining: true }), async () => "ran")).resolves.toBe(
+      "ran",
+    );
+    expect(l.owners.size).toBe(0);
+  });
+
+  it("nhiều khóa: k2 bận, bật cờ tắt → BUSY_RETRY, k1 đã lấy được nhả, không còn lease", async () => {
+    const l = new FakeLocking();
+    await l.acquire("k2", { ownerId: "OTHER" });
+    const fn = jest.fn(async () => "ran");
+    const p = withOwnedLock(l, ["k2", "k1"], owned({ abortWhenDraining: true }), fn).catch((e: unknown) => e);
+    await jest.advanceTimersByTimeAsync(100);
+    expect([...l.owners.entries()].some(([k, o]) => k === "k1" && o.startsWith("job:"))).toBe(true);
+    shutdownState().draining = true;
+    expect(((await settle(p, 1_000)) as CheckoutError).code).toBe("BUSY_RETRY");
+    expect(l.owners.has("k1")).toBe(false);
+    expect(l.owners.get("k2")).toBe("OTHER");
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("đồng thời: hai người chờ cùng khóa (abortWhenDraining) → bật cờ tắt, cả hai thôi chờ; chủ đang giữ không bị ảnh hưởng", async () => {
+    const l = await heldByOther();
+    const fn = jest.fn(async () => "ran");
+    const a = withOwnedLock(l, "k1", owned({ abortWhenDraining: true }), fn).catch((e: unknown) => e);
+    const b = withOwnedLock(l, "k1", owned({ abortWhenDraining: true }), fn).catch((e: unknown) => e);
+    await jest.advanceTimersByTimeAsync(200);
+    shutdownState().draining = true;
+    const both = Promise.all([a, b]);
+    const [ea, eb] = await settle(both, 1_000);
+    expect((ea as CheckoutError).code).toBe("BUSY_RETRY");
+    expect((eb as CheckoutError).code).toBe("BUSY_RETRY");
+    expect(fn).not.toHaveBeenCalled();
+    expect(l.owners.get("k1")).toBe("OTHER");
+  });
+
+  it("không bật abortWhenDraining (mặc định) → đang tắt vẫn chờ tới hết waitMs rồi BUSY_RETRY", async () => {
+    const l = await heldByOther();
+    const fn = jest.fn(async () => "ran");
+    const start = Date.now();
+    const p = withOwnedLock(l, "k1", owned(), fn).catch((e: unknown) => e);
+    shutdownState().draining = true;
+    await jest.advanceTimersByTimeAsync(WAIT - 1_000);
+    let settled = false;
+    void p.then(() => (settled = true));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(((await p) as CheckoutError).code).toBe("BUSY_RETRY");
+    expect(Date.now() - start).toBeGreaterThanOrEqual(WAIT);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("không bật abortWhenDraining → đang tắt, khóa nhả giữa chừng thì lấy được và chạy fn (đường request giữ nguyên)", async () => {
+    const l = await heldByOther();
+    shutdownState().draining = true;
+    const p = withOwnedLock(l, "k1", owned(), async () => "ran");
+    await jest.advanceTimersByTimeAsync(5_000);
+    await l.release("k1", { ownerId: "OTHER" });
+    expect(await settle(p, 1_000)).toBe("ran");
+    expect(l.owners.size).toBe(0);
   });
 });

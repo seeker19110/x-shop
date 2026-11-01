@@ -220,6 +220,12 @@ export interface OwnedLockOptions {
    * (phần đã ghi vẫn còn) — chỉ dùng cho tác vụ gọi lại được an toàn (idempotent).
    */
   failOnLeaseLoss?: boolean;
+  /**
+   * Truyền xuống `AcquireOptions.abortWhenDraining` (T-237, D-081): đang chờ khóa bận mà tiến trình đang tắt → thôi chờ,
+   * báo `BUSY_RETRY` và KHÔNG chạy `fn`. Chỉ cắt việc CHỜ — khóa rảnh vẫn lấy được; `fn` đang chạy không bị cắt. Mặc định
+   * TẮT (đường request/CLI chờ trọn `waitMs`); đường job/nền bật.
+   */
+  abortWhenDraining?: boolean;
   onReleaseError?: (e: unknown) => void;
 }
 
@@ -245,6 +251,7 @@ export async function withOwnedLock<T>(
     ttlSeconds: opts.ttlSeconds,
     scope: opts.scope,
     callTimeoutMs: opts.callTimeoutMs,
+    abortWhenDraining: opts.abortWhenDraining === true,
   });
   try {
     const result = await fn();
