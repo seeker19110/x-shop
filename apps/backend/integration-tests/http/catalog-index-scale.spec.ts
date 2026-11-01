@@ -18,7 +18,7 @@ import type { CatalogIndexRow } from "../../src/modules/catalog-index/service";
 import catalogIndexRebuildJob from "../../src/jobs/catalog-index-rebuild";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
 import { acquireOrdered, releaseOwned } from "../../src/lib/checkout/locks";
-import { exclusiveRebuilds, pauseAfterPriceRead } from "../helpers/catalog-rebuild";
+import { type ExclusiveRebuilds, exclusiveRebuilds, pauseAfterPriceRead } from "../helpers/catalog-rebuild";
 import { createCountScope } from "../helpers/scoped-counter";
 
 jest.setTimeout(300 * 1000);
@@ -835,123 +835,161 @@ medusaIntegrationTestRunner({
         };
       }) as typeof original);
     };
+    /**
+     * T-240: ca đặt dấu SENTINEL rồi kiểm dấu còn/mất cô lập khỏi job nền. Rebuild của job `*\/30` đọc nguồn TRƯỚC
+     * `breakPricing()` (giá còn tốt) mà gọi `replaceAll` SAU `markSentinel` thì xoá dấu → `sentinelCount()`/
+     * `count(bad AND SENTINEL)` đỏ (tái hiện: 45 → 0). Cả thân ca chạy trong cửa sổ độc quyền rebuild; rebuild của ca chờ
+     * khoá có hạn (ngữ cảnh cửa sổ hỏng → BUSY_RETRY sau 10 s, không treo 5 phút). Cửa sổ đóng ở `finally`, ca hết hạn
+     * giữa chừng thì `afterEach` đóng (`cleanups`); stub giá gỡ bởi `jest.restoreAllMocks`.
+     */
+    const CASE_LOCK_WAIT_MS = 10_000;
+    const isolatedFromJobs = async (fn: (ex: ExclusiveRebuilds) => Promise<void>): Promise<void> => {
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      try {
+        await ex.run(() => fn(ex));
+      } finally {
+        ex.close();
+      }
+    };
+    const rebuildInCase = () => rebuildCatalogIndex(container, { waitMs: CASE_LOCK_WAIT_MS });
 
     it("rebuild khi missing > 0: giữ nguyên bảng cũ, log lỗi, ngoại lệ mở đúng 1 lần dù gọi 2 lần; hết lỗi thì thay bảng", async () => {
-      await rebuildCatalogIndex(container);
-      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
-      await markSentinel("prod_SCALE0000%");
-      const before = await count();
-      const sentinels = await sentinelCount();
-      expect(sentinels).toBeGreaterThan(0);
+      await isolatedFromJobs(async () => {
+        await rebuildInCase();
+        await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+        await markSentinel("prod_SCALE0000%");
+        const before = await count();
+        const sentinels = await sentinelCount();
+        expect(sentinels).toBeGreaterThan(0);
 
-      const error = jest.spyOn(logger, "error");
-      const stub = breakPricing();
-      const r1 = await rebuildCatalogIndex(container);
-      const r2 = await rebuildCatalogIndex(container);
-      stub.mockRestore();
+        const error = jest.spyOn(logger, "error");
+        const stub = breakPricing();
+        const r1 = await rebuildInCase();
+        const r2 = await rebuildInCase();
+        stub.mockRestore();
 
-      for (const r of [r1, r2]) {
-        expect(r.missing).toBe(SKUS_PER_PRODUCT);
-        expect(r.rows).toBe(0);
-      }
-      expect(await count()).toBe(before);
-      expect(await sentinelCount()).toBe(sentinels); // bảng cũ còn nguyên (không bị dựng lại)
-      expect(logged(error, "BỊ HỦY")).toBe(true);
-      expect(await exceptions()).toBe(1);
-      expect(await exceptions("open")).toBe(1);
-      const detail = (await db.raw(`SELECT detail, priority FROM ops_exception WHERE kind = ?`, [KIND]))
-        .rows[0] as { detail: { op: string; missing: number }; priority: string };
-      expect(detail.detail).toMatchObject({ op: "rebuild", missing: SKUS_PER_PRODUCT });
-      expect(detail.priority).toBe("high");
+        for (const r of [r1, r2]) {
+          expect(r.missing).toBe(SKUS_PER_PRODUCT);
+          expect(r.rows).toBe(0);
+        }
+        expect(await count()).toBe(before);
+        expect(await sentinelCount()).toBe(sentinels); // bảng cũ còn nguyên (không bị dựng lại)
+        expect(logged(error, "BỊ HỦY")).toBe(true);
+        expect(await exceptions()).toBe(1);
+        expect(await exceptions("open")).toBe(1);
+        const detail = (await db.raw(`SELECT detail, priority FROM ops_exception WHERE kind = ?`, [KIND]))
+          .rows[0] as { detail: { op: string; missing: number }; priority: string };
+        expect(detail.detail).toMatchObject({ op: "rebuild", missing: SKUS_PER_PRODUCT });
+        expect(detail.priority).toBe("high");
 
-      // Bình thường: vẫn thay cả bảng (sentinel biến mất), ngoại lệ cũ không tự đóng, không mở thêm.
-      const ok = await rebuildCatalogIndex(container);
-      expect(ok.missing).toBe(0);
-      expect(await count()).toBe(expectedTotal);
-      expect(await sentinelCount()).toBe(0);
-      expect(await exceptions()).toBe(1);
+        // Bình thường: vẫn thay cả bảng (sentinel biến mất), ngoại lệ cũ không tự đóng, không mở thêm.
+        const ok = await rebuildInCase();
+        expect(ok.missing).toBe(0);
+        expect(await count()).toBe(expectedTotal);
+        expect(await sentinelCount()).toBe(0);
+        expect(await exceptions()).toBe(1);
 
-      // Xử lý xong (resolved) rồi lỗi tái diễn → mở lại (không bị dedupe vĩnh viễn).
-      await db.raw(`UPDATE ops_exception SET state = 'resolved' WHERE kind = ?`, [KIND]);
-      const stub2 = breakPricing();
-      await rebuildCatalogIndex(container);
-      stub2.mockRestore();
-      expect(await exceptions()).toBe(2);
-      expect(await exceptions("open")).toBe(1);
+        // Xử lý xong (resolved) rồi lỗi tái diễn → mở lại (không bị dedupe vĩnh viễn).
+        await db.raw(`UPDATE ops_exception SET state = 'resolved' WHERE kind = ?`, [KIND]);
+        const stub2 = breakPricing();
+        await rebuildInCase();
+        stub2.mockRestore();
+        expect(await exceptions()).toBe(2);
+        expect(await exceptions("open")).toBe(1);
+      });
     });
 
     it("đồng bộ theo sản phẩm gặp missing: không ghi sản phẩm đó (giữ dòng cũ), sản phẩm khác trong lô vẫn ghi; ngoại lệ không mở trùng", async () => {
-      await rebuildCatalogIndex(container);
-      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
-      await markSentinel("prod_SCALE0000%");
-      const bad = "prod_SCALE00001";
-      const good = "prod_SCALE00002";
-      const badBefore = await count("product_id = ?", [bad]);
-      expect(badBefore).toBe(SKUS_PER_PRODUCT);
+      await isolatedFromJobs(async () => {
+        await rebuildInCase();
+        await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+        await markSentinel("prod_SCALE0000%");
+        const bad = "prod_SCALE00001";
+        const good = "prod_SCALE00002";
+        const badBefore = await count("product_id = ?", [bad]);
+        expect(badBefore).toBe(SKUS_PER_PRODUCT);
 
-      const stub = breakPricing();
-      const written = await syncCatalogProducts(container, [bad, good]);
-      await syncCatalogProducts(container, [bad]);
-      stub.mockRestore();
+        const stub = breakPricing();
+        const written = await syncCatalogProducts(container, [bad, good]);
+        await syncCatalogProducts(container, [bad]);
+        stub.mockRestore();
 
-      expect(written).toBe(SKUS_PER_PRODUCT); // chỉ sản phẩm tốt được ghi
-      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
-      expect(await count("product_id = ?", [bad])).toBe(badBefore);
-      expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
-      expect(await count("product_id = ?", [good])).toBe(SKUS_PER_PRODUCT);
-      expect(await exceptions("open")).toBe(1);
+        expect(written).toBe(SKUS_PER_PRODUCT); // chỉ sản phẩm tốt được ghi
+        expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+        expect(await count("product_id = ?", [bad])).toBe(badBefore);
+        expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
+        expect(await count("product_id = ?", [good])).toBe(SKUS_PER_PRODUCT);
+        expect(await exceptions("open")).toBe(1);
+      });
     });
 
     it("T-061: drain giữ dấu sản phẩm lệch giá, thử lại khi đến hạn (backoff), ghi được khi giá sửa xong; sản phẩm tốt ghi ngay", async () => {
-      await rebuildCatalogIndex(container);
-      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
-      await markSentinel("prod_SCALE0000%");
-      const bad = "prod_SCALE00001";
-      const good = "prod_SCALE00002";
-      const dirty = async (id: string) =>
-        (
-          await db.raw(
-            `SELECT attempts, next_attempt_at > clock_timestamp() AS waiting FROM catalog_index_dirty WHERE product_id = ?`,
-            [id],
-          )
-        ).rows[0] as { attempts: number; waiting: boolean } | undefined;
-      const makeDue = () =>
-        db.raw(
-          `UPDATE catalog_index_dirty SET next_attempt_at = clock_timestamp() - interval '1 second' WHERE product_id = ?`,
-          [bad],
-        );
+      // T-240: job xả mỗi phút (`waitMs` 0, lượt hẹn) có thể đang giữ CATALOG_INDEX_LOCK đúng lúc ca xả. Ca xả với
+      // `waitMs` 0 thì trả về ngay, không xả gì (tái hiện: processed 0, sentinel của sản phẩm tốt còn 5) → ca chờ khoá có
+      // hạn. Job xả có thể xả hộ dấu của ca — stub giá cài TRƯỚC markDirty nên ai xả cũng ra cùng trạng thái DB.
+      const DRAIN_WAIT_MS = 20_000;
+      const drainInCase = () => drainCatalogIndex(container, { waitMs: DRAIN_WAIT_MS });
+      const warn = jest.spyOn(logger, "warn");
+      await isolatedFromJobs(async () => {
+        await rebuildInCase();
+        await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+        await markSentinel("prod_SCALE0000%");
+        const bad = "prod_SCALE00001";
+        const good = "prod_SCALE00002";
+        const dirty = async (id: string) =>
+          (
+            await db.raw(
+              `SELECT attempts, next_attempt_at > clock_timestamp() AS waiting FROM catalog_index_dirty WHERE product_id = ?`,
+              [id],
+            )
+          ).rows[0] as { attempts: number; waiting: boolean } | undefined;
+        const makeDue = () =>
+          db.raw(
+            `UPDATE catalog_index_dirty SET next_attempt_at = clock_timestamp() - interval '1 second' WHERE product_id = ?`,
+            [bad],
+          );
 
-      await index().markDirty([bad, good]);
-      const stub = breakPricing();
-      await drainCatalogIndex(container);
-      // Sản phẩm tốt ghi ngay (sentinel biến mất, dấu xoá); sản phẩm lệch giữ dòng cũ + dấu hẹn lại.
-      expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
-      expect(await dirty(good)).toBeUndefined();
-      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
-      expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
+        const stub = breakPricing();
+        await index().markDirty([bad, good]);
+        await drainInCase();
+        // Sản phẩm tốt ghi ngay (sentinel biến mất, dấu xoá); sản phẩm lệch giữ dòng cũ + dấu hẹn lại.
+        expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
+        expect(await dirty(good)).toBeUndefined();
+        expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+        expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
 
-      // Chưa đến hạn: drain không đọc nguồn (không lặp nóng).
-      // Chỉ đếm lời gọi nằm trong lần drain của test — job catalog-index-drain chạy nền không được lẫn vào.
-      const scope = createCountScope("catalog-drain");
-      const graph = scope.counter(container.resolve(ContainerRegistrationKeys.QUERY), "graph");
-      await scope.measureInProcess(() => drainCatalogIndex(container));
-      expect(graph.counter.inRequest).toBe(0);
-      expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
+        // Chưa đến hạn: drain không đọc nguồn (không lặp nóng).
+        // Chỉ đếm lời gọi nằm trong lần drain của test — job catalog-index-drain chạy nền không được lẫn vào.
+        const scope = createCountScope("catalog-drain");
+        const graph = scope.counter(container.resolve(ContainerRegistrationKeys.QUERY), "graph");
+        const claim = scope.counter(index(), "claimDirty");
+        const due = scope.counter(index(), "dirtyCount");
+        await scope.measureInProcess(drainInCase);
+        expect(graph.counter.inRequest).toBe(0);
+        // Cận dưới (T-240): lần xả của ca thật sự xét hàng đợi (lấy dấu hoặc đếm dấu đến hạn) — ngữ cảnh đo mất, hay xả
+        // bỏ cuộc vì khoá bận, thì `graph` = 0 ở trên qua suông.
+        expect(claim.counter.inRequest + due.counter.inRequest).toBeGreaterThanOrEqual(1);
+        expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
 
-      // Đến hạn mà giá vẫn hỏng: thử lại, attempts tăng, hẹn lùi tiếp.
-      await makeDue();
-      await drainCatalogIndex(container);
-      expect(await dirty(bad)).toEqual({ attempts: 2, waiting: true });
-      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+        // Đến hạn mà giá vẫn hỏng: thử lại, attempts tăng, hẹn lùi tiếp.
+        await makeDue();
+        await drainInCase();
+        expect(await dirty(bad)).toEqual({ attempts: 2, waiting: true });
+        expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
 
-      // Giá sửa xong + đến hạn: ghi được, dấu xoá, ngoại lệ đã mở vẫn còn (không tự đóng).
-      stub.mockRestore();
-      await makeDue();
-      await drainCatalogIndex(container);
-      expect(await dirty(bad)).toBeUndefined();
-      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(0);
-      expect(await count("product_id = ?", [bad])).toBe(SKUS_PER_PRODUCT);
-      expect(await exceptions("open")).toBe(1);
+        // Giá sửa xong + đến hạn: ghi được, dấu xoá, ngoại lệ đã mở vẫn còn (không tự đóng).
+        stub.mockRestore();
+        await makeDue();
+        await drainInCase();
+        expect(await dirty(bad)).toBeUndefined();
+        expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(0);
+        expect(await count("product_id = ?", [bad])).toBe(SKUS_PER_PRODUCT);
+        expect(await exceptions("open")).toBe(1);
+      });
+      // Không lần xả nào (của ca hay nền) bỏ cuộc vì khoá bận quá hạn hoặc hạ tầng khoá lỗi.
+      expect(logged(warn, "Khoá index bị giữ quá")).toBe(false);
+      expect(logged(warn, "Bỏ lượt xả")).toBe(false);
     });
 
     it("T-061: markDirty mới trên dấu đang chờ backoff đặt lại attempts và đến hạn ngay; migration down/up khứ hồi", async () => {
