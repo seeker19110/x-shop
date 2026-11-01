@@ -10,6 +10,7 @@ import { READINESS_PROBE_TIMEOUT_MS } from "../../src/lib/health/readiness";
 import { RBAC_MODULE } from "../../src/modules/rbac";
 import type RbacModuleService from "../../src/modules/rbac/service";
 import { noThrow, type HttpResponse } from "../helpers/auth";
+import { probeProblemBody } from "../helpers/leak-probe";
 
 jest.setTimeout(180 * 1000);
 
@@ -19,9 +20,8 @@ const REDIS_LOCK_PREFIX = "medusa_lock:";
 /** Không được lộ ra phản hồi readiness: host/cổng, mã lỗi kết nối, SQL, tên phụ thuộc, phiên bản. */
 const LEAK =
   /ECONN|ETIMEDOUT|5432|6379|10\.0\.0\.|select|postgres|redis|knex|version|medusa|\bat .*\.(js|ts)/i;
-/** Thân phản hồi để dò LEAK, bỏ `trace_id`: UUID ngẫu nhiên có thể chứa "5432"/"6379" (đỏ giả ~0,1 %/lần). */
-const leakProbe = (data: unknown): string =>
-  JSON.stringify(data, (k, v: unknown) => (k === "trace_id" ? undefined : v));
+/** Thân để dò LEAK: tách + kiểm định dạng `trace_id` (UUID có thể chứa "5432"/"6379" → đỏ giả), dò phần còn lại. */
+const leakProbe = (data: unknown): string => probeProblemBody(data).rest;
 
 /** Hình tối thiểu đọc từ query.graph (không phụ thuộc kiểu sinh trong .medusa/types). */
 type WithSalesChannels = { id: string; sales_channels?: ReadonlyArray<{ id?: string } | null> | null };

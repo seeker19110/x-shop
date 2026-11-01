@@ -31,6 +31,7 @@ import { NOTIFY_MODULE } from "../../src/modules/notify";
 import type NotifyModuleService from "../../src/modules/notify/service";
 import { createCountScope } from "../helpers/scoped-counter";
 import { checkoutClient, CONTACT, DEV_VNPAY, ipn, type Api, type Res } from "../helpers/checkout-api";
+import { probeProblemBody } from "../helpers/leak-probe";
 import {
   createPromotion,
   inventoryLevel,
@@ -270,7 +271,8 @@ medusaIntegrationTestRunner({
           const r = await getOrder(ref, token);
           expect(r.status).toBe(404);
           expect(r.headers["cache-control"]).toContain("no-store");
-          const raw = JSON.stringify(r.data);
+          // Tách + kiểm định dạng `trace_id` rồi dò phần còn lại: UUID ngẫu nhiên có thể chứa "0912" → đỏ giả.
+          const raw = probeProblemBody(r.data).rest;
           for (const pii of [CONTACT.name, CONTACT.email, "0912", "Điện Biên", b.orderId]) {
             expect(raw).not.toContain(pii);
           }

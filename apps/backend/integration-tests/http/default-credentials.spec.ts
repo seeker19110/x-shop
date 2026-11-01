@@ -6,6 +6,7 @@ import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { AUTH_RATE_LIMITS } from "../../src/lib/admin-security/config";
 import seedXShop from "../../src/scripts/seed";
 import { createAdmin, noThrow } from "../helpers/auth";
+import { probeProblemBody } from "../helpers/leak-probe";
 
 jest.setTimeout(300 * 1000);
 
@@ -160,8 +161,8 @@ medusaIntegrationTestRunner({
       "probe công khai %s không lộ version/chi tiết phụ thuộc",
       async (p) => {
         const res = (await api.get(p, noThrow)) as { data: unknown };
-        // Bỏ `trace_id`: UUID ngẫu nhiên có thể chứa "5432"/"6379" → đỏ giả.
-        const body = JSON.stringify(res.data ?? "", (k, v: unknown) => (k === "trace_id" ? undefined : v));
+        // Tách + kiểm định dạng `trace_id` (UUID có thể chứa "5432"/"6379" → đỏ giả); 200 không có trace_id.
+        const body = probeProblemBody(res.data, { requireTraceId: false }).rest;
         expect(body).not.toMatch(
           /ECONN|5432|6379|select|postgres|redis|knex|version|medusa|\bat .*\.(js|ts)/i,
         );

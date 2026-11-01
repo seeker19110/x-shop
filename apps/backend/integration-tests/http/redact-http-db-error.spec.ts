@@ -8,6 +8,7 @@ import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import { adminHeaders, noThrow, storeHeaders } from "../helpers/auth";
 import { createTestProduct } from "../helpers/catalog";
+import { probeLogLines, probeProblemBody } from "../helpers/leak-probe";
 import { FASHION_MODULE } from "../../src/modules/fashion";
 import type FashionModuleService from "../../src/modules/fashion/service";
 
@@ -19,6 +20,15 @@ jest.setTimeout(180 * 1000);
  * làm mẫu SQL không khớp và toàn bộ số/chuỗi lọt log. Khẳng định: stdout của logger không còn giá trị đã chèn.
  */
 const LEAKS = /(?<![\w:.])(?:180|9431|78|95)(?![\w:])|61\.5|Nguyễn|0912345678|fmm_01J/;
+
+/**
+ * Log để dò LEAKS/MEASURE_LEAK: tách + kiểm định dạng `trace_id` (phải đúng mã trong phản hồi) và `span_id` (16 hex)
+ * rồi dò phần còn lại — UUID/span ngẫu nhiên có thể chứa "9431" → đỏ giả (helpers/leak-probe.ts).
+ */
+function scrubLog(logged: string, responseBody: unknown): string {
+  const { traceId } = probeProblemBody(responseBody);
+  return probeLogLines(logged, { expectedTraceId: traceId }).rest;
+}
 
 medusaIntegrationTestRunner({
   testSuite: ({ api, getContainer }) => {
@@ -73,7 +83,7 @@ medusaIntegrationTestRunner({
       const logged = lines.join("");
       expect(logged).toContain("boom trigger");
       expect(logged).toContain(String(res.data.trace_id));
-      expect(logged).not.toMatch(LEAKS);
+      expect(scrubLog(logged, res.data)).not.toMatch(LEAKS);
     });
 
     /**
@@ -133,8 +143,8 @@ medusaIntegrationTestRunner({
       const logged = errorLines.join("");
       expect(logged).toMatch(/update \\+"fashion_product_attributes\\+" set \[REDACTED\] - boom v3 UPDATE/);
       expect(logged).toContain(String(res.data.trace_id));
-      expect(logged).not.toMatch(/user_qa_t144|9431|Nguyễn|Lý do riêng/);
-      if (attributesId !== "") expect(logged).not.toContain(attributesId);
+      expect(scrubLog(logged, res.data)).not.toMatch(/user_qa_t144|9431|Nguyễn|Lý do riêng/);
+      if (attributesId !== "") expect(scrubLog(logged, res.data)).not.toContain(attributesId);
     });
     /**
      * Review T-151 vòng 3, ca A: SQL viết tay NHIỀU DÒNG của module checkout chạy qua MikroORM `execute` (`formatQuery`
@@ -305,7 +315,7 @@ medusaIntegrationTestRunner({
         await pgOf().raw(teardown);
       }
       const logged = out.lines.filter((l) => l.includes('"level":"error"')).join("");
-      return { status: res.status, logged };
+      return { status: res.status, logged: res.status === 500 ? scrubLog(logged, res.data) : logged };
     }
 
     /** Lỗi thật khi ghi số đo qua module fashion (MikroORM; Medusa `dbErrorMapper` có thể đổi unique/NOT NULL). */
@@ -344,7 +354,7 @@ medusaIntegrationTestRunner({
       expect(res.status).toBe(500);
       const logged = out.lines.filter((l) => l.includes('"level":"error"')).join("");
       expect(logged).toContain(String(res.data.trace_id));
-      return logged;
+      return scrubLog(logged, res.data);
     }
 
     function loggedDirect(err: unknown) {
