@@ -930,8 +930,14 @@ medusaIntegrationTestRunner({
       // hạn. Job xả có thể xả hộ dấu của ca — stub giá cài TRƯỚC markDirty nên ai xả cũng ra cùng trạng thái DB.
       const DRAIN_WAIT_MS = 20_000;
       const drainInCase = () => drainCatalogIndex(container, { waitMs: DRAIN_WAIT_MS });
-      const warn = jest.spyOn(logger, "warn");
-      await isolatedFromJobs(async () => {
+      // Chỉ ghi warn phát ra trong ngữ cảnh của ca: lượt xả nền gặp Redis chậm cũng log "Bỏ lượt xả" mà không phải lỗi của ca.
+      const ownWarns: string[] = [];
+      await isolatedFromJobs(async (ex) => {
+        const warnImpl = logger.warn.bind(logger);
+        jest.spyOn(logger, "warn").mockImplementation((...args: Parameters<typeof logger.warn>) => {
+          if (ex.owns()) ownWarns.push(String(args[0]));
+          return warnImpl(...args);
+        });
         await rebuildInCase();
         await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
         await markSentinel("prod_SCALE0000%");
@@ -987,9 +993,9 @@ medusaIntegrationTestRunner({
         expect(await count("product_id = ?", [bad])).toBe(SKUS_PER_PRODUCT);
         expect(await exceptions("open")).toBe(1);
       });
-      // Không lần xả nào (của ca hay nền) bỏ cuộc vì khoá bận quá hạn hoặc hạ tầng khoá lỗi.
-      expect(logged(warn, "Khoá index bị giữ quá")).toBe(false);
-      expect(logged(warn, "Bỏ lượt xả")).toBe(false);
+      // Không lần xả nào của ca bỏ cuộc vì khoá bận quá hạn hoặc hạ tầng khoá lỗi.
+      expect(ownWarns.some((m) => m.includes("Khoá index bị giữ quá"))).toBe(false);
+      expect(ownWarns.some((m) => m.includes("Bỏ lượt xả"))).toBe(false);
     });
 
     it("T-061: markDirty mới trên dấu đang chờ backoff đặt lại attempts và đến hạn ngay; migration down/up khứ hồi", async () => {
