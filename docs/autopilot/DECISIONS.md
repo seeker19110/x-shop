@@ -1129,3 +1129,10 @@
 - Chọn: Baseline = min các lần CI đo được, làm tròn xuống 0,1 (93,7/83,6); vẫn cao hơn trước PR (91,85/81,73); ghi biên dao động; mỗi lần nâng sau dùng min ≥ 2 lần chạy
 - Lý do (tiêu chí chất lượng cuối): Đúng (tiêu chí 1): baseline từ một mẫu của số đo có nhiễu là lỗi đo, không phải ngưỡng chất lượng; min nhiều mẫu là cách ratchet chuẩn; vẫn nâng so với trước PR (không nới so với nhánh chính); thêm dung sai vào công cụ là nới mọi lần so; phương án 3 đúng nhưng không chặn được CI đỏ ngẫu nhiên ngay — ghi thành task
 - Đường lùi: Đặt lại 93,81/83,66 khi coverage tích hợp tất định
+
+### D-161 · 2026-11-01T01:00:36+00:00 · Sửa hồ sơ D-160: D-160 ghi hai lần CI 'cùng code' nhưng run 2 (7f3a900) khác test catalog; chỉ src backend giống nhau. Giữ con số 93,7/83,6?
+
+- Phương án: (1) Giữ 93,7/83,6, sửa hồ sơ: cùng src backend, khác test catalog; 20 dòng lật (redact luhn, refunds 452-454 mất; scrypt-gate 83-85 được) đều là đường phụ thuộc thời gian/dữ liệu ngoài phần test đổi; T-239 làm tất định 3 chỗ rồi nâng lại; đường lùi = đặt lại min ≥ 2 lần CI tất định · (2) Quay lại 93,81/83,66 ngay
+- Chọn: Giữ 93,7/83,6, sửa hồ sơ: cùng src backend, khác test catalog; 20 dòng lật (redact luhn, refunds 452-454 mất; scrypt-gate 83-85 được) đều là đường phụ thuộc thời gian/dữ liệu ngoài phần test đổi; T-239 làm tất định 3 chỗ rồi nâng lại; đường lùi = đặt lại min ≥ 2 lần CI tất định
+- Lý do (tiêu chí chất lượng cuối): Trung thực hồ sơ (P1); reviewer tải hai artefact và xác nhận dòng lật không thuộc phần code/test đổi — vẫn là nhiễu đo; quay lại 93,81 tái tạo CI đỏ ngẫu nhiên
+- Đường lùi: Đặt lại baseline = min ≥ 2 lần CI tất định sau T-239
