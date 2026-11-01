@@ -1122,3 +1122,10 @@
 - Chọn: Giữ nguyên: là dữ liệu cấu hình/nội dung (CMS) hoặc thông điệp cho lập trình viên/vận hành, không phải chuỗi UI cứng; lint chỉ bắt .tsx
 - Lý do (tiêu chí chất lượng cuối): Đúng phân loại (tiêu chí 1/3): i18n chuỗi UI ≠ nội dung CMS; đưa nội dung vào messages làm mất đường thay bằng CMS; lỗi nội bộ không hiển thị cho khách; thông báo validate của @x-shop/domain là phạm vi riêng nếu cần đa ngôn ngữ
 - Đường lùi: Chuyển home/navigation vào vi.json bằng một task mới
+
+### D-160 · 2026-11-01T00:27:39+00:00 · Baseline coverage tích hợp đặt đúng số một lần đo (93,81/83,66 — T-236) làm CI đỏ ngẫu nhiên: lần đo kế 93,77 (14 dòng dao động, cùng code). Sửa thế nào?
+
+- Phương án: (1) Baseline = min các lần CI đo được, làm tròn xuống 0,1 (93,7/83,6); vẫn cao hơn trước PR (91,85/81,73); ghi biên dao động; mỗi lần nâng sau dùng min ≥ 2 lần chạy · (2) Thêm dung sai vào coverage-ratchet cho suite integration · (3) Tìm và làm tất định 14 dòng dao động trước, giữ 93,81
+- Chọn: Baseline = min các lần CI đo được, làm tròn xuống 0,1 (93,7/83,6); vẫn cao hơn trước PR (91,85/81,73); ghi biên dao động; mỗi lần nâng sau dùng min ≥ 2 lần chạy
+- Lý do (tiêu chí chất lượng cuối): Đúng (tiêu chí 1): baseline từ một mẫu của số đo có nhiễu là lỗi đo, không phải ngưỡng chất lượng; min nhiều mẫu là cách ratchet chuẩn; vẫn nâng so với trước PR (không nới so với nhánh chính); thêm dung sai vào công cụ là nới mọi lần so; phương án 3 đúng nhưng không chặn được CI đỏ ngẫu nhiên ngay — ghi thành task
+- Đường lùi: Đặt lại 93,81/83,66 khi coverage tích hợp tất định

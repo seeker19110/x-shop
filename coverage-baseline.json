@@ -8,9 +8,9 @@
   },
   "integration": {
     "$comment": "Nguồn integration (T-135, QA-COV-001): so bằng `node scripts/coverage-ratchet.mjs --suite integration` sau `pnpm --filter @x-shop/backend test:integration:coverage` (CI: job integration-coverage 8 shard + integration-coverage-merge, T-198; phạm vi bỏ src/admin/** — D-157; docs/ops/perf/INTEGRATION-COVERAGE.md). Chỉ tăng: `--suite integration --update`.",
-    "measured": "2026-10-31 — CI run 41243467426 (job integration-coverage-merge, 8 shard, 62/62 suite xanh, phạm vi D-157 bỏ src/admin/**): lines 93.81 %, branches 83.66 % (coverage-merge, istanbul của jest 29, provider v8)",
+    "measured": "2026-11-01 — min của 2 lần CI (run 41243467426: 93.81/83.66; run 41255962935: 93.77/83.71; cùng code, 8 shard, phạm vi D-157), làm tròn xuống 0,1 vì coverage tích hợp dao động ~0,05 điểm giữa các lần chạy (D-160). Nâng tiếp: min ≥ 2 lần chạy.",
     "packages": {
-      "apps/backend": { "lines": 93.81, "branches": 83.66 }
+      "apps/backend": { "lines": 93.7, "branches": 83.6 }
     }
   }
 }
