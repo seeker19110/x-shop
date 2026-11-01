@@ -333,6 +333,18 @@ medusaIntegrationTestRunner({
           },
         );
         expect(rejected.data.refund.state).toBe("rejected");
+        // T-239: duyệt lại khi state đã đổi — đã approved → idempotent (200, changed:false); đã rejected → 409 INVALID_STATE.
+        const again = await flow.admin(`/admin/x/refunds/${id}/approve`, acc2.headers);
+        expect(again.status).toBe(200);
+        expect(again.data).toMatchObject({ changed: false, refund: { id, state: "succeeded" } });
+        const smallAgain = await flow.admin(`/admin/x/refunds/${small.data.refund.id}/approve`, acc2.headers);
+        expect(smallAgain.status).toBe(200);
+        expect(smallAgain.data).toMatchObject({ changed: false, refund: { state: "approved" } });
+        const rejectedAgain = await flow.admin(
+          `/admin/x/refunds/${bySupport.data.refund.id}/approve`,
+          acc2.headers,
+        );
+        expect(rejectedAgain).toMatchObject({ status: 409, data: { code: "INVALID_STATE" } });
         const summary = await flow.adminGet(`/admin/x/refunds?order_id=${o.orderId}`, acc1.headers);
         // Bị từ chối → nhả số đang giữ.
         expect(summary.data).toMatchObject({

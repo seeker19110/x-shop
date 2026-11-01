@@ -7,6 +7,7 @@ import type { Logger, MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { TimingSafeEmailPassAuthService } from "../../src/lib/admin-security/emailpass";
+import { ConcurrencyGate, replaceScryptGateForTest } from "../../src/lib/admin-security/scrypt-gate";
 import {
   EMAILPASS_HASH_CONFIG,
   MEDUSA_DEFAULT_SCRYPT,
@@ -308,6 +309,32 @@ medusaIntegrationTestRunner({
         expect(String(r.headers["content-type"])).toContain("application/problem+json");
       }
       // Hết đợt: tài khoản thật vẫn đăng nhập được (5xx không bị tính là lần sai).
+      expect((await login(admin.email, admin.password)).status).toBe(200);
+    });
+
+    it("hết hạn chờ hàng đợi scrypt (T-239, tất định) → 503 AUTH_BUSY, người chờ rời hàng, cổng xả sạch", async () => {
+      const admin = await createAdmin(rawApi, container, { roles: [] });
+      // 1 phép chạy + hạn chờ 1 ms: phép scrypt logN 17 chạy hàng trăm ms → mọi người chờ phía sau chắc chắn quá hạn.
+      const gate = new ConcurrencyGate({ max: 1, queueMax: 8, waitTimeoutMs: 1 });
+      const previous = replaceScryptGateForTest(gate);
+      try {
+        const burst = await Promise.all(
+          Array.from({ length: 4 }, (_, i) =>
+            api.post(
+              "/auth/user/emailpass",
+              { email: `khong-${i}-${randomUUID()}@example.test`, password: "SENTINEL-sai" },
+              { ...noThrow, headers: { "x-forwarded-for": `192.0.2.${i + 1}` } },
+            ),
+          ),
+        );
+        const busy = burst.filter((r) => r.status === 503);
+        expect(busy.length).toBeGreaterThan(0);
+        for (const r of busy) expect(r.data.code).toBe("AUTH_BUSY");
+        expect(burst.every((r) => r.status === 401 || r.status === 503)).toBe(true);
+        expect(gate.waiting).toBe(0);
+      } finally {
+        replaceScryptGateForTest(previous);
+      }
       expect((await login(admin.email, admin.password)).status).toBe(200);
     });
 

@@ -148,4 +148,17 @@ describe("log lỗi DB không lộ giá trị đã chèn (T-151)", () => {
     );
     assertClean(err);
   });
+
+  it("T-239 PII: PAN thử chuẩn (Luhn hợp lệ) qua logger thật → [CARD]; chuỗi 16 số sai Luhn không bị che nhầm", () => {
+    logger.error("thanh toán thất bại, thẻ 4111 1111 1111 1111 bị từ chối");
+    logger.error(new Error("card=4111-1111-1111-1111 declined"));
+    logger.error("mã đối soát 4111 1111 1111 1112 không phải thẻ");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain("[CARD]");
+    expect(lines[0]).not.toMatch(/4111/);
+    expect(lines[1]).toContain("[CARD]");
+    expect(lines[1]).not.toMatch(/4111/);
+    expect(lines[2]).not.toContain("[CARD]");
+    expect(lines[2]).toContain("4111 1111 1111 1112");
+  });
 });
