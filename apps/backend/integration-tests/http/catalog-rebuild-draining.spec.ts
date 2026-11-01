@@ -5,10 +5,13 @@ import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import catalogIndexRebuildJob from "../../src/jobs/catalog-index-rebuild";
 import { CURRENCY } from "../../src/lib/catalog/constants";
-import { CATALOG_INDEX_LOCK, CATALOG_REBUILD_LOCK } from "../../src/lib/catalog/indexer";
+import { CATALOG_INDEX_LOCK, CATALOG_REBUILD_LOCK, drainCatalogIndex } from "../../src/lib/catalog/indexer";
 import { acquireOrdered, releaseOwned } from "../../src/lib/checkout/locks";
 import { resetShutdownStateForTest, shutdownState } from "../../src/lib/lifecycle/shutdown";
+import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
+import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
 import seedCatalog from "../../src/scripts/seed-catalog";
+import { exclusiveRebuilds, type ExclusiveRebuilds } from "../helpers/catalog-rebuild";
 
 jest.setTimeout(120 * 1000);
 
@@ -17,14 +20,22 @@ jest.setTimeout(120 * 1000);
  * `CATALOG_REBUILD_LOCK`, hoặc lượt xả/đồng bộ giữ `CATALOG_INDEX_LOCK`) mà tiến trình bắt đầu tắt → thôi chờ ngay, trả
  * về gọn (không ném, không log error), nhả khoá đã lấy, bảng read model cũ giữ nguyên. Trước T-237 job chờ mỗi khoá tới
  * 5 phút. Mọi bước chờ theo tín hiệu (lần giành khoá của job bị Redis báo bận), không ngủ cố định.
+ *
+ * Mỗi ca giữ độc quyền rebuild (`exclusiveRebuilds`): job rebuild nền của app test không giành được
+ * `CATALOG_REBUILD_LOCK` giữa ca (nó giữ khoá rebuild thì job của ca chờ khoá rebuild, không bao giờ tới bước chờ khoá
+ * ghi → ca treo tới hết hạn, còn `holdAsOther` gia hạn lease mãi → cả bộ im). Mọi khoá/cửa sổ/móc của ca được thả ở
+ * `afterEach` — kể cả khi ca hết hạn giữa chừng.
  */
 
-/** Ngữ cảnh "lời gọi do job của ca khởi phát" — phân biệt với job nền của app test (cùng tiền tố ownerId `lock:`). */
+/** Ngữ cảnh "lời gọi do job của ca khởi phát" — phân biệt với lời gọi khác của ca (giữ khoá, thăm dò, xả). */
 const jobCtx = new AsyncLocalStorage<true>();
-const runJob = (container: MedusaContainer) => jobCtx.run(true, () => catalogIndexRebuildJob(container));
 
 /** Hạn "vài giây" cho job trả về sau khi bật cờ tắt (backoff chờ khoá ≤ ~120 ms/lần; trước T-237: tới 5 phút). */
 const RETURN_WITHIN_MS = 5_000;
+/** Hạn chờ tín hiệu "job của ca đang chờ khoá": quá hạn → ca đỏ nhanh thay vì treo tới hết hạn ca. */
+const SIGNAL_WITHIN_MS = 30_000;
+/** Hạn chờ job còn dở của ca kết thúc ở `afterEach` (đã thả khoá → job giành được và chạy xong). */
+const SETTLE_JOBS_MS = 60_000;
 
 type Settled = { state: "done"; value: unknown; error: unknown } | { state: "pending" };
 
@@ -50,7 +61,24 @@ medusaIntegrationTestRunner({
     let container: MedusaContainer;
     let db: Knex;
     let logger: Logger;
+    let ex: ExclusiveRebuilds;
     const locking = () => container.resolve(Modules.LOCKING);
+    const index = (): CatalogIndexModuleService => container.resolve(CATALOG_INDEX_MODULE);
+
+    /**
+     * Việc thả của ca, chạy ngược thứ tự đăng ký ở `afterEach` — kể cả khi ca hết hạn giữa chừng (jest bỏ dở thân ca,
+     * `finally` của nó không chạy). Lỗi một việc không chặn các việc sau.
+     */
+    const cleanups: Array<() => unknown> = [];
+    /** Job của ca (mọi lần chạy) — `afterEach` chờ chúng kết thúc (có hạn) trước khi đóng cửa sổ độc quyền. */
+    const jobs: Promise<unknown>[] = [];
+
+    /** Chạy job thật trong ngữ cảnh của ca (giành khoá rebuild như thường) và của "job của ca" (tín hiệu bận). */
+    const runJob = () => {
+      const p = ex.run(() => jobCtx.run(true, () => catalogIndexRebuildJob(container)));
+      jobs.push(p);
+      return p;
+    };
 
     /** Ảnh chụp bảng read model: mọi lần thay bảng (replaceAll) đổi `indexed_at`/giá → so sánh bằng nhau là "còn nguyên". */
     const snapshot = async () =>
@@ -74,23 +102,28 @@ medusaIntegrationTestRunner({
         (r: { price: string | number }) => Number(r.price),
       );
 
-    /** Chủ khác (tiến trình khác) giữ `key` trên Redis thật. */
+    /**
+     * Chủ khác (tiến trình khác) giữ `key` trên Redis thật. Giành trong ngữ cảnh của ca (cửa sổ độc quyền chỉ chặn rebuild
+     * nền); việc nhả đăng ký vào `cleanups` ngay khi giữ được, gọi nhiều lần vô hại.
+     */
     const holdAsOther = async (key: string) => {
       const owner = `t237-other-${key}-${Date.now()}`;
-      await acquireOrdered(locking(), [key], {
-        ownerId: owner,
-        waitMs: 60_000,
-        ttlSeconds: 30,
-        scope: "test",
-      });
-      return { owner, release: () => releaseOwned(locking(), owner, [key]) };
+      await ex.run(() =>
+        acquireOrdered(locking(), [key], { ownerId: owner, waitMs: 60_000, ttlSeconds: 30, scope: "test" }),
+      );
+      let released: Promise<void> | undefined;
+      const release = () => (released ??= releaseOwned(locking(), owner, [key]));
+      cleanups.push(release);
+      return { owner, release };
     };
 
-    /** Khoá `key` đang rảnh trên Redis thật? Thử giành bằng chủ thăm dò, không chờ; giành được thì trả ngay. */
+    /** Khoá `key` đang rảnh trên Redis thật? Thử giành bằng chủ thăm dò (trong ngữ cảnh của ca), không chờ. */
     const isFree = async (key: string): Promise<boolean> => {
       const probe = `t237-probe-${Date.now()}-${Math.random()}`;
       try {
-        await acquireOrdered(locking(), [key], { ownerId: probe, waitMs: 0, ttlSeconds: 5, scope: "test" });
+        await ex.run(() =>
+          acquireOrdered(locking(), [key], { ownerId: probe, waitMs: 0, ttlSeconds: 5, scope: "test" }),
+        );
       } catch (e) {
         if ((e as { code?: string }).code === "BUSY_RETRY") return false;
         throw e;
@@ -102,22 +135,45 @@ medusaIntegrationTestRunner({
     /**
      * Tín hiệu "job của ca đang chờ `key`": `n` lần giành `key` khởi phát từ job của ca bị provider báo bận (đúng lỗi
      * Redis trả khi chủ khác giữ khoá). Không dựa vào thời gian.
+     *
+     * `locking.acquire` đã là spy của `exclusiveRebuilds` (`jest.spyOn` lần hai trả CHÍNH spy đó) → bọc NỐI TIẾP lên cài
+     * đặt hiện có (không `mockImplementation` đè, không `bind` lại spy — tự gọi đệ quy); gỡ thì trả cài đặt cũ.
      */
     const jobWaitingOn = (key: string, n = 1) => {
-      const acquire = locking().acquire.bind(locking());
+      const svc = locking();
+      const spy = jest.spyOn(svc, "acquire");
+      const prev = spy.getMockImplementation()!;
       let busy = 0;
       let reached!: () => void;
       const signal = new Promise<void>((r) => (reached = r));
-      jest.spyOn(locking(), "acquire").mockImplementation(async (keys, args) => {
+      const impl: typeof prev = async (keys, args) => {
         try {
-          return await acquire(keys, args);
+          return await prev.call(svc, keys, args);
         } catch (e) {
           const list = Array.isArray(keys) ? keys : [keys];
           if (jobCtx.getStore() === true && list.includes(key) && ++busy >= n) reached();
           throw e;
         }
-      });
-      return signal;
+      };
+      spy.mockImplementation(impl);
+      const restore = () => {
+        if (spy.getMockImplementation() === impl) spy.mockImplementation(prev);
+      };
+      cleanups.push(restore);
+      return { signal, restore };
+    };
+
+    /**
+     * Chờ có hạn tới khi job của ca vào vòng chờ khoá. Job kết thúc trước tín hiệu, hoặc quá `SIGNAL_WITHIN_MS` (vd rebuild
+     * khác giữ khoá rebuild nên job không tới được bước chờ khoá ghi) → ca đỏ ngay với kết quả, không treo.
+     */
+    const untilWaiting = async (signal: Promise<void>, pending: Promise<unknown>[]) => {
+      const settled = Promise.race(pending).then(
+        () => "job-settled",
+        () => "job-settled",
+      );
+      const r = await within(Promise.race([signal.then(() => "waiting"), settled]), SIGNAL_WITHIN_MS);
+      expect(r).toEqual({ state: "done", value: "waiting", error: undefined });
     };
 
     beforeAll(async () => {
@@ -127,9 +183,31 @@ medusaIntegrationTestRunner({
       logger = container.resolve(ContainerRegistrationKeys.LOGGER);
     });
 
-    afterEach(() => {
+    beforeEach(async () => {
+      ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      // Thả khoá/móc của ca (đăng ký sau → chạy trước) rồi mới chờ job dở: job giành được khoá và chạy xong.
+      cleanups.push(() => within(Promise.allSettled(jobs.splice(0)), SETTLE_JOBS_MS));
+      // Mốc sạch trước ảnh chụp: không còn dấu bẩn đến hạn → lượt xả nền không ghi bảng giữa ca; rebuild nền bị cửa sổ chặn.
+      await ex.run(async () => {
+        for (let i = 0; i < 20 && (await index().dirtyCount(true)) > 0; i++)
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+      });
+      expect(await index().dirtyCount(true)).toBe(0);
+    });
+
+    afterEach(async () => {
+      let first: unknown;
+      for (const release of cleanups.splice(0).reverse()) {
+        try {
+          await release();
+        } catch (e) {
+          first ??= e;
+        }
+      }
       resetShutdownStateForTest();
       jest.restoreAllMocks();
+      if (first !== undefined) throw first;
     });
 
     it("chủ khác giữ CATALOG_REBUILD_LOCK: hai job đang chờ, bật cờ tắt → cả hai trả về trong vài giây, không ném/log error; khoá vẫn của chủ kia, job không giành; bảng cũ còn nguyên", async () => {
@@ -138,32 +216,29 @@ medusaIntegrationTestRunner({
       const info = jest.spyOn(logger, "info");
       const error = jest.spyOn(logger, "error");
       const other = await holdAsOther(CATALOG_REBUILD_LOCK);
-      let jobs: Promise<unknown>[] = [];
-      try {
-        // Mỗi job bị báo bận ≥ 2 lần = đã vào vòng chờ (thử lại sau backoff), không chỉ lần thử đầu.
-        const waiting = jobWaitingOn(CATALOG_REBUILD_LOCK, 4);
-        jobs = [runJob(container), runJob(container)];
-        await waiting;
-        expect((await within(Promise.race(jobs), 0)).state).toBe("pending");
 
-        shutdownState().draining = true;
-        const start = Date.now();
-        const r = await within(Promise.all(jobs), RETURN_WITHIN_MS);
-        const elapsed = Date.now() - start;
-        expect(r.state).toBe("done");
-        expect(r.state === "done" ? r.error : "pending").toBeUndefined();
-        expect(elapsed).toBeLessThan(RETURN_WITHIN_MS);
-        expect(error).not.toHaveBeenCalled();
-        expect(
-          info.mock.calls.filter((a) => String(a[0]).includes("Đang tắt — thôi chờ khoá rebuild")).length,
-        ).toBeGreaterThanOrEqual(2);
+      // Mỗi job bị báo bận ≥ 2 lần = đã vào vòng chờ (thử lại sau backoff), không chỉ lần thử đầu.
+      const waiting = jobWaitingOn(CATALOG_REBUILD_LOCK, 4);
+      const pair = [runJob(), runJob()];
+      await untilWaiting(waiting.signal, pair);
+      expect((await within(Promise.race(pair), 0)).state).toBe("pending");
 
-        expect(await isFree(CATALOG_REBUILD_LOCK)).toBe(false); // chủ kia vẫn giữ
-        expect(await snapshot()).toEqual(before);
-      } finally {
-        await other.release();
-        await within(Promise.allSettled(jobs), 60_000);
-      }
+      shutdownState().draining = true;
+      const start = Date.now();
+      const r = await within(Promise.all(pair), RETURN_WITHIN_MS);
+      const elapsed = Date.now() - start;
+      expect(r.state).toBe("done");
+      expect(r.state === "done" ? r.error : "pending").toBeUndefined();
+      expect(elapsed).toBeLessThan(RETURN_WITHIN_MS);
+      expect(error).not.toHaveBeenCalled();
+      expect(
+        info.mock.calls.filter((a) => String(a[0]).includes("Đang tắt — thôi chờ khoá rebuild")).length,
+      ).toBeGreaterThanOrEqual(2);
+
+      expect(await isFree(CATALOG_REBUILD_LOCK)).toBe(false); // chủ kia vẫn giữ
+      expect(await snapshot()).toEqual(before);
+
+      await other.release();
       // Job đã thôi hẳn, không còn chờ để giành khoá vừa nhả.
       expect(await isFree(CATALOG_REBUILD_LOCK)).toBe(true);
       expect(await snapshot()).toEqual(before);
@@ -182,44 +257,41 @@ medusaIntegrationTestRunner({
       const error = jest.spyOn(logger, "error");
       const info = jest.spyOn(logger, "info");
       const other = await holdAsOther(CATALOG_INDEX_LOCK);
-      let job: Promise<unknown> = Promise.resolve();
-      try {
-        const waiting = jobWaitingOn(CATALOG_INDEX_LOCK, 2);
-        job = runJob(container);
-        await waiting;
-        expect((await within(job, 0)).state).toBe("pending");
-        expect(await isFree(CATALOG_REBUILD_LOCK)).toBe(false); // job đang giữ khoá rebuild trong lúc chờ khoá ghi
 
-        shutdownState().draining = true;
-        const start = Date.now();
-        const r = await within(job, RETURN_WITHIN_MS);
-        const elapsed = Date.now() - start;
-        expect(r.state).toBe("done");
-        expect(r.state === "done" ? r.error : "pending").toBeUndefined();
-        expect(elapsed).toBeLessThan(RETURN_WITHIN_MS);
-        expect(error).not.toHaveBeenCalled();
-        expect(info.mock.calls.some((a) => String(a[0]).includes("Đang tắt — thôi chờ khoá rebuild"))).toBe(
-          true,
-        );
+      const waiting = jobWaitingOn(CATALOG_INDEX_LOCK, 2);
+      const job = runJob();
+      await untilWaiting(waiting.signal, [job]);
+      expect((await within(job, 0)).state).toBe("pending");
+      expect(await isFree(CATALOG_REBUILD_LOCK)).toBe(false); // job đang giữ khoá rebuild trong lúc chờ khoá ghi
 
-        expect(await isFree(CATALOG_REBUILD_LOCK)).toBe(true); // khoá rebuild đã nhả
-        expect(await isFree(CATALOG_INDEX_LOCK)).toBe(false); // khoá ghi vẫn của chủ kia
-        expect(await snapshot()).toEqual(before);
-        expect(await indexPrice(variantId)).toEqual(expect.arrayContaining([OLD]));
-      } finally {
-        await other.release();
-        await within(job, 60_000);
-        resetShutdownStateForTest();
-        jest.restoreAllMocks();
-      }
+      shutdownState().draining = true;
+      const start = Date.now();
+      const r = await within(job, RETURN_WITHIN_MS);
+      const elapsed = Date.now() - start;
+      expect(r.state).toBe("done");
+      expect(r.state === "done" ? r.error : "pending").toBeUndefined();
+      expect(elapsed).toBeLessThan(RETURN_WITHIN_MS);
+      expect(error).not.toHaveBeenCalled();
+      expect(info.mock.calls.some((a) => String(a[0]).includes("Đang tắt — thôi chờ khoá rebuild"))).toBe(
+        true,
+      );
+
+      expect(await isFree(CATALOG_REBUILD_LOCK)).toBe(true); // khoá rebuild đã nhả
+      expect(await isFree(CATALOG_INDEX_LOCK)).toBe(false); // khoá ghi vẫn của chủ kia
+      expect(await snapshot()).toEqual(before);
+      expect(await indexPrice(variantId)).toEqual(expect.arrayContaining([OLD]));
+
+      await other.release();
+      waiting.restore();
+      resetShutdownStateForTest();
 
       // Đối chứng: không tắt, khoá rảnh → job rebuild trọn, giá nguồn mới vào bảng (ảnh chụp "còn nguyên" ở trên có nghĩa).
-      await runJob(container);
+      await runJob();
       const after = await indexPrice(variantId);
       expect(after.length).toBeGreaterThan(0);
       expect(after.every((p) => p === NEW)).toBe(true);
       await setSourcePrice(variantId, OLD);
-      await runJob(container);
+      await runJob();
     });
   },
 });
