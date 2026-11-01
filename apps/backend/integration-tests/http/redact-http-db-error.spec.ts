@@ -27,19 +27,25 @@ const LEAKS = /(?<![\w:.])(?:180|9431|78|95)(?![\w:])|61\.5|Nguyễn|0912345678|
  */
 function scrubLog(logged: string, responseBody: unknown): string {
   const { traceId } = probeProblemBody(responseBody);
-  // stdout chụp cả bản ghi của ngữ cảnh khác (job/subscriber chạy song song, trace_id khác) — chúng không thuộc request
-  // này, để lại sẽ làm probe ném "khác expectedTraceId" (đỏ giả). Bản ghi không có trace_id và dòng không phải JSON giữ nguyên.
-  const ownLines = logged.split("\n").filter((line) => {
+  // stdout chụp cả bản ghi của ngữ cảnh khác (job/subscriber chạy song song, trace_id khác). Không bỏ chúng (sẽ che
+  // đúng lúc thiết kế bị phá — lỗi của request ghi với trace_id lệch): tách hai nhóm; nhóm khác ngữ cảnh vẫn phải có
+  // trace_id UUID v4 hợp lệ và vẫn bị dò, chỉ không ép bằng trace_id của phản hồi.
+  const own: string[] = [];
+  const other: string[] = [];
+  for (const line of logged.split("\n")) {
+    let id: unknown;
     try {
       const rec: unknown = JSON.parse(line);
-      if (typeof rec !== "object" || rec === null) return true;
-      const id = (rec as { trace_id?: unknown }).trace_id;
-      return id === undefined || id === traceId;
+      id = typeof rec === "object" && rec !== null ? (rec as { trace_id?: unknown }).trace_id : undefined;
     } catch {
-      return true;
+      id = undefined;
     }
-  });
-  return probeLogLines(ownLines.join("\n"), { expectedTraceId: traceId }).rest;
+    (id === undefined || id === traceId ? own : other).push(line);
+  }
+  return [
+    probeLogLines(own.join("\n"), { expectedTraceId: traceId }).rest,
+    probeLogLines(other.join("\n")).rest,
+  ].join("\n");
 }
 
 medusaIntegrationTestRunner({
@@ -95,6 +101,11 @@ medusaIntegrationTestRunner({
       const logged = lines.join("");
       expect(logged).toContain("boom trigger");
       expect(logged).toContain(String(res.data.trace_id));
+      // Bản ghi lỗi của chính request phải mang đúng trace_id của phản hồi (không lọt sang nhóm "ngữ cảnh khác").
+      const boom = logged.split("\n").filter((l) => l.includes("boom trigger"));
+      expect(boom.length).toBeGreaterThan(0);
+      for (const l of boom)
+        expect((JSON.parse(l) as { trace_id?: unknown }).trace_id).toBe(res.data.trace_id);
       expect(scrubLog(logged, res.data)).not.toMatch(LEAKS);
     });
 
