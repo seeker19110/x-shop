@@ -47,62 +47,87 @@ export function pauseAfterPriceRead(container: MedusaContainer, variantId: strin
   };
 }
 
-/** Ngữ cảnh "việc của ca test": lời gọi khởi phát trong `run` của `exclusiveRebuilds` (kể cả timer/promise con). */
-const testOwned = new AsyncLocalStorage<true>();
+/**
+ * Ngữ cảnh "việc của ca test": lời gọi khởi phát trong `run` của MỘT cửa sổ `exclusiveRebuilds` (kể cả timer/promise con).
+ * Mỗi cửa sổ một token riêng (T-238): timer/lượt xả hẹn sinh trong cửa sổ của ca trước (ngữ cảnh lan theo `setTimeout`)
+ * không được coi là việc của cửa sổ sau.
+ */
+const testOwned = new AsyncLocalStorage<symbol>();
 
 export interface ExclusiveRebuilds {
-  /** Chạy `fn` trong ngữ cảnh của ca: rebuild nó khởi phát giành `CATALOG_REBUILD_LOCK` như thường. */
+  /** Chạy `fn` trong ngữ cảnh của cửa sổ: rebuild nó khởi phát giành `CATALOG_REBUILD_LOCK` như thường. */
   run<T>(fn: () => Promise<T>): Promise<T>;
-  /** Chạy `fn` NGOÀI ngữ cảnh của ca (giả lập job nền) — dùng cho test chống hồi quy. */
+  /** Chạy `fn` NGOÀI ngữ cảnh của cửa sổ (giả lập job nền) — dùng cho test chống hồi quy. */
   outside<T>(fn: () => T): T;
+  /**
+   * Lời gọi hiện tại thuộc ngữ cảnh của CHÍNH cửa sổ này? Spy toàn cục (clockNow, replaceAll, locking…) dùng để chỉ đếm
+   * việc của ca, không lẫn job/lượt xả nền chạy song song (T-238).
+   */
+  owns(): boolean;
   /** Đóng cửa sổ: rebuild nền đang chờ giành được khoá như thường. Gọi nhiều lần vô hại. */
   close(): void;
 }
 
 /**
- * Độc quyền rebuild toàn phần cho một ca dùng móc dừng (T-167). App test chạy job thật: `x-catalog-index-rebuild`
- * (mỗi 30 phút) có thể giành `CATALOG_REBUILD_LOCK` giữa ca — vd ca "đồng bộ đọc TRƯỚC mốc, ghi SAU mốc" dừng một lượt
- * xả đang GIỮ `CATALOG_INDEX_LOCK` chờ rebuild CỦA CA lấy mốc; rebuild của job giữ khoá rebuild và chờ khoá ghi (5 phút
- * = hạn test) → vòng chờ: rebuild của ca chờ khoá rebuild, lượt xả chờ rebuild của ca, job chờ lượt xả. Hết hạn test thì
- * lượt xả vẫn dừng (gia hạn lease mãi) → mọi ca sau chờ khoá ghi, cả bộ im (lần chạy 04:05/22:05).
+ * Độc quyền rebuild toàn phần cho một ca dùng móc dừng hoặc spy toàn cục (T-167, T-238). App test chạy job thật:
+ * `x-catalog-index-rebuild` (mỗi 30 phút) có thể giành `CATALOG_REBUILD_LOCK` giữa ca — vd ca "đồng bộ đọc TRƯỚC mốc, ghi
+ * SAU mốc" dừng một lượt xả đang GIỮ `CATALOG_INDEX_LOCK` chờ rebuild CỦA CA lấy mốc; rebuild của job giữ khoá rebuild và
+ * chờ khoá ghi (5 phút = hạn test) → vòng chờ: rebuild của ca chờ khoá rebuild, lượt xả chờ rebuild của ca, job chờ lượt
+ * xả. Hết hạn test thì lượt xả vẫn dừng (gia hạn lease mãi) → mọi ca sau chờ khoá ghi, cả bộ im (lần chạy 04:05/22:05).
+ * Ca đếm qua spy toàn cục thì rebuild của job chen vào thành thêm một cặp đọc/thay (T-238).
  *
- * Trong cửa sổ: mọi lần giành `CATALOG_REBUILD_LOCK` NGOÀI ngữ cảnh của ca nhận đúng lỗi "khoá bận" của provider (job
- * thăm dò tiếp như khi khoá đang bị giữ — không lỗi giả, không bỏ job); mở cửa sổ thì chờ rebuild nền đang chạy (nếu
- * có) xong trước. Không lồng hai cửa sổ trong một ca.
+ * Trong cửa sổ: mọi lần giành `CATALOG_REBUILD_LOCK` NGOÀI ngữ cảnh của cửa sổ nhận đúng lỗi "khoá bận" của provider (job
+ * thăm dò tiếp như khi khoá đang bị giữ — không lỗi giả, không bỏ job). Mở cửa sổ: giành khoá rebuild trong ngữ cảnh của
+ * cửa sổ (chờ rebuild nền đang chạy xong) và chỉ CÀI chặn lúc đang giữ khoá — trong lúc chờ, lời gia hạn lease của rebuild
+ * nền đang giữ khoá đi thẳng (chặn thì lease hết hạn giữa rebuild nền, cửa sổ giành được khoá khi nó còn chạy — mất độc
+ * quyền); lúc cài, không ai khác giữ khoá nên mọi lời giành ngoài ngữ cảnh sau đó đều là giành mới (hoặc lời gia hạn của
+ * lease đã mất — chặn đúng). `locking.acquire` đã là spy (ca cài trước) → bọc nối tiếp lên cài đặt hiện có; đóng thì trả
+ * lại. Không lồng hai cửa sổ trong một ca.
  */
 export async function exclusiveRebuilds(
   container: MedusaContainer,
   waitMs = 60_000,
 ): Promise<ExclusiveRebuilds> {
   const locking = container.resolve(Modules.LOCKING);
-  const acquire = locking.acquire.bind(locking);
-  const spy = jest.spyOn(locking, "acquire").mockImplementation(async (keys, args) => {
-    const list = Array.isArray(keys) ? keys : [keys];
-    if (list.includes(CATALOG_REBUILD_LOCK) && testOwned.getStore() !== true) {
-      throw new Error(
-        `Failed to acquire lock for key "${CATALOG_REBUILD_LOCK}" (ca test giữ độc quyền rebuild)`,
-      );
-    }
-    return acquire(keys, args);
-  });
-  const close = () => spy.mockRestore();
-  try {
-    // Rebuild nền đã giữ khoá trước khi mở cửa sổ → chờ nó nhả (giành rồi nhả ngay).
-    await testOwned.run(true, () =>
-      withOwnedLock(
-        locking,
-        CATALOG_REBUILD_LOCK,
-        { waitMs, ttlSeconds: 30, scope: "test-exclusive-rebuild" },
-        async () => undefined,
-      ),
-    );
-  } catch (e) {
-    close();
-    throw e;
-  }
+  const token = Symbol("exclusive-rebuilds");
+  const owns = () => testOwned.getStore() === token;
+  let close = () => {};
+  const install = () => {
+    const created = !jest.isMockFunction(locking.acquire);
+    const spy = jest.spyOn(locking, "acquire");
+    const prev = spy.getMockImplementation()!;
+    let active = true;
+    const impl: typeof prev = async (keys, args) => {
+      const list = Array.isArray(keys) ? keys : [keys];
+      if (active && list.includes(CATALOG_REBUILD_LOCK) && !owns()) {
+        throw new Error(
+          `Failed to acquire lock for key "${CATALOG_REBUILD_LOCK}" (ca test giữ độc quyền rebuild)`,
+        );
+      }
+      return prev.call(locking, keys, args);
+    };
+    spy.mockImplementation(impl);
+    close = () => {
+      // Có spy khác bọc lên trên (chưa gỡ) → để lại một lớp đi thẳng; `jest.restoreAllMocks` ở afterEach dọn hết.
+      active = false;
+      if (spy.getMockImplementation() !== impl) return;
+      if (created) spy.mockRestore();
+      else spy.mockImplementation(prev);
+    };
+  };
+  // Rebuild nền đã giữ khoá trước khi mở cửa sổ → chờ nó nhả; cài chặn khi CHÍNH cửa sổ đang giữ khoá rồi nhả.
+  await testOwned.run(token, () =>
+    withOwnedLock(
+      locking,
+      CATALOG_REBUILD_LOCK,
+      { waitMs, ttlSeconds: 30, scope: "test-exclusive-rebuild" },
+      async () => install(),
+    ),
+  );
   return {
-    run: (fn) => testOwned.run(true, fn),
+    run: (fn) => testOwned.run(token, fn),
     outside: (fn) => testOwned.exit(fn),
-    close,
+    owns,
+    close: () => close(),
   };
 }

@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import type { Logger, MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import {
   CATALOG_INDEX_LOCK,
+  CATALOG_REBUILD_LOCK,
   drainCatalogIndex,
   rebuildCatalogIndex,
   syncCatalogProducts,
@@ -15,6 +17,7 @@ import type CatalogIndexModuleService from "../../src/modules/catalog-index/serv
 import type { CatalogIndexRow } from "../../src/modules/catalog-index/service";
 import catalogIndexRebuildJob from "../../src/jobs/catalog-index-rebuild";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
+import { acquireOrdered, releaseOwned } from "../../src/lib/checkout/locks";
 import { exclusiveRebuilds, pauseAfterPriceRead } from "../helpers/catalog-rebuild";
 import { createCountScope } from "../helpers/scoped-counter";
 
@@ -193,14 +196,18 @@ medusaIntegrationTestRunner({
       const CHUNK_ROWS = 500;
       const COLUMNS = 25;
       const inserts: number[] = [];
-      // Chỉ đếm INSERT trong giao dịch replaceAll của rebuild: từ T-167 lượt xả nền (job mỗi phút, lượt hẹn) được phép
-      // đồng bộ song song lúc rebuild đọc nguồn — INSERT của nó không thuộc phép đo. replaceAll giữ khoá ghi nên trong
-      // khoảng này không lượt đồng bộ nào ghi xen.
+      // Chỉ đếm INSERT trong giao dịch replaceAll của rebuild CỦA CA: từ T-167 lượt xả nền (job mỗi phút, lượt hẹn) được
+      // phép đồng bộ song song lúc rebuild đọc nguồn — INSERT của nó không thuộc phép đo; replaceAll giữ khoá ghi nên
+      // trong khoảng này không lượt đồng bộ nào ghi xen. Rebuild nền (job */30) bị cửa sổ độc quyền chặn, và replaceAll
+      // ngoài ngữ cảnh của ca không được đếm (T-238).
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
       let inReplace = false;
       let inserted = -1;
       const svc = index();
       const replace = svc.replaceAll.bind(svc);
       jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        if (!ex.owns()) return replace(rows, since);
         inReplace = true;
         try {
           const r = await replace(rows, since);
@@ -216,10 +223,11 @@ medusaIntegrationTestRunner({
       };
       db.on("query", onQuery);
       try {
-        const result = await rebuildCatalogIndex(container);
+        const result = await ex.run(() => rebuildCatalogIndex(container));
         expect(result.rows).toBe(expectedTotal);
       } finally {
         db.removeListener("query", onQuery);
+        ex.close();
       }
       // `inserted` = dòng ảnh chụp thực ghi (trừ sản phẩm giữ bản đồng bộ nếu lượt xả nền chen lúc đọc — thường 0).
       expect(inserted).toBeGreaterThan(expectedTotal - 10 * SKUS_PER_PRODUCT);
@@ -302,14 +310,14 @@ medusaIntegrationTestRunner({
       const svc = index();
       const replace = svc.replaceAll.bind(svc);
       const seen: { value?: T } = {};
-      const spy = jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
-        const r = await replace(rows, since);
-        seen.value = await atReplace();
-        return r;
-      });
       // Job rebuild nền không chen vào giữa: móc dừng ở lần đọc giá ĐẦU TIÊN, phải là của rebuild do ca chạy.
       const ex = await exclusiveRebuilds(container);
       cleanups.push(ex.close);
+      const spy = jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        const r = await replace(rows, since);
+        if (ex.owns()) seen.value = await atReplace();
+        return r;
+      });
       try {
         return await ex.run(async () => {
           const gate = pauseAfterPriceRead(container, variantId);
@@ -516,14 +524,14 @@ medusaIntegrationTestRunner({
           const clock = svc.clockNow.bind(svc);
           jest.spyOn(svc, "clockNow").mockImplementation(async () => {
             const s = await clock();
-            sinceTaken(s);
+            if (ex.owns()) sinceTaken(s);
             return s;
           });
           const replace = svc.replaceAll.bind(svc);
           let atReplace: { price: number[]; dirty: boolean } | undefined;
           jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
             const r = await replace(rows, since);
-            atReplace = { price: await pricesOf(vid), dirty: await isDirty(pid) };
+            if (ex.owns()) atReplace = { price: await pricesOf(vid), dirty: await isDirty(pid) };
             return r;
           });
           try {
@@ -581,18 +589,39 @@ medusaIntegrationTestRunner({
 
     it("T-167: hai rebuild đồng thời chạy tuần tự (mỗi lần thay là MỘT ảnh chụp, không xen lúc đọc); ảnh chụp cũ hơn ảnh chụp đã áp bị bỏ", async () => {
       const svc = index();
+      // T-238: spy clockNow/replaceAll là toàn cục — rebuild của job nền (*/30, đúng lúc cron tới) hay lượt xả theo dấu
+      // '*' chạy song song thành thêm một cặp đọc/thay. Cửa sổ độc quyền chặn chúng giành khoá rebuild giữa ca; chỉ đếm
+      // lời gọi trong ngữ cảnh của ca.
+      expect(await isDirty("*")).toBe(false);
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
       const order: string[] = [];
+      let foreign = 0;
       const clock = svc.clockNow.bind(svc);
       const replace = svc.replaceAll.bind(svc);
       jest.spyOn(svc, "clockNow").mockImplementation(async () => {
-        order.push("đọc");
+        if (ex.owns()) order.push("đọc");
+        else foreign += 1;
         return clock();
       });
       jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
-        order.push("thay");
+        if (ex.owns()) order.push("thay");
+        else foreign += 1;
         return replace(rows, since);
       });
-      const [a, b] = await Promise.all([rebuildCatalogIndex(container), rebuildCatalogIndex(container)]);
+      // Tick job rebuild thật tới đúng lúc hai rebuild của ca bắt đầu (tái hiện T-238: trước khi sửa, thứ tự thành
+      // đọc/thay × 3). Job chạy NGOÀI ngữ cảnh ca như worker job; bọc trong object để không bị await gộp.
+      const bg = {
+        job: ex
+          .outside(() => catalogIndexRebuildJob(container))
+          .then(
+            () => "ok",
+            (e: unknown) => e,
+          ),
+      };
+      const [a, b] = await ex.run(() =>
+        Promise.all([rebuildCatalogIndex(container), rebuildCatalogIndex(container)]),
+      );
       expect(order).toEqual(["đọc", "thay", "đọc", "thay"]);
       for (const r of [a, b]) {
         expect(r.superseded).toBe(false);
@@ -600,7 +629,15 @@ medusaIntegrationTestRunner({
       }
       expect(await count()).toBe(expectedTotal);
       expect(await distinctKeys()).toBe(expectedTotal);
+      // Cửa sổ chưa đóng: job chưa giành được khoá rebuild (chưa đọc nguồn).
+      expect(foreign).toBe(0);
+      ex.close();
+      // Đóng cửa sổ → job rebuild như thường (không bỏ job); lời gọi của nó không lọt vào thứ tự của ca.
+      await expect(bg.job).resolves.toBe("ok");
+      expect(foreign).toBeGreaterThanOrEqual(2);
+      expect(order).toHaveLength(4);
       jest.restoreAllMocks();
+      await settle();
 
       // Chốt ở DB, không dựa vào khoá Redis (lease mất, tiến trình treo): ảnh chụp bắt đầu trước ảnh chụp đã áp → không ghi.
       const older = await svc.clockNow();
@@ -623,14 +660,21 @@ medusaIntegrationTestRunner({
       // Chỉ khoá do REBUILD giữ: lượt xả nền (chủ `drain-…`, job mỗi phút/lượt hẹn) được phép chạy song song từ T-167.
       const ownerOf = (args: unknown) => (args as { ownerId?: string } | undefined)?.ownerId ?? "";
       let heldBy: string | null = null;
+      // T-238: chỉ khoá do rebuild CỦA CA giữ — rebuild của job nền (*/30) giữ khoá ghi thì câu đọc nguồn của rebuild
+      // này lọt vào "trong khoá"; cửa sổ độc quyền chặn job giữa ca. Spy của ca cài TRƯỚC: cửa sổ bọc nối tiếp lên nó.
+      let ex: Awaited<ReturnType<typeof exclusiveRebuilds>> | null = null;
       jest.spyOn(locking, "acquire").mockImplementation(async (keys, args) => {
         await acquire(keys, args);
-        if (isIndexLock(keys) && !ownerOf(args).startsWith("drain-")) heldBy = ownerOf(args);
+        if (isIndexLock(keys) && ex?.owns() === true && !ownerOf(args).startsWith("drain-"))
+          heldBy = ownerOf(args);
       });
       jest.spyOn(locking, "release").mockImplementation(async (keys, args) => {
         if (isIndexLock(keys) && ownerOf(args) === heldBy) heldBy = null;
         return release(keys, args);
       });
+      ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      const excl = ex;
       const inLock: string[] = [];
       let outside = 0;
       const onQuery = (q: { sql?: string }) => {
@@ -641,7 +685,12 @@ medusaIntegrationTestRunner({
         else outside += 1;
       };
       db.on("query", onQuery);
-      const result = await rebuildCatalogIndex(container).finally(() => db.removeListener("query", onQuery));
+      const result = await excl
+        .run(() => rebuildCatalogIndex(container))
+        .finally(() => {
+          db.removeListener("query", onQuery);
+          excl.close();
+        });
       expect(result.rows).toBe(expectedTotal);
       const SOURCE =
         /\b(from|join)\s+"?(product|product_variant|price|price_set|price_list|inventory_item|inventory_level|reservation_item|product_category|sales_channel)"?(\s|$)/i;
@@ -650,6 +699,95 @@ medusaIntegrationTestRunner({
       // Đo 2026-10-27 (5.605 dòng): 21 câu trong khoá (BEGIN, 6 câu write log/chốt, DELETE, 12 INSERT, COMMIT, đếm cuối)
       // trên 252 câu cả lượt (8 %); trước T-167: mọi câu trong khoá, gồm 391 câu đọc nguồn.
       expect(inLock.length / (inLock.length + outside)).toBeLessThan(0.5);
+    });
+
+    // ---- T-238: cửa sổ độc quyền (helper) — phân quyền theo ngữ cảnh của TỪNG cửa sổ, gia hạn lease của chủ đang giữ ----
+    /** Giành `CATALOG_REBUILD_LOCK` không chờ bằng chủ thăm dò (giành được thì nhả ngay); bị từ chối → "busy". */
+    const tryRebuildLock = async (): Promise<"ok" | "busy"> => {
+      const locking = container.resolve(Modules.LOCKING);
+      const owner = `t238-probe-${randomUUID()}`;
+      try {
+        await acquireOrdered(locking, [CATALOG_REBUILD_LOCK], {
+          ownerId: owner,
+          waitMs: 0,
+          ttlSeconds: 5,
+          scope: "test",
+        });
+      } catch (e) {
+        if ((e as { code?: string }).code === "BUSY_RETRY") return "busy";
+        throw e;
+      }
+      await releaseOwned(locking, owner, [CATALOG_REBUILD_LOCK]);
+      return "ok";
+    };
+
+    it("T-238 cửa sổ độc quyền: trong ngữ cảnh cửa sổ được giành khoá rebuild; ngoài ngữ cảnh, hoặc việc còn sót từ ngữ cảnh cửa sổ TRƯỚC, bị báo bận; đóng thì ai cũng giành được", async () => {
+      const first = await exclusiveRebuilds(container);
+      cleanups.push(first.close);
+      // Việc treo sinh trong cửa sổ đầu (như lượt xả hẹn/timer của ca trước), chạy tiếp khi cửa sổ sau đang mở.
+      let fire!: () => void;
+      const fired = new Promise<void>((r) => (fire = r));
+      cleanups.push(() => fire());
+      const leftover = first.run(async () => {
+        await fired;
+        return tryRebuildLock();
+      });
+      expect(await first.run(tryRebuildLock)).toBe("ok");
+      expect(await first.outside(tryRebuildLock)).toBe("busy");
+      expect(await tryRebuildLock()).toBe("busy");
+      first.close();
+      expect(await tryRebuildLock()).toBe("ok");
+
+      const second = await exclusiveRebuilds(container);
+      cleanups.push(second.close);
+      fire();
+      // Trước T-238 (một store chung cho mọi cửa sổ): việc sót của cửa sổ đầu được coi là của ca → giành được khoá.
+      expect(await leftover).toBe("busy");
+      expect(second.owns()).toBe(false);
+      expect(await second.run(async () => [second.owns(), first.owns()])).toEqual([true, false]);
+      expect(await second.run(tryRebuildLock)).toBe("ok");
+      expect(await second.outside(tryRebuildLock)).toBe("busy");
+      second.close();
+      expect(await tryRebuildLock()).toBe("ok");
+    });
+
+    it("T-238 cửa sổ độc quyền: rebuild nền đang giữ khoá lúc mở cửa sổ → lease của nó vẫn được gia hạn (không hết hạn giữa chừng), cửa sổ chỉ mở sau khi nó nhả", async () => {
+      const locking = container.resolve(Modules.LOCKING);
+      const TTL_SECONDS = 2;
+      const bgOwner = `t238-bg-${randomUUID()}`;
+      // Giả lập rebuild nền: giữ khoá rebuild NGOÀI mọi cửa sổ, lease ngắn (gia hạn nền mỗi ~1/3 TTL như rebuild thật).
+      await acquireOrdered(locking, [CATALOG_REBUILD_LOCK], {
+        ownerId: bgOwner,
+        waitMs: 10_000,
+        ttlSeconds: TTL_SECONDS,
+        scope: "test",
+      });
+      let released: Promise<void> | undefined;
+      const releaseBg = () => (released ??= releaseOwned(locking, bgOwner, [CATALOG_REBUILD_LOCK]));
+      cleanups.push(() => void releaseBg());
+      let opened = false;
+      const opening = exclusiveRebuilds(container, 30_000).then((ex) => {
+        opened = true;
+        return ex;
+      });
+      // Ca đỏ/hết hạn trước khi cửa sổ mở: afterEach nhả chủ nền (đăng ký trước) rồi đóng cửa sổ ngay khi nó mở — không để
+      // lớp chặn sót sang ca sau.
+      cleanups.push(
+        () =>
+          void opening.then(
+            (ex) => ex.close(),
+            () => undefined,
+          ),
+      );
+      // Quá 2 × TTL: chặn cả lời gia hạn của chủ đang giữ thì lease hết hạn và cửa sổ giành được khoá khi rebuild nền còn
+      // chạy (mất độc quyền). Đúng: cửa sổ còn chờ.
+      await new Promise((r) => setTimeout(r, 2 * TTL_SECONDS * 1000 + 500));
+      expect(opened).toBe(false);
+      await releaseBg();
+      const ex = await opening;
+      expect(await ex.outside(tryRebuildLock)).toBe("busy");
+      expect(await ex.run(tryRebuildLock)).toBe("ok");
+      ex.close();
     });
 
     it("kiểm cuối báo lỗi có số liệu khi bảng lệch số dòng vừa ghi (không im lặng)", async () => {
