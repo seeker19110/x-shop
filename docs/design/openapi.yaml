@@ -1267,7 +1267,7 @@ paths:
       operationId: adminApproveRefund
       x-idempotency: state
       summary: "Người thứ hai duyệt hoàn tiền"
-      description: "Khác người tạo (403 `SELF_APPROVAL`). Yêu cầu vượt ngưỡng → xác thực lại MFA ≤ 5 phút."
+      description: "Khác người tạo (403 `SELF_APPROVAL`). Yêu cầu vượt ngưỡng → xác thực lại MFA ≤ 5 phút. Duyệt lại yêu cầu đã qua `requested` (đã duyệt/đã hoàn) → 200 `changed: false`; yêu cầu đã `rejected` → 409 `INVALID_STATE`."
       security:
         - adminSession: []
         - adminBearer: []

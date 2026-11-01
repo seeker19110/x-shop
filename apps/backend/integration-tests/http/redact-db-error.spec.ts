@@ -153,12 +153,16 @@ describe("log lỗi DB không lộ giá trị đã chèn (T-151)", () => {
     logger.error("thanh toán thất bại, thẻ 4111 1111 1111 1111 bị từ chối");
     logger.error(new Error("card=4111-1111-1111-1111 declined"));
     logger.error("mã đối soát 4111 1111 1111 1112 không phải thẻ");
-    expect(lines).toHaveLength(3);
+    // Chữ số ≥ 5 ở vị trí nhân đôi → phủ nhánh `d > 9` của luhn (PAN thử Mastercard công khai).
+    logger.error("thẻ 5555 5555 5555 4444 hết hạn");
+    expect(lines).toHaveLength(4);
     expect(lines[0]).toContain("[CARD]");
     expect(lines[0]).not.toMatch(/4111/);
     expect(lines[1]).toContain("[CARD]");
     expect(lines[1]).not.toMatch(/4111/);
     expect(lines[2]).not.toContain("[CARD]");
     expect(lines[2]).toContain("4111 1111 1111 1112");
+    expect(lines[3]).toContain("[CARD]");
+    expect(lines[3]).not.toMatch(/5555/);
   });
 });
