@@ -8,9 +8,9 @@
   },
   "integration": {
     "$comment": "Nguồn integration (T-135, QA-COV-001): so bằng `node scripts/coverage-ratchet.mjs --suite integration` sau `pnpm --filter @x-shop/backend test:integration:coverage` (CI: job integration-coverage 8 shard + integration-coverage-merge, T-198; phạm vi bỏ src/admin/** — D-157; docs/ops/perf/INTEGRATION-COVERAGE.md). Chỉ tăng: `--suite integration --update`.",
-    "measured": "2026-11-01 — min của 2 lần CI, cùng src backend (khác test catalog ở 7f3a900): run 41243467426 @6382532 93.81/83.66 (35610/37957 dòng, 6311/7543 nhánh); run 41255962935 @7f3a900 93.77/83.71 (35596/37957, 6304/7530 — mẫu số nhánh v8 đổi theo thực thi). 20 dòng lật, net −14: mất redact.ts:180-193 (luhn), refunds.ts:452-454; được scrypt-gate.ts:83-85 — đường phụ thuộc thời gian/dữ liệu, không thuộc phần test đổi. Làm tròn xuống 0,1 (D-160, sửa hồ sơ D-161); nâng lại sau T-239.",
+    "measured": "2026-11-01 — 2 lần CI cùng SHA c0d2f71 (run 41277741273, lần 1: 93.83/83.91; lần 2: 93.85/83.98), sau T-239 (test tất định cho luhn, duyệt lại refund, scrypt-gate hết hạn chờ). Công thức (D-162): min − biên dao động quan sát được, làm tròn xuống 0,1 → lines 93.83−0.02 = 93.8; branches 83.91−0.07 = 83.8. Lịch sử: 93.81/83.66 (T-236, một mẫu — D-160/D-161 sửa).",
     "packages": {
-      "apps/backend": { "lines": 93.7, "branches": 83.6 }
+      "apps/backend": { "lines": 93.8, "branches": 83.8 }
     }
   }
 }

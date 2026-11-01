@@ -1136,3 +1136,10 @@
 - Chọn: Giữ 93,7/83,6, sửa hồ sơ: cùng src backend, khác test catalog; 20 dòng lật (redact luhn, refunds 452-454 mất; scrypt-gate 83-85 được) đều là đường phụ thuộc thời gian/dữ liệu ngoài phần test đổi; T-239 làm tất định 3 chỗ rồi nâng lại; đường lùi = đặt lại min ≥ 2 lần CI tất định
 - Lý do (tiêu chí chất lượng cuối): Trung thực hồ sơ (P1); reviewer tải hai artefact và xác nhận dòng lật không thuộc phần code/test đổi — vẫn là nhiễu đo; quay lại 93,81 tái tạo CI đỏ ngẫu nhiên
 - Đường lùi: Đặt lại baseline = min ≥ 2 lần CI tất định sau T-239
+
+### D-162 · 2026-11-01T07:56:41+00:00 · T-239: hai lần CI cùng SHA c0d2f71 (run 41277741273 lần 1/2) đo 93,83/83,91 và 93,85/83,98 — lines gần tất định, branches còn lệch 0,07. Đặt baseline integration thế nào?
+
+- Phương án: (1) min − biên dao động quan sát được, làm tròn xuống 0,1: lines 93,83−0,02→93,8; branches 83,91−0,07→83,8 · (2) min làm tròn xuống 0,1 (D-160 nguyên văn): 93,8/83,9 — branches chỉ còn 0,01 dư so với min, dưới biên 0,07
+- Chọn: min − biên dao động quan sát được, làm tròn xuống 0,1: lines 93,83−0,02→93,8; branches 83,91−0,07→83,8
+- Lý do (tiêu chí chất lượng cuối): Đúng (tiêu chí 1): baseline phải chịu được nhiễu đo đã quan sát, nếu không CI đỏ ngẫu nhiên như sau T-236; vẫn nâng so với 93,7/83,6 và qua Gate T-239 (≥ 93,75/83,65); tinh chỉnh quy tắc D-160 thành công thức có ghi trong file
+- Đường lùi: Đặt lại theo công thức khi có thêm mẫu cùng SHA
