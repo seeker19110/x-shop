@@ -242,6 +242,54 @@ test("mergeCoverage: nhánh trong callback vô danh không chạy (dòng = 0) kh
   assert.equal(mergeCoverage(libs, [s2, a]).getCoverageSummary().toJSON().branches.covered, 1);
 });
 
+test("mergeCoverage: range hẹp nhất trùng loc lấy số nhỏ nhất; range ngoài đếm 0 không che range trong đã chạy", () => {
+  const libs = istanbulLibs(root);
+  const L = (a, b, c, d) => ({ start: { line: a, column: b }, end: { line: c, column: d } });
+  const body = L(1, 0, 20, 1);
+  const br = (loc, line) => ({ type: "branch", loc, locations: [loc], line });
+  const target = br(L(4, 4, 4, 20), 4);
+  const stmts = { statementMap: { 0: L(4, 4, 4, 20) }, s: { 0: 1 } };
+  // Shard có ghi nhánh mục tiêu (chưa chạy) — để tạo mục vắng ở shard kia.
+  const other = {
+    "/k.ts": { path: "/k.ts", ...stmts, fnMap: {}, f: {}, branchMap: { 0: target }, b: { 0: [0] } },
+  };
+  // (a) Hai range cùng loc thân class (static initializer 0, instance initializer 5): lấy min → 0.
+  const same = {
+    "/k.ts": {
+      path: "/k.ts",
+      statementMap: {},
+      s: {},
+      fnMap: {
+        0: { name: "<static_initializer>", decl: body, loc: body, line: 1 },
+        1: { name: "<instance_members_initializer>", decl: body, loc: body, line: 1 },
+      },
+      f: { 0: 0, 1: 5 },
+      branchMap: {},
+      b: {},
+    },
+  };
+  for (const order of [
+    [same, other],
+    [other, same],
+  ])
+    assert.equal(mergeCoverage(libs, order).getCoverageSummary().toJSON().branches.covered, 0);
+  // (b) Range ngoài đếm 0 bao một static method đã gọi 2 lần chứa mục: lấy range HẸP NHẤT (2), không min mọi range chứa.
+  const nested = {
+    "/k.ts": {
+      path: "/k.ts",
+      ...stmts,
+      fnMap: {
+        0: { name: "<instance_members_initializer>", decl: body, loc: body, line: 1 },
+        1: { name: "make", decl: L(3, 2, 3, 6), loc: L(3, 2, 6, 3), line: 3 },
+      },
+      f: { 0: 0, 1: 2 },
+      branchMap: {},
+      b: {},
+    },
+  };
+  assert.equal(mergeCoverage(libs, [nested, other]).getCoverageSummary().toJSON().branches.covered, 1);
+});
+
 test("alignCoverages: bù statement/hàm/nhánh vắng bằng 0 (cả bT), không đổi đầu vào, giữ mục đã có", () => {
   const a = { "/a.ts": fileCov("/a.ts", [1, 0, 0, 0], [1, 0], 1) };
   const b = { "/a.ts": fileCov("/a.ts", [0, 0, 0, 0], [0, 0], 0) };

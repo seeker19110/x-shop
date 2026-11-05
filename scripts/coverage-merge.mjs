@@ -130,7 +130,9 @@ function shardRanges(fc) {
  *   nhất cho tất định); không có range chứa → 0;
  * - nhưng nếu mọi statement nằm trọn trong mục đều 0 lần ở shard này thì mục = 0: hàm VÔ DANH không được gọi (callback,
  *   executor Promise) v8 không ghi vào branchMap/fnMap, chỉ để lại dòng 0 — range chứa ghi được lại là hàm bao ngoài đã
- *   chạy (review T-241).
+ *   chạy (review T-241). Cũng phủ range v8 gộp liền kề ở shard khác (vd then-block + phần sau `throw` cùng đếm 0).
+ *   Quy tắc thiên về an toàn: ở mức một shard có thể đặt 0 cả khi phần đầu mục đã chạy (dòng 0 nằm trong range 0 lồng bên
+ *   trong) — chấp nhận, vì đếm thiếu không tạo phủ giả và shard khác chạy thật vẫn phủ được.
  */
 function missingHits(ranges, stmts, loc) {
   const cands = ranges.filter((r) => contains(r.loc, loc));

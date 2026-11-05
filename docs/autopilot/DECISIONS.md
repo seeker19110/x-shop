@@ -1179,4 +1179,4 @@
 - Lý do (tiêu chí chất lượng cuối): Chủ dự án chọn 82,7 (2026-11-05). Số đo nay là phủ thật và không đổi theo cách chia shard; 82,7 dưới cả hai mẫu ~7 nhánh. Sẽ xác nhận bằng ≥ 2 lần CI trên code cuối trước khi coi là chốt. T-239 vế branches (≥83,65) dựa trên số đo có phủ ảo — không đạt được với số thật, để mở, không sửa Gate cho khớp.
 - Đường lùi: Revert commit T-241 (khôi phục cách gộp cũ + sàn 83,6)
 
-> Bổ sung D-167 (2026-11-05, sau review T-241): số đo đúng là 82,83 (@f5fe35a, 6243/7537) và 82,81 (@7f3a900, 6236/7530) — bản đầu (82,80/82,79) đưa nhầm placeholder `all: true` của jest vào tổng và còn ~5 nhánh ảo trong callback vô danh; đã sửa trong cùng commit T-241. Sàn 82,7 giữ nguyên (biên ~10 nhánh).
+> Bổ sung D-167 (2026-11-05, sau review T-241): số đo đúng là 82,83 (@f5fe35a, 6243/7537) và 82,81 (@7f3a900, 6236/7530) — bản đầu (82,80/82,79) đưa nhầm placeholder `all: true` của jest vào tổng và còn 5 nhánh ảo (4 trong callback vô danh, 1 range v8 gộp liền kề ở `src/lib/checkout/http.ts` 28:43–33:32); đã sửa trong cùng commit T-241. Sàn 82,7 giữ nguyên (biên ~10 nhánh).
