@@ -1164,3 +1164,19 @@
 - Chọn: Lines 93,75, branches giữ 83,6; mở lại T-239, thêm task sửa cách gộp nhánh rồi mới nâng branches
 - Lý do (tiêu chí chất lượng cuối): (1) đúng/an toàn: 83,75 dựa trên phủ ảo, PR thêm suite http kế tiếp (T-203…T-205, T-186) có thể làm quality đỏ trên master và sau merge không hạ được (--against). Lines là phủ thật, dư ~35 dòng so với dao động cùng SHA 6–10 dòng, nên nâng. (2) đường lùi: không nâng branches thì không khoá thêm điều chưa thật. Ghi chú rủi ro: kể cả 83,6 cũng cao hơn phủ thật 83,08 — sửa cách gộp sau merge sẽ cần hạ baseline branches, việc đó cần chủ dự án duyệt (LOOP-CI-001), không tự hạ.
 - Đường lùi: Đặt lại branches 83,75 trong coverage-baseline.json khi cách gộp shard đã sửa và đo lại ≥ 2 mẫu
+
+### D-166 · 2026-11-05T14:05:04+00:00 · Chủ dự án chọn (2026-11-05, trả lời câu hỏi D-165): hạ sàn branches tích hợp hay giữ 83,6 trước khi merge PR #20?
+
+- Phương án: (1) Hạ sàn branches về 83,0 và làm T-241 (sửa cách gộp, đo lại 2 mẫu CI) · (2) Giữ 83,6, merge ngay
+- Chọn: Hạ sàn branches về 83,0 và làm T-241 (sửa cách gộp, đo lại 2 mẫu CI)
+- Lý do (tiêu chí chất lượng cuối): Chủ dự án duyệt trực tiếp (LOOP-CI-001 cho phép hạ ngưỡng khi người duyệt). (1) đúng: số đo branches thành phủ thật, không đổi theo cách chia shard; 83,0 thấp hơn phủ thật ~83,08 nên không đỏ ngẫu nhiên. (2) làm trước merge vì sau merge --against khoá baseline.
+- Đường lùi: Khôi phục coverage-merge.mjs cũ và baseline 83,6 bằng revert commit T-241
+
+### D-167 · 2026-11-05T22:02:16+00:00 · T-241 xong: gộp coverage với range chứa trong cùng shard (gồm range hàm ở fnMap) cho branches tích hợp 82,80 (@f5fe35a, 6248/7545) và 82,79 (@7f3a900, 6241/7538) — ổn định giữa hai cách chia shard (trước sửa 83,95/83,72). Sàn 83,0 vừa duyệt (D-166) sẽ đỏ. Đặt sàn branches bao nhiêu?
+
+- Phương án: (1) 82,7 (biên ~0,1 điểm) · (2) 82,5 · (3) Bỏ T-241, giữ 83,6
+- Chọn: 82,7 (biên ~0,1 điểm)
+- Lý do (tiêu chí chất lượng cuối): Chủ dự án chọn 82,7 (2026-11-05). Số đo nay là phủ thật và không đổi theo cách chia shard; 82,7 dưới cả hai mẫu ~7 nhánh. Sẽ xác nhận bằng ≥ 2 lần CI trên code cuối trước khi coi là chốt. T-239 vế branches (≥83,65) dựa trên số đo có phủ ảo — không đạt được với số thật, để mở, không sửa Gate cho khớp.
+- Đường lùi: Revert commit T-241 (khôi phục cách gộp cũ + sàn 83,6)
+
+> Bổ sung D-167 (2026-11-05, sau review T-241): số đo đúng là 82,83 (@f5fe35a, 6243/7537) và 82,81 (@7f3a900, 6236/7530) — bản đầu (82,80/82,79) đưa nhầm placeholder `all: true` của jest vào tổng và còn ~5 nhánh ảo trong callback vô danh; đã sửa trong cùng commit T-241. Sàn 82,7 giữ nguyên (biên ~10 nhánh).

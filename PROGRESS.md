@@ -1,10 +1,10 @@
 # PROGRESS.md — x-shop (webapp shop thời trang)
 
 ## Đang làm
-- Đợt 3 PLAN-2 (mục L, D-129) trên nhánh `claude/festive-wozniak-fwg3eg`, PR #20 đang mở, chờ chủ dự án merge. Còn mở: `T-239` (lines đã nâng 93,75; branches giữ 83,6 vì phủ ảo khi gộp shard — D-165) chờ `T-241` sửa cách gộp nhánh coverage.
+- Đợt 3 PLAN-2 (mục L, D-129) trên nhánh `claude/festive-wozniak-fwg3eg`, PR #20 đang mở, chờ chủ dự án merge. Chủ dự án yêu cầu merge (2026-11-05) — guard chặn merge do agent (ngoại lệ cứng LOOP-STOP-005, PR chạm auth/thanh toán): chủ dự án bấm squash-merge. `T-241` xong: gộp coverage không còn phủ ảo, sàn branches 82,7 (D-166/D-167, chủ dự án duyệt); `T-239` để mở (vế branches ≥ 83,65 dựa trên số đo ảo).
 
 ## Tiếp theo
-1. `T-241` (sửa `scripts/coverage-merge.mjs`, không cộng hit range chứa cho nhánh của hàm shard không gọi) → đo lại ≥ 2 mẫu CI → `T-239` nâng branches. Phủ thật hiện ~83,08 < sàn 83,6: nếu đo lại thấp hơn thì hạ sàn cần chủ dự án duyệt — nên quyết trước khi merge PR #20 (master chưa có baseline, `--against` chưa khoá).
+1. Xác nhận sàn branches 82,7 bằng ≥ 2 lần CI trên head cuối của PR #20 (job `integration-coverage-merge`); dao động lớn hơn biên thì báo chủ dự án.
 2. Sau khi PR #20 merge, cắt lại nhánh làm việc từ master, mỗi lát một PR, có người rà:
    - `T-186` migration bigint cột tiền (D-140, có sẵn 3 commit ở nhánh riêng);
    - `T-203` consent → `T-204` thời hạn lưu → `T-205` DSAR (D-158, PII, merge cần người);
@@ -20,9 +20,9 @@
    Xem trạng thái máy: `python3 .xtemplates/scripts/xt.py loop status`.
 
 ## Quyết định
-- Toàn bộ quyết định ở `docs/autopilot/DECISIONS.md` (D-001…D-165); quyết định kiến trúc ở `docs/adr/`.
+- Toàn bộ quyết định ở `docs/autopilot/DECISIONS.md` (D-001…D-167); quyết định kiến trúc ở `docs/adr/`.
 - Gần nhất:
-  - D-160…D-165: baseline coverage tích hợp 93,75/83,6 (lines từ 2 mẫu CI cùng code `f5fe35a`; branches không nâng vì phủ ảo khi gộp shard). Không nâng theo một mẫu, theo tree khác, hay theo số đo gộp chưa sửa.
+  - D-160…D-167: baseline coverage tích hợp 93,75/82,7. `scripts/coverage-merge.mjs` bù mục vắng ở mỗi shard bằng hit của range chứa trong CÙNG shard (gồm range hàm) — hết phủ ảo, số đo không đổi theo cách chia shard. Không nâng theo một mẫu hay theo tree khác.
   - Hàng rào đỏ giả khi dò rò rỉ: `integration-tests/helpers/leak-probe.ts`. Tầng 1 tách và kiểm định dạng `trace_id`/`span_id` (sai thì ném lỗi). Tầng 2 dò regex phần còn lại. `probeRequestLog` dò cả dòng của ngữ cảnh khác, không bỏ qua dòng nào. Có unit test riêng (`leak-probe.unit.spec`).
 - Tiền là số nguyên VND. Logic tiền/tồn/trạng thái chỉ nằm ở `packages/domain` và workflow backend.
 

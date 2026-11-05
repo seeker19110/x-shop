@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  alignCoverages,
   checkShardSet,
   istanbulLibs,
   main,
@@ -106,6 +107,160 @@ test("mergeCoverage (istanbul của jest): cộng số lần chạy theo vị tr
   assert.equal(s.functions.covered, 2);
   // Gộp thứ tự ngược cho cùng kết quả (job gộp không phụ thuộc thứ tự tải artifact).
   assert.deepEqual(mergeCoverage(libs, [b, a]).getCoverageSummary().toJSON(), s);
+});
+
+test("mergeCoverage: nhánh vắng ở một shard KHÔNG mượn hit của block chứa ở shard khác (phủ ảo, T-241/D-165)", () => {
+  const libs = istanbulLibs(root);
+  const L = (a, b, c, d) => ({ start: { line: a, column: b }, end: { line: c, column: d } });
+  const block = { type: "block", loc: L(1, 0, 10, 1), locations: [L(1, 0, 10, 1)], line: 1 };
+  const fn = (hits) => ({
+    fnMap: { 0: { name: "m", decl: L(3, 2, 3, 3), loc: L(3, 2, 6, 3), line: 3 } },
+    f: { 0: hits },
+  });
+  const inner = { type: "branch", loc: L(4, 4, 4, 30), locations: [L(4, 4, 4, 30)], line: 4 };
+  const file = (fnHits, withInner, innerHits) => ({
+    "/c.ts": {
+      path: "/c.ts",
+      statementMap: { 0: L(1, 0, 10, 1) },
+      s: { 0: 6 },
+      ...fn(fnHits),
+      branchMap: withInner ? { 0: block, 1: inner } : { 0: block },
+      b: withInner ? { 0: [6], 1: [innerHits] } : { 0: [6] },
+    },
+  });
+  // Shard A nạp module (thân class 6 lần) nhưng KHÔNG gọi hàm m (v8: range hàm đếm 0, không ghi nhánh bên trong).
+  // Shard B gọi m 2 lần, nhánh L4 trong m chưa chạy.
+  const a = file(0, false);
+  const b = file(2, true, 0);
+  // Đối chứng: gộp thẳng bằng istanbul thì nhánh L4 thành "đã phủ" (mượn hit 6 của block thân class ở shard A).
+  // (istanbul giữ tham chiếu object đầu vào và ghi đè khi gộp → gộp thô trên bản sao.)
+  const raw = libs.coverage.createCoverageMap({});
+  raw.merge(structuredClone(a));
+  raw.merge(structuredClone(b));
+  assert.equal(raw.getCoverageSummary().toJSON().branches.covered, 2);
+  for (const order of [
+    [a, b],
+    [b, a],
+  ]) {
+    const s = mergeCoverage(libs, order).getCoverageSummary().toJSON();
+    assert.equal(s.branches.total, 2);
+    assert.equal(s.branches.covered, 1, "nhánh L4 chưa chạy ở shard nào → không phủ");
+  }
+  // Ngữ nghĩa v8 được giữ: block chạy cùng số lần với cha thì v8 không ghi riêng → shard A gọi m 2 lần mà không ghi
+  // L4 nghĩa là L4 chạy 2 lần (range chứa hẹp nhất trong CÙNG shard là hàm m).
+  assert.equal(
+    mergeCoverage(libs, [file(2, false), b])
+      .getCoverageSummary()
+      .toJSON().branches.covered,
+    2,
+  );
+  // Có chạy thật ở shard có ghi thì vẫn được tính.
+  assert.equal(
+    mergeCoverage(libs, [a, file(2, true, 3)])
+      .getCoverageSummary()
+      .toJSON().branches.covered,
+    2,
+  );
+});
+
+test("mergeCoverage: placeholder `all: true` (file shard không nạp) không thêm mục vào số đo (review T-241)", () => {
+  const libs = istanbulLibs(root);
+  const L = (a, b, c, d) => ({ start: { line: a, column: b }, end: { line: c, column: d } });
+  const real = {
+    "/g.ts": {
+      path: "/g.ts",
+      statementMap: { 0: L(1, 0, 5, 1) },
+      s: { 0: 1 },
+      fnMap: { 0: { name: "grant", decl: L(1, 0, 1, 5), loc: L(1, 0, 5, 1), line: 1 } },
+      f: { 0: 1 },
+      branchMap: { 0: { type: "if", loc: L(2, 2, 2, 9), locations: [L(2, 2, 2, 9)], line: 2 } },
+      b: { 0: [1] },
+    },
+  };
+  const empty = {
+    "/g.ts": {
+      path: "/g.ts",
+      all: true,
+      statementMap: { 0: L(1, 0, 5, 1) },
+      s: { 0: 0 },
+      fnMap: { 0: { name: "(empty-report)", decl: L(1, 0, 5, 1), loc: L(1, 0, 5, 1), line: 1 } },
+      f: { 0: 0 },
+      branchMap: { 0: { type: "branch", loc: L(1, 0, 5, 1), locations: [L(1, 0, 5, 1)], line: 1 } },
+      b: { 0: [0] },
+    },
+  };
+  const want = mergeCoverage(libs, [real]).getCoverageSummary().toJSON();
+  for (const order of [
+    [empty, real],
+    [real, empty],
+  ]) {
+    const m = mergeCoverage(libs, order);
+    assert.deepEqual(m.getCoverageSummary().toJSON(), want);
+    assert.ok(!Object.values(m.fileCoverageFor("/g.ts").data.fnMap).some((f) => f.name === "(empty-report)"));
+  }
+});
+
+test("mergeCoverage: nhánh trong callback vô danh không chạy (dòng = 0) không mượn hit của hàm bao ngoài", () => {
+  const libs = istanbulLibs(root);
+  const L = (a, b, c, d) => ({ start: { line: a, column: b }, end: { line: c, column: d } });
+  const fn = { name: "step", decl: L(1, 0, 1, 4), loc: L(1, 0, 10, 1), line: 1 };
+  const elseBr = { type: "branch", loc: L(7, 3, 9, 3), locations: [L(7, 3, 9, 3)], line: 7 };
+  // Dòng 1–4 (thân step) và 5–9 (callback vô danh bên trong).
+  const statementMap = { 0: L(2, 2, 2, 20), 1: L(6, 4, 6, 20), 2: L(8, 4, 8, 20) };
+  // Shard S: step chạy 3 lần nhưng callback không chạy → v8 không ghi callback, chỉ để dòng 6/8 = 0.
+  const s = {
+    "/r.ts": {
+      path: "/r.ts",
+      statementMap,
+      s: { 0: 3, 1: 0, 2: 0 },
+      fnMap: { 0: fn },
+      f: { 0: 3 },
+      branchMap: {},
+      b: {},
+    },
+  };
+  // Shard A: callback chạy, nhánh else chưa chạy.
+  const a = {
+    "/r.ts": {
+      path: "/r.ts",
+      statementMap,
+      s: { 0: 1, 1: 2, 2: 0 },
+      fnMap: { 0: fn },
+      f: { 0: 1 },
+      branchMap: { 0: elseBr },
+      b: { 0: [0] },
+    },
+  };
+  for (const order of [
+    [s, a],
+    [a, s],
+  ])
+    assert.equal(mergeCoverage(libs, order).getCoverageSummary().toJSON().branches.covered, 0);
+  // Đối chứng: dòng trong nhánh có chạy ở S (block cùng số lần với cha, v8 không ghi riêng) → vẫn tính theo hàm bao.
+  const s2 = structuredClone(s);
+  s2["/r.ts"].s[2] = 3;
+  assert.equal(mergeCoverage(libs, [s2, a]).getCoverageSummary().toJSON().branches.covered, 1);
+});
+
+test("alignCoverages: bù statement/hàm/nhánh vắng bằng 0 (cả bT), không đổi đầu vào, giữ mục đã có", () => {
+  const a = { "/a.ts": fileCov("/a.ts", [1, 0, 0, 0], [1, 0], 1) };
+  const b = { "/a.ts": fileCov("/a.ts", [0, 0, 0, 0], [0, 0], 0) };
+  delete b["/a.ts"].fnMap[0];
+  delete b["/a.ts"].f[0];
+  delete b["/a.ts"].branchMap[0];
+  delete b["/a.ts"].b[0];
+  b["/a.ts"].bT = {};
+  const before = structuredClone(b);
+  const [a2, b2] = alignCoverages([a, b]);
+  assert.deepEqual(b, before, "không sửa object đầu vào");
+  assert.deepEqual(a2, a, "shard đã đủ mục giữ nguyên");
+  assert.equal(Object.keys(b2["/a.ts"].fnMap).length, 1);
+  assert.equal(b2["/a.ts"].f[0], 0);
+  assert.deepEqual(b2["/a.ts"].b[0], [0, 0]);
+  assert.deepEqual(b2["/a.ts"].bT[0], [0, 0]);
+  // File chỉ có ở một shard: không thêm vào shard kia.
+  const [, c2] = alignCoverages([a, { "/z.ts": fileCov("/z.ts", [1, 1, 1, 1], [1, 1], 1) }]);
+  assert.deepEqual(Object.keys(c2), ["/z.ts"]);
 });
 
 test("main: gộp thư mục shard → coverage-summary.json đọc được bởi coverage-ratchet; bộ shard thiếu → exit 2, không ghi", () => {

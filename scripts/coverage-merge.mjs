@@ -3,6 +3,7 @@
 // (artifact của một job matrix) có `coverage-final.json` (reporter `json` của jest, provider v8 → dạng istanbul) và
 // `shard.json` {shard, total, ids}. Kiểm đủ bộ trước khi gộp — thiếu/thừa/trùng shard, id trùng giữa shard, hoặc hợp các
 // id lệch danh sách mong đợi (`--expect-ids`, vd `list.mjs` không tham số lọc `http:`) → exit 2: không đo đủ ≠ đạt.
+// Trước khi gộp, bù mục vắng ở từng shard theo chính shard đó (alignCoverages, T-241 — tránh phủ ảo của istanbul).
 // Gộp bằng istanbul-lib-coverage (cộng số lần chạy theo vị trí) rồi in báo cáo bằng istanbul-lib-report/istanbul-reports
 // — ĐÚNG các thư viện jest dùng để ra coverage-summary.json, lấy qua chuỗi phụ thuộc của `jest` trong apps/backend (không
 // thêm phụ thuộc). Ra `<out>/coverage-summary.json` (cho `coverage-ratchet.mjs --suite integration`), coverage-final.json,
@@ -101,10 +102,110 @@ export function istanbulLibs(root) {
   }
 }
 
-/** Gộp các object coverage-final.json; trả CoverageMap. */
+const locKey = (l) => `${l.start.line}|${l.start.column}|${l.end.line}|${l.end.column}`;
+const before = (a, b) => a.line < b.line || (a.line === b.line && a.column <= b.column);
+/** `outer` chứa `inner` (cho phép trùng biên). */
+const contains = (outer, inner) => before(outer.start, inner.start) && before(inner.end, outer.end);
+// Khoá trùng cách istanbul-lib-coverage 3.x so vị trí khi gộp (keyFromLoc): statement theo loc, hàm theo loc, nhánh theo
+// locations[0].
+const KINDS = [
+  { map: "statementMap", hits: "s", key: (it) => locKey(it), loc: (it) => it },
+  { map: "fnMap", hits: "f", key: (it) => locKey(it.loc), loc: (it) => it.loc },
+  { map: "branchMap", hits: "b", key: (it) => locKey(it.locations[0]), loc: (it) => it.locations[0] },
+];
+
+/** Range có số lần chạy của MỘT shard (block v8 trong branchMap + thân hàm trong fnMap) — để tìm range chứa. */
+function shardRanges(fc) {
+  const out = [];
+  for (const [k, it] of Object.entries(fc.branchMap ?? {}))
+    (it.locations ?? []).forEach((loc, i) => out.push({ loc, hits: fc.b?.[k]?.[i] ?? 0 }));
+  for (const [k, it] of Object.entries(fc.fnMap ?? {}))
+    if (it.loc) out.push({ loc: it.loc, hits: fc.f?.[k] ?? 0 });
+  return out;
+}
+
+/**
+ * Số lần chạy của mục vắng ở một shard, suy từ CHÍNH shard đó:
+ * - range chứa hẹp nhất (block ở branchMap, thân hàm ở fnMap; nhiều range hẹp nhất ngang nhau/chéo nhau → lấy số nhỏ
+ *   nhất cho tất định); không có range chứa → 0;
+ * - nhưng nếu mọi statement nằm trọn trong mục đều 0 lần ở shard này thì mục = 0: hàm VÔ DANH không được gọi (callback,
+ *   executor Promise) v8 không ghi vào branchMap/fnMap, chỉ để lại dòng 0 — range chứa ghi được lại là hàm bao ngoài đã
+ *   chạy (review T-241).
+ */
+function missingHits(ranges, stmts, loc) {
+  const cands = ranges.filter((r) => contains(r.loc, loc));
+  if (cands.length === 0) return 0;
+  const narrowest = cands.filter(
+    (r) => !cands.some((o) => o !== r && contains(r.loc, o.loc) && !contains(o.loc, r.loc)),
+  );
+  const hits = Math.min(...narrowest.map((r) => r.hits));
+  if (hits === 0) return 0;
+  const inside = stmts.filter((st) => contains(loc, st.loc));
+  return inside.length > 0 && inside.every((st) => st.hits === 0) ? 0 : hits;
+}
+
+/**
+ * Bù cho mỗi shard các statement/hàm/nhánh mà shard khác có nhưng shard này không có (T-241, D-165…D-167), số lần chạy
+ * theo `missingHits` (suy từ chính shard đó). Vì sao: `CoverageMap.merge` của istanbul gặp mục vắng thì cộng hit của
+ * range chứa nhưng chỉ tìm trong CÙNG LOẠI map — nhánh tìm trong branchMap, bỏ qua thân hàm ở fnMap — nên nhánh trong
+ * hàm mà shard không gọi (fnMap đếm 0) mượn hit của block thân class thành "đã phủ" (phủ ảo), số ảo đổi theo cách chia
+ * shard. Bù trước thì mọi mục có khoá khớp ở mọi shard → istanbul chỉ cộng đúng vị trí.
+ * Mục `all: true` (placeholder jest sinh cho file shard không nạp, `collectCoverageFrom`) bỏ qua như istanbul vẫn làm:
+ * không đưa vào tập hợp, không bù. Không sửa object đầu vào.
+ */
+export function alignCoverages(coverages) {
+  const union = new Map(); // file → {statementMap: Map(key→item), ...}
+  for (const c of coverages) {
+    for (const [file, fc] of Object.entries(c)) {
+      if (fc.all === true) continue;
+      let u = union.get(file);
+      if (!u) union.set(file, (u = Object.fromEntries(KINDS.map((k) => [k.map, new Map()]))));
+      for (const k of KINDS)
+        for (const it of Object.values(fc[k.map] ?? {})) {
+          const key = k.key(it);
+          if (!u[k.map].has(key)) u[k.map].set(key, it);
+        }
+    }
+  }
+  return coverages.map((c) =>
+    Object.fromEntries(
+      Object.entries(c).map(([file, fc]) => {
+        if (fc.all === true || !union.has(file)) return [file, fc];
+        const out = { ...fc };
+        const ranges = shardRanges(fc);
+        const stmts = Object.entries(fc.statementMap ?? {}).map(([k, loc]) => ({
+          loc,
+          hits: fc.s?.[k] ?? 0,
+        }));
+        for (const k of KINDS) {
+          const map = { ...(fc[k.map] ?? {}) };
+          const hits = { ...(fc[k.hits] ?? {}) };
+          const bT = k.hits === "b" && fc.bT ? { ...fc.bT } : null;
+          const have = new Set(Object.values(map).map(k.key));
+          let next = Math.max(-1, ...Object.keys(map).map(Number).filter(Number.isInteger)) + 1;
+          for (const [key, it] of union.get(file)[k.map]) {
+            if (have.has(key)) continue;
+            map[next] = it;
+            if (k.hits === "b") {
+              hits[next] = it.locations.map((loc) => missingHits(ranges, stmts, loc));
+              if (bT) bT[next] = it.locations.map(() => 0);
+            } else hits[next] = missingHits(ranges, stmts, k.loc(it));
+            next++;
+          }
+          out[k.map] = map;
+          out[k.hits] = hits;
+          if (bT) out.bT = bT;
+        }
+        return [file, out];
+      }),
+    ),
+  );
+}
+
+/** Gộp các object coverage-final.json (đã bù mục vắng — alignCoverages); trả CoverageMap. */
 export function mergeCoverage(libs, coverages) {
   const map = libs.coverage.createCoverageMap({});
-  for (const c of coverages) map.merge(c);
+  for (const c of alignCoverages(coverages)) map.merge(c);
   return map;
 }
 
