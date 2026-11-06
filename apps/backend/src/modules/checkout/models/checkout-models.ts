@@ -18,8 +18,10 @@ import {
  * Model DSL của module `checkout` (docs/design/checkout-flow.md §2). Ràng buộc nghiệp vụ (UNIQUE/partial UNIQUE/CHECK)
  * thực thi ở Postgres (BASE-DATA-010) — khai báo ở đây để snapshot/ORM biết, và viết tường minh trong migration.
  *
- * Tiền: số nguyên VND. DSL `model.number()` ánh xạ cột `integer`; migration dùng `bigint` cho mọi cột tiền rồi ép kiểu
- * khi đọc (service) — xem Migration20261024180000. Không dùng float/numeric tự do.
+ * Tiền: số nguyên VND, cột DB `bigint` (T-186, Migration20261106100000; ADR-0007). DSL 2.22.1 không có kiểu bigint trả
+ * number nên property tiền vẫn khai `model.number()` (snapshot ghi `integer` — drift so model↔snapshot, không so DB;
+ * kiểu thật do check-schema MONEY_TYPE kiểm); driver trả int8 dạng chuỗi được ép về number có Number.isSafeInteger ở
+ * `src/lib/db/int8.ts`. Không dùng float/numeric tự do.
  * Index khai `where: null` = không giới hạn theo `deleted_at` (ràng buộc giữ cả với bản ghi đã xoá mềm).
  */
 

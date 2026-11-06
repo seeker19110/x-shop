@@ -19,6 +19,8 @@ export const Shipment = model
     provider: model.text(),
     provider_order_code: model.text().nullable(),
     state: model.enum([...SHIPMENT_STATES]).default("unfulfilled"),
+    // Tiền (cod_amount, shipping_fee, cod_reported_amount): cột DB `bigint` (T-186, Migration20261106100100), DSL vẫn
+    // `model.number()` — xem chú thích "Tiền" ở checkout/models/checkout-models.ts.
     cod_amount: model.number(),
     /** Phí hãng tính cho vận đơn (null tới khi hãng trả). */
     shipping_fee: model.number().nullable(),

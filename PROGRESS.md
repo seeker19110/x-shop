@@ -1,17 +1,15 @@
 # PROGRESS.md — x-shop (webapp shop thời trang)
 
 ## Đang làm
-- Đợt 3 PLAN-2 (mục L, D-129) trên nhánh `claude/festive-wozniak-fwg3eg`, PR #20 đang mở, chờ chủ dự án merge. Chủ dự án yêu cầu merge (2026-11-05) — guard chặn merge do agent (ngoại lệ cứng LOOP-STOP-005, PR chạm auth/thanh toán): chủ dự án bấm squash-merge. `T-241` xong: gộp coverage không còn phủ ảo, sàn branches 82,7 (D-166/D-167, chủ dự án duyệt); `T-239` để mở (vế branches ≥ 83,65 dựa trên số đo ảo).
+- PR #20 (đợt 2–3 PLAN-2) đã merge vào master (`f1b19e8`, 2026-11-06). Nhánh `claude/festive-wozniak-fwg3eg` cắt lại từ master; lát hiện tại: `T-186` cột tiền bigint (D-140) — 4 migration mới `Migration20261106100000…100300`, check-schema luật MONEY_TYPE, ADR-0007; Gate xanh, chờ review + full gate rồi mở PR (migration → người merge).
 
 ## Tiếp theo
-1. Chờ chủ dự án squash-merge PR #20 (agent bị guard chặn merge). Sàn 82,7 đã xác nhận bằng 2 lần CI trên `b1ac825` (run 42130589447 lần 1/2: branches 82,83 / 82,85; lines 93,87 / 93,85).
-2. Sau khi PR #20 merge, cắt lại nhánh làm việc từ master, mỗi lát một PR, có người rà:
-   - `T-186` migration bigint cột tiền (D-140, có sẵn 3 commit ở nhánh riêng);
+1. Mỗi lát một PR cắt từ master, có người rà (sau khi PR T-186 merge):
    - `T-203` consent → `T-204` thời hạn lưu → `T-205` DSAR (D-158, PII, merge cần người);
    - `T-060` PDP p95 ≤ 300 ms.
 
    Các task này đang ở trạng thái `loop defer`.
-3. Chờ người, không tự làm:
+2. Chờ người, không tự làm:
    - T-068/T-108/T-113/T-129: sửa `xt.yaml`;
    - T-130: xem migration không đảo ngược rồi áp bản vá; T-123 áp sau T-130;
    - T-105: áp bản vá và duyệt ngoại lệ giấy phép. Các bản vá ở `docs/ops/patches/`;
@@ -27,13 +25,11 @@
 - Tiền là số nguyên VND. Logic tiền/tồn/trạng thái chỉ nằm ở `packages/domain` và workflow backend.
 
 ## Bàn giao phiên
-- Master ở `2993b09`. PR #20 chạy CI bắt buộc `quality` + `gitleaks`.
-  - `pr-commits` đỏ do commit cũ đã đẩy có subject dài → cần squash-merge.
-  - CodeQL báo nhầm 2 high (`session.ts:75`, `deny-throttle.ts:36`) và 4 medium (`ghn-client.ts:167`, `retry.ts:170`, `scripts/perf/baseline.mjs:380`, `e2e/lb.mjs:67`), chờ chủ dự án dismiss.
-- Lệnh kiểm (~70 phút, cần `bash scripts/dev-services.sh start`): `bash .xtemplates/scripts/dev-task.sh gate && pnpm check:ci-local && node scripts/check-commits.mjs origin/claude/festive-wozniak-fwg3eg HEAD`
+- Master ở `f1b19e8` (PR #20 đã merge; CodeQL báo nhầm đã được chủ dự án dismiss). CI bắt buộc `quality` + `gitleaks`.
+- Lệnh kiểm (~70 phút, cần `bash scripts/dev-services.sh start`): `bash .xtemplates/scripts/dev-task.sh gate && pnpm check:ci-local && node scripts/check-commits.mjs origin/master HEAD`
 - Bẫy môi trường:
   - Worktree không có node_modules: dùng `cp -al`, không dùng symlink.
   - Phải gỡ worktree trước khi chạy `check:ci-local`.
   - Hook commit chạy `gate-fast` có trần thời gian, máy tải cao thì bị timeout.
   - Subject commit ≤ 72 ký tự: đếm trước khi commit.
-- Cần chủ dự án: merge PR #20 (squash), dismiss CodeQL, xác nhận Redis 7.2 production (D-147), chọn registry/hạ tầng (D-150), dọn `/var/lib/docker`, cấp khoá sandbox VNPAY/GHN.
+- Cần chủ dự án: merge PR T-186 (migration — ngoại lệ cứng), xác nhận Redis 7.2 production (D-147), chọn registry/hạ tầng (D-150), dọn `/var/lib/docker`, cấp khoá sandbox VNPAY/GHN.
