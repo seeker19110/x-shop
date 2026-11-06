@@ -12,14 +12,55 @@ export interface QuoteLineInput {
   quantity: number;
 }
 
-/** Ưu đãi cấp đơn: P0 tối đa MỘT mã (PRICE02). */
+/**
+ * Ưu đãi cấp đơn: P0 tối đa MỘT mã (PRICE02, D-061). `promotionId` = id khuyến mãi nguồn — chỉ để chụp vào đơn, không
+ * tham gia tính tiền.
+ */
 export type OrderDiscount =
-  | { code: string; kind: "percent"; basisPoints: number; maxAmount?: number; minSubtotal?: number }
-  | { code: string; kind: "fixed"; amount: number; minSubtotal?: number };
+  | {
+      code: string;
+      promotionId?: string | undefined;
+      kind: "percent";
+      basisPoints: number;
+      maxAmount?: number | undefined;
+      minSubtotal?: number | undefined;
+    }
+  | {
+      code: string;
+      promotionId?: string | undefined;
+      kind: "fixed";
+      amount: number;
+      minSubtotal?: number | undefined;
+    };
 
 /** Ưu đãi vận chuyển có thể cộng với mã cấp đơn nếu được cấu hình. */
 export type ShippingDiscount =
-  { code: string; kind: "free" } | { code: string; kind: "fixed"; amount: number };
+  | { code: string; promotionId?: string | undefined; kind: "free" }
+  | { code: string; promotionId?: string | undefined; kind: "fixed"; amount: number };
+
+/**
+ * Ảnh chụp khuyến mãi tại lúc báo giá/đặt (D-061, T-134): loại, giá trị, điều kiện, phạm vi, mã, id. Nằm trong breakdown
+ * nên đi cùng quote (`checkout_quote.breakdown`) và đơn (`order_finance.quote`); đơn, đổi trả, đối soát đọc từ đây —
+ * khuyến mãi bị sửa/tắt/xoá sau đó không đổi đơn đã đặt. Trường không áp dụng là `null` (lưu JSON không mất khoá).
+ */
+export interface PromotionSnapshot {
+  /** Id khuyến mãi nguồn; `null` khi nơi gọi không cung cấp. */
+  promotionId: string | null;
+  code: string;
+  /** Phạm vi áp dụng: tiền hàng cấp đơn hay phí vận chuyển. */
+  scope: "order" | "shipping";
+  kind: "percent" | "fixed" | "free";
+  /** Mã phần trăm: basis point (1 % = 100). */
+  basisPoints: number | null;
+  /** Mã cố định: số tiền giảm cấu hình (VND) — có thể lớn hơn số thực giảm. */
+  amount: number | null;
+  /** Điều kiện: tiền hàng tối thiểu (VND). */
+  minSubtotal: number | null;
+  /** Trần giảm của mã phần trăm (VND). */
+  maxAmount: number | null;
+  /** Số thực giảm trên đơn này (VND) — bằng `orderDiscountTotal`/`shippingDiscountTotal` tương ứng. */
+  discountTotal: number;
+}
 
 export interface QuoteInput {
   lines: readonly QuoteLineInput[];
@@ -47,13 +88,54 @@ export interface QuoteBreakdown {
   shippingDiscountCode: string | null;
   shippingTotal: number;
   total: number;
+  /**
+   * Ảnh chụp mã cấp đơn (T-134); `null` = không áp mã. Tuỳ chọn trong kiểu: quote/đơn lưu trước T-134 không có khoá
+   * này (`computeQuote` luôn điền).
+   */
+  orderPromotion?: PromotionSnapshot | null;
+  /** Ảnh chụp mã vận chuyển (T-134); `null` = không áp mã. Tuỳ chọn như `orderPromotion`. */
+  shippingPromotion?: PromotionSnapshot | null;
 }
 
 export type QuoteError = "CART_EMPTY" | "LIMIT" | "VALIDATION" | "DISCOUNT_NOT_APPLICABLE";
 
+const optionalVnd = (v: number | undefined, label: string): number | null =>
+  v === undefined ? null : assertNonNegativeVnd(v, label);
+
+/** Chỉ gọi SAU `orderDiscountAmount` — giá trị/điều kiện đã được kiểm ở đó, ở đây chỉ chép. */
+function orderPromotionSnapshot(d: OrderDiscount, discountTotal: number): PromotionSnapshot {
+  return {
+    promotionId: d.promotionId ?? null,
+    code: d.code,
+    scope: "order",
+    kind: d.kind,
+    basisPoints: d.kind === "percent" ? d.basisPoints : null,
+    amount: d.kind === "fixed" ? d.amount : null,
+    minSubtotal: d.minSubtotal ?? null,
+    maxAmount: d.kind === "percent" ? (d.maxAmount ?? null) : null,
+    discountTotal,
+  };
+}
+
+function shippingPromotionSnapshot(d: ShippingDiscount, discountTotal: number): PromotionSnapshot {
+  return {
+    promotionId: d.promotionId ?? null,
+    code: d.code,
+    scope: "shipping",
+    kind: d.kind,
+    basisPoints: null,
+    amount: d.kind === "fixed" ? d.amount : null,
+    minSubtotal: null,
+    maxAmount: null,
+    discountTotal,
+  };
+}
+
 function orderDiscountAmount(d: OrderDiscount, subtotal: number): Result<number, QuoteError> {
-  if (d.minSubtotal !== undefined && subtotal < d.minSubtotal) {
-    return err("DISCOUNT_NOT_APPLICABLE", `Mã ${d.code} cần đơn từ ${d.minSubtotal} đồng`, "discount_code");
+  // Điều kiện sai kiểu (âm, lẻ, NaN) là lỗi cấu hình — không bỏ qua ngầm mà áp mã sai.
+  const minSubtotal = optionalVnd(d.minSubtotal, "minSubtotal");
+  if (minSubtotal !== null && subtotal < minSubtotal) {
+    return err("DISCOUNT_NOT_APPLICABLE", `Mã ${d.code} cần đơn từ ${minSubtotal} đồng`, "discount_code");
   }
   let amount: number;
   if (d.kind === "percent") {
@@ -127,6 +209,10 @@ export function computeQuote(input: QuoteInput): Result<QuoteBreakdown, QuoteErr
     shippingDiscountCode: sd?.code ?? null,
     shippingTotal,
     total: subtotal - orderDiscountTotal + shippingTotal,
+    orderPromotion: input.orderDiscount
+      ? orderPromotionSnapshot(input.orderDiscount, orderDiscountTotal)
+      : null,
+    shippingPromotion: sd ? shippingPromotionSnapshot(sd, shippingDiscountTotal) : null,
   });
 }
 
@@ -134,7 +220,9 @@ export type QuoteChange = "PRICE_CHANGED" | "SHIPPING_CHANGED" | "DISCOUNT_CHANG
 
 /**
  * So quote khách đã xác nhận với quote tính lại lúc submit (AT03). Mọi khác biệt về dòng, giá, phí hay giảm → phải
- * xác nhận lại; không thu thêm ngầm. Trả về null khi giống hệt.
+ * xác nhận lại; không thu thêm ngầm. Trả về null khi giống hệt. Ảnh chụp khuyến mãi (`orderPromotion`/`shippingPromotion`)
+ * KHÔNG đem so: điều khoản đổi mà mã và số giảm như cũ thì khách trả đúng số đã xác nhận, đơn chụp điều khoản lúc đặt
+ * (T-134); quote lưu trước T-134 (không có ảnh chụp) vẫn so được.
  */
 export function diffQuotes(confirmed: QuoteBreakdown, current: QuoteBreakdown): QuoteChange | null {
   const key = (q: QuoteBreakdown) =>

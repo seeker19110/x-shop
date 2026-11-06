@@ -4,7 +4,6 @@ import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
 import { ensureNativeFulfillment } from "../../src/lib/shipping/fulfillment";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { SHIPPING_MODULE } from "../../src/modules/shipping";
 import type ShippingModuleService from "../../src/modules/shipping/service";
 import { adminHeaders, type HttpClient } from "../helpers/auth";
@@ -58,7 +57,6 @@ medusaIntegrationTestRunner({
       fx = await seedCatalog(container);
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       ip = newIp();
       staff = await adminHeaders(api as unknown as HttpClient, container, { roles: ["order_staff"] });
     });

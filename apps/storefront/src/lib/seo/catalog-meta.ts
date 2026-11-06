@@ -1,6 +1,7 @@
 import { activeFilterCount, type CatalogFilter } from "@x-shop/domain";
 import type { Metadata } from "next";
 import { hrefFor, totalPages } from "../../components/catalog/filter-state";
+import { t } from "../i18n";
 
 /**
  * Chính sách index (đặc tả §12.1): chỉ trang danh mục gốc (kể cả các trang phân trang của nó) được index.
@@ -8,7 +9,7 @@ import { hrefFor, totalPages } from "../../components/catalog/filter-state";
  * (không disallow trong robots để bot còn đọc được noindex).
  */
 export function isIndexable(filter: CatalogFilter, opts: { search?: boolean } = {}): boolean {
-  return !opts.search && activeFilterCount(filter) === 0 && filter.sort === "newest";
+  return opts.search !== true && activeFilterCount(filter) === 0 && filter.sort === "newest";
 }
 
 export interface CatalogMetaInput {
@@ -30,7 +31,7 @@ export function catalogMetadata(input: CatalogMetaInput): Metadata {
   const next = filter.page < last ? hrefFor(basePath, { ...filter, page: filter.page + 1 }) : null;
   const indexable = isIndexable(filter, { search });
   return {
-    title: filter.page > 1 ? `${input.title} – Trang ${filter.page}` : input.title,
+    title: filter.page > 1 ? t("catalog.pageTitle", { title: input.title, page: filter.page }) : input.title,
     description: input.description,
     alternates: { canonical },
     robots: indexable ? { index: true, follow: true } : { index: false, follow: true },

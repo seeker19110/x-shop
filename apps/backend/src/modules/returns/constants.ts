@@ -3,7 +3,7 @@
  * migration (CHECK), service và route. Trạng thái đổi trả/hoàn tiền lấy nguyên từ máy trạng thái của `@x-shop/domain`
  * (đặc tả §6.1 là nguồn chuẩn).
  */
-import { REFUND_STATES, RETURN_STATES } from "@x-shop/domain";
+import { REFUND_STATES, RETURN_STATES, secondsToMs } from "@x-shop/domain";
 
 export { REFUND_STATES, RETURN_STATES };
 
@@ -52,7 +52,7 @@ export const RETURNS_CONFIG = {
    */
   refundMaxAttempts: 3,
   /** Chờ khóa `order:<id>` trước khi trả 409 BUSY_RETRY. */
-  lockWaitMs: 15_000,
+  lockWaitMs: secondsToMs(15),
 } as const;
 
 /**

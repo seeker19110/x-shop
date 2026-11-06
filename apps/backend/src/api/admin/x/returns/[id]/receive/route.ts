@@ -3,6 +3,7 @@ import { auditContextOf } from "../../../../../../lib/audit/record";
 import { handleReturnsRouteError } from "../../../../../../workflows/returns/errors";
 import { actorOf, parseBody, ReceiveBody } from "../../../../../../workflows/returns/http";
 import { presentReturn, receiveReturn } from "../../../../../../workflows/returns/returns";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/returns/:id/receive — kho nhận hàng trả (quyền `return.receive`). Hàng vào KHO CÁCH LY chờ kiểm định,
@@ -12,9 +13,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
   try {
     const actor = actorOf(req, "return.receive");
     const body = parseBody(ReceiveBody, req.body);
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
     const { ret, changed } = await receiveReturn(
       req.scope,
-      String(req.params.id),
+      params.data.id,
       actor,
       body.lines ?? null,
       auditContextOf(req),

@@ -3,6 +3,7 @@ import { requestAttempt } from "../../../../lib/checkout/service";
 import { readLastOrderRef, readOrderAccess } from "../../../../lib/orders/cookie";
 import { ORDER_REF_RE } from "../../../../lib/orders/map";
 import { recheckOrder } from "../../../../lib/orders/service";
+import { isNonEmpty } from "../../../../lib/presence";
 
 /**
  * Trang trở về từ VNPAY (`VNPAY_RETURN_URL`, có thể kèm `?attempt=…`). KHÔNG đổi trạng thái theo tham số URL (AT08,
@@ -31,16 +32,19 @@ export async function GET(request: Request): Promise<NextResponse> {
   const url = new URL(request.url);
   let ref: string | null = null;
   const attempt = url.searchParams.get("attempt");
-  if (attempt) {
+  if (isNonEmpty(attempt)) {
     // Attempt của giỏ trong phiên này (cookie giỏ) — server đặt luôn cookie phiên đơn nếu đơn đã tạo.
     const r = await requestAttempt(attempt);
     if (r.kind === "placed") ref = r.ref;
   }
   ref ??= await readLastOrderRef();
-  if (ref && (await readOrderAccess(ref))) {
+  if (isNonEmpty(ref) && isNonEmpty(await readOrderAccess(ref))) {
     await recheckOrder(ref); // kết quả hiển thị ở trang đơn; lỗi/429 không chặn chuyển trang
     return go(request, `/don-hang/${encodeURIComponent(ref)}`);
   }
   const hint = refFromOrderInfo(url.searchParams.get("vnp_OrderInfo"));
-  return go(request, `/tra-cuu-don?tu=thanh-toan${hint ? `&ma=${encodeURIComponent(hint)}` : ""}`);
+  return go(
+    request,
+    `/tra-cuu-don?tu=thanh-toan${isNonEmpty(hint) ? `&ma=${encodeURIComponent(hint)}` : ""}`,
+  );
 }

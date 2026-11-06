@@ -1,0 +1,18 @@
+-- order-view-outbox
+-- Nguồn: apps/backend/src/lib/orders/view.ts presentOrder → listOutboxEvents({ aggregate_id })
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["order_PF0123457"]
+
+SELECT * FROM outbox_event WHERE aggregate_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC;
+
+Sort  (cost=8.50..8.51 rows=3 width=186) (actual time=0.016..0.017 rows=3 loops=1)
+  Sort Key: created_at
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=4
+  ->  Index Scan using "IDX_outbox_event_aggregate_id" on outbox_event  (cost=0.42..8.48 rows=3 width=186) (actual time=0.012..0.013 rows=3 loops=1)
+        Index Cond: (aggregate_id = 'order_PF0123457'::text)
+        Filter: (deleted_at IS NULL)
+        Buffers: shared hit=4
+Planning Time: 0.053 ms
+Execution Time: 0.027 ms

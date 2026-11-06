@@ -1,0 +1,14 @@
+-- order-finance-by-order-id
+-- Nguồn: listOrderFinances({ order_id }) — access.ts, cancel.ts, recheck.ts, payment.ts, jobs.ts, notify.ts …
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["order_PF0123457"]
+
+SELECT * FROM order_finance WHERE order_id = $1 AND deleted_at IS NULL;
+
+Index Scan using "IDX_order_finance_order_id_unique" on order_finance  (cost=0.42..8.44 rows=1 width=335) (actual time=0.009..0.010 rows=1 loops=1)
+  Index Cond: (order_id = 'order_PF0123457'::text)
+  Filter: (deleted_at IS NULL)
+  Buffers: shared hit=4
+Planning Time: 0.039 ms
+Execution Time: 0.016 ms

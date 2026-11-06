@@ -49,9 +49,11 @@ export const GET = async (req: MedusaStoreRequest, res: MedusaResponse): Promise
 export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promise<void> => {
   setPrivate(res);
   try {
+    // Quyền với đơn TRƯỚC khi kiểm thân/khóa (T-085): thiếu/sai token → 404 như mọi route đơn (AT20), không để người
+    // không có quyền nhận lỗi 422 theo schema.
+    const fin = await requireOrderAccess(req, "cancelIpRef");
     const key = idempotencyKeyOf(req);
     const body = parseBody(ReturnRequestBody, req.body);
-    const fin = await requireOrderAccess(req, "cancelIpRef");
     const { ret, replayed } = await requestReturn(
       req.scope,
       {

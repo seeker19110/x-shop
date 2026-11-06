@@ -1,35 +1,34 @@
+import { t } from "../i18n";
+
 /** Thông tin đơn vị bán và liên kết chính sách: CHƯA CÓ dữ liệu thật — chủ shop điền trước khi mở bán (đặc tả §11.2). */
 export const SELLER = {
-  name: "[Tên đơn vị bán — chủ shop điền]",
-  address: "[Địa chỉ đơn vị bán — chủ shop điền]",
-  taxCode: "[Mã số thuế / giấy phép kinh doanh — chủ shop điền]",
-  contact: "[Email/điện thoại hỗ trợ — chủ shop điền]",
+  name: t("static.seller.name"),
+  address: t("static.seller.address"),
+  taxCode: t("static.seller.taxCode"),
+  contact: t("static.seller.contact"),
 } as const;
 
 export const POLICY_LINKS = [
-  { href: "/giao-hang", label: "Chính sách giao hàng" },
-  { href: "/doi-tra-hoan-tien", label: "Đổi trả và hoàn tiền" },
-  { href: "/bao-mat", label: "Chính sách bảo mật" },
+  { href: "/giao-hang", label: t("static.policy.shipping.linkLabel") },
+  { href: "/doi-tra-hoan-tien", label: t("static.policy.returns.linkLabel") },
+  { href: "/bao-mat", label: t("static.policy.privacy.linkLabel") },
 ] as const;
 
 /** Tóm tắt giao hàng/đổi trả đặt gần CTA ở PDP (PDP05): chỉ nói điều đã chắc chắn, chi tiết ở trang chính sách. */
 export const PDP_SUMMARY = [
   {
-    title: "Giao hàng",
-    text: "Phí và thời gian giao hàng hiển thị ở bước thanh toán, trước khi bạn xác nhận đơn.",
+    title: t("product.summary.shipping.title"),
+    text: t("product.summary.shipping.text"),
     href: "/giao-hang",
-    linkLabel: "Chi tiết giao hàng",
+    linkLabel: t("product.summary.shipping.linkLabel"),
   },
   {
-    title: "Đổi trả",
-    text: "Điều kiện đổi trả được công bố đầy đủ trước khi mua.",
+    title: t("product.summary.returns.title"),
+    text: t("product.summary.returns.text"),
     href: "/doi-tra-hoan-tien",
-    linkLabel: "Chi tiết đổi trả",
+    linkLabel: t("product.summary.returns.linkLabel"),
   },
 ] as const;
-
-export const POLICY_PENDING_NOTICE =
-  "Nội dung chờ chủ shop duyệt — trang này là bản giữ chỗ, chưa phải điều khoản chính thức.";
 
 export interface PolicyPageContent {
   slug: "giao-hang" | "doi-tra-hoan-tien" | "bao-mat";
@@ -41,45 +40,33 @@ export interface PolicyPageContent {
 export const POLICY_PAGES: readonly PolicyPageContent[] = [
   {
     slug: "giao-hang",
-    title: "Chính sách giao hàng",
-    description: "Thời gian, phí và phạm vi giao hàng của shop.",
+    title: t("static.policy.shipping.title"),
+    description: t("static.policy.shipping.description"),
     sections: [
-      { heading: "Phạm vi và thời gian", text: "[Chủ shop điền: khu vực giao hàng và thời gian dự kiến.]" },
-      {
-        heading: "Phí giao hàng",
-        text: "Phí giao hàng được tính và hiển thị ở bước thanh toán trước khi bạn xác nhận đơn.",
-      },
-      { heading: "Kiểm tra hàng khi nhận", text: "[Chủ shop điền: điều kiện kiểm hàng khi nhận.]" },
+      { heading: t("static.policy.shipping.scopeHeading"), text: t("static.policy.shipping.scopeText") },
+      { heading: t("static.policy.shipping.feeHeading"), text: t("static.policy.shipping.feeText") },
+      { heading: t("static.policy.shipping.inspectHeading"), text: t("static.policy.shipping.inspectText") },
     ],
   },
   {
     slug: "doi-tra-hoan-tien",
-    title: "Đổi trả và hoàn tiền",
-    description: "Điều kiện đổi trả và cách hoàn tiền.",
+    title: t("static.policy.returns.title"),
+    description: t("static.policy.returns.description"),
     sections: [
       {
-        heading: "Điều kiện đổi trả",
-        text: "[Chủ shop điền: thời hạn, tình trạng sản phẩm, chi phí vận chuyển đổi trả.]",
+        heading: t("static.policy.returns.conditionsHeading"),
+        text: t("static.policy.returns.conditionsText"),
       },
-      {
-        heading: "Hoàn tiền",
-        text: "[Chủ shop điền: phương thức và thời gian hoàn tiền theo từng cách thanh toán.]",
-      },
+      { heading: t("static.policy.returns.refundHeading"), text: t("static.policy.returns.refundText") },
     ],
   },
   {
     slug: "bao-mat",
-    title: "Chính sách bảo mật",
-    description: "Cách shop thu thập và bảo vệ dữ liệu cá nhân.",
+    title: t("static.policy.privacy.title"),
+    description: t("static.policy.privacy.description"),
     sections: [
-      {
-        heading: "Dữ liệu chúng tôi thu thập",
-        text: "[Chủ shop điền: danh mục dữ liệu, mục đích, thời gian lưu trữ.]",
-      },
-      {
-        heading: "Quyền của bạn",
-        text: "[Chủ shop điền: quyền truy cập, chỉnh sửa, xóa dữ liệu và cách liên hệ.]",
-      },
+      { heading: t("static.policy.privacy.dataHeading"), text: t("static.policy.privacy.dataText") },
+      { heading: t("static.policy.privacy.rightsHeading"), text: t("static.policy.privacy.rightsText") },
     ],
   },
 ];

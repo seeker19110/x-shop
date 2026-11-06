@@ -37,6 +37,15 @@ describe("InlineError / EmptyState / Skeleton / VisuallyHidden", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Lỗi A");
   });
 
+  it('EmptyState: action rỗng (false/""/0/null) → không dựng khung hành động', () => {
+    for (const action of [false, "", 0, null, undefined]) {
+      const { unmount } = render(<EmptyState title="Trống" action={action} />);
+      // Chỉ còn tiêu đề trong section — không có khung hành động rỗng.
+      expect(screen.getByRole("heading", { name: "Trống" }).parentElement?.childElementCount).toBe(1);
+      unmount();
+    }
+  });
+
   it("EmptyState: tiêu đề, mô tả, hành động; mô tả/hành động tùy chọn", () => {
     const { rerender } = render(
       <EmptyState

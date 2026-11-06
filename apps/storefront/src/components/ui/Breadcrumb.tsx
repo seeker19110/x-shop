@@ -1,5 +1,8 @@
 import Link from "next/link";
 import styles from "./Breadcrumb.module.css";
+import { isNonEmpty } from "../../lib/presence";
+import { safeHref } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export interface BreadcrumbItem {
   label: string;
@@ -9,7 +12,7 @@ export interface BreadcrumbItem {
 
 export function Breadcrumb({
   items,
-  label = "Đường dẫn",
+  label = t("ui.breadcrumb.label"),
 }: {
   items: readonly BreadcrumbItem[];
   label?: string;
@@ -21,10 +24,10 @@ export function Breadcrumb({
       <ol className={styles.list}>
         {items.map((item, i) => (
           <li key={`${i}-${item.label}`} className={styles.item}>
-            {i === last || !item.href ? (
+            {i === last || !isNonEmpty(item.href) ? (
               <span aria-current={i === last ? "page" : undefined}>{item.label}</span>
             ) : (
-              <Link href={item.href} className={styles.link}>
+              <Link href={safeHref(item.href)} className={styles.link}>
                 {item.label}
               </Link>
             )}

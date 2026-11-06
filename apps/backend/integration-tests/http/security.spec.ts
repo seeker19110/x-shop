@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import http from "node:http";
+import { Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import seedXShop from "../../src/scripts/seed";
 import { API_CSP } from "../../src/lib/security/headers";
 import { resetHttpSecurityConfigForTests } from "../../src/lib/security/config";
@@ -9,6 +11,8 @@ import { UPLOAD_LIMITS } from "../../src/lib/security/upload";
 import { ORDER_RATE_LIMITS } from "../../src/lib/orders/rate-limit";
 import { CHECKOUT_MODULE } from "../../src/modules/checkout";
 import type CheckoutModuleService from "../../src/modules/checkout/service";
+import { AUDIT_MODULE } from "../../src/modules/audit";
+import type AuditModuleService from "../../src/modules/audit/service";
 import { createAdmin, storeHeaders, type AdminAccount } from "../helpers/auth";
 
 jest.setTimeout(300 * 1000);
@@ -82,13 +86,13 @@ medusaIntegrationTestRunner({
               // không phải JSON
             }
             resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text, json });
-            if (opts.expectEarlyClose) req.destroy();
+            if (opts.expectEarlyClose === true) req.destroy();
           });
         });
         req.on("error", reject);
         if (body !== undefined) req.write(body);
         // Máy chủ trả lời sớm khi thân còn chưa gửi (như client đang tải lên): giữ request mở, chỉ gửi header.
-        if (opts.expectEarlyClose) req.flushHeaders();
+        if (opts.expectEarlyClose === true) req.flushHeaders();
         else req.end();
       });
     }
@@ -99,7 +103,7 @@ medusaIntegrationTestRunner({
     };
 
     const search = (ip?: string) =>
-      raw("GET", "/store/x/search?q=ao", { ...store, ...(ip && { "x-forwarded-for": ip }) });
+      raw("GET", "/store/x/search?q=ao", { ...store, ...(isNonEmpty(ip) ? { "x-forwarded-for": ip } : {}) });
 
     beforeAll(async () => {
       base = new URL(String((api as unknown as { defaults: { baseURL: string } }).defaults.baseURL));
@@ -246,6 +250,105 @@ medusaIntegrationTestRunner({
         expect(logout.status).toBe(403);
         expect(logout.json.code).toBe("CSRF_REJECTED");
         expect((await raw("GET", "/admin/users/me", { cookie: sessionCookie })).status).toBe(200);
+      });
+    });
+
+    describe("đăng nhập admin không lộ tài khoản tồn tại; đăng xuất vô hiệu phiên (BE-AUTH-003/004, T-099)", () => {
+      const login = (email: string, password: string) =>
+        raw(
+          "POST",
+          "/auth/user/emailpass",
+          { "content-type": "application/json", "x-forwarded-for": newIp() },
+          JSON.stringify({ email, password }),
+        );
+      const median = (xs: number[]) => {
+        const v = [...xs].sort((a, b) => a - b);
+        return v[Math.floor(v.length / 2)]!;
+      };
+      const timed = async (fn: () => Promise<RawRes>) => {
+        const t0 = performance.now();
+        const res = await fn();
+        return { res, ms: performance.now() - t0 };
+      };
+
+      it("email không tồn tại vs sai mật khẩu: cùng status + thân lỗi; trung vị thời gian chênh ≤ 1.5×", async () => {
+        const admin = await createAdmin(api as never, getContainer());
+        // ≤ 11 lần sai cho cùng email (ngưỡng theo định danh 20/15 phút), mỗi lần một IP (ngưỡng email+IP 5).
+        const existing = () => login(admin.email, "sai-mat-khau-0123");
+        const missing = () => login(`khong-co-${randomUUID()}@x-shop.test`, "sai-mat-khau-0123");
+        const a = await existing();
+        const b = await missing();
+        expect(a.status).toBe(401);
+        expect(b.status).toBe(a.status);
+        // Thân lỗi giống hệt trừ `trace_id` (mỗi request một mã).
+        const { trace_id: _ta, ...bodyA } = a.json;
+        const { trace_id: _tb, ...bodyB } = b.json;
+        expect(bodyB).toEqual(bodyA);
+        expect(bodyA).toMatchObject({ status: 401, message: "Invalid email or password" });
+        const ta: number[] = [];
+        const tb: number[] = [];
+        for (let i = 0; i < 9; i++) {
+          const [x, y] = i % 2 ? [missing, existing] : [existing, missing];
+          const first = await timed(x);
+          const second = await timed(y);
+          (x === existing ? ta : tb).push(first.ms);
+          (y === existing ? ta : tb).push(second.ms);
+          expect([first.res.status, second.res.status]).toEqual([401, 401]);
+        }
+        const ratio = Math.max(median(ta), median(tb)) / Math.min(median(ta), median(tb));
+        expect(ratio).toBeLessThanOrEqual(1.5);
+        // Đúng mật khẩu vẫn đăng nhập được (lớp cân thời gian không chặn ca được phép).
+        expect((await login(admin.email, admin.password)).status).toBe(200);
+      });
+
+      it("đăng xuất (DELETE /auth/session) → cookie cũ dùng lại bị 401; cookie bị xoá trong phản hồi", async () => {
+        const admin = await createAdmin(api as never, getContainer());
+        const origin = "http://localhost:9000";
+        const created = await raw("POST", "/auth/session", { ...admin.headers, origin }, "");
+        expect(created.status).toBe(200);
+        const sid = (created.headers["set-cookie"] ?? [])
+          .map((c) => c.split(";")[0] ?? "")
+          .find((c) => c.startsWith("connect.sid=")) as string;
+        expect(sid).toBeDefined();
+        const setCookie = (created.headers["set-cookie"] ?? []).find((c) => c.startsWith("connect.sid="))!;
+        expect(setCookie.toLowerCase()).toContain("httponly");
+        expect((await raw("GET", "/admin/users/me", { cookie: sid })).status).toBe(200);
+
+        const out = await raw("DELETE", "/auth/session", { cookie: sid, origin });
+        expect(out.status).toBe(200);
+        const cleared = (out.headers["set-cookie"] ?? []).find((c) => c.startsWith("connect.sid="));
+        expect(cleared).toMatch(/^connect\.sid=;/);
+        expect((await raw("GET", "/admin/users/me", { cookie: sid })).status).toBe(401);
+      });
+
+      it("đăng nhập tạo lại session ID (D-059, T-133): cookie cấy sẵn bị huỷ, phiên mới mang danh tính người đăng nhập", async () => {
+        const origin = "http://localhost:9000";
+        const sidOf = (res: RawRes) =>
+          (res.headers["set-cookie"] ?? [])
+            .map((c) => c.split(";")[0] ?? "")
+            .find((c) => c.startsWith("connect.sid="));
+        // Kẻ tấn công có phiên hợp lệ của CHÍNH MÌNH và cấy cookie đó vào trình duyệt nạn nhân (session fixation).
+        const attacker = await createAdmin(api as never, getContainer());
+        const victim = await createAdmin(api as never, getContainer());
+        const planted = sidOf(await raw("POST", "/auth/session", { ...attacker.headers, origin }, ""));
+        expect(planted).toBeDefined();
+
+        // Bị từ chối: chỉ có cookie (không Bearer) → 401 (middleware native chỉ nhận Bearer), không phát cookie mới.
+        const denied = await raw("POST", "/auth/session", { cookie: planted!, origin }, "");
+        expect(denied.status).toBe(401);
+        expect(sidOf(denied)).toBeUndefined();
+
+        const login = await raw("POST", "/auth/session", { ...victim.headers, cookie: planted!, origin }, "");
+        expect(login.status).toBe(200);
+        expect((login.json.user as { actor_id?: string }).actor_id).toBe(victim.userId);
+        const fresh = sidOf(login);
+        expect(fresh).toBeDefined();
+        expect(fresh).not.toBe(planted);
+        // Phiên cấy đã huỷ ở server (Redis) → 401; phiên mới là của nạn nhân, kẻ tấn công không biết ID.
+        expect((await raw("GET", "/admin/users/me", { cookie: planted! })).status).toBe(401);
+        const me = await raw("GET", "/admin/users/me", { cookie: fresh! });
+        expect(me.status).toBe(200);
+        expect((me.json.user as { id?: string }).id).toBe(victim.userId);
       });
     });
 
@@ -500,6 +603,9 @@ medusaIntegrationTestRunner({
         const files = res.body.files as Array<{ id: string; url: string }>;
         expect(files).toHaveLength(1);
         expect(files[0]!.url).toMatch(/\.png$/);
+        // Tên lưu do server sinh (T-100): không còn tên client trong khoá/URL.
+        expect(files[0]!.id).toMatch(/^\d{13}-[0-9A-HJKMNP-TV-Z]{26}\.png$/);
+        expect(files[0]!.url).not.toContain("ao-thun");
         const del = await fetch(new URL(`/admin/uploads/${encodeURIComponent(files[0]!.id)}`, base), {
           method: "DELETE",
           headers: owner.headers,
@@ -585,6 +691,26 @@ medusaIntegrationTestRunner({
           );
           expect(notMultipart.status).toBe(415);
         });
+
+        it("T-145: request-target URL tuyệt đối không lách bước kiểm (server test không có hook của medusa start)", async () => {
+          const abs = await raw(
+            "POST",
+            `http://localhost:${base.port}/admin/uploads`,
+            { ...owner.headers, "content-type": "application/json" },
+            "{}",
+          );
+          expect(abs.status).toBe(415);
+          const presigned = await raw(
+            "POST",
+            `HTTP://LOCALHOST:${base.port}/admin/uploads/presigned-urls`,
+            { ...owner.headers, "content-type": "application/json" },
+            JSON.stringify({ originalname: "a.png", size: 10, mime_type: "image/png", access: "public" }),
+          );
+          expect({ status: presigned.status, code: presigned.json.code }).toEqual({
+            status: 403,
+            code: "UPLOAD_METHOD_DISABLED",
+          });
+        });
       });
 
       it("URL ký trước (client tải thẳng, không kiểm được nội dung) bị tắt → 403", async () => {
@@ -611,6 +737,53 @@ medusaIntegrationTestRunner({
           method: "DELETE",
           headers: owner.headers,
         });
+      });
+    });
+
+    describe("T-145: cổng RBAC theo pathname router thấy (phòng thủ chiều sâu — server test KHÔNG có hook chặn URL tuyệt đối)", () => {
+      const EMAIL = "khach-t145-sec@example.test";
+      const PHONE = "0987654321";
+
+      it("support + `GET http://host/admin/customers/<id>` → 403 + audit (trước: 200 lộ email/SĐT); owner vẫn đọc được", async () => {
+        const container = getContainer();
+        const [customer] = await container
+          .resolve(Modules.CUSTOMER)
+          .createCustomers([{ email: EMAIL, phone: PHONE, first_name: "Khach", last_name: "Sec" }]);
+        const support = await createAdmin(api as never, container, { roles: ["support"] });
+        const abs = `http://localhost:${base.port}/admin/customers/${customer!.id}`;
+        for (const target of [
+          abs,
+          `${abs}?fields=email,phone`,
+          `http://localhost:${base.port}/admin/x/audit`,
+        ]) {
+          const res = await raw("GET", target, support.headers);
+          expect({ target, status: res.status, code: res.json.code }).toEqual({
+            target,
+            status: 403,
+            code: "FORBIDDEN",
+          });
+          expect(res.body.includes(EMAIL) || res.body.includes(PHONE)).toBe(false);
+        }
+        const { entries } = await container
+          .resolve<AuditModuleService>(AUDIT_MODULE)
+          .list({ action: "rbac.denied", actor_id: support.userId }, { limit: 20, offset: 0 });
+        expect(entries.map((e) => e.resource_id)).toEqual(
+          expect.arrayContaining([
+            `GET /admin/customers/${customer!.id.toLowerCase()}`,
+            "GET /admin/x/audit",
+          ]),
+        );
+        // Mã hoá hỏng ở đường dẫn admin → 400 INVALID_PATH, không lộ dữ liệu. Ở Medusa 2.22.1 lõi (tra route của CORS/auth
+        // /admin) ném URIError trước cổng → handler lỗi trả 400; nhánh 400 + audit của cổng (D-080) là phòng thủ chiều sâu,
+        // kiểm ở unit (request-target-rule.unit.spec.ts).
+        for (const target of ["/admin/customers/%E0%A4%A", "/admin/khong-co-route/%zz"]) {
+          const bad = await raw("GET", target, support.headers);
+          expect({ target, status: bad.status, code: bad.json.code }).toEqual({
+            target,
+            status: 400,
+            code: "INVALID_PATH",
+          });
+        }
       });
     });
   },

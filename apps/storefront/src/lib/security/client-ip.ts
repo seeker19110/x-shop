@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import { isNonEmpty } from "../presence";
 
 /**
  * IP khách chuyển tiếp cho backend để rate limit theo IP (SEC03, AT20). App Router không thấy địa chỉ socket — chỉ có
@@ -25,8 +26,9 @@ export function forwardedClientIp(
     ?.split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const ip = real || xff?.[xff.length - 1];
-  return ip && IP_RE.test(ip) ? ip : null;
+  // x-real-ip rỗng coi như thiếu → lấy hop cuối của x-forwarded-for (giữ hành vi cũ).
+  const ip = isNonEmpty(real) ? real : xff?.[xff.length - 1];
+  return isNonEmpty(ip) && IP_RE.test(ip) ? ip : null;
 }
 
 /** Header `x-forwarded-for` cho lời gọi backend từ server (rỗng khi không tin header hoặc ngoài ngữ cảnh request). */
@@ -34,7 +36,7 @@ export async function clientIpHeader(): Promise<Record<string, string>> {
   try {
     const h = await headers();
     const ip = forwardedClientIp((n) => h.get(n), trustProxyHeaders());
-    return ip ? { "x-forwarded-for": ip } : {};
+    return isNonEmpty(ip) ? { "x-forwarded-for": ip } : {};
   } catch {
     return {};
   }

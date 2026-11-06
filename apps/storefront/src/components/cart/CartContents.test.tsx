@@ -46,7 +46,6 @@ const line = (over: Partial<CartLineView> & { id: string }): CartLineView => ({
 });
 
 const cart = (lines: CartLineView[], over: Partial<CartView> = {}): CartView => ({
-  id: "cart_1",
   lines,
   itemCount: lines.reduce((s, l) => s + l.quantity, 0),
   subtotal: lines.reduce((s, l) => s + l.lineTotal, 0),
@@ -92,6 +91,7 @@ describe("CHK01: lỗi từng dòng", () => {
     }),
   ]);
 
+  // S-010 (SPEC-checkout): dòng lỗi có giải thích, dòng khác nguyên, chặn thanh toán; dòng lỗi vẫn xóa được (test kế tiếp).
   it("lỗi hiện tại ĐÚNG dòng, dòng khác còn nguyên, thanh toán bị chặn có giải thích", () => {
     render(<CartContents cart={issueCart} />);
     const items = screen.getAllByRole("listitem");

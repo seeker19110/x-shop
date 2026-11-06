@@ -1,6 +1,6 @@
 # ADR-0001 — Stack: pnpm monorepo, Medusa v2 + Next.js, lõi domain thuần TS
 
-- Trạng thái: Accepted (D-005, 2026-10-24)
+- Trạng thái: Superseded by ADR-0004 (Accepted, D-005, 2026-10-24)
 - Bối cảnh: đặc tả gốc §7 chọn Next.js + Medusa v2 để sở hữu mã nguồn; nghiên cứu `docs/research/2026-10-24-stack.md`.
 
 ## Quyết định

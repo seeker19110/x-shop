@@ -3,8 +3,13 @@ import Link from "next/link";
 import { Swatch, type SwatchOption } from "../ui/ColorSwatch";
 import { Price, discountPercent } from "../ui/Price";
 import styles from "./ProductCard.module.css";
+import { safeImgSrc } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export const PRODUCT_CARD_MAX_SWATCHES = 5;
+
+/** Ảnh trang trí (ảnh hover lặp lại nội dung ảnh chính): alt rỗng để trình đọc màn hình bỏ qua. */
+const DECORATIVE_ALT = "";
 
 /** Lưới 2/3/4 cột theo token --grid-cols (breakpoint 48em / 72em). */
 export const PRODUCT_CARD_IMAGE_SIZES = "(min-width: 72em) 25vw, (min-width: 48em) 33vw, 50vw";
@@ -53,7 +58,7 @@ export function ProductCard({
     <article className={styles.card}>
       <div className={styles.media}>
         <Image
-          src={image.src}
+          src={safeImgSrc(image.src)}
           alt={image.alt}
           fill
           sizes={PRODUCT_CARD_IMAGE_SIZES}
@@ -62,15 +67,19 @@ export function ProductCard({
         />
         {hoverImage ? (
           <Image
-            src={hoverImage.src}
-            alt=""
+            src={safeImgSrc(hoverImage.src)}
+            alt={DECORATIVE_ALT}
             fill
             sizes={PRODUCT_CARD_IMAGE_SIZES}
             className={styles.hoverImage}
           />
         ) : null}
-        {soldOut ? <span className={styles.badge}>Hết hàng</span> : null}
-        {pct !== null ? <span className={`${styles.badge} ${styles.sale}`}>Giảm {pct}%</span> : null}
+        {soldOut ? <span className={styles.badge}>{t("catalog.card.soldOut")}</span> : null}
+        {pct !== null ? (
+          <span className={`${styles.badge} ${styles.sale}`}>
+            {t("catalog.card.discount", { percent: pct })}
+          </span>
+        ) : null}
       </div>
       <div className={styles.info}>
         <h3 className={styles.name}>
@@ -80,7 +89,7 @@ export function ProductCard({
         </h3>
         <Price current={price} max={maxPrice} original={originalPrice} />
         {shown.length > 0 ? (
-          <ul className={styles.swatches} aria-label="Màu có sẵn">
+          <ul className={styles.swatches} aria-label={t("catalog.card.colors")}>
             {shown.map((c) => (
               <li key={c.value} className={styles.swatchItem}>
                 <span role="img" aria-label={c.name} className={styles.swatchItem}>
@@ -90,8 +99,8 @@ export function ProductCard({
             ))}
             {more > 0 ? (
               <li className={styles.more}>
-                <span aria-hidden="true">+{more}</span>
-                <span className="visually-hidden">{`và ${more} màu khác`}</span>
+                <span aria-hidden="true">{t("catalog.card.moreBadge", { count: more })}</span>
+                <span className="visually-hidden">{t("catalog.card.moreText", { count: more })}</span>
               </li>
             ) : null}
           </ul>

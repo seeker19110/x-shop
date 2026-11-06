@@ -1,0 +1,16 @@
+{
+  "$comment": "Ratchet coverage (QA-COV-002, T-110): scripts/coverage-ratchet.mjs đỏ khi lines/branches của một gói thấp hơn số dưới đây. Chỉ tăng: nâng bằng `node scripts/coverage-ratchet.mjs --update` sau `pnpm -r --if-present test:coverage`; không sửa tay để hạ.",
+  "measured": "2026-10-26 — pnpm -r --if-present test:coverage (provider v8; domain/storefront vitest 5.0.5, backend jest 29 unit), Node 22.22.0, Linux x86_64",
+  "packages": {
+    "apps/backend": { "lines": 28.78, "branches": 83.1 },
+    "apps/storefront": { "lines": 91.01, "branches": 80.99 },
+    "packages/domain": { "lines": 99.83, "branches": 94.75 }
+  },
+  "integration": {
+    "$comment": "Nguồn integration (T-135, QA-COV-001): so bằng `node scripts/coverage-ratchet.mjs --suite integration` sau `pnpm --filter @x-shop/backend test:integration:coverage` (CI: job integration-coverage 8 shard + integration-coverage-merge, T-198; phạm vi bỏ src/admin/** — D-157; docs/ops/perf/INTEGRATION-COVERAGE.md). Chỉ tăng: `--suite integration --update`.",
+    "measured": "2026-11-05 — lines 93.75 từ 2 lần CI cùng code (run 41307132420 lần 1/2 @f5fe35a: 35679/38013, 35673/38013). Branches 82.7 sau T-241 (gộp lấy range chứa trong CÙNG shard, không mượn shard khác): gộp lại artefact 8 shard ra 82.83 (@f5fe35a, 6243/7537) và 82.81 (@7f3a900, 6236/7530) — trước sửa 83.95/83.72 do phủ ảo (hàm có tên không gọi + callback vô danh không chạy; bỏ qua placeholder all:true); chủ dự án duyệt hạ sàn (D-166, D-167).",
+    "packages": {
+      "apps/backend": { "lines": 93.75, "branches": 82.7 }
+    }
+  }
+}

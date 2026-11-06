@@ -7,7 +7,16 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateDataset, HANDLE_PREFIX } from "./dataset.mjs";
-import { ADMIN_DB_URL, assertSafeTargets, backendEnv, DATABASE_URL, LOAD, REDIS_URL } from "./env.mjs";
+import {
+  ADMIN_DB_URL,
+  assertNotProduction,
+  assertSafeTargets,
+  backendEnv,
+  BASE_URL,
+  DATABASE_URL,
+  LOAD,
+  REDIS_URL,
+} from "./env.mjs";
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const backendDir = path.join(root, "apps/backend");
@@ -127,6 +136,7 @@ async function armContentionVariant() {
 
 export async function prepare() {
   assertSafeTargets();
+  assertNotProduction(BASE_URL);
   const timings = {};
   const env = backendEnv();
   const medusa = (args) => run("pnpm", ["exec", "medusa", ...args], { cwd: backendDir, env });

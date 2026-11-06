@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useSyncExternalStore, type ReactNode, type Re
 import { createPortal } from "react-dom";
 import styles from "./Dialog.module.css";
 import { cx } from "./cx";
+import { t } from "../../lib/i18n";
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -47,7 +48,7 @@ export function Overlay({
   title,
   children,
   returnFocusRef,
-  closeLabel = "Đóng",
+  closeLabel = t("ui.dialog.close"),
   variant = "dialog",
 }: OverlayProps) {
   const mounted = useSyncExternalStore(
@@ -87,7 +88,7 @@ export function Overlay({
       document.removeEventListener("focusin", onFocusIn);
       unlockScroll();
       const target = returnRef.current?.current ?? opener;
-      if (target?.isConnected) target.focus();
+      if (target?.isConnected === true) target.focus();
     };
   }, [active]);
 
@@ -149,7 +150,7 @@ export function Overlay({
             aria-label={closeLabel}
             onClick={() => onCloseRef.current()}
           >
-            <span aria-hidden="true">×</span>
+            <span aria-hidden="true">{t("ui.glyph.close")}</span>
           </button>
         </header>
         <div className={styles.body}>{children}</div>

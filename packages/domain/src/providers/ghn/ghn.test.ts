@@ -84,6 +84,18 @@ describe("trạng thái và callback", () => {
     expect(parseCallback({ OrderCode: "x".repeat(65), Type: "a", Time: "t" })).toBeNull();
     expect(parseCallback({ OrderCode: "x", Type: "cod", Time: "t", CODAmount: 1.5 })?.codAmount).toBeNull();
   });
+  it('trường bắt buộc rỗng → null; Status/ClientOrderCode rỗng giữ nguyên "" (BASE-DATA-003)', () => {
+    expect(parseCallback({ OrderCode: "", Type: "a", Time: "t" })).toBeNull();
+    expect(parseCallback({ OrderCode: "x", Type: "", Time: "t" })).toBeNull();
+    expect(parseCallback({ OrderCode: "x", Type: "a", Time: "" })).toBeNull();
+    expect(
+      parseCallback({ OrderCode: "x", Type: "a", Time: "t", Status: "", ClientOrderCode: "" }),
+    ).toMatchObject({
+      status: "",
+      clientOrderCode: "",
+      codAmount: null,
+    });
+  });
 });
 
 describe("MockGhn — S-303 không tạo trùng", () => {

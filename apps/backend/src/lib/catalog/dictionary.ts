@@ -20,12 +20,19 @@ export interface Dictionary {
   sizes: Map<string, SizeEntry>;
 }
 
+/**
+ * Trần số mục mỗi bảng màu/size đọc một lần (XC-PERF-006 — không `take: null`; bảng do nhân viên quản lý, thực tế vài
+ * chục mục). Mục ngoài trần (theo rank) rơi về nhánh "giá trị lạ" — vẫn hiển thị được, chỉ mất nhãn/thứ tự.
+ */
+export const DICTIONARY_MAX = 1000;
+
 /** Bảng màu/size dùng chung (module fashion). Giá trị lạ không có trong bảng → nhãn = giá trị, xếp cuối. */
 export async function loadDictionary(container: MedusaContainer): Promise<Dictionary> {
   const fashion: FashionModuleService = container.resolve(FASHION_MODULE);
+  const page = { take: DICTIONARY_MAX, order: { rank: "ASC" as const, value: "ASC" as const } };
   const [colors, sizes] = await Promise.all([
-    fashion.listFashionColors({}, { take: null }),
-    fashion.listFashionSizes({}, { take: null }),
+    fashion.listFashionColors({}, page),
+    fashion.listFashionSizes({}, page),
   ]);
   return {
     colors: new Map(

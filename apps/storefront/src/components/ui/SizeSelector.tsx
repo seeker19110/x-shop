@@ -5,6 +5,9 @@ import { useId } from "react";
 import { InlineError } from "./InlineError";
 import styles from "./SizeSelector.module.css";
 import { cx } from "./cx";
+import { isNonEmpty } from "../../lib/presence";
+import { safeHref } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export interface SizeOption {
   value: string;
@@ -33,7 +36,7 @@ export function SizeSelector({
   error,
   sizeGuideHref,
   onSizeGuide,
-  legend = "Size",
+  legend = t("ui.sizeSelector.legend"),
 }: SizeSelectorProps) {
   const uid = useId();
   const labelId = `${uid}-label`;
@@ -46,18 +49,18 @@ export function SizeSelector({
         </span>
         {onSizeGuide ? (
           <button type="button" className={styles.guide} onClick={onSizeGuide} aria-haspopup="dialog">
-            Hướng dẫn chọn size
+            {t("ui.sizeSelector.guide")}
           </button>
-        ) : sizeGuideHref ? (
-          <Link href={sizeGuideHref} className={styles.guide}>
-            Hướng dẫn chọn size
+        ) : isNonEmpty(sizeGuideHref) ? (
+          <Link href={safeHref(sizeGuideHref)} className={styles.guide}>
+            {t("ui.sizeSelector.guide")}
           </Link>
         ) : null}
       </div>
       <div
         role="group"
         aria-labelledby={labelId}
-        aria-describedby={error ? errorId : undefined}
+        aria-describedby={isNonEmpty(error) ? errorId : undefined}
         className={styles.group}
       >
         {options.map((o) => {
@@ -74,12 +77,12 @@ export function SizeSelector({
               }}
             >
               <span>{o.label ?? o.value}</span>
-              {!o.available ? <span className={styles.note}>hết hàng</span> : null}
+              {!o.available ? <span className={styles.note}>{t("ui.sizeSelector.soldOut")}</span> : null}
             </button>
           );
         })}
       </div>
-      {error ? <InlineError id={errorId}>{error}</InlineError> : null}
+      {isNonEmpty(error) ? <InlineError id={errorId}>{error}</InlineError> : null}
     </div>
   );
 }

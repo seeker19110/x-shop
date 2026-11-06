@@ -12,7 +12,7 @@ pnpm test
 ```
 
 Không bước tay nào khác: `pnpm test` chạy test đơn vị, không cần Postgres/Redis hay khoá bí mật. Các lệnh trên trích từ
-`setup` và `test` của [`xt.yaml`](xt.yaml); CI chạy lại đúng chúng (job `readme-smoke`).
+`setup` và `test` của [`xt.yaml`](xt.yaml); CI chạy lại đúng chúng (job `onboarding-smoke`).
 
 ## Yêu cầu môi trường
 

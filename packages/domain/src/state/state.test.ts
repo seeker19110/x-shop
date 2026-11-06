@@ -100,6 +100,13 @@ describe("giao vận / đổi trả / hoàn / đối soát", () => {
     expect(refundMachine.canTransition("unknown", "processing")).toBe(false);
     expect(refundMachine.isTerminal("succeeded")).toBe(true);
   });
+  it("T-169: approved → failed (từ chối dứt khoát trước khi gửi cổng); approved không nhảy thẳng tới succeeded/unknown/cancelled", () => {
+    expect(refundMachine.canTransition("approved", "failed")).toBe(true);
+    for (const s of ["succeeded", "unknown", "cancelled"] as const) {
+      expect({ s, ok: refundMachine.canTransition("approved", s) }).toEqual({ s, ok: false });
+    }
+    expect(refundMachine.canTransition("requested", "failed")).toBe(false);
+  });
   it("T-044: chỉ failed hủy được (→ cancelled, kết thúc); unknown/processing phải đối chiếu trước", () => {
     expect(refundMachine.canTransition("failed", "cancelled")).toBe(true);
     expect(refundMachine.isTerminal("cancelled")).toBe(true);

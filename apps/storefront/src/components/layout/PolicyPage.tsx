@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { POLICY_PAGES, POLICY_PENDING_NOTICE, type PolicyPageContent } from "../../lib/content/site";
+import { POLICY_PAGES, type PolicyPageContent } from "../../lib/content/site";
 import styles from "./PolicyPage.module.css";
+import { t } from "../../lib/i18n";
 
 export function policyContent(slug: PolicyPageContent["slug"]): PolicyPageContent {
   const page = POLICY_PAGES.find((p) => p.slug === slug);
@@ -21,7 +22,7 @@ export function PolicyPage({ slug }: { slug: PolicyPageContent["slug"] }) {
     <article className={styles.article} aria-labelledby="tieu-de-chinh-sach">
       <h1 id="tieu-de-chinh-sach">{page.title}</h1>
       <p role="note" className={styles.warning}>
-        <strong>Chưa chính thức.</strong> {POLICY_PENDING_NOTICE}
+        <strong>{t("static.policy.pendingBadge")}</strong> {t("static.policy.pendingNotice")}
       </p>
       {page.sections.map((s) => (
         <section key={s.heading} className={styles.section}>

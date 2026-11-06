@@ -25,7 +25,9 @@ export function apiSecurityHeaders(production: boolean): Record<string, string> 
 
 export function securityHeaders(_req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
   for (const [k, v] of Object.entries(apiSecurityHeaders(getHttpSecurityConfig().production))) {
-    if (!res.getHeader(k)) res.setHeader(k, v);
+    // Chỉ đặt khi chưa có; giá trị rỗng coi như chưa đặt (giữ hành vi cũ — header bảo mật rỗng không có tác dụng).
+    const current = res.getHeader(k);
+    if (current === undefined || current === "") res.setHeader(k, v);
   }
   // Không quảng cáo framework/phiên bản (Express đặt mặc định).
   res.removeHeader("X-Powered-By");

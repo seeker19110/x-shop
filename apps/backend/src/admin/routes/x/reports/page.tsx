@@ -6,6 +6,7 @@ import { adminFetch } from "../../../lib/api";
 import { formatInstant, formatVnd } from "../../../lib/format";
 import { periodFromDays } from "../../../lib/period";
 import { useApi } from "../../../lib/use-api";
+import { isNonEmpty } from "../../../lib/presence";
 
 interface Summary {
   period: { from: string | null; to: string | null };
@@ -90,13 +91,13 @@ const ReportsPage = (): ReactNode => {
             Xem báo cáo
           </Button>
         </form>
-        {formError && <Text className="text-ui-fg-error">{formError}</Text>}
+        {isNonEmpty(formError) && <Text className="text-ui-fg-error">{formError}</Text>}
         <ProblemAlert error={report.error} />
         {s && (
           <Text size="xsmall" className="text-ui-fg-muted">
-            Kỳ: {s.period.from ? formatInstant(s.period.from) : "từ đầu"} →{" "}
-            {s.period.to ? formatInstant(s.period.to) : "hiện tại"} (không gồm mốc cuối). COD phải nhận và
-            chênh lệch mở là ảnh chụp hiện tại, không lọc kỳ.
+            Kỳ: {isNonEmpty(s.period.from) ? formatInstant(s.period.from) : "từ đầu"} →{" "}
+            {isNonEmpty(s.period.to) ? formatInstant(s.period.to) : "hiện tại"} (không gồm mốc cuối). COD phải
+            nhận và chênh lệch mở là ảnh chụp hiện tại, không lọc kỳ.
           </Text>
         )}
       </Container>

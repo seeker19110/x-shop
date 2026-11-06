@@ -52,8 +52,10 @@
   cursor: pointer;
 }
 
-.iconLink:hover {
-  background: var(--background);
+@media (hover: hover) {
+  .iconLink:hover {
+    background: var(--background);
+  }
 }
 
 .count {
@@ -76,11 +78,18 @@
   text-decoration: none;
 }
 
-.navLink:hover,
 .navLink[aria-current="page"] {
   text-decoration: underline;
   text-decoration-thickness: 2px;
   text-underline-offset: 0.35em;
+}
+
+@media (hover: hover) {
+  .navLink:hover {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 0.35em;
+  }
 }
 
 @media (min-width: 48em) {

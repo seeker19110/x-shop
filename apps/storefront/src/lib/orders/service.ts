@@ -3,6 +3,8 @@ import { cartEnabled } from "../cart/service";
 import { readOrderAccess, writeOrderAccess } from "./cookie";
 import { mapOrderResponse, ORDER_REF_RE } from "./map";
 import type { LookupState, OrderResult } from "./types";
+import { isNonEmpty } from "../presence";
+import { t } from "../i18n";
 
 /**
  * Gọi `/store/x/orders/*` từ SERVER. Token phiên đơn đọc từ cookie HttpOnly và gửi qua header `x-order-access` — không
@@ -29,7 +31,7 @@ async function withAccess(
 ): Promise<{ result: OrderResult; raw: unknown }> {
   if (!cartEnabled() || !ORDER_REF_RE.test(ref)) return { result: { kind: "not_found" }, raw: null };
   const token = await readOrderAccess(ref);
-  if (!token) return { result: { kind: "not_found" }, raw: null };
+  if (!isNonEmpty(token)) return { result: { kind: "not_found" }, raw: null };
   const r = await run(token);
   return { result: mapOrderResponse(r.status, r.body), raw: r.body };
 }
@@ -66,12 +68,11 @@ export async function cancelOrder(ref: string): Promise<OrderResult & { refundRe
   return { ...r, refundRequested: cancel?.refund_requested === true };
 }
 
-const LOOKUP_FALLBACK =
-  "Nếu thông tin đúng, chúng tôi đã gửi liên kết xem đơn tới số điện thoại/email đã dùng khi đặt hàng.";
+const LOOKUP_FALLBACK = t("orders.lookup.fallbackSent");
 
 /** Tra cứu bằng mã đơn + SĐT: luôn cùng một thông điệp, không lộ đơn có tồn tại (POST01). */
 export async function lookupOrder(ref: string, phone: string): Promise<LookupState> {
-  if (!cartEnabled()) return { status: "error", message: "Tra cứu đơn tạm thời chưa khả dụng." };
+  if (!cartEnabled()) return { status: "error", message: t("orders.lookup.unavailable") };
   const r = await call("/store/x/orders/lookup", { method: "POST", body: { display_ref: ref, phone } });
   const b = (r.body ?? {}) as { message?: unknown; detail?: unknown; field?: unknown };
   if (r.status === 202) {
@@ -82,13 +83,13 @@ export async function lookupOrder(ref: string, phone: string): Promise<LookupSta
     return {
       status: "invalid",
       field,
-      message: typeof b.detail === "string" ? b.detail : "Thông tin chưa hợp lệ",
+      message: typeof b.detail === "string" ? b.detail : t("orders.lookup.invalid"),
     };
   }
   if (r.status === 429) {
-    return { status: "rate_limited", message: "Bạn đã thử quá nhiều lần. Vui lòng thử lại sau." };
+    return { status: "rate_limited", message: t("orders.lookup.tooMany") };
   }
-  return { status: "error", message: "Không gửi được yêu cầu lúc này. Vui lòng thử lại sau ít phút." };
+  return { status: "error", message: t("orders.lookup.sendFailed") };
 }
 
 /** Đổi liên kết tra cứu (một lần) thành cookie phiên đơn. Trả mã đơn khi thành công. */

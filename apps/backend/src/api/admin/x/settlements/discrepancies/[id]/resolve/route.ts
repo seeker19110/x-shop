@@ -9,6 +9,7 @@ import {
   ResolveBody,
   settlementOf,
 } from "../../../../../../../lib/settlement/http";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/settlements/discrepancies/:id/resolve `{ note, evidence_ref? }` — đóng chênh lệch có lý do (+ mã chứng
@@ -19,8 +20,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
   try {
     const actorId = requirePermission(req, "exception.resolve", "settlement.read");
     const body = parseInput(ResolveBody, req.body);
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
     const discrepancy = await settlementOf(req).resolveDiscrepancy({
-      id: String(req.params.id ?? "").slice(0, 128),
+      id: params.data.id,
       actor_id: actorId,
       note: body.note,
       evidence_ref: body.evidence_ref ?? null,

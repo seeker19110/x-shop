@@ -1,0 +1,819 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 181653f..6cd783f 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -112,6 +112,18 @@ jobs:
+         run: node scripts/check-fixtures.mjs
+       - name: Test của các script kiểm kiến trúc/dữ liệu
+         run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs
++      # x-shop (T-105): giấy phép phụ thuộc theo license-policy.yaml (BASE-DEP-005, CMP-LIC-002/004) + SBOM CycloneDX
++      # (CMP-LIC-003) sinh từ cùng danh sách gói đã cài, đỏ khi < 99% thành phần có giấy phép. Không thêm action bên thứ
++      # ba: SBOM do script trong repo sinh, chỉ upload bằng actions/upload-artifact (ghim SHA).
++      - name: Giấy phép phụ thuộc/asset + SBOM CycloneDX — `node scripts/licenses.mjs --sbom`
++        run: node scripts/licenses.mjs --sbom "$RUNNER_TEMP/sbom.cdx.json" && pnpm check:licenses:test
++      - name: Lưu SBOM (sbom.cdx.json)
++        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (xác minh 2026-10-26 từ tag upstream)
++        with:
++          name: sbom-cyclonedx
++          path: ${{ runner.temp }}/sbom.cdx.json
++          if-no-files-found: error
++          retention-days: 90
+ 
+   # E2E (QA-E2E-001, QA-E2E-029): chạy CÙNG LÚC với `gate`, không `needs` — lệnh `e2e` tự build và phục vụ (vd `webServer`
+   # của Playwright). `e2e-mode`: `off` (chưa khai `e2e`) → bỏ qua; `shard` (lệnh dùng $XT_SHARD, vd
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index 741c768..5fe6634 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -59,7 +59,7 @@ Nguồn khung: [`01-baseline/dependencies.md`](.xtemplates/framework/01-baseline
+ - [x] `BASE-DEP-002` **MUST** CI và build sản phẩm cài **đóng băng** từ lockfile; manifest lệch lockfile → thất bại, không tự sửa lockfile. → Kiểm: workflow dùng `npm ci`/`--frozen-lockfile`/`--locked`/`--require-hashes`/`-mod=readonly`; test: sửa manifest không cập nhật lock → CI đỏ. · Nguồn: npm ci docs; pip secure installs; Go modules reference (`-mod=readonly`) — Kiểm: `grep -q 'frozen-lockfile' xt.yaml && grep -q 'dev-task.sh setup' .github/workflows/ci.yml`
+ - [x] `BASE-DEP-003` **MUST** Runtime/ngôn ngữ dùng phiên bản còn **được hỗ trợ bảo mật** (Node 22/24 LTS, Python ≥ 3.11, Go hai bản mới nhất, .NET 8/10 LTS, Java LTS…) và được ghim trong file phiên bản; không phụ thuộc runtime cài sẵn. → Kiểm: `.nvmrc`/`.python-version`/`mise.toml`/`go.mod go` tồn tại; CI đối chiếu với `https://endoflife.date/api/<product>.json` (`eol` > hôm nay + 90 ngày) hằng tuần. · Nguồn: endoflife.date API; nodejs.org previous releases; devguide.python.org versions — Kiểm: `grep -qE '^22\.' .nvmrc && grep -q '"node": ">=22' package.json && grep -q 'node-version-file: .nvmrc' .github/workflows/ci.yml`
+ - [ ] `BASE-DEP-004` **MUST** Quét lỗ hổng phụ thuộc trong CI trên **mỗi PR** và **theo lịch** (ít nhất hằng tuần); mức high/critical chưa xử lý chặn merge; ngoại lệ ghi file có `cve`, `reason`, `approved_by`, `expires`. → Kiểm: `osv-scanner scan source -r . --config osv-scanner.toml` exit 0; file ngoại lệ không có mục quá hạn (script kiểm). · Nguồn: OWASP Vulnerable Dependency Management CS; OpenSSF Badge `vulnerabilities_fixed_60_days` — Thiếu: workflow vuln-scan (PR + tuần), osv-scanner.toml, VULN-SLA.md đã có (T-104); 5 high trên pnpm-lock.yaml đã vá bằng nâng/`pnpm.overrides` không ngoại lệ (T-132; `osv-scanner scan source -L pnpm-lock.yaml` + `node scripts/osv-gate.mjs` → 0 high); còn thiếu: vuln-scan chưa là required check
+-- [ ] `BASE-DEP-005` **MUST** License của mọi phụ thuộc (kể cả transitive) được **biết** và nằm trong allowlist; gói không rõ license hoặc copyleft/không OSI phải có quyết định ghi lại trước khi dùng. → Kiểm: `license-checker`/`pip-licenses`/`go-licenses`/`cargo deny check licenses` với allowlist trong repo = 0 vi phạm; ngoại lệ ở `license-exceptions.json` có `approved_by`/`expires`. · Nguồn: [`../16-compliance-privacy/licensing-and-ip.md`](.xtemplates/framework/16-compliance-privacy/licensing-and-ip.md); catalog 23 §2.5 — Thiếu: chưa có license-allow.json (xt.py license-check exit 2)
++- [ ] `BASE-DEP-005` **MUST** License của mọi phụ thuộc (kể cả transitive) được **biết** và nằm trong allowlist; gói không rõ license hoặc copyleft/không OSI phải có quyết định ghi lại trước khi dùng. → Kiểm: `license-checker`/`pip-licenses`/`go-licenses`/`cargo deny check licenses` với allowlist trong repo = 0 vi phạm; ngoại lệ ở `license-exceptions.json` có `approved_by`/`expires`. · Nguồn: [`../16-compliance-privacy/licensing-and-ip.md`](.xtemplates/framework/16-compliance-privacy/licensing-and-ip.md); catalog 23 §2.5 — Thiếu: cổng `node scripts/licenses.mjs` + `xt.py license-check` đã có và xanh (license-policy.yaml, license-allow.json), nhưng 14 ngoại lệ (copyleft yếu/OFL/CC-BY/4 gói @medusajs/admin-* không khai license) ghi `approved_by: đề xuất:` — chờ phiên chính duyệt bằng `loop decide` và xác minh LICENSE upstream của @medusajs/admin-*
+ - [ ] `BASE-DEP-006` **MUST** Trước khi thêm phụ thuộc mới: kiểm repo không archive, có bảo trì trong 12 tháng, license hợp lệ, không bật telemetry gửi dữ liệu mặc định, có cách thay thế trong stdlib hay không; ghi một dòng lý do trong PR. → Kiểm: PR template có mục "Phụ thuộc mới: tên · license · lý do · thay thế đã xét"; CI so `git diff origin/<base> -- <lockfile>`, có gói mới mà mục "Phụ thuộc mới" trong mô tả PR trống → đỏ. · Nguồn: evidence-and-sources.md luật 7; catalog README §18, §21 — Thiếu: PR template đã có mục kiểm phụ thuộc mới (T-103); CI chưa so lockfile với mô tả PR
+ - [ ] `BASE-DEP-007` **MUST** Cập nhật phụ thuộc **tự động và có nhịp**: Dependabot/Renovate bật cho mọi hệ sinh thái trong repo (gói, `github-actions`, `docker`), gom nhóm minor/patch, giới hạn số PR mở. → Kiểm: `.github/dependabot.yml` (`version: 2`) hoặc `renovate.json` liệt kê đủ `package-ecosystem` có trong repo; có PR bot trong 30 ngày gần nhất. · Nguồn: Dependabot configuration options; Scorecard Dependency-Update-Tool — Thiếu: dependabot.yml đã có npm×4 + github-actions (T-103), chưa khai docker (repo chưa có Dockerfile/compose); chưa có PR bot trong 30 ngày (kiểm sau khi merge)
+ - [x] `BASE-DEP-008` **MUST** Phụ thuộc tải lúc build/CI (action, base image, binary, model) được ghim theo **SHA/digest/checksum**, không chỉ tag; chi tiết và SBOM ở [`../12-security/supply-chain.md`](.xtemplates/framework/12-security/supply-chain.md). → Kiểm: `pinact run --check`; `FROM image@sha256:`; `sha256sum -c` cho binary tải về. · Nguồn: GitHub Actions security hardening; Scorecard Pinned-Dependencies — Kiểm: `! grep -En 'image: *(postgres|redis)[^@]*$' .github/workflows/ci.yml`
+@@ -873,9 +873,9 @@ Nguồn khung: [`16-compliance-privacy/international-privacy.md`](.xtemplates/fr
+ Nguồn khung: [`16-compliance-privacy/licensing-and-ip.md`](.xtemplates/framework/16-compliance-privacy/licensing-and-ip.md)
+ 
+ - [ ] `CMP-LIC-001` **MUST** Sản phẩm có file `LICENSE` (mở nguồn: license OSI; nội bộ: ghi "proprietary" + chủ sở hữu) và `NOTICE`/`THIRD_PARTY_NOTICES` sinh tự động từ SBOM cho phụ thuộc yêu cầu ghi công. → Kiểm: file tồn tại; CI sinh NOTICE và diff = 0. · Nguồn: Apache-2.0 §4(d); MIT; BSD-3-Clause; Luật SHTT 50/2005/QH11 (sửa đổi 2022, 2025) — Thiếu: không có `LICENSE` ở gốc repo (package.json ghi `UNLICENSED`) và chưa có NOTICE/THIRD_PARTY_NOTICES sinh từ SBOM
+-- [ ] `CMP-LIC-002` **MUST** Chính sách license phụ thuộc dạng file (`license-policy.yaml`: allow/deny/review theo SPDX id; ngoại lệ có `package, reason, approved_by, expires`); cổng CI chặn license cấm hoặc không xác định. → Kiểm: job CI chạy license check trên lockfile/SBOM; PR thêm gói AGPL/unknown bị chặn; ngoại lệ hết hạn → fail. · Nguồn: SPDX License List 3.29.0 (16/09/2026); OSI Approved Licenses; `research/…catalog-extraction.md` §2.6 — Thiếu: chưa có `license-policy.yaml` và job CI kiểm license trên lockfile
+-- [ ] `CMP-LIC-003` **MUST** SBOM (CycloneDX hoặc SPDX) sinh mỗi build cho mọi thành phần (code, container, model) với trường license; lưu cùng artifact phát hành. → Kiểm: artifact có `sbom.cdx.json`/`.spdx.json`; license không null ≥ 99%; xem [`../12-security/supply-chain.md`](.xtemplates/framework/12-security/supply-chain.md). · Nguồn: NTIA Minimum Elements for SBOM; CycloneDX 1.7 (ECMA-424); SPDX 3.0 (phiên bản theo nhà [`../12-security/supply-chain.md`](.xtemplates/framework/12-security/supply-chain.md)) — Thiếu: chưa sinh SBOM CycloneDX/SPDX trong CI/artifact phát hành
+-- [ ] `CMP-LIC-004` **MUST** Không dùng gói/model/dataset/asset không có license rõ ràng; "source-available" (BSL, SSPL, ELv2, Commons Clause) được phân loại riêng và chỉ dùng với quyết định có ghi. → Kiểm: SBOM không có `NOASSERTION`/`UNKNOWN` ngoài danh sách ngoại lệ; ADR cho mỗi thành phần source-available. · Nguồn: OSI Open Source Definition; Elastic License 2.0; SSPL — Thiếu: chưa có SBOM để kiểm `NOASSERTION`/`UNKNOWN`; chưa rà gói source-available (Medusa MIT; k6 AGPL chỉ là công cụ ngoài — xshop-load.js ghi chú; ADR cho từng thành phần chưa có)
++- [x] `CMP-LIC-002` **MUST** Chính sách license phụ thuộc dạng file (`license-policy.yaml`: allow/deny/review theo SPDX id; ngoại lệ có `package, reason, approved_by, expires`); cổng CI chặn license cấm hoặc không xác định. → Kiểm: job CI chạy license check trên lockfile/SBOM; PR thêm gói AGPL/unknown bị chặn; ngoại lệ hết hạn → fail. · Nguồn: SPDX License List 3.29.0 (16/09/2026); OSI Approved Licenses; `research/…catalog-extraction.md` §2.6 — Kiểm: `node scripts/licenses.mjs && node --test scripts/licenses.test.mjs` (job `gate` chạy cả hai; gói AGPL/unknown không ngoại lệ, ngoại lệ hết hạn → exit 1, có test)
++- [ ] `CMP-LIC-003` **MUST** SBOM (CycloneDX hoặc SPDX) sinh mỗi build cho mọi thành phần (code, container, model) với trường license; lưu cùng artifact phát hành. → Kiểm: artifact có `sbom.cdx.json`/`.spdx.json`; license không null ≥ 99%; xem [`../12-security/supply-chain.md`](.xtemplates/framework/12-security/supply-chain.md). · Nguồn: NTIA Minimum Elements for SBOM; CycloneDX 1.7 (ECMA-424); SPDX 3.0 (phiên bản theo nhà [`../12-security/supply-chain.md`](.xtemplates/framework/12-security/supply-chain.md)) — Thiếu: `node scripts/licenses.mjs --sbom` sinh `sbom.cdx.json` CycloneDX 1.6 (1563 thành phần, 99.74% có giấy phép — chạy cục bộ) và CI đã có bước upload artifact `sbom-cyclonedx`, nhưng chưa có lần chạy CI thật; chưa đính kèm artifact phát hành (chờ T-112/release)
++- [ ] `CMP-LIC-004` **MUST** Không dùng gói/model/dataset/asset không có license rõ ràng; "source-available" (BSL, SSPL, ELv2, Commons Clause) được phân loại riêng và chỉ dùng với quyết định có ghi. → Kiểm: SBOM không có `NOASSERTION`/`UNKNOWN` ngoài danh sách ngoại lệ; ADR cho mỗi thành phần source-available. · Nguồn: OSI Open Source Definition; Elastic License 2.0; SSPL — Thiếu: không có gói source-available/deny nào; asset được kiểm theo assets/CREDITS.md; nhưng 4 gói `Unknown` (@medusajs/admin-*) còn ngoại lệ chờ `decision` D-NNN và chưa có ADR cho thành phần source-available (hiện 0 thành phần)
+ 
+ ### Privacy by design: tối thiểu hoá, mục đích, lưu trữ, xoá, DPIA
+ 
+diff --git a/license-allow.json b/license-allow.json
+new file mode 100644
+index 0000000..a1107f4
+--- /dev/null
++++ b/license-allow.json
+@@ -0,0 +1,16 @@
++{
++  "allow": [
++    "0BSD",
++    "Apache-2.0",
++    "BSD-2-Clause",
++    "BSD-3-Clause",
++    "BlueOak-1.0.0",
++    "CC0-1.0",
++    "ISC",
++    "MIT",
++    "MIT-0",
++    "Unlicense",
++    "Zlib"
++  ],
++  "exceptions": []
++}
+diff --git a/license-policy.yaml b/license-policy.yaml
+new file mode 100644
+index 0000000..80ab46b
+--- /dev/null
++++ b/license-policy.yaml
+@@ -0,0 +1,129 @@
++# Chính sách giấy phép phụ thuộc và asset (BASE-DEP-005, CMP-LIC-002, CMP-LIC-004). Đọc bởi `scripts/licenses.mjs`
++# (`node scripts/licenses.mjs`; chạy trong job `gate` của CI). Định danh theo SPDX (https://spdx.org/licenses/).
++# Quy tắc: biểu thức `A OR B` lấy nhánh tốt nhất, `A AND B` lấy nhánh xấu nhất. Gói đạt khi cả biểu thức thuộc `allow`;
++# còn lại (review / deny / source_available / không rõ) CHỈ đạt khi có mục trong `exceptions` còn hạn. Không có cách
++# nào khác "cho qua": thêm gói giấy phép lạ thì cổng đỏ tới khi có quyết định ghi lại ở đây.
++#
++# Đồng bộ với `license-allow.json` (cổng `xt.py license-check` của khung, phía Python): `allow` ở đó phải là tập con
++# của `allow` ở đây — `licenses.mjs` kiểm.
++
++# Cho phép thẳng (permissive, không buộc công bố mã của ta).
++allow:
++  - 0BSD
++  - Apache-2.0
++  - BSD-2-Clause
++  - BSD-3-Clause
++  - BlueOak-1.0.0
++  - CC0-1.0
++  - ISC
++  - MIT
++  - MIT-0
++  - Unlicense
++  - Zlib
++
++# Cần rà từng gói: copyleft yếu / dữ liệu / phông / giấy phép hiếm. Dùng được khi có ngoại lệ ghi lý do.
++review:
++  - CC-BY-4.0 # dữ liệu (vd caniuse-lite): cần ghi công
++  - LGPL-3.0-or-later # thư viện liên kết động; không sửa, thay được
++  - MPL-2.0 # copyleft mức tệp; chỉ dùng nguyên bản, không sửa tệp MPL
++  - OFL-1.1 # phông chữ
++  - Python-2.0 # argparse (giấy phép kiểu PSF, tương thích rộng)
++
++# Cấm hẳn (copyleft mạnh / không thương mại). Hậu tố `*` khớp tiền tố. Dùng được chỉ khi có ngoại lệ kèm `decision`.
++deny:
++  - AGPL-*
++  - GPL-*
++  - CC-BY-NC-*
++  - CC-BY-ND-*
++  - CC-BY-SA-*
++
++# Source-available (không OSI): phân loại riêng, mặc định cấm; mỗi thành phần cần ngoại lệ kèm `decision` (ADR/D-NNN).
++source_available:
++  - BUSL-1.1
++  - SSPL-1.0
++  - Elastic-2.0
++  - LicenseRef-Commons-Clause
++  - Commons-Clause
++
++# Gói không khai giấy phép (pnpm báo `Unknown`, hoặc `UNLICENSED`/`SEE LICENSE IN …`/rỗng) = KHÔNG RÕ: cổng đỏ nếu
++# không có ngoại lệ với `license: Unknown` kèm `decision`.
++
++# Ngoại lệ: bắt buộc `package`, `license` (đúng chuỗi cổng báo), `reason`, `approved_by`, `expires` (YYYY-MM-DD, tối đa
++# 180 ngày kể từ hôm nay; quá hạn thì đỏ). Tuỳ chọn `versions` (danh sách, vắng = mọi phiên bản). Giấy phép deny /
++# source_available / Unknown bắt buộc thêm `decision` (D-NNN hoặc ADR). `approved_by` bắt đầu bằng `đề xuất:` nghĩa là
++# phiên thực thi đề xuất theo phân loại ở trên, CHƯA được phiên chính duyệt bằng `loop decide` — duyệt xong thì sửa lại.
++exceptions:
++  - package: "@img/sharp-libvips-linux-x64"
++    license: LGPL-3.0-or-later
++    reason: Thư viện native libvips của sharp, liên kết động, không sửa, thay được bằng bản hệ thống; không phát hành lại bản sửa.
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: "@img/sharp-libvips-linuxmusl-x64"
++    license: LGPL-3.0-or-later
++    reason: Như bản linux-x64 (biến thể musl cho image Alpine).
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: caniuse-lite
++    license: CC-BY-4.0
++    reason: Dữ liệu tương thích trình duyệt (phụ thuộc gián tiếp của công cụ build), chỉ dùng lúc build; ghi công qua gói.
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: argparse
++    license: Python-2.0
++    reason: Bản port JS của argparse (phụ thuộc gián tiếp của công cụ lint/YAML), giấy phép kiểu PSF tương thích permissive.
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: "@axe-core/playwright"
++    license: MPL-2.0
++    reason: Công cụ kiểm a11y chỉ ở devDependencies (E2E), dùng nguyên bản, không sửa tệp MPL, không đóng gói vào sản phẩm.
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: axe-core
++    license: MPL-2.0
++    reason: Như @axe-core/playwright (devDependency, nguyên bản).
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: lightningcss
++    license: MPL-2.0
++    reason: Bộ biên dịch CSS dùng lúc build (qua Next/Lighthouse), nguyên bản, không sửa tệp MPL.
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: lightningcss-linux-x64-gnu
++    license: MPL-2.0
++    reason: Binary native của lightningcss (glibc), nguyên bản.
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: lightningcss-linux-x64-musl
++    license: MPL-2.0
++    reason: Binary native của lightningcss (musl), nguyên bản.
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: "@fontsource/be-vietnam-pro"
++    license: OFL-1.1
++    reason: Phông giao diện tự host, ghi ở assets/CREDITS.md; OFL cho phép nhúng/phân phối kèm phần mềm, không bán riêng phông.
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-04-24"
++  - package: "@medusajs/admin-bundler"
++    license: Unknown
++    reason: package.json của gói không khai `license`; gói thuộc monorepo medusajs/medusa (MIT, các gói @medusajs khác đã khai MIT). Cần xác minh LICENSE upstream.
++    decision: "chờ D-NNN (phiên chính xác minh LICENSE upstream)"
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-01-24"
++  - package: "@medusajs/admin-sdk"
++    license: Unknown
++    reason: Như @medusajs/admin-bundler.
++    decision: "chờ D-NNN (phiên chính xác minh LICENSE upstream)"
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-01-24"
++  - package: "@medusajs/admin-shared"
++    license: Unknown
++    reason: Như @medusajs/admin-bundler.
++    decision: "chờ D-NNN (phiên chính xác minh LICENSE upstream)"
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-01-24"
++  - package: "@medusajs/admin-vite-plugin"
++    license: Unknown
++    reason: Như @medusajs/admin-bundler.
++    decision: "chờ D-NNN (phiên chính xác minh LICENSE upstream)"
++    approved_by: "đề xuất: executor T-105 (chờ duyệt phiên chính)"
++    expires: "2027-01-24"
+diff --git a/package.json b/package.json
+index 88b2c57..408ca00 100644
+--- a/package.json
++++ b/package.json
+@@ -28,6 +28,8 @@
+     "check:routes:test": "node --test scripts/check-routes.test.mjs",
+     "check:sql-safety": "node scripts/check-sql-safety.mjs",
+     "check:sql-safety:test": "node --test scripts/check-sql-safety.test.mjs",
++    "check:licenses": "node scripts/licenses.mjs",
++    "check:licenses:test": "node --test scripts/licenses.test.mjs",
+     "depcruise": "depcruise apps/backend/src apps/backend/integration-tests apps/storefront/src packages/domain/src --config .dependency-cruiser.cjs",
+     "depcruise:test": "node --test scripts/depcruise-rules.test.mjs"
+   },
+diff --git a/requirements-dev.txt b/requirements-dev.txt
+new file mode 100644
+index 0000000..89a0099
+--- /dev/null
++++ b/requirements-dev.txt
+@@ -0,0 +1,2 @@
++# Dự án x-shop không có phụ thuộc Python. File này để `xt.py license-check` (mặc định đọc requirements-dev.txt) chạy được;
++# giấy phép phụ thuộc Node kiểm bằng `node scripts/licenses.mjs` theo `license-policy.yaml`.
+diff --git a/scripts/licenses.mjs b/scripts/licenses.mjs
+new file mode 100644
+index 0000000..c4823fc
+--- /dev/null
++++ b/scripts/licenses.mjs
+@@ -0,0 +1,376 @@
++#!/usr/bin/env node
++// Cổng giấy phép phụ thuộc + asset (BASE-DEP-005, CMP-LIC-002/003/004). Đọc `license-policy.yaml`, quét phụ thuộc đã cài
++// bằng `pnpm licenses list --json` (hoặc `--input <file>` cho test), và ĐỎ khi có gói: giấy phép deny / source-available /
++// cần rà / không rõ mà không có ngoại lệ còn hạn (`package`, `license`, `reason`, `approved_by`, `expires`). Kiểm thêm:
++// ngoại lệ quá hạn, thiếu trường, `expires` xa quá 180 ngày, ngoại lệ deny/source-available/Unknown thiếu `decision`,
++// `license-allow.json` ⊆ `allow` của chính sách, và mọi ảnh/phông trong thư mục asset phải có dòng ở `assets/CREDITS.md`.
++// `--sbom <file>` ghi SBOM CycloneDX 1.6 (CMP-LIC-003) và đỏ nếu < 99% thành phần có giấy phép.
++// CLI: node scripts/licenses.mjs [--policy F] [--input F] [--sbom F] [--credits F] [--no-assets]
++import { execFileSync } from "node:child_process";
++import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
++import { join, relative, resolve } from "node:path";
++import { pathToFileURL } from "node:url";
++import { parse } from "yaml";
++
++export const MAX_EXCEPTION_DAYS = 180;
++export const MIN_LICENSE_COVERAGE = 0.99;
++const DAY = 86_400_000;
++const RANK = { allow: 0, review: 1, unknown: 2, source_available: 3, deny: 4 };
++const ASSET_DIRS = ["apps/storefront/public", "apps/backend/static", "assets"];
++const ASSET_EXT = /\.(svg|png|jpe?g|webp|avif|gif|ico|woff2?|ttf|otf|mp4|webm|mp3|wav)$/i;
++const REQUIRED = ["package", "license", "reason", "approved_by", "expires"];
++
++/** Chuỗi giấy phép "không rõ": rỗng, Unknown, UNLICENSED, SEE LICENSE IN …, NOASSERTION. */
++export function isUnknownLicense(s) {
++  const t = String(s ?? "").trim();
++  return !t || /^(unknown|unlicensed|noassertion|none)$/i.test(t) || /^see license/i.test(t);
++}
++
++const matchesAny = (id, patterns) =>
++  (patterns ?? []).some((p) => (p.endsWith("*") ? id.startsWith(p.slice(0, -1)) : id === p));
++
++/** Phân loại MỘT định danh SPDX → allow | review | unknown | source_available | deny. Hậu tố `+` bỏ khi tra. */
++export function classifyId(id, policy) {
++  const bare = id.replace(/\+$/, "");
++  if (isUnknownLicense(id)) return "unknown";
++  if (matchesAny(id, policy.source_available) || matchesAny(bare, policy.source_available))
++    return "source_available";
++  if (matchesAny(id, policy.deny) || matchesAny(bare, policy.deny)) return "deny";
++  if (policy.allow?.includes(id)) return "allow";
++  if (policy.review?.includes(id)) return "review";
++  return "unknown"; // định danh lạ (chưa phân loại) = chưa rõ, không bao giờ tự cho qua
++}
++
++/** Tách biểu thức SPDX thành cây: {op:"OR"|"AND", args} | {id}. Ngoặc không khớp → ném lỗi. */
++export function parseExpression(expr) {
++  const tokens = String(expr).match(/\(|\)|[^\s()]+/g) ?? [];
++  let i = 0;
++  const parseOr = () => {
++    const args = [parseAnd()];
++    while (tokens[i]?.toUpperCase() === "OR") {
++      i++;
++      args.push(parseAnd());
++    }
++    return args.length === 1 ? args[0] : { op: "OR", args };
++  };
++  const parseAnd = () => {
++    const args = [parseAtom()];
++    while (tokens[i]?.toUpperCase() === "AND") {
++      i++;
++      args.push(parseAtom());
++    }
++    return args.length === 1 ? args[0] : { op: "AND", args };
++  };
++  const parseAtom = () => {
++    const t = tokens[i++];
++    if (t === undefined) throw new Error(`biểu thức SPDX cụt: "${expr}"`);
++    if (t === "(") {
++      const n = parseOr();
++      if (tokens[i++] !== ")") throw new Error(`thiếu ")" trong "${expr}"`);
++      return n;
++    }
++    if (t === ")" || /^(AND|OR)$/i.test(t)) throw new Error(`token lạ "${t}" trong "${expr}"`);
++    return { id: t };
++  };
++  const tree = parseOr();
++  if (i < tokens.length) throw new Error(`thừa token "${tokens[i]}" trong "${expr}"`);
++  return tree;
++}
++
++/** Mức xấu nhất/tốt nhất của biểu thức: OR lấy nhánh tốt nhất, AND lấy nhánh xấu nhất. Không phân tích được → unknown. */
++export function classifyExpression(expr, policy) {
++  if (isUnknownLicense(expr)) return "unknown";
++  let tree;
++  try {
++    tree = parseExpression(expr);
++  } catch {
++    return "unknown";
++  }
++  const walk = (n) => {
++    if (n.id !== undefined) return classifyId(n.id, policy);
++    const levels = n.args.map(walk);
++    const pick = n.op === "OR" ? Math.min : Math.max;
++    const r = pick(...levels.map((l) => RANK[l]));
++    return Object.keys(RANK).find((k) => RANK[k] === r);
++  };
++  return walk(tree);
++}
++
++/** Kiểm chính sách + ngoại lệ; trả mảng lỗi (rỗng = đạt). */
++export function checkPolicy(policy, now = new Date()) {
++  const errors = [];
++  for (const k of ["allow", "review", "deny", "source_available"]) {
++    if (!Array.isArray(policy?.[k])) errors.push(`license-policy.yaml: thiếu danh sách \`${k}\``);
++  }
++  const lists = ["allow", "review", "deny", "source_available"];
++  for (const id of policy?.allow ?? []) {
++    for (const k of lists.slice(1)) {
++      if (matchesAny(id, policy[k] ?? [])) errors.push(`SPDX \`${id}\` vừa ở allow vừa ở ${k}`);
++    }
++  }
++  const seen = new Set();
++  for (const [i, e] of (policy?.exceptions ?? []).entries()) {
++    const tag = `ngoại lệ #${i + 1} (${e?.package ?? "?"})`;
++    const missing = REQUIRED.filter((k) => typeof e?.[k] !== "string" || !e[k].trim());
++    if (missing.length) {
++      errors.push(`${tag}: thiếu ${missing.join(", ")}`);
++      continue;
++    }
++    const key = `${e.package}|${e.license}|${[e.versions ?? []].flat().join(",")}`;
++    if (seen.has(key)) errors.push(`${tag}: trùng lặp`);
++    seen.add(key);
++    if (!/^\d{4}-\d{2}-\d{2}$/.test(e.expires) || Number.isNaN(Date.parse(e.expires))) {
++      errors.push(`${tag}: expires "${e.expires}" không phải YYYY-MM-DD`);
++      continue;
++    }
++    const days = Math.floor((Date.parse(`${e.expires}T23:59:59Z`) - now.getTime()) / DAY);
++    if (days < 0) errors.push(`${tag}: hết hạn ${e.expires} — xét lại rồi gia hạn hoặc bỏ gói`);
++    else if (days > MAX_EXCEPTION_DAYS)
++      errors.push(`${tag}: expires ${e.expires} xa quá ${MAX_EXCEPTION_DAYS} ngày`);
++    if (
++      e.versions !== undefined &&
++      (!Array.isArray(e.versions) || e.versions.some((v) => typeof v !== "string"))
++    ) {
++      errors.push(`${tag}: versions phải là danh sách chuỗi`);
++    }
++    const level = classifyExpression(e.license, policy);
++    if (["deny", "source_available", "unknown"].includes(level) && !String(e.decision ?? "").trim()) {
++      errors.push(`${tag}: giấy phép ${level} (${e.license}) bắt buộc có \`decision\` (D-NNN/ADR)`);
++    }
++  }
++  return errors;
++}
++
++/** `license-allow.json` (cổng Python của khung) phải là tập con `allow` của chính sách. */
++export function checkAllowSync(policy, allowJson) {
++  const errors = [];
++  if (!Array.isArray(allowJson?.allow)) return ["license-allow.json: thiếu `allow`"];
++  for (const id of allowJson.allow) {
++    if (!policy.allow?.includes(id))
++      errors.push(`license-allow.json: \`${id}\` không có trong allow của license-policy.yaml`);
++  }
++  return errors;
++}
++
++/** Làm phẳng đầu ra `pnpm licenses list --json` ({license: [{name, versions, license, ...}]}) → [{name, version, license}]. */
++export function flattenPnpm(json) {
++  const out = [];
++  for (const [group, pkgs] of Object.entries(json ?? {})) {
++    for (const p of pkgs ?? []) {
++      const versions = p.versions?.length ? p.versions : [p.version ?? ""];
++      for (const version of versions) out.push({ name: p.name, version, license: p.license ?? group });
++    }
++  }
++  return out.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
++}
++
++/** Ngoại lệ còn hạn khớp gói (tên + đúng chuỗi giấy phép + phiên bản nếu có giới hạn). */
++export function findException(pkg, policy, now = new Date()) {
++  return (policy.exceptions ?? []).find(
++    (e) =>
++      e.package === pkg.name &&
++      e.license === pkg.license &&
++      (!e.versions || e.versions.includes(pkg.version)) &&
++      Date.parse(`${e.expires}T23:59:59Z`) >= now.getTime(),
++  );
++}
++
++/** Đánh giá toàn bộ gói. {violations, excepted, stale, counts}. */
++export function evaluate(packages, policy, now = new Date()) {
++  const violations = [];
++  const excepted = [];
++  const counts = { allow: 0, review: 0, unknown: 0, source_available: 0, deny: 0 };
++  const used = new Set();
++  for (const p of packages) {
++    const level = classifyExpression(p.license, policy);
++    counts[level]++;
++    if (level === "allow") continue;
++    const exc = findException(p, policy, now);
++    if (exc) {
++      used.add(exc);
++      excepted.push({ ...p, level, exception: exc });
++    } else {
++      violations.push({ ...p, level });
++    }
++  }
++  const stale = (policy.exceptions ?? []).filter((e) => !used.has(e));
++  return { violations, excepted, stale, counts };
++}
++
++const stripExt = (s) => String(s).trim();
++const isSpdxLike = (s) =>
++  /^[A-Za-z0-9.+()\- ]+$/.test(s) && !isUnknownLicense(s) && (!/ /.test(s) || / (AND|OR) /.test(s));
++
++/** SBOM CycloneDX 1.6. License là `expression` khi giống SPDX, ngược lại `license.name`; Unknown → không có trường. */
++export function buildSbom(packages, { name, version, sha, now = new Date() } = {}) {
++  const components = packages.map((p) => {
++    const group = p.name.startsWith("@") ? p.name.split("/")[0] : undefined;
++    const bare = group ? p.name.slice(group.length + 1) : p.name;
++    const purl = `pkg:npm/${group ? `${encodeURIComponent(group)}/` : ""}${encodeURIComponent(bare)}@${encodeURIComponent(p.version)}`;
++    const c = {
++      type: "library",
++      "bom-ref": purl,
++      ...(group ? { group } : {}),
++      name: bare,
++      version: p.version,
++      purl,
++    };
++    const lic = stripExt(p.license);
++    if (!isUnknownLicense(lic)) {
++      c.licenses =
++        isSpdxLike(lic) && /[A-Za-z]/.test(lic) && /(\bOR\b|\bAND\b|\()/.test(lic)
++          ? [{ expression: lic }]
++          : [{ license: isSpdxLike(lic) ? { id: lic } : { name: lic } }];
++    }
++    return c;
++  });
++  return {
++    bomFormat: "CycloneDX",
++    specVersion: "1.6",
++    version: 1,
++    metadata: {
++      timestamp: now.toISOString(),
++      component: {
++        type: "application",
++        name: name ?? "x-shop",
++        version: version ?? "0.0.0",
++        ...(sha ? { "bom-ref": `git:${sha}` } : {}),
++      },
++      ...(sha ? { properties: [{ name: "git.commit", value: sha }] } : {}),
++    },
++    components,
++  };
++}
++
++export function licenseCoverage(sbom) {
++  const n = sbom.components.length;
++  const withLic = sbom.components.filter((c) => c.licenses?.length).length;
++  return { total: n, withLicense: withLic, ratio: n === 0 ? 0 : withLic / n };
++}
++
++// ---- asset --------------------------------------------------------------------------------------------------------
++
++/** Glob đường dẫn → RegExp: `**` mọi cấp, `*` trong một cấp, `{a,b}` chọn. */
++export function globToRegExp(glob) {
++  let re = "";
++  for (let i = 0; i < glob.length; i++) {
++    const c = glob[i];
++    if (c === "*" && glob[i + 1] === "*") {
++      re += ".*";
++      i++;
++    } else if (c === "*") re += "[^/]*";
++    else if (c === "{") re += "(?:";
++    else if (c === "}") re += ")";
++    else if (c === ",") re += "|";
++    else re += c.replace(/[.+?^$()|[\]\\]/g, "\\$&");
++  }
++  return new RegExp(`^${re}$`);
++}
++
++/** Glob đường dẫn ở cột đầu của bảng CREDITS.md (chỉ ô bắt đầu bằng `apps/`/`assets/`/`packages/` trong dấu huyền). */
++export function creditGlobs(markdown) {
++  const globs = [];
++  for (const line of String(markdown ?? "").split(/\r?\n/)) {
++    if (!line.startsWith("|")) continue;
++    const first = line.split("|")[1] ?? "";
++    for (const m of first.matchAll(/`([^`]+)`/g)) {
++      if (/^(apps|assets|packages)\//.test(m[1])) globs.push(m[1]);
++    }
++  }
++  return globs;
++}
++
++/** File asset (ảnh/phông/media) chưa có glob nào trong CREDITS.md → danh sách đường dẫn. */
++export function uncreditedAssets(files, globs) {
++  const res = globs.map(globToRegExp);
++  return files.filter((f) => ASSET_EXT.test(f) && !res.some((r) => r.test(f)));
++}
++
++function walk(dir, root, out = []) {
++  if (!existsSync(dir)) return out;
++  for (const d of readdirSync(dir, { withFileTypes: true })) {
++    const full = join(dir, d.name);
++    if (d.isDirectory()) walk(full, root, out);
++    else out.push(relative(root, full).split("\\").join("/"));
++  }
++  return out;
++}
++
++// ---- CLI ----------------------------------------------------------------------------------------------------------
++
++function arg(argv, name, dflt) {
++  const i = argv.indexOf(name);
++  return i >= 0 ? argv[i + 1] : dflt;
++}
++
++export function main(argv = process.argv.slice(2), root = process.cwd()) {
++  const policyPath = resolve(root, arg(argv, "--policy", "license-policy.yaml"));
++  const now = new Date();
++  const errors = [];
++  const policy = parse(readFileSync(policyPath, "utf8"));
++  errors.push(...checkPolicy(policy, now));
++  const allowPath = join(root, "license-allow.json");
++  if (existsSync(allowPath))
++    errors.push(...checkAllowSync(policy, JSON.parse(readFileSync(allowPath, "utf8"))));
++
++  const input = arg(argv, "--input");
++  const raw = input
++    ? readFileSync(resolve(root, input), "utf8")
++    : execFileSync("pnpm", ["licenses", "list", "--json"], {
++        cwd: root,
++        encoding: "utf8",
++        maxBuffer: 512 * 1024 * 1024,
++      });
++  const packages = flattenPnpm(JSON.parse(raw));
++  if (packages.length === 0) errors.push("không quét được gói nào (đã chạy `pnpm install` chưa?)");
++  const res = evaluate(packages, policy, now);
++  for (const v of res.violations) {
++    errors.push(`${v.name}@${v.version}: giấy phép \`${v.license}\` (${v.level}) không có ngoại lệ còn hạn`);
++  }
++  for (const s of res.stale)
++    console.warn(`cảnh báo: ngoại lệ ${s.package} (${s.license}) không còn khớp gói nào — bỏ đi`);
++
++  const sbomPath = arg(argv, "--sbom");
++  if (sbomPath) {
++    const sha = process.env.GITHUB_SHA || tryGit(root);
++    const pkgJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
++    const sbom = buildSbom(packages, { name: pkgJson.name, version: pkgJson.version, sha, now });
++    writeFileSync(resolve(root, sbomPath), `${JSON.stringify(sbom, null, 2)}\n`);
++    const cov = licenseCoverage(sbom);
++    console.log(`SBOM ${sbomPath}: ${cov.total} thành phần, ${(cov.ratio * 100).toFixed(2)}% có giấy phép`);
++    if (cov.ratio < MIN_LICENSE_COVERAGE)
++      errors.push(`SBOM: chỉ ${(cov.ratio * 100).toFixed(2)}% có giấy phép (< 99%)`);
++  }
++
++  if (!argv.includes("--no-assets")) {
++    const creditsPath = resolve(root, arg(argv, "--credits", "assets/CREDITS.md"));
++    if (!existsSync(creditsPath)) errors.push("thiếu assets/CREDITS.md (nguồn + giấy phép asset)");
++    else {
++      const globs = creditGlobs(readFileSync(creditsPath, "utf8"));
++      const files = ASSET_DIRS.flatMap((d) => walk(join(root, d), root));
++      for (const f of uncreditedAssets(files, globs))
++        errors.push(`asset ${f}: chưa có dòng trong assets/CREDITS.md`);
++    }
++  }
++
++  console.log(
++    `licenses: ${packages.length} gói — allow ${res.counts.allow}, review ${res.counts.review}, không rõ ${res.counts.unknown}, ` +
++      `source-available ${res.counts.source_available}, deny ${res.counts.deny}; ngoại lệ đang dùng ${res.excepted.length}.`,
++  );
++  if (errors.length) {
++    for (const e of errors) console.error(`✗ ${e}`);
++    return 1;
++  }
++  console.log("✓ licenses: đạt chính sách.");
++  return 0;
++}
++
++function tryGit(root) {
++  try {
++    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
++  } catch {
++    return undefined;
++  }
++}
++
++if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(main());
+diff --git a/scripts/licenses.test.mjs b/scripts/licenses.test.mjs
+new file mode 100644
+index 0000000..019bece
+--- /dev/null
++++ b/scripts/licenses.test.mjs
+@@ -0,0 +1,204 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import {
++  buildSbom,
++  checkAllowSync,
++  checkPolicy,
++  classifyExpression,
++  creditGlobs,
++  evaluate,
++  flattenPnpm,
++  globToRegExp,
++  isUnknownLicense,
++  licenseCoverage,
++  parseExpression,
++  uncreditedAssets,
++} from "./licenses.mjs";
++
++const NOW = new Date("2026-10-26T00:00:00Z");
++const policy = {
++  allow: ["MIT", "Apache-2.0", "ISC", "CC0-1.0"],
++  review: ["MPL-2.0"],
++  deny: ["AGPL-*", "GPL-*"],
++  source_available: ["BUSL-1.1", "SSPL-1.0"],
++  exceptions: [],
++};
++const exc = (o) => ({
++  package: "p",
++  license: "MPL-2.0",
++  reason: "r",
++  approved_by: "a",
++  expires: "2027-01-01",
++  ...o,
++});
++
++test("isUnknownLicense: rỗng/null/Unknown/UNLICENSED/SEE LICENSE đều là không rõ; MIT thì không", () => {
++  for (const s of [
++    "",
++    null,
++    undefined,
++    "Unknown",
++    "UNLICENSED",
++    "see license in LICENSE.md",
++    "NOASSERTION",
++    "  ",
++  ]) {
++    assert.equal(isUnknownLicense(s), true, String(s));
++  }
++  assert.equal(isUnknownLicense("MIT"), false);
++});
++
++test("classifyExpression: OR lấy nhánh tốt nhất, AND nhánh xấu nhất, ngoặc, glob deny, định danh lạ = không rõ", () => {
++  const c = (e) => classifyExpression(e, policy);
++  assert.equal(c("MIT"), "allow");
++  assert.equal(c("(MIT OR CC0-1.0)"), "allow");
++  assert.equal(c("MIT OR GPL-3.0-only"), "allow");
++  assert.equal(c("MIT AND GPL-3.0-only"), "deny");
++  assert.equal(c("Apache-2.0 AND MIT"), "allow");
++  assert.equal(c("MIT AND MPL-2.0"), "review");
++  assert.equal(c("AGPL-3.0-or-later"), "deny");
++  assert.equal(c("BUSL-1.1"), "source_available");
++  assert.equal(c("SSPL-1.0 OR AGPL-3.0-only"), "source_available");
++  assert.equal(c("Weird-1.0"), "unknown");
++  assert.equal(c("(MIT"), "unknown");
++  assert.equal(c(""), "unknown");
++  assert.equal(c("GPL-2.0+"), "deny");
++});
++
++test("parseExpression: AND ưu tiên hơn OR; token thừa/cụt ném lỗi", () => {
++  assert.deepEqual(parseExpression("A OR B AND C"), {
++    op: "OR",
++    args: [{ id: "A" }, { op: "AND", args: [{ id: "B" }, { id: "C" }] }],
++  });
++  assert.throws(() => parseExpression("A OR"));
++  assert.throws(() => parseExpression("A B"));
++  assert.throws(() => parseExpression(")"));
++});
++
++test("evaluate: gói review/unknown/deny không ngoại lệ → vi phạm; có ngoại lệ đúng chuỗi → đạt; sai chuỗi/phiên bản/hết hạn → vi phạm", () => {
++  const pkgs = [
++    { name: "ok", version: "1.0.0", license: "MIT" },
++    { name: "p", version: "1.0.0", license: "MPL-2.0" },
++    { name: "q", version: "1.0.0", license: "Unknown" },
++    { name: "agpl", version: "1.0.0", license: "AGPL-3.0-only" },
++  ];
++  const r0 = evaluate(pkgs, policy, NOW);
++  assert.deepEqual(
++    r0.violations.map((v) => v.name),
++    ["p", "q", "agpl"],
++  );
++  const withExc = {
++    ...policy,
++    exceptions: [exc({}), exc({ package: "q", license: "Unknown", decision: "D-1" })],
++  };
++  const r1 = evaluate(pkgs, withExc, NOW);
++  assert.deepEqual(
++    r1.violations.map((v) => v.name),
++    ["agpl"],
++  );
++  assert.equal(r1.excepted.length, 2);
++  // sai chuỗi giấy phép (gói đổi giấy phép) → ngoại lệ không còn hiệu lực
++  assert.equal(
++    evaluate([{ name: "p", version: "1.0.0", license: "GPL-3.0-only" }], withExc, NOW).violations.length,
++    1,
++  );
++  // giới hạn phiên bản
++  const v = { ...policy, exceptions: [exc({ versions: ["1.0.0"] })] };
++  assert.equal(evaluate([{ name: "p", version: "2.0.0", license: "MPL-2.0" }], v, NOW).violations.length, 1);
++  assert.equal(evaluate([{ name: "p", version: "1.0.0", license: "MPL-2.0" }], v, NOW).violations.length, 0);
++  // hết hạn
++  const old = { ...policy, exceptions: [exc({ expires: "2026-10-25" })] };
++  assert.equal(evaluate([pkgs[1]], old, NOW).violations.length, 1);
++  // ngoại lệ hết hạn đúng ngày hôm nay vẫn còn hiệu lực tới hết ngày (UTC)
++  const today = { ...policy, exceptions: [exc({ expires: "2026-10-26" })] };
++  assert.equal(evaluate([pkgs[1]], today, new Date("2026-10-26T12:00:00Z")).violations.length, 0);
++  // ngoại lệ không còn khớp gói nào → stale
++  assert.equal(evaluate([pkgs[0]], withExc, NOW).stale.length, 2);
++  // rỗng
++  assert.deepEqual(evaluate([], policy, NOW).violations, []);
++});
++
++test("checkPolicy: thiếu trường, quá hạn, xa quá 180 ngày, ngày sai, deny/Unknown thiếu decision, trùng allow-deny", () => {
++  const bad = (exceptions) => checkPolicy({ ...policy, exceptions }, NOW);
++  assert.deepEqual(bad([exc({})]), []);
++  assert.match(bad([exc({ reason: "" })])[0], /thiếu reason/);
++  assert.match(bad([exc({ approved_by: undefined })])[0], /thiếu approved_by/);
++  assert.match(bad([exc({ expires: "2026-10-01" })])[0], /hết hạn/);
++  assert.match(bad([exc({ expires: "2028-01-01" })])[0], /xa quá 180/);
++  assert.match(bad([exc({ expires: "01/01/2027" })])[0], /YYYY-MM-DD/);
++  assert.match(bad([exc({ license: "Unknown" })])[0], /decision/);
++  assert.match(bad([exc({ license: "AGPL-3.0-only" })])[0], /decision/);
++  assert.match(bad([exc({}), exc({})])[0], /trùng/);
++  assert.match(checkPolicy({ ...policy, deny: ["MIT"] }, NOW)[0], /vừa ở allow vừa ở deny/);
++  assert.match(checkPolicy({ allow: [] }, NOW)[0], /thiếu danh sách/);
++  assert.match(checkPolicy({ ...policy, exceptions: [exc({ versions: "1" })] }, NOW).join(), /versions/);
++});
++
++test("checkAllowSync: license-allow.json phải là tập con allow của chính sách", () => {
++  assert.deepEqual(checkAllowSync(policy, { allow: ["MIT"] }), []);
++  assert.match(checkAllowSync(policy, { allow: ["MIT", "GPL-3.0-only"] })[0], /GPL-3.0-only/);
++  assert.match(checkAllowSync(policy, {})[0], /thiếu/);
++});
++
++test("flattenPnpm: tách từng phiên bản, giấy phép lấy từ trường hoặc nhóm, null → rỗng", () => {
++  const out = flattenPnpm({
++    MIT: [{ name: "b", versions: ["2.0.0", "1.0.0"], license: "MIT" }],
++    Unknown: [{ name: "a", versions: ["1.0.0"] }],
++  });
++  assert.deepEqual(
++    out.map((p) => `${p.name}@${p.version}:${p.license}`),
++    ["a@1.0.0:Unknown", "b@1.0.0:MIT", "b@2.0.0:MIT"],
++  );
++  assert.deepEqual(flattenPnpm(null), []);
++  assert.deepEqual(flattenPnpm({}), []);
++});
++
++test("buildSbom: CycloneDX 1.6, purl có scope mã hoá, expression/id/name, Unknown không có licenses, ghi SHA; coverage", () => {
++  const sbom = buildSbom(
++    [
++      { name: "@scope/pkg", version: "1.0.0", license: "MIT" },
++      { name: "dual", version: "1.0.0", license: "(MIT OR CC0-1.0)" },
++      { name: "weird", version: "1.0.0", license: "Some Custom License" },
++      { name: "none", version: "1.0.0", license: "Unknown" },
++    ],
++    { name: "x-shop", version: "0.1.0", sha: "abc123", now: NOW },
++  );
++  assert.equal(sbom.bomFormat, "CycloneDX");
++  assert.equal(sbom.specVersion, "1.6");
++  assert.equal(sbom.components[0].purl, "pkg:npm/%40scope/pkg@1.0.0");
++  assert.deepEqual(sbom.components[0].licenses, [{ license: { id: "MIT" } }]);
++  assert.deepEqual(sbom.components[1].licenses, [{ expression: "(MIT OR CC0-1.0)" }]);
++  assert.deepEqual(sbom.components[2].licenses, [{ license: { name: "Some Custom License" } }]);
++  assert.equal(sbom.components[3].licenses, undefined);
++  assert.equal(sbom.metadata.properties[0].value, "abc123");
++  assert.deepEqual(licenseCoverage(sbom), { total: 4, withLicense: 3, ratio: 0.75 });
++  assert.equal(licenseCoverage({ components: [] }).ratio, 0);
++});
++
++test("asset: creditGlobs đọc cột đầu; globToRegExp ** / * / {}; asset không có dòng credit bị liệt kê, non-asset bỏ qua", () => {
++  const md = [
++    "| Đường dẫn | Nội dung |",
++    "| --- | --- |",
++    "| `apps/a/public/demo/*.svg` | x |",
++    "| `apps/a/public/icons/*.{png,ico}` | y |",
++    "| Be Vietnam Pro | `không-phải-đường-dẫn` |",
++  ].join("\n");
++  const globs = creditGlobs(md);
++  assert.deepEqual(globs, ["apps/a/public/demo/*.svg", "apps/a/public/icons/*.{png,ico}"]);
++  assert.equal(globToRegExp("a/**/b.svg").test("a/x/y/b.svg"), true);
++  assert.equal(globToRegExp("a/*.svg").test("a/x/b.svg"), false);
++  assert.deepEqual(
++    uncreditedAssets(
++      [
++        "apps/a/public/demo/x.svg",
++        "apps/a/public/icons/i.ico",
++        "apps/a/public/new/photo.jpg",
++        "apps/a/public/robots.txt",
++      ],
++      globs,
++    ),
++    ["apps/a/public/new/photo.jpg"],
++  );
++  assert.deepEqual(creditGlobs(""), []);
++  assert.deepEqual(creditGlobs(null), []);
++});

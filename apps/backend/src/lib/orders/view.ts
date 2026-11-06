@@ -1,6 +1,12 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { ledgerTotals, type AddressSnapshot, type QuoteBreakdown, type ShipmentState } from "@x-shop/domain";
+import {
+  ledgerTotals,
+  type AddressSnapshot,
+  type QuoteBreakdown,
+  type ShipmentState,
+  isNonEmpty,
+} from "@x-shop/domain";
 import { maskFreeText } from "../audit/sanitize";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
@@ -88,7 +94,7 @@ interface NativeFulfillment {
 }
 
 const service = (c: MedusaContainer) => c.resolve<CheckoutModuleService>(CHECKOUT_MODULE);
-const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
+const iso = (d: Date | string | null | undefined) => (isNonEmpty(d) ? new Date(d).toISOString() : null);
 
 /** Trạng thái đặt đơn cho phép khách tự hủy (POST02) — thêm điều kiện chưa có vận đơn. */
 export const CUSTOMER_CANCELLABLE_STATES = ["placed", "awaiting_payment", "confirmed"] as const;
@@ -99,11 +105,11 @@ export function maskPhone(phone: string): string {
 }
 
 export function shipmentStateOf(fulfillments: readonly NativeFulfillment[]): ShipmentStateView {
-  const active = fulfillments.filter((f) => !f.canceled_at);
+  const active = fulfillments.filter((f) => !isNonEmpty(f.canceled_at));
   if (active.length === 0) return "unfulfilled";
-  if (active.some((f) => f.delivered_at)) return "delivered";
-  if (active.some((f) => f.shipped_at)) return "shipped";
-  if (active.some((f) => f.packed_at)) return "packed";
+  if (active.some((f) => isNonEmpty(f.delivered_at))) return "delivered";
+  if (active.some((f) => isNonEmpty(f.shipped_at))) return "shipped";
+  if (active.some((f) => isNonEmpty(f.packed_at))) return "packed";
   return "picking";
 }
 
@@ -128,7 +134,7 @@ export function orderShipmentState(
   shipment: Pick<ShipmentRow, "state" | "provider_order_code"> | null,
 ): ShipmentStateView {
   const native = shipmentStateOf(fulfillments);
-  if (native !== "unfulfilled" || !shipment?.provider_order_code) return native;
+  if (native !== "unfulfilled" || !shipment || !isNonEmpty(shipment.provider_order_code)) return native;
   return ROW_VIEW[shipment.state] ?? "packed";
 }
 
@@ -139,7 +145,7 @@ export function orderShipmentState(
 export function customerCanCancel(
   state: string,
   shipmentState: ShipmentStateView,
-  shipment: unknown | null,
+  shipment: object | null | undefined,
 ): boolean {
   return (
     (CUSTOMER_CANCELLABLE_STATES as readonly string[]).includes(state) &&
@@ -250,15 +256,15 @@ export async function presentOrder(container: MedusaContainer, fin: OrderFinance
       label: "Đã ghi nhận yêu cầu hoàn tiền",
     });
   }
-  for (const f of native.fulfillments.filter((x) => !x.canceled_at)) {
-    if (f.shipped_at) {
+  for (const f of native.fulfillments.filter((x) => !isNonEmpty(x.canceled_at))) {
+    if (isNonEmpty(f.shipped_at)) {
       timeline.push({
         at: iso(f.shipped_at) as string,
         kind: "shipped",
         label: "Đã giao cho đơn vị vận chuyển",
       });
     }
-    if (f.delivered_at) {
+    if (isNonEmpty(f.delivered_at)) {
       timeline.push({ at: iso(f.delivered_at) as string, kind: "delivered", label: "Đã giao hàng" });
     }
   }

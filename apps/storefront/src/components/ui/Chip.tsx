@@ -1,6 +1,7 @@
 "use client";
 
 import styles from "./Chip.module.css";
+import { t } from "../../lib/i18n";
 
 export interface ChipProps {
   label: string;
@@ -10,17 +11,21 @@ export interface ChipProps {
 }
 
 /** Bộ lọc đang áp; nút gỡ có tên "Bỏ lọc: <nhãn>". */
-export function Chip({ label, onRemove, removeLabelPrefix = "Bỏ lọc" }: ChipProps) {
+export function Chip({ label, onRemove, removeLabelPrefix }: ChipProps) {
   return (
     <span className={styles.chip}>
       <span className={styles.text}>{label}</span>
       <button
         type="button"
         className={styles.remove}
-        aria-label={`${removeLabelPrefix}: ${label}`}
+        aria-label={
+          removeLabelPrefix === undefined
+            ? t("catalog.removeFilter", { label })
+            : `${removeLabelPrefix}: ${label}`
+        }
         onClick={onRemove}
       >
-        <span aria-hidden="true">×</span>
+        <span aria-hidden="true">{t("ui.glyph.close")}</span>
       </button>
     </span>
   );
@@ -38,7 +43,7 @@ export interface ChipListProps {
   label?: string;
 }
 
-export function ChipList({ items, onRemove, onClearAll, label = "Bộ lọc đang áp" }: ChipListProps) {
+export function ChipList({ items, onRemove, onClearAll, label = t("ui.chip.listLabel") }: ChipListProps) {
   if (items.length === 0) return null;
   return (
     <div className={styles.listWrap}>
@@ -50,7 +55,7 @@ export function ChipList({ items, onRemove, onClearAll, label = "Bộ lọc đan
         ))}
       </ul>
       <button type="button" className={styles.clear} onClick={onClearAll}>
-        Xóa tất cả
+        {t("ui.chip.clearAll")}
       </button>
     </div>
   );

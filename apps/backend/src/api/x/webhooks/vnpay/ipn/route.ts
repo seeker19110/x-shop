@@ -2,24 +2,29 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { vnpay } from "@x-shop/domain";
 import { flattenQuery, handleVnpayIpn } from "../../../../../lib/checkout/payment";
-import { FixedWindowLimiter } from "../../../../../lib/http/rate-limit";
-import { clientIpOf } from "../../../../../lib/security/config";
-
-/** 300 IPN / 10 giây / IP — đủ cho VNPAY gửi lặp, chặn dội request rẻ tiền. */
-const limiter = new FixedWindowLimiter(300, 10_000);
+import { webhookRateLimit } from "../../../../../lib/http/webhook-rate-limit";
+import { readQueryBag } from "../../../../../lib/http/request-input";
 
 /**
  * GET /x/webhooks/vnpay/ipn — chỉ VNPAY gọi (không cần publishable key/đăng nhập; tin cậy duy nhất là chữ ký
- * HMAC-SHA512). Phản hồi JSON `{RspCode, Message}` theo protocol (docs/design/checkout-flow.md §4, SPEC-payment S-101…S-106).
+ * HMAC-SHA512). Giới hạn 300 IPN / 10 giây / IP đếm ở Postgres, chung mọi bản sao (lib/http/webhook-rate-limit.ts,
+ * T-152). Phản hồi JSON `{RspCode, Message}` theo protocol (docs/design/checkout-flow.md §4, SPEC-payment S-101…S-106).
  */
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   res.setHeader("Cache-Control", "no-store");
-  if (!limiter.allow(clientIpOf(req).ip ?? "unknown")) {
+  const rate = await webhookRateLimit(req, "vnpayIpnIp");
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", String(rate.retryAfterSeconds));
     res.status(429).json(vnpay.IPN_RESPONSES.unknownError);
     return;
   }
+  const bag = readQueryBag(req);
+  if (!bag.ok) {
+    res.status(200).json(vnpay.IPN_RESPONSES.invalidSignature);
+    return;
+  }
   try {
-    const result = await handleVnpayIpn(req.scope, flattenQuery(req.query as Record<string, unknown>));
+    const result = await handleVnpayIpn(req.scope, flattenQuery(bag.data));
     res.status(200).json(result);
   } catch (e) {
     req.scope

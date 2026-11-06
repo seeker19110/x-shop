@@ -1,7 +1,14 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, generateEntityId, Modules } from "@medusajs/framework/utils";
 import { createStep, StepResponse } from "@medusajs/framework/workflows-sdk";
-import { diffQuotes, orderMachine, vnpay, type AddressSnapshot, type QuoteBreakdown } from "@x-shop/domain";
+import {
+  diffQuotes,
+  orderMachine,
+  vnpay,
+  type AddressSnapshot,
+  type QuoteBreakdown,
+  isNonEmpty,
+} from "@x-shop/domain";
 import { randomInt } from "node:crypto";
 import { cartFingerprint, loadCheckoutCart, toSafeInteger, type CheckoutCart } from "../../lib/checkout/cart";
 import {
@@ -76,7 +83,7 @@ async function releaseLocksSafely(
   keys: readonly string[] | null,
 ): Promise<void> {
   const error = await releaseOwnedQuietly(lockingOf(container), ownerId, keys);
-  if (error) {
+  if (error !== null) {
     container
       .resolve(ContainerRegistrationKeys.LOGGER)
       .warn(`[checkout] không nhả được khóa của ${ownerId} (tự hết hạn sau TTL): ${causeOf(error)}`);
@@ -148,7 +155,7 @@ export const prepareCheckoutStep = createStep(
     const service = checkoutService(container);
     const now = new Date();
     const cart = await loadCheckoutCart(container, input.cart_id);
-    if (!cart || cart.completed_at) throw new CheckoutError("NOT_FOUND");
+    if (!cart || isNonEmpty(cart.completed_at)) throw new CheckoutError("NOT_FOUND");
 
     const current = await service.currentCartVersion(cart.id);
     if (!current || current.version !== input.cart_version || current.fingerprint !== cartFingerprint(cart)) {
@@ -163,7 +170,12 @@ export const prepareCheckoutStep = createStep(
     if (stored.cart_version !== input.cart_version) throw new CheckoutError("CART_CHANGED");
     if (now.getTime() >= new Date(stored.expires_at).getTime()) throw new CheckoutError("QUOTE_EXPIRED");
 
-    const built = await buildQuote(container, cart, input.address, stored.discount_code ?? null, now);
+    // Phí ship: dùng phí đã lưu trong quote khi quote còn hạn và đầu vào định phí không đổi (bản sao nào cũng đọc cùng
+    // một quote trong DB); đầu vào đổi/hết hạn → hỏi lại hãng, phí khác → SHIPPING_CHANGED (T-153).
+    const built = await buildQuote(container, cart, input.address, stored.discount_code ?? null, now, {
+      quote: stored,
+      paymentMethod: input.payment_method,
+    });
     const change = diffQuotes(stored.breakdown as unknown as QuoteBreakdown, built.breakdown);
     if (change !== null) {
       const fresh = await service.createCheckoutQuotes({
@@ -173,6 +185,7 @@ export const prepareCheckoutStep = createStep(
         discount_code: stored.discount_code ?? null,
         address: input.address as unknown as Record<string, unknown>,
         breakdown: built.breakdown as unknown as Record<string, unknown>,
+        shipping: built.shipping as unknown as Record<string, unknown>,
         total: built.breakdown.total,
         expires_at: new Date(now.getTime() + CHECKOUT_CONFIG.quoteTtlMs),
       });
@@ -183,6 +196,8 @@ export const prepareCheckoutStep = createStep(
             discount_code: fresh.discount_code ?? null,
             breakdown: built.breakdown,
             address: input.address,
+            // Hình quote trong 409 giữ như trước T-153 (không kèm `shipping_quote`).
+            shipping: undefined,
           }),
         },
       });
@@ -208,12 +223,12 @@ export const prepareCheckoutStep = createStep(
     const locationIds = (
       (channels[0] as { stock_locations?: Array<{ id?: string } | null> } | undefined)?.stock_locations ?? []
     )
-      .flatMap((l) => (l?.id ? [l.id] : []))
+      .flatMap((l) => (l && isNonEmpty(l.id) ? [l.id] : []))
       .sort();
 
     const sizeCharts = await sizeChartsOfProducts(
       container,
-      cart.items.flatMap((l) => (l.product_id ? [l.product_id] : [])),
+      cart.items.flatMap((l) => (isNonEmpty(l.product_id) ? [l.product_id] : [])),
     );
 
     const prepared: PreparedCheckout = {
@@ -229,11 +244,11 @@ export const prepareCheckoutStep = createStep(
         variant_id: l.variant_id as string,
         title: l.title,
         quantity: l.quantity,
-        size_chart: (l.product_id && sizeCharts.get(l.product_id)) || NO_SIZE_CHART,
+        size_chart: (isNonEmpty(l.product_id) ? sizeCharts.get(l.product_id) : undefined) ?? NO_SIZE_CHART,
       })),
       breakdown: built.breakdown,
       discount: built.discount,
-      shipping_service: built.shipping.service,
+      shipping_service: built.shipping.providerService,
       requirements,
       location_ids: locationIds,
       inventory_lock_keys: requirements.map((r) => lockKeys.inventoryItem(r.inventory_item_id)),
@@ -293,7 +308,7 @@ export const checkStockStep = createStep(
       const loc = input.location_ids.find(
         (l) => byLoc.has(l) && (need.backorder || (byLoc.get(l) ?? 0) >= need.quantity),
       );
-      if (loc) {
+      if (isNonEmpty(loc)) {
         chosen.set(itemId, loc);
         continue;
       }
@@ -387,7 +402,7 @@ export const verifyNativeOrderStep = createStep(
       const cartLine = it?.metadata?.cart_line_item_id;
       if (it && typeof cartLine === "string") lineMap[cartLine] = it.id;
     }
-    const missing = input.line_ids.filter((id) => !lineMap[id]);
+    const missing = input.line_ids.filter((id) => !isNonEmpty(lineMap[id]));
     if (total !== input.expected_total || missing.length > 0) {
       throw new CheckoutError("INTERNAL", "Đơn tạo ra lệch với báo giá — đã hủy, vui lòng thử lại", {
         detail: { native_total: total, quote_total: input.expected_total, missing_lines: missing },
@@ -435,7 +450,7 @@ export const createOrderFinanceStep = createStep(
         address: input.address,
         contact: input.contact,
       });
-      if (id) return new StepResponse({ display_ref: ref }, { order_id: input.order_id });
+      if (isNonEmpty(id)) return new StepResponse({ display_ref: ref }, { order_id: input.order_id });
     }
     throw new CheckoutError("INTERNAL", "Không sinh được mã đơn, vui lòng thử lại");
   },
@@ -495,24 +510,29 @@ export const createPaymentAttemptStep = createStep(
       throw new CheckoutError("VALIDATION", "Phương thức thanh toán chưa được bật", {
         field: "payment_method",
       });
-    if (!input.hold_expires_at) throw new CheckoutError("INTERNAL", "Thiếu hạn giữ hàng cho đơn online");
+    if (!isNonEmpty(input.hold_expires_at))
+      throw new CheckoutError("INTERNAL", "Thiếu hạn giữ hàng cho đơn online");
     const service = checkoutService(container);
     // Reference ổn định, duy nhất (UNIQUE ở DB), dạng PA_<ULID> — chỉ ký tự VNPAY chấp nhận.
     const txnRef = generateEntityId(undefined, "PA");
     const expiresAt = new Date(input.hold_expires_at);
+    // T-170: MỘT mốc (`prepared.now`) cho cả `vnp_CreateDate` trong URL lẫn chuỗi lưu vào attempt — querydr/refund gửi lại
+    // đúng chuỗi này làm `vnp_TransactionDate`. `created_at` (now() của DB lúc INSERT, sau mốc này) không dùng được.
+    const createdAt = new Date(input.now);
     const id = await service.insertPaymentAttempt({
       order_id: input.order_id,
       provider: "vnpay",
       txn_ref: txnRef,
       amount: input.amount,
       expires_at: expiresAt,
+      vnp_create_date: vnpay.toVnpDate(createdAt),
     });
     const paymentUrl = vnpay.buildPaymentUrl(cfg, {
       txnRef,
       amount: input.amount,
       orderInfo: `Thanh toan don ${input.display_ref}`,
       ipAddr: input.ip,
-      createdAt: new Date(input.now),
+      createdAt,
       expiresAt,
       // Storefront `/thanh-toan/ket-qua?attempt=` (API-CONTRACT): attempt của giỏ trong phiên → đúng đơn, không lấy từ URL.
       returnParams: { attempt: input.attempt_id },
@@ -552,8 +572,12 @@ export const finalizeCheckoutStep = createStep(
         cart_id: input.cart_id,
         cart_version: input.cart_version,
         order_state: input.deadlines.order_state,
-        hold_expires_at: input.deadlines.hold_expires_at ? new Date(input.deadlines.hold_expires_at) : null,
-        cod_confirm_by: input.deadlines.cod_confirm_by ? new Date(input.deadlines.cod_confirm_by) : null,
+        hold_expires_at: isNonEmpty(input.deadlines.hold_expires_at)
+          ? new Date(input.deadlines.hold_expires_at)
+          : null,
+        cod_confirm_by: isNonEmpty(input.deadlines.cod_confirm_by)
+          ? new Date(input.deadlines.cod_confirm_by)
+          : null,
         // Thông báo chỉ gửi sau finalization (AT34) — subscriber đọc outbox, không đọc order.placed native.
         outbox: {
           event_key: `order.placed_pending:${input.order_id}`,

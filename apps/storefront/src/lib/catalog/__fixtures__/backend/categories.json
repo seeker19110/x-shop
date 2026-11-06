@@ -72,5 +72,8 @@
       "parent_handle": null,
       "product_count": 4
     }
-  ]
+  ],
+  "count": 12,
+  "limit": 200,
+  "offset": 0
 }

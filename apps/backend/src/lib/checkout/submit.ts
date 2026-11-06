@@ -1,11 +1,12 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
-import { decideIdempotency, payloadHash, type AddressSnapshot } from "@x-shop/domain";
+import { decideIdempotency, payloadHash, type AddressSnapshot, isNonEmpty } from "@x-shop/domain";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type { PaymentMethod } from "../../modules/checkout/models/constants";
 import type CheckoutModuleService from "../../modules/checkout/service";
 import { submitCheckoutWorkflow } from "../../workflows/checkout/submit-checkout";
 import type { CheckoutContact } from "../../workflows/checkout/steps";
+import { inventoryGuardKind } from "../inventory/guard";
 import { CHECKOUT_CONFIG } from "./config";
 import { leftoversOfAttempt } from "./jobs";
 import { releaseOwnedQuietly } from "./locks";
@@ -73,18 +74,38 @@ export function submitPayloadHash(r: SubmitRequest): string {
   });
 }
 
-const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
+const iso = (d: Date | string | null | undefined) => (isNonEmpty(d) ? new Date(d).toISOString() : null);
+
+/** Cột attempt đủ để quyết định kết quả (outcomeOf) VÀ dựng view — một lần đọc cho cả hai. */
+const ATTEMPT_SNAPSHOT_FIELDS = [
+  "id",
+  "state",
+  "cart_id",
+  "cart_version",
+  "payment_method",
+  "order_id",
+  "error_code",
+  "error_detail",
+] as const;
+type AttemptSnapshot = Pick<
+  Awaited<ReturnType<CheckoutModuleService["listCheckoutAttempts"]>>[number],
+  (typeof ATTEMPT_SNAPSHOT_FIELDS)[number]
+>;
 
 export async function presentAttempt(
   container: MedusaContainer,
   attemptId: string,
 ): Promise<AttemptView | null> {
+  const [a] = await service(container).listCheckoutAttempts({ id: attemptId });
+  return a ? presentSnapshot(container, a) : null;
+}
+
+/** View từ đúng một ảnh chụp attempt (state/error của view khớp ảnh chụp đã dùng để quyết định). */
+async function presentSnapshot(container: MedusaContainer, a: AttemptSnapshot): Promise<AttemptView> {
   const s = service(container);
-  const [a] = await s.listCheckoutAttempts({ id: attemptId });
-  if (!a) return null;
   let order: AttemptView["order"] = null;
   let paymentUrl: string | null = null;
-  if (a.order_id) {
+  if (isNonEmpty(a.order_id)) {
     const [fin] = await s.listOrderFinances({ order_id: a.order_id });
     if (fin) {
       order = {
@@ -109,7 +130,7 @@ export async function presentAttempt(
     payment_method: a.payment_method,
     order,
     payment_url: paymentUrl,
-    error: a.error_code ? { code: a.error_code, message: detail?.message ?? "" } : null,
+    error: isNonEmpty(a.error_code) ? { code: a.error_code, message: detail?.message ?? "" } : null,
   };
 }
 
@@ -120,25 +141,35 @@ function storedError(code: string | null, detail: unknown): CheckoutError {
   return known ?? new CheckoutError("INTERNAL");
 }
 
-async function waitWhilePreparing(container: MedusaContainer, attemptId: string): Promise<void> {
+/**
+ * Chờ attempt rời `preparing` (≤ replayWaitMs) và trả ĐÚNG lần đọc đã kết thúc việc chờ — quyết định kết quả trên chính
+ * ảnh chụp đó. Đọc lại lần nữa thì có thể gặp attempt vừa được request khác mở lại (failed → preparing, retry cùng key)
+ * và trả 202 ngay, không chờ (ca đỏ CI 09fd83d: 3 submit đồng thời khi Redis khóa mất).
+ */
+async function waitWhilePreparing(
+  container: MedusaContainer,
+  attemptId: string,
+): Promise<AttemptSnapshot | undefined> {
   const deadline = Date.now() + CHECKOUT_CONFIG.replayWaitMs;
-  while (Date.now() < deadline) {
-    const [a] = await service(container).listCheckoutAttempts({ id: attemptId }, { select: ["id", "state"] });
-    if (!a || a.state !== "preparing") return;
+  for (;;) {
+    const [a] = await service(container).listCheckoutAttempts(
+      { id: attemptId },
+      { select: [...ATTEMPT_SNAPSHOT_FIELDS] },
+    );
+    if (!a || a.state !== "preparing" || Date.now() >= deadline) return a;
     await new Promise((r) => setTimeout(r, CHECKOUT_CONFIG.replayPollMs));
   }
 }
 
 /** Trả kết quả của một attempt đã có (replay/hai tab): chờ ngắn nếu đang chạy. */
 async function outcomeOf(container: MedusaContainer, attemptId: string): Promise<SubmitOutcome> {
-  await waitWhilePreparing(container, attemptId);
-  const [a] = await service(container).listCheckoutAttempts({ id: attemptId });
+  const a = await waitWhilePreparing(container, attemptId);
   if (!a) return { kind: "error", error: new CheckoutError("INTERNAL"), attemptId };
   if (a.state === "failed")
     return { kind: "error", error: storedError(a.error_code, a.error_detail), attemptId };
   if (a.state === "compensated")
     return { kind: "error", error: new CheckoutError("ATTEMPT_ABORTED"), attemptId };
-  const view = (await presentAttempt(container, attemptId)) as AttemptView;
+  const view = await presentSnapshot(container, a);
   return a.state === "ready" ? { kind: "ok", view } : { kind: "pending", view };
 }
 
@@ -158,6 +189,11 @@ export function classify(error: unknown): CheckoutError {
   if (/Not enough stock available|is not stocked at location/.test(message)) {
     return new CheckoutError("INSUFFICIENT_STOCK");
   }
+  // Hàng rào DB (T-185) từ chối lúc commit: vượt tồn → hết hàng; số giữ bị ghi đè đồng thời (drift) → bận, thử lại cùng
+  // khóa (attempt mở lại, đọc số mới). Không phải 500.
+  const guard = inventoryGuardKind(error);
+  if (guard === "stock") return new CheckoutError("INSUFFICIENT_STOCK");
+  if (guard === "drift") return new CheckoutError("BUSY_RETRY");
   if (/Failed to acquire lock|Timed-out acquiring lock/.test(message)) return new CheckoutError("BUSY_RETRY");
   const name = typeof error === "object" && error !== null ? String((error as { name?: unknown }).name) : "";
   if (REDIS_CONNECTION_ERROR.test(message) || REDIS_CONNECTION_ERROR.test(name)) {
@@ -185,7 +221,8 @@ async function runAttempt(
     },
     throwOnError: false,
   });
-  if (!errors || errors.length === 0) return outcomeOf(container, attemptId);
+  // Kiểu nói `errors` luôn là mảng; giữ phòng thủ khi thiếu (như `!errors` cũ).
+  if ((errors ?? []).length === 0) return outcomeOf(container, attemptId);
   // Lưới an toàn: bù trừ dừng giữa chừng thì bước nhả khóa có thể không chạy → ngừng gia hạn khóa của attempt (khóa tự
   // hết hạn theo TTL nếu Redis đang mất) để job đối chiếu/retry không bị chặn bởi một khóa được gia hạn mãi.
   await releaseOwnedQuietly(container.resolve(Modules.LOCKING), attemptId, null);
@@ -249,7 +286,7 @@ export async function submitCheckout(container: MedusaContainer, r: SubmitReques
 
     // DATA02: phiên bản giỏ đã có checkout hoạt động (tab khác, key khác) → trả attempt đó, không tạo đơn thứ hai.
     const activeId = await s.findActiveAttemptId(r.cart_id, r.cart_version);
-    if (activeId) return outcomeOf(container, activeId);
+    if (isNonEmpty(activeId)) return outcomeOf(container, activeId);
 
     const insertedId = await s.insertAttemptIfAbsent({
       cart_id: r.cart_id,
@@ -261,7 +298,7 @@ export async function submitCheckout(container: MedusaContainer, r: SubmitReques
       payment_method: r.payment_method,
       lease_until: leaseUntil(),
     });
-    if (insertedId) return runAttempt(container, insertedId, r);
+    if (isNonEmpty(insertedId)) return runAttempt(container, insertedId, r);
   }
   return { kind: "error", error: new CheckoutError("BUSY_RETRY"), attemptId: null };
 }

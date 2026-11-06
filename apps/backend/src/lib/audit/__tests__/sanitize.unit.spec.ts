@@ -6,7 +6,7 @@ describe("sanitizeChanges (che PII trong audit)", () => {
       sanitizeChanges({
         password: "p@ss",
         token: "eyJ...",
-        email: "nguyen.van.a@example.vn",
+        email: "nguyen.van.a@example.test",
         phone: "0912345678",
         address: { line1: "12 Lý Thái Tổ", ward: "Hoàn Kiếm" },
         first_name: "An",
@@ -16,7 +16,7 @@ describe("sanitizeChanges (che PII trong audit)", () => {
     ).toEqual({
       password: REDACTED,
       token: REDACTED,
-      email: "n***@example.vn",
+      email: "n***@example.test",
       phone: "091****678",
       address: PII,
       first_name: PII,
@@ -28,25 +28,25 @@ describe("sanitizeChanges (che PII trong audit)", () => {
   it("che theo giá trị ở khóa bất kỳ, kể cả trong mảng/lồng nhau; null/rỗng giữ nguyên", () => {
     expect(
       sanitizeChanges({
-        note: "khach@mail.vn",
+        note: "khach@example.test",
         contacts: ["+84 912 345 678", "không phải số"],
-        nested: { deep: { who: "a@b.co" } },
+        nested: { deep: { who: "a@example.test" } },
         empty: "",
         missing: null,
         skipped: undefined,
       }),
     ).toEqual({
-      note: "k***@mail.vn",
+      note: "k***@example.test",
       contacts: ["+84******678", "không phải số"],
-      nested: { deep: { who: "a***@b.co" } },
+      nested: { deep: { who: "a***@example.test" } },
       empty: "",
       missing: null,
     });
   });
 
   it("email/số điện thoại lẫn trong văn bản tự do cũng bị che; số khác giữ nguyên", () => {
-    expect(sanitizeChanges({ reason: "Khách a.b@mail.vn gọi 0912345678 hỏi đơn 1234" })).toEqual({
-      reason: "Khách a***@mail.vn gọi 091****678 hỏi đơn 1234",
+    expect(sanitizeChanges({ reason: "Khách a.b@example.test gọi 0912345678 hỏi đơn 1234" })).toEqual({
+      reason: "Khách a***@example.test gọi 091****678 hỏi đơn 1234",
     });
   });
 

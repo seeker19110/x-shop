@@ -16,6 +16,9 @@ import { ScrollRestorer } from "./ScrollRestorer";
 import { ListAnalytics } from "./ListAnalytics";
 import { ProductGrid } from "./ProductGrid";
 import { SortForm } from "./SortForm";
+import { isNonEmpty } from "../../lib/presence";
+import { safeHref } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export interface CatalogViewProps {
   basePath: string;
@@ -61,7 +64,7 @@ export function CatalogView({
       <ScrollRestorer />
       <header className={styles.head}>
         <h1>{heading}</h1>
-        {intro ? <p className={styles.intro}>{intro}</p> : null}
+        {isNonEmpty(intro) ? <p className={styles.intro}>{intro}</p> : null}
         {header}
       </header>
 
@@ -83,7 +86,7 @@ export function CatalogView({
           category={category}
         />
         <p className={styles.count} aria-live="polite">
-          {result ? `${result.total} sản phẩm` : "Chưa có số liệu"}
+          {result ? t("catalog.count", { total: result.total }) : t("catalog.noData")}
         </p>
         <SortForm basePath={basePath} filter={filter} />
       </div>
@@ -94,13 +97,13 @@ export function CatalogView({
         <FilterSidebar basePath={basePath} filter={filter} facets={result?.facets ?? null} />
         <section aria-labelledby="ds-san-pham" className={styles.results}>
           <h2 id="ds-san-pham" className="visually-hidden">
-            Danh sách sản phẩm
+            {t("catalog.listHeading")}
           </h2>
           {result === null ? (
             <div role="alert" className={styles.errorBox}>
-              <InlineError>{error ?? "Không tải được danh sách sản phẩm. Vui lòng thử lại."}</InlineError>
-              <Button href={hrefFor(basePath, filter)} variant="secondary">
-                Thử lại
+              <InlineError>{error ?? t("catalog.loadError")}</InlineError>
+              <Button href={safeHref(hrefFor(basePath, filter))} variant="secondary">
+                {t("catalog.retry")}
               </Button>
             </div>
           ) : result.items.length > 0 ? (
@@ -114,33 +117,35 @@ export function CatalogView({
             </>
           ) : result.total > 0 ? (
             <EmptyState
-              title="Trang này không có sản phẩm"
-              description={`Bộ lọc hiện có ${result.total} sản phẩm, trong ${lastPage} trang.`}
-              action={<Button href={hrefFor(basePath, { ...filter, page: 1 })}>Về trang 1</Button>}
+              title={t("catalog.pageEmptyTitle")}
+              description={t("catalog.pageEmptyDescription", { total: result.total, pages: lastPage })}
+              action={
+                <Button href={safeHref(hrefFor(basePath, { ...filter, page: 1 }))}>
+                  {t("catalog.goFirstPage")}
+                </Button>
+              }
             />
           ) : (
             <EmptyState
-              title="Không tìm thấy sản phẩm phù hợp"
+              title={t("catalog.noResultsTitle")}
               description={
-                chips.length > 0
-                  ? "Các điều kiện bạn chọn được giữ nguyên. Gỡ từng điều kiện bên dưới để mở rộng kết quả."
-                  : "Hãy thử từ khóa khác hoặc xem các danh mục dưới đây."
+                chips.length > 0 ? t("catalog.noResultsKeptConditions") : t("catalog.noResultsTryOther")
               }
               action={
                 <div className={styles.noResults}>
                   {chips.length > 0 ? (
-                    <ul className={styles.removeList} aria-label="Gỡ điều kiện">
+                    <ul className={styles.removeList} aria-label={t("catalog.removeListLabel")}>
                       {chips.map((c) => (
                         <li key={c.key}>
-                          <Link href={c.href} prefetch={false}>
-                            {`Bỏ lọc: ${c.label}`}
+                          <Link href={safeHref(c.href)} prefetch={false}>
+                            {t("catalog.removeFilter", { label: c.label })}
                           </Link>
                         </li>
                       ))}
                     </ul>
                   ) : null}
                   {suggestions && suggestions.length > 0 ? (
-                    <ul className={styles.removeList} aria-label="Danh mục gợi ý">
+                    <ul className={styles.removeList} aria-label={t("catalog.suggestedCategories")}>
                       {suggestions.map((s) => (
                         <li key={s.handle}>
                           <Link href={categoryHref(s.handle)} prefetch={false}>

@@ -1,6 +1,13 @@
 import { readFileSync } from "node:fs";
 import { err, ok, type Result } from "../result.js";
 import { searchKey, toNfc } from "../catalog/text.js";
+import {
+  CHECKOUT_LIMITS,
+  CHECKOUT_MESSAGES,
+  charLength,
+  normalizePhone,
+  normalizeText,
+} from "../validation/index.js";
 
 /**
  * Danh mục đơn vị hành chính 2 cấp (tỉnh/thành → phường/xã) sau sắp xếp 01/07/2025 — 34 tỉnh, 3.321 xã.
@@ -76,15 +83,18 @@ export type AddressError = "PROVINCE_NOT_FOUND" | "WARD_NOT_FOUND" | "WARD_PROVI
 export function validateAddress(input: AddressInput): Result<AddressSnapshot, AddressError> {
   const { dataset, wardsByCode } = load();
   const province = dataset.provinces.find((p) => p.code === input.provinceCode);
-  if (!province) return err("PROVINCE_NOT_FOUND", "Vui lòng chọn tỉnh/thành phố", "province_code");
+  if (!province) return err("PROVINCE_NOT_FOUND", CHECKOUT_MESSAGES.province, "province_code");
   const ward = wardsByCode.get(input.wardCode);
-  if (!ward) return err("WARD_NOT_FOUND", "Vui lòng chọn phường/xã", "ward_code");
+  if (!ward) return err("WARD_NOT_FOUND", CHECKOUT_MESSAGES.ward, "ward_code");
   if (ward.provinceCode !== province.code) {
     return err("WARD_PROVINCE_MISMATCH", "Phường/xã không thuộc tỉnh/thành đã chọn", "ward_code");
   }
-  const line = toNfc(input.line).trim().replace(/\s+/g, " ");
-  if (line.length < 3) return err("VALIDATION", "Vui lòng nhập số nhà, tên đường", "address_line");
-  if (line.length > 200) return err("VALIDATION", "Địa chỉ quá dài (tối đa 200 ký tự)", "address_line");
+  // Cùng quy tắc với `addressLineSchema` của form checkout (một nguồn: validation/).
+  const line = normalizeText(input.line);
+  if (charLength(line) < CHECKOUT_LIMITS.lineMin)
+    return err("VALIDATION", CHECKOUT_MESSAGES.line, "address_line");
+  if (charLength(line) > CHECKOUT_LIMITS.lineMax)
+    return err("VALIDATION", CHECKOUT_MESSAGES.lineTooLong, "address_line");
   return ok({
     provinceCode: province.code,
     provinceName: province.name,
@@ -108,11 +118,11 @@ export function suggestWards(provinceCode: string, query: string, limit = 8): Wa
     .slice(0, limit);
 }
 
-const PHONE_RE = /^(0|\+84)(3|5|7|8|9)\d{8}$/;
-
-/** Số di động Việt Nam 10 số (0xxxxxxxxx hoặc +84xxxxxxxxx) → dạng chuẩn 0xxxxxxxxx. */
+/**
+ * Số di động Việt Nam 10 số (0xxxxxxxxx hoặc +84xxxxxxxxx) → dạng chuẩn 0xxxxxxxxx. Quy tắc nằm ở
+ * `validation/phone.ts` (một nguồn với form checkout); hàm này chỉ bọc thành `Result`.
+ */
 export function normalizeVnPhone(raw: string): Result<string, "VALIDATION"> {
-  const s = raw.replace(/[\s.()-]/g, "");
-  if (!PHONE_RE.test(s)) return err("VALIDATION", "Số điện thoại không hợp lệ", "phone");
-  return ok(s.startsWith("+84") ? `0${s.slice(3)}` : s);
+  const phone = normalizePhone(raw);
+  return phone === null ? err("VALIDATION", "Số điện thoại không hợp lệ", "phone") : ok(phone);
 }

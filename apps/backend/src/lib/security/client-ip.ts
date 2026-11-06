@@ -1,4 +1,5 @@
 import { BlockList, isIP } from "node:net";
+import { isNonEmpty } from "@x-shop/domain";
 
 /**
  * IP khách cho rate limit / nhật ký / vnp_IpAddr (SEC03, AT20).
@@ -94,7 +95,7 @@ export function parseTrustedProxies(raw: string | undefined): TrustedProxiesPars
     }
     const [addr, prefixRaw, extra] = entry.split("/");
     const ip = normalizeIp(addr);
-    if (!ip || extra !== undefined) {
+    if (!isNonEmpty(ip) || extra !== undefined) {
       return { ok: false, reason: `phải là IP, CIDR hoặc ${TRUSTED_PROXY_KEYWORDS.join("|")}` };
     }
     const family = isIP(ip) === 4 ? "ipv4" : "ipv6";
@@ -136,7 +137,7 @@ export interface IpSource {
 
 export function resolveClientIp(src: IpSource, trusted: TrustedProxies): ClientIp {
   const peer = normalizeIp(src.remoteAddress);
-  if (!peer) return { ip: null, internal: false };
+  if (!isNonEmpty(peer)) return { ip: null, internal: false };
   if (!trusted.has(peer)) return { ip: peer, internal: false };
   const header = Array.isArray(src.forwardedFor) ? src.forwardedFor.join(",") : (src.forwardedFor ?? "");
   const all = header
@@ -149,7 +150,7 @@ export function resolveClientIp(src: IpSource, trusted: TrustedProxies): ClientI
   for (const raw of hops) {
     const ip = normalizeIp(raw);
     // Chuỗi hỏng: không tin phần bên trái; khách = hop tin cậy cuối, KHÔNG coi là nội bộ (không được miễn giới hạn IP).
-    if (!ip) return { ip: current, internal: false };
+    if (!isNonEmpty(ip)) return { ip: current, internal: false };
     if (!trusted.has(ip)) return { ip, internal: false };
     current = ip;
   }

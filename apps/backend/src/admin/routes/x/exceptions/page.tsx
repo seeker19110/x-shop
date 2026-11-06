@@ -18,6 +18,7 @@ import {
 } from "../../../lib/labels";
 import { AdminApiError } from "../../../lib/problem";
 import { useApi } from "../../../lib/use-api";
+import { isNonEmpty } from "../../../lib/presence";
 
 interface ExceptionItem {
   source: "ops" | "settlement" | "cod";
@@ -223,7 +224,7 @@ const ExceptionsPage = (): ReactNode => {
                 </Table.Cell>
                 <Table.Cell>
                   {i.order_id ?? "—"}
-                  {i.reference && (
+                  {isNonEmpty(i.reference) && (
                     <Text size="xsmall" className="text-ui-fg-subtle">
                       {i.reference}
                     </Text>

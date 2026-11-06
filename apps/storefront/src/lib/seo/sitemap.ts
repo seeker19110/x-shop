@@ -4,6 +4,7 @@ import { getCategories, listProducts } from "../catalog/client";
 import { categoryHref } from "../content/navigation";
 import { getClientEnv } from "../env";
 import { productPath } from "./product-jsonld";
+import { isNonEmpty } from "../presence";
 
 /** Giới hạn của giao thức sitemap là 50.000 URL; ta cắt ở 5.000 cho mỗi tệp (nhẹ, dễ gỡ lỗi). */
 export const SITEMAP_CHUNK = 5000;
@@ -19,7 +20,7 @@ type Entry = MetadataRoute.Sitemap[number];
 
 /** `lastmod` chỉ khi là ngày hợp lệ; thiếu/sai → bỏ (không bịa). */
 function lastmod(iso: string | undefined): Date | undefined {
-  if (!iso) return undefined;
+  if (!isNonEmpty(iso)) return undefined;
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? undefined : d;
 }

@@ -1,5 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
-import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
+import { MedusaError } from "@medusajs/framework/utils";
+import { logServerError } from "../errors/error-handler";
 import type { ShipmentRow } from "../../modules/shipping/service";
 import { readCheckoutError, sendProblem as sendCheckoutProblem } from "../checkout/errors";
 import { sendProblem } from "../http/problem";
@@ -44,8 +45,6 @@ export function handleShippingRouteError(req: MedusaRequest, res: MedusaResponse
           : 0;
     if (status) return sendProblem(res, status, error.type.toUpperCase(), error.message);
   }
-  req.scope
-    .resolve(ContainerRegistrationKeys.LOGGER)
-    .error(`[shipping] lỗi: ${error instanceof Error ? error.message : "không rõ"}`);
+  logServerError(req, "shipping", error);
   sendProblem(res, 500, "INTERNAL", "Không thể xử lý yêu cầu lúc này");
 }

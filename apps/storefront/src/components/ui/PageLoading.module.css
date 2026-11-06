@@ -1,0 +1,24 @@
+.page {
+  display: grid;
+  gap: var(--space-6);
+  /* Giữ chiều cao tối thiểu gần nội dung thật để footer không nhảy khi dữ liệu về (tránh CLS). */
+  min-height: 60dvh;
+  align-content: start;
+}
+
+.body {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--grid-gap);
+}
+
+@media (min-width: 48em) {
+  .grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}

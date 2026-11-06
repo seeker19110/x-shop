@@ -7,6 +7,7 @@ import {
   AdminReturnRequestBody,
   idempotencyKeyOf,
   parseBody,
+  parseQuery,
 } from "../../../../workflows/returns/http";
 import { presentReturn, requestReturn } from "../../../../workflows/returns/returns";
 
@@ -50,7 +51,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
 export const GET = async (req: MedusaRequest, res: MedusaResponse): Promise<void> => {
   try {
     actorOf(req, "return.receive");
-    const query = parseBody(AdminReturnListQuery, req.query);
+    const query = parseQuery(req, AdminReturnListQuery);
     const body = await listReturnsForAdmin(req.scope, query);
     res.setHeader("Cache-Control", "no-store");
     res.status(200).json(body);

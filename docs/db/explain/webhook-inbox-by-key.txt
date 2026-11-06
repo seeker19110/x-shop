@@ -1,0 +1,13 @@
+-- webhook-inbox-by-key
+-- Nguồn: apps/backend/src/modules/checkout/service.ts recordInbox (SELECT sau ON CONFLICT)
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["vnpay","V0123456"]
+
+SELECT id, result, processed_at FROM webhook_inbox WHERE provider = $1 AND event_key = $2;
+
+Index Scan using "IDX_webhook_inbox_provider_event_unique" on webhook_inbox  (cost=0.42..8.44 rows=1 width=38) (actual time=0.009..0.009 rows=1 loops=1)
+  Index Cond: ((provider = 'vnpay'::text) AND (event_key = 'V0123456'::text))
+  Buffers: shared hit=4
+Planning Time: 0.029 ms
+Execution Time: 0.015 ms

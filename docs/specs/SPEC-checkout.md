@@ -34,6 +34,8 @@ lần, để không bị thu thêm ngầm và không mất hàng đã giữ.
 - Given SKU X còn `stocked=1, reserved=0`
 - When 50 giỏ khác nhau submit đồng thời
 - Then đúng 1 submit thành công; 49 nhận `409 INSUFFICIENT_STOCK` dạng hiểu được; `reserved_quantity=1`, không âm.
+- And hàng rào CSDL (T-185, IND-ECOM-001): constraint trigger DEFERRABLE INITIALLY DEFERRED trên `inventory_level` và `reservation_item` kiểm lúc commit trạng thái cuối của mỗi (SKU, kho): (1) `x_inventory_level_stock_guard` — số âm, `reserved > stocked`, hoặc tổng `reservation_item` còn sống > `stocked` (D-134) → `409 INSUFFICIENT_STOCK`; (2) `x_inventory_reserved_drift` — `reserved_quantity` khác tổng `reservation_item` còn sống (ghi đồng thời không qua khóa đã ghi đè số giữ, kể cả khi còn hàng) → submit `409 BUSY_RETRY` (gửi lại cùng Idempotency-Key), route admin/native `409 INVENTORY_CONFLICT_RETRY` kèm `Retry-After`. Không 500.
+- And **backorder thực tế tắt theo D-133**: hàng rào chặn cả reservation có `allow_backorder` — biến thể bật backorder vẫn nhận `409 INSUFFICIENT_STOCK` khi hết hàng. Mở backorder cần quyết định mới + migration mới.
 
 ### S-005 Hết hạn giữ hàng (INV02, §6.2 bước 8)
 - Given đơn online `awaiting_payment`, `hold_expires_at` đã qua, provider query trả "chưa trả"
@@ -90,3 +92,10 @@ lần, để không bị thu thêm ngầm và không mất hàng đã giữ.
   - Phí ship theo bậc khối lượng (`apps/backend/src/lib/checkout/shipping.ts`): số bậc làm tròn LÊN (ceil); khối lượng một dòng không số nguyên gram làm tròn lên.
   - Thuế/hóa đơn: hiện chưa tính thuế (đặc tả gốc §7.4: cấu hình theo mô hình kinh doanh, không hardcode). Khi thêm, phải ghi mode làm tròn (HALF_UP hay HALF_EVEN theo nghiệp vụ) vào spec này và ADR trước khi code.
   - Kiểm: `pnpm --filter @x-shop/domain exec vitest run src/money` (ca `percentOfVnd` làm tròn xuống, biên 0 và 10.000 bp, thuộc tính tổng phân bổ).
+
+## 5. Câu hỏi mở — khuyến mãi (IND-ECOM-004, T-122)
+Hành vi ĐANG CÓ (đã có test): tối đa MỘT mã cấp đơn (% có trần / tiền cố định, điều kiện đơn tối thiểu) + tối đa MỘT ưu đãi ship, cộng được; giảm đơn tính trên subtotal rồi kẹp ≤ subtotal; tổng ≥ 0; quota TỔNG lượt dùng mã (S-008). Kiểm: `pnpm --filter @x-shop/domain test -- quote coupon`. Chưa có trong đặc tả/code — chưa tự thêm, cần phiên chính quyết (`loop decide`):
+- **Q-PROMO-1 Giới hạn lượt dùng/người.** Khách vãng lai không có định danh. (a) Khoá theo số điện thoại chuẩn hóa đã xác minh + email: đơn giản nhưng dễ né bằng số khác; (b) bỏ giới hạn/người, chỉ giữ quota tổng + giới hạn tốc độ: rẻ, chấp nhận rủi ro lạm dụng; (c) chỉ áp giới hạn/người cho mã dành cho tài khoản (cần tài khoản — ngoài phạm vi "mua không cần tài khoản").
+- **Q-PROMO-2 Ngân sách khuyến mãi (tổng tiền giảm tối đa/mã hoặc chiến dịch).** (a) Cộng dồn `orderDiscountTotal` các đơn đã tính ở bảng sử dụng mã, chặn khi chạm trần (cần khóa như quota, hoàn khi huỷ); (b) dùng ngân sách của Medusa Campaign nếu bản đang dùng hỗ trợ (chưa xác minh); (c) không có ngân sách, chỉ quota lượt.
+- **Q-PROMO-3 Chồng nhiều mã cấp đơn — ĐÃ CHỐT (D-061):** giữ một mã cấp đơn (PRICE02); thêm cờ `stackable` khi chủ sản phẩm yêu cầu.
+- **Q-PROMO-4 Snapshot khuyến mãi trong đơn — ĐÃ CHỐT (D-061), đã có (T-134):** breakdown lưu `orderPromotion`/`shippingPromotion` (id khuyến mãi, mã, phạm vi, loại, giá trị, điều kiện đơn tối thiểu/trần giảm, số thực giảm) tại lúc đặt; đơn và đối soát đọc ảnh chụp trong `order_finance.quote`, mã bị sửa/tắt/xoá sau khi đặt không đổi đơn. `diffQuotes` vẫn chỉ so mã + số giảm; mã hết hạn giữa quote và submit → 422 `DISCOUNT_NOT_APPLICABLE` (D-109). Kiểm: `pnpm --filter @x-shop/domain test -- promotion-snapshot` · `pnpm --filter @x-shop/backend test:integration -- checkout-submit`.

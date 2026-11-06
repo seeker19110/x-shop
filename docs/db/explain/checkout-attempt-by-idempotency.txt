@@ -1,0 +1,15 @@
+-- checkout-attempt-by-idempotency
+-- Nguồn: apps/backend/src/lib/checkout/submit.ts → listCheckoutAttempts({ idempotency_scope, idempotency_key })
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["checkout","idk_PF0123457"]
+
+SELECT * FROM checkout_attempt
+  WHERE idempotency_scope = $1 AND idempotency_key = $2 AND deleted_at IS NULL;
+
+Index Scan using "IDX_checkout_attempt_idempotency_unique" on checkout_attempt  (cost=0.42..8.44 rows=1 width=222) (actual time=0.009..0.009 rows=1 loops=1)
+  Index Cond: ((idempotency_scope = 'checkout'::text) AND (idempotency_key = 'idk_PF0123457'::text))
+  Filter: (deleted_at IS NULL)
+  Buffers: shared hit=4
+Planning Time: 0.044 ms
+Execution Time: 0.016 ms

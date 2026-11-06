@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { getClientEnv } from "./lib/env";
 import { buildCsp, createNonce, HSTS_VALUE } from "./lib/security/csp";
 import { allowedHostsOf, checkCsrf } from "./lib/security/csrf";
 
@@ -16,7 +17,7 @@ export function proxy(request: NextRequest): NextResponse {
     origin: request.headers.get("origin"),
     secFetchSite: request.headers.get("sec-fetch-site"),
     allowedHosts: [
-      ...allowedHostsOf(request.headers, process.env.NEXT_PUBLIC_SITE_URL),
+      ...allowedHostsOf(request.headers, getClientEnv().NEXT_PUBLIC_SITE_URL),
       request.nextUrl.host.toLowerCase(),
     ],
   });

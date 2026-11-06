@@ -10,5 +10,6 @@ pnpm-lock.yaml
 **/.next/
 **/.medusa/
 coverage/
+coverage-integration/
 xt.yaml
 packages/domain/data/

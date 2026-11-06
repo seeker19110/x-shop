@@ -1,3 +1,5 @@
+import { mibToBytes, daysToMs, secondsToMs } from "@x-shop/domain";
+
 /**
  * Giá trị liệt kê + cấu hình của module `settlement` (T-028: đối soát COD/sao kê, chênh lệch, báo cáo — đặc tả §5.5,
  * AT14, SPEC-fulfillment S-304, SPEC-admin S-406). Một nguồn cho migration (CHECK), parser, service và route.
@@ -8,7 +10,7 @@
  *  - `reference`: GHN COD → `client_order_code` (hoặc mã vận đơn của hãng); VNPAY `payment` → `vnp_TxnRef`; VNPAY
  *    `refund` → `vnp_RequestId` của yêu cầu hoàn (`x_refund.provider_request_id`).
  *  - `amount`: số nguyên VND ≥ 0, chỉ chữ số (không dấu, không phân cách nghìn, không thập phân), ≤ trần cột integer.
- *  - `occurred_at`: ISO 8601 có múi giờ (`Z` hoặc `+07:00`) — thời điểm tiền chuyển/ghi có theo chứng từ.
+ *  - `occurred_at`: RFC 3339 có giây và offset (`Z` hoặc `+07:00`) — thời điểm tiền chuyển/ghi có theo chứng từ.
  *  - `type`: GHN COD → `cod`; VNPAY → `payment` | `refund`.
  */
 
@@ -94,19 +96,31 @@ export const EXCEPTION_OWNER_ROLE: Record<string, string> = {
   outbox_dead: "order_staff",
   notification_failed: "order_staff",
   catalog_index_mismatch: "owner",
+  catalog_compensation_failed: "owner",
+  job_circuit_open: "owner",
   cod_unsettled: "accountant",
 };
 export const DEFAULT_SETTLEMENT_OWNER_ROLE = "accountant";
 
 export const SETTLEMENT_CONFIG = {
   /** Trần file nhập (byte) — kiểm trước khi giải mã. */
-  maxFileBytes: 1024 * 1024,
+  maxFileBytes: mibToBytes(1),
   /** Trần số dòng dữ liệu một batch. */
   maxRows: 5_000,
   /** Trần cột `integer` của Postgres (D-009) — vượt là lỗi dòng, không cắt. */
   maxAmountVnd: 2_147_483_647,
   /** Chấp nhận lệch đồng hồ: `occurred_at`/`period_end` không quá thời điểm hiện tại + chừng này. */
-  futureSkewMs: 24 * 3600_000,
+  futureSkewMs: daysToMs(1),
   /** Số lỗi dòng tối đa trả về (file lỗi hàng loạt không làm phình phản hồi). */
   maxReportedErrors: 100,
+  /**
+   * Chờ khoá nhập theo nguồn (`pg_advisory_xact_lock`) tối đa chừng này rồi trả 409 IMPORT_IN_PROGRESS (T-140). Phải
+   * nhỏ hơn hẳn `statement_timeout` (30 s, T-092) — nếu không, câu chờ khoá bị cắt bằng lỗi chung 57014 → 500 — và lớn hơn
+   * thời gian một lần nhập trần `maxRows` dòng (đo: docs/db/connections.md §5) để hai lần bấm/nhập song song vẫn tuần tự
+   * hoá êm (lần sau trả bản đã nhập hoặc nhập tiếp), không báo lỗi oan.
+   * GIẢ ĐỊNH: số đo 5,1–5,6 s là Postgres cục bộ (RTT ≈ 0). Lần nhập trần chạy ~5.073 câu tuần tự → mỗi 1 ms RTT tới DB
+   * cộng ~5 s: RTT 1 ms → ~10–11 s, chạm hạn này (lần nhập trần thứ hai song song có thể nhận 409 dù không treo — gọi lại
+   * được). Theo dõi log warn `IMPORT_IN_PROGRESS`; tăng hạn (vẫn < statement_timeout) hoặc gộp câu ghi nếu xảy ra thường.
+   */
+  importLockWaitMs: secondsToMs(10),
 } as const;

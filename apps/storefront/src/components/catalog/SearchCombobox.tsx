@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS, clientFetch } from "../../lib/client-fetch";
+import { t } from "../../lib/i18n";
 import { Button } from "../ui/Button";
 import styles from "./CatalogView.module.css";
 import {
@@ -61,7 +63,11 @@ export function SearchCombobox({ defaultValue, maxLength }: SearchComboboxProps)
       const ctrl = new AbortController();
       abort.current = ctrl;
       try {
-        const res = await fetch(`/api/catalog/suggest?q=${encodeURIComponent(q)}`, { signal: ctrl.signal });
+        const res = await clientFetch(
+          `/api/catalog/suggest?q=${encodeURIComponent(q)}`,
+          { signal: ctrl.signal },
+          { maxRetries: 1, timeoutMs: CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS },
+        );
         if (!res.ok || ctrl.signal.aborted) return;
         const list = sanitizeSuggestions(await res.json());
         if (ctrl.signal.aborted) return;
@@ -105,7 +111,7 @@ export function SearchCombobox({ defaultValue, maxLength }: SearchComboboxProps)
   return (
     <form ref={formRef} role="search" method="get" action="/tim-kiem" className={styles.searchForm}>
       <label htmlFor={`${uid}-q`} className={styles.searchLabel}>
-        Tìm theo tên, mã SKU hoặc danh mục
+        {t("search.inputLabel")}
       </label>
       <div className={styles.searchRow}>
         <div className={styles.comboWrap}>
@@ -131,7 +137,7 @@ export function SearchCombobox({ defaultValue, maxLength }: SearchComboboxProps)
           <ul
             id={listId}
             role="listbox"
-            aria-label="Gợi ý tìm kiếm"
+            aria-label={t("search.suggestLabel")}
             className={styles.suggestList}
             hidden={!open}
           >
@@ -156,11 +162,11 @@ export function SearchCombobox({ defaultValue, maxLength }: SearchComboboxProps)
           </ul>
         </div>
         <Button type="submit" size="lg">
-          Tìm
+          {t("search.submit")}
         </Button>
       </div>
       <div role="status" aria-live="polite" className="visually-hidden">
-        {open ? `${items.length} gợi ý. Dùng phím mũi tên lên xuống để chọn, Enter để tìm, Esc để đóng.` : ""}
+        {open ? t("search.suggestStatus", { count: items.length }) : ""}
       </div>
     </form>
   );

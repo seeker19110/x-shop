@@ -27,6 +27,12 @@ on:
 permissions:
   contents: read
 
+# Tắt telemetry của công cụ build/chạy trên CI (PM-RISK-006, T-218): CI không được gửi số liệu ra ngoài; chỉ THÊM biến, không đổi bước nào.
+# Tên biến xác minh 2026-10-30 — Medusa: docs.medusajs.com/learn/resources/usage; Next.js: nextjs.org/telemetry. Xem docs/ops/ENV.md §Telemetry.
+env:
+  MEDUSA_DISABLE_TELEMETRY: "true"
+  NEXT_TELEMETRY_DISABLED: "1"
+
 # PR: push mới hủy run cũ cùng PR. `main`: mỗi commit một group riêng (run_id), không hủy — giữ bằng chứng CI từng commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -41,11 +47,15 @@ jobs:
   gate:
     name: gate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 → 60 (2026-10-29): bộ tích hợp tăng (862 test) — gate bị huỷ ở 30 phút từ 27/10; lần xanh ở trần 50 mất 49 phút.
+    # 60 → 90 (2026-10-29): gate-par mất 53 phút ở ea2aaa7 (993 test tích hợp), bước coverage bị huỷ ở phút 60.
+    # Trần thời gian chạy, không phải ngưỡng chất lượng. Chia shard test cần sửa xt.yaml (T-128, chờ người) — T-198.
+    timeout-minutes: 90
     # x-shop: test tích hợp Medusa (giữ hàng, idempotency, IPN — AT04/AT05/AT35) chạy trên Postgres/Redis thật (đặc tả §13.3).
     services:
       postgres:
-        image: postgres:16-alpine
+        # BASE-DEP-008: ghim digest (index đa kiến trúc, xác minh 2026-10-26 từ Docker Hub registry). Nâng: lấy digest mới của tag.
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
         env:
           POSTGRES_USER: xshop
           POSTGRES_PASSWORD: xshop
@@ -54,7 +64,9 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:7-alpine
+        # D-147: ghim 7.2 (BSD-3, EOL 2029-12-01) thay vì 7.4+ (RSALv2/SSPLv1, không OSI). Digest = manifest list, lấy 2026-10-30 từ
+        # https://hub.docker.com/v2/repositories/library/redis/tags/7.2-alpine. Nâng: lấy digest mới của tag; đổi dòng 7.2 phải qua ADR/D-NNN.
+        image: redis:7.2-alpine@sha256:2c933526722b4126a61d5c170f766dc159adf97682f0b1cbbc27b1666ba96d84
         ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
@@ -77,8 +89,64 @@ jobs:
         run: bash .xtemplates/scripts/dev-task.sh require lint test
       - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
         run: bash .xtemplates/scripts/dev-task.sh setup
+      # x-shop (T-184, Q-02, DB-SEC-002): vai trò xshop_app (chỉ DML) + xshop_migrator (owner/DDL) trên Postgres của job, TRƯỚC
+      # test tích hợp (db-roles.spec kiểm thuộc tính vai trò, quyền bảng, timeout cấp vai trò do migration đặt). Mật khẩu là
+      # giá trị GIẢ mặc định của scripts/db-roles.sh (chứa SENTINEL; Postgres dùng một lần của job). Thêm bước, không đổi
+      # lệnh cổng. psql có sẵn trên ubuntu-latest.
+      - name: Vai trò DB tách quyền — `scripts/db-roles.sh` (DB-SEC-002)
+        env:
+          XS_PG_ADMIN_URL: postgres://xshop:xshop@localhost:5432/xshop
+        run: bash scripts/db-roles.sh
+      # SEC-SECRET-007 (T-183): output `gate-par` (gồm log test tích hợp Medusa chạy `--silent=false`) được tee ra file để
+      # bước gitleaks bên dưới quét — bí mật lọt vào log test = đỏ. `shell: bash` = `-eo pipefail`: mã thoát của gate-par
+      # vẫn quyết định bước (tee không nuốt lỗi). Thêm kiểm, không đổi lệnh cổng.
       - name: gate-par — typecheck ∥ lint ∥ build → test (kèm ngưỡng coverage của `test`) đúng lệnh trong xt.yaml
-        run: bash .xtemplates/scripts/dev-task.sh gate-par
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/test-logs"
+          bash .xtemplates/scripts/dev-task.sh gate-par 2>&1 | tee "$RUNNER_TEMP/test-logs/gate-par.log"
+      # SEC-SECRET-007, CMP-PRIV-008: gitleaks (CLI MIT, không dùng gitleaks-action vì EULA/giấy phép tổ chức — xem
+      # secret-scan.yml) quét THƯ MỤC log, không đọc lịch sử git (`dir` = `--no-git`), dùng `.gitleaks-logs.toml` (kế thừa
+      # `.gitleaks.toml` D-135, chỉ thêm ngoại lệ UUID chuẩn — trace_id trong log HTTP bị generic-api-key bắt nhầm). Phiên bản ghim + sha256 (gitleaks_8.30.0_checksums.txt, xác minh 2026-10-29). Nhẹ: ~6 MB, vài giây.
+      - name: gitleaks --no-git trên log test — `gitleaks dir` (SEC-SECRET-007)
+        if: ${{ !cancelled() }}
+        env:
+          GITLEAKS_VERSION: 8.30.0
+          GITLEAKS_SHA256: 79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          test -s "$RUNNER_TEMP/test-logs/gate-par.log"
+          "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir "$RUNNER_TEMP/test-logs" --config .gitleaks-logs.toml --redact --no-banner
+      # x-shop (T-110, QA-COV-001/002): coverage nhánh (v8) của domain + storefront (vitest) + backend unit (jest), rồi
+      # ratchet so coverage-baseline.json — lines/branches tụt dưới baseline, hoặc PR hạ chính baseline so với nhánh đích
+      # (`--against`), thì bước đỏ. Bước riêng vì `floor --run` không áp ở pha build (ADR-0041) và `test` của xt.yaml
+      # chưa chạy coverage (đổi xt.yaml là việc phiên chính). BASE_REF qua env, không nội suy vào shell.
+      - name: Coverage nhánh + ratchet — `test:coverage` mỗi gói rồi `scripts/coverage-ratchet.mjs`
+        env:
+          BASE_REF: ${{ github.base_ref || 'master' }}
+        run: |
+          set -euo pipefail
+          pnpm coverage:ratchet:test
+          pnpm -r --if-present test:coverage
+          node scripts/coverage-ratchet.mjs --against "origin/$BASE_REF"
+      # Báo cáo coverage (json-summary + lcov HTML) làm artifact, kể cả khi ratchet đỏ (để xem nhánh nào tụt).
+      # upload-artifact v7.0.2 — SHA lấy bằng `git ls-remote` ngày 2026-10-26 (tag nhẹ, trỏ thẳng commit).
+      - name: Lưu báo cáo coverage (artifact 14 ngày)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: |
+            packages/domain/coverage/
+            apps/storefront/coverage/
+            apps/backend/coverage/
+          retention-days: 14
+          if-no-files-found: warn
       # Sàn M/L (LOOP-HARNESS-023): khoá sàn khai riêng trong xt.yaml (`format_check`, `coverage`, kiểm kiểu theo stack) —
       # trước chỉ `loop verify` chạy nên CI xanh khi sàn đỏ (AUD-XFEAT-020). Lệnh trùng lệnh của gate-par bỏ qua; `e2e` có
       # job riêng; quy mô S/không blueprint → không áp; khoá thiếu chỉ cảnh báo (như doctor).
@@ -91,6 +159,89 @@ jobs:
       # WF-DOC-002, BASE-DOC-006: liên kết Markdown nội bộ (file + anchor) phải trỏ tới đích có thật; offline, chặn merge.
       - name: Liên kết tài liệu nội bộ — `check-links.py`
         run: python3 .xtemplates/scripts/check-links.py
+      # x-shop (T-131): script kiểm tài liệu đã có nhưng chưa chạy ở CI nên lệch tài liệu↔mã không bị chặn. Kiểm ngắn → BƯỚC
+      # trong `gate` (không thêm job/required check). Mỗi script chạy kèm test của chính nó.
+      - name: Đặc tả API (openapi + spectral) — `pnpm check:openapi`
+        run: pnpm check:openapi
+      # x-shop (T-187, ARC-INT-001/BE-API-008): thêm kiểm — mỗi route ghi nhận Idempotency-Key hoặc nằm trong allowlist có
+      # lý do + test song song; OpenAPI khai `x-idempotency` khớp mã. Kèm test của chính script.
+      - name: Idempotency route ghi — `pnpm check:idempotency` (ARC-INT-001)
+        run: pnpm check:idempotency && pnpm check:idempotency:test
+      - name: Bản đồ dữ liệu ↔ migration/PII — `pnpm check:data-map`
+        run: pnpm check:data-map
+      - name: Cấu trúc ADR — `node scripts/check-adr.mjs`
+        run: node scripts/check-adr.mjs
+      # x-shop (T-233, WF-DOC-008): mỗi mục RUNBOOK `## N.` có `last_drilled:` (ngày thật hoặc "chưa diễn tập <lý do>");
+      # quá 6 tháng chỉ cảnh báo, thiếu/sai định dạng/ngày tương lai thì đỏ.
+      - name: Ngày diễn tập RUNBOOK — `node scripts/check-runbook.mjs` (WF-DOC-008)
+        run: node scripts/check-runbook.mjs
+      # x-shop (T-210, ARC-ADR-004): thêm kiểm — ADR đã accepted ở ref gốc chỉ được đổi dòng Status/liên kết, không xoá. Cần
+      # lịch sử nhánh đích: checkout của job đã `fetch-depth: 0`. Ref gốc: ĐÚNG biểu thức của bước check-migrations.
+      - name: ADR đã accepted bất biến — `pnpm check:adr:immutable` (ARC-ADR-004)
+        env:
+          ADR_BASE_REF: >-
+            ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref)
+            || (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+            && github.event.before) || 'HEAD~1' }}
+        run: pnpm check:adr:immutable
+      - name: Test của các script kiểm tài liệu
+        run: pnpm check:openapi:test && pnpm check:data-map:test && pnpm check:adr:test && node --test scripts/check-runbook.test.mjs
+      - name: Ranh giới module + vòng phụ thuộc — `pnpm depcruise` (ARC-MOD-004/005)
+        run: pnpm depcruise
+      - name: SQL nối chuỗi ngoài allowlist — `pnpm check:sql-safety` (BASE-SEC-007)
+        run: pnpm check:sql-safety
+      - name: Bảng route storefront ↔ app/ — `pnpm check:routes` (FE-RENDER-001)
+        run: pnpm check:routes
+      - name: Fixture không PII thật — `node scripts/check-fixtures.mjs` (QA-DATA-002)
+        run: node scripts/check-fixtures.mjs
+      - name: Test của các script kiểm kiến trúc/dữ liệu
+        run: pnpm depcruise:test && pnpm check:sql-safety:test && pnpm check:routes:test && node --test scripts/check-fixtures.test.mjs scripts/check-slo.test.mjs scripts/ops/explain-hot-paths.test.mjs scripts/n-minus-1.test.mjs e2e/smoke-tags.test.mjs e2e/lb.test.mjs e2e/args.test.mjs && pnpm load:test && pnpm check:vi-diacritics:test && pnpm check:authz:test && pnpm check:schema:test && pnpm check:ci-local:test && pnpm check:migrations:test && pnpm check:units:test && pnpm check:env-doc:test && pnpm check:domains:test
+      - name: Schema module tuỳ biến (FK ON DELETE/index, NOT NULL, CHECK) — `pnpm check:schema` (DB-MODEL-004)
+        run: pnpm check:schema
+      # x-shop (T-102): migration đã có trên nhánh đích giữ nguyên byte (blob hash git) + migration mới không phá huỷ trong
+      # up() (DROP/RENAME/đổi kiểu/SET NOT NULL/TRUNCATE/DELETE không WHERE) trừ khi có cờ `@migration-contract` nêu
+      # migration expand đã phát hành. Cần lịch sử nhánh đích: checkout ở trên đã `fetch-depth: 0`; thiếu ref → bước đỏ.
+      # Ref gốc: PR → nhánh đích; push → commit trước push (`event.before`; all-zero khi tạo nhánh → HEAD~1);
+      # workflow_dispatch → HEAD~1. Không dùng origin/<nhánh> cho push/dispatch vì nó trùng HEAD (không kiểm gì).
+      - name: Migration cũ bất biến + expand/contract — `pnpm check:migrations` (DB-MIG-003, DB-MIG-008, OPS-DEPLOY-003)
+        env:
+          MIGRATIONS_BASE_REF: >-
+            ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref)
+            || (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+            && github.event.before) || 'HEAD~1' }}
+        run: pnpm check:migrations
+      # Drift (DB-MIG-001): DB riêng dùng một lần trên Postgres của job → db:migrate → `medusa db:generate` mọi module có
+      # model DML; sinh ra migration/snapshot mới = model lệch migration → đỏ.
+      - name: Drift model ↔ migration — `pnpm check:migrations:drift` (DB-MIG-001)
+        run: pnpm check:migrations:drift
+      - name: Route dữ liệu cá nhân có test BOLA/BFLA — `pnpm check:authz` (QA-INT-006)
+        run: pnpm check:authz
+      - name: Chuỗi UI tiếng Việt có dấu — `pnpm check:vi-diacritics` (UX-CONTENT-001)
+        run: pnpm check:vi-diacritics
+      # x-shop (T-160): cột số chỉ thời lượng/kích thước/tiền trong migration + model phải có hậu tố đơn vị hoặc nằm trong
+      # scripts/units-allowlist.json kèm lý do (XC-UNITS-009, D-110). Không cần DB.
+      - name: Cột số có hậu tố đơn vị — `pnpm check:units` (XC-UNITS-009)
+        run: pnpm check:units
+      # x-shop (T-217): màu chỉ đến từ token (tokens.css); hex/rgb/hsl cứng ngoài token = đỏ (UX-DS-002). Không cần DB.
+      - name: Không màu cứng ngoài token — `pnpm check:hex` (UX-DS-002)
+        run: pnpm check:hex && pnpm check:hex:test
+      # x-shop (T-227, đề xuất từ T-206): component dữ liệu ("use client" tự lấy/ghi dữ liệu) cần test 4 trạng thái
+      # loading/empty/error/success (UX-STATE-001). Không cần DB. Chỉ thêm bước, không nới cổng.
+      - name: Component dữ liệu đủ test 4 trạng thái — `pnpm check:ui-states` (UX-STATE-001)
+        run: pnpm check:ui-states && pnpm check:ui-states:test
+      # x-shop (T-208): khoá biến môi trường của schema zod (backend + storefront) ↔ docs/ops/ENV.md, hai chiều; lệch = đỏ
+      # (BASE-CFG-003, Q-18). Không cần DB. Thêm kiểm, không nới cổng.
+      - name: Khoá env schema ↔ docs/ops/ENV.md — `pnpm check:env-doc` (BASE-CFG-003)
+        run: pnpm check:env-doc
+      # x-shop (T-211, D-047): thư mục `modules/*` + `packages/domain/src/*` ↔ docs/architecture/domains.md, hai chiều; lệch = đỏ
+      # (ARC-MOD-008, ADR-0005). Không cần DB. Thêm kiểm, không nới cổng.
+      - name: Module/lõi miền ↔ docs/architecture/domains.md — `pnpm check:domains` (ARC-MOD-008)
+        run: pnpm check:domains
+      # x-shop (T-212, Q-14): metadata spec (status/approved_by/approved_at) + mỗi ID tiêu chí S-NNN có test nhắc tới (hoặc
+      # nằm trong scripts/spec-trace-allowlist.json kèm lý do); thiếu = đỏ (WF-SDD-001/002/003, PM-SPEC-004). Không cần DB.
+      # Thêm kiểm, không nới cổng.
+      - name: Spec đủ metadata + tiêu chí ↔ test — `pnpm check:specs && pnpm check:spec-trace` (WF-SDD-003)
+        run: pnpm check:specs:test && pnpm check:specs && pnpm check:spec-trace
 
   # E2E (QA-E2E-001, QA-E2E-029): chạy CÙNG LÚC với `gate`, không `needs` — lệnh `e2e` tự build và phục vụ (vd `webServer`
   # của Playwright). `e2e-mode`: `off` (chưa khai `e2e`) → bỏ qua; `shard` (lệnh dùng $XT_SHARD, vd
@@ -129,11 +280,11 @@ jobs:
           TOTAL: ${{ strategy.job-total }}
         run: bash .xtemplates/scripts/dev-task.sh e2e "$SHARD" "$TOTAL"
 
-  # readme-smoke (BASE-DOC-005, XC-DX-001): chạy ĐÚNG khối bash đầu tiên của README.md (mục "Bắt đầu nhanh") trên
+  # onboarding-smoke (BASE-DOC-005, XC-DX-001): chạy ĐÚNG khối bash đầu tiên của README.md (mục "Bắt đầu nhanh") trên
   # clone sạch, để tài liệu không lệch mã; đo thời gian vào step summary. Job ngắn, độc lập, nằm trong `quality.needs`
   # (không thêm required check). Lệnh trong README không cần Postgres/Redis hay bí mật.
-  readme-smoke:
-    name: readme-smoke
+  onboarding-smoke:
+    name: onboarding-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -146,12 +297,210 @@ jobs:
       - name: Chạy đúng các lệnh ở khối bash đầu tiên của README.md
         run: |
           set -euo pipefail
-          awk '/^```bash$/{f=1;next} /^```$/{if(f)exit} f' README.md > "$RUNNER_TEMP/readme-smoke.sh"
-          [ -s "$RUNNER_TEMP/readme-smoke.sh" ] || { echo "::error::README.md không có khối bash"; exit 1; }
-          cat "$RUNNER_TEMP/readme-smoke.sh"
+          awk '/^```bash$/{f=1;next} /^```$/{if(f)exit} f' README.md > "$RUNNER_TEMP/onboarding-smoke.sh"
+          [ -s "$RUNNER_TEMP/onboarding-smoke.sh" ] || { echo "::error::README.md không có khối bash"; exit 1; }
+          cat "$RUNNER_TEMP/onboarding-smoke.sh"
           start=$(date +%s)
-          bash -euxo pipefail "$RUNNER_TEMP/readme-smoke.sh"
-          echo "readme-smoke: $(( $(date +%s) - start )) giây" | tee -a "$GITHUB_STEP_SUMMARY"
+          bash -euxo pipefail "$RUNNER_TEMP/onboarding-smoke.sh"
+          echo "onboarding-smoke: $(( $(date +%s) - start )) giây" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # x-shop (T-163, OPS-DEPLOY-003, D-115): test tích hợp của bản N−1 (ref gốc) trên schema N (migration của HEAD) —
+  # `scripts/n-minus-1.mjs` (cây N−1 qua git archive, phủ migration HEAD, chứng minh schema trùng `db:migrate` của HEAD,
+  # rồi chạy `test:integration` của N−1). Job RIÊNG, song song với `gate` (không `needs`), để không kéo dài `gate`
+  # (~26/30 phút). KHÔNG nằm trong `quality.needs` (không phải required check của ruleset), NHƯNG `xt.py merge-check`
+  # của khung xét MỌI check của PR nên job đỏ vẫn CHẶN merge do máy — D-124 chấp nhận: đây là cổng thật cho PR có
+  # migration. Mã 1 (không tương thích) và 2 (không kết luận được) đều đỏ, kèm annotation `::error::` nêu hướng xử lý;
+  # bảng xử lý theo nguyên nhân ở RUNBOOK §5 "Xử lý job n-minus-1 đỏ".
+  # Chỉ chạy nặng khi có migration thêm/đổi/xoá so với ref gốc HOẶC tập {tên@phiên bản} của `@medusajs/*` trong
+  # pnpm-lock.yaml đổi so với ref gốc (T-195; lockfile hỏng → chạy, fail-safe) — bước detect, không cần cài phụ thuộc;
+  # không có → các bước sau `skipped`, job xanh trong vài giây. Ref gốc: ĐÚNG biểu thức của bước check-migrations trong `gate`.
+  n-minus-1:
+    name: n-minus-1
+    runs-on: ubuntu-latest
+    # Cả bộ test (26–44 phút ở máy dev) + khi có ca đỏ: 2 lần xác nhận + 1 đối chứng chỉ trên suite đỏ (D-124).
+    timeout-minutes: 60
+    services:
+      postgres:
+        # Cùng digest với job `gate` (BASE-DEP-008).
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_USER: xshop
+          POSTGRES_PASSWORD: xshop
+          POSTGRES_DB: xshop
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        # D-147: ghim 7.2 (BSD-3, EOL 2029-12-01) thay vì 7.4+ (RSALv2/SSPLv1, không OSI). Digest = manifest list, lấy 2026-10-30 từ
+        # https://hub.docker.com/v2/repositories/library/redis/tags/7.2-alpine. Nâng: lấy digest mới của tag; đổi dòng 7.2 phải qua ADR/D-NNN.
+        image: redis:7.2-alpine@sha256:2c933526722b4126a61d5c170f766dc159adf97682f0b1cbbc27b1666ba96d84
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://xshop:xshop@localhost:5432/xshop
+      REDIS_URL: redis://localhost:6379
+      MIGRATIONS_BASE_REF: >-
+        ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref)
+        || (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        && github.event.before) || 'HEAD~1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # ref gốc (nhánh đích / commit trước push) phải có trong clone
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - id: detect
+        name: Có migration đổi hoặc @medusajs/* trong lockfile đổi so với ref gốc? — `n-minus-1.mjs --detect-only`
+        run: node scripts/n-minus-1.mjs --detect-only
+      - if: steps.detect.outputs.run == 'true'
+        name: setup — khoá `setup:` của xt.yaml (cây HEAD; store pnpm này là cache cho cây N−1)
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      - if: steps.detect.outputs.run == 'true'
+        name: Test tích hợp bản N−1 trên schema N — `node scripts/n-minus-1.mjs`
+        env:
+          N1_WORKDIR: ${{ runner.temp }}
+        run: node scripts/n-minus-1.mjs
+
+  # x-shop (T-198, QA-COV-001; mở lại đường lùi D-119): coverage test tích hợp backend, chia shard để mỗi job ≤ 20 phút
+  # (cả bộ một job: 36–58 phút, D-064). Mỗi shard chạy nhóm suite do `scripts/test-shards/list.mjs --http-shard I/N` chia
+  # cân theo thời lượng (scripts/test-shards/http-durations.json), bằng ĐÚNG script `test:integration:coverage` của
+  # apps/backend (TEST_TYPE=integration:http, `--coverage`, provider v8) — chỉ thêm `--runTestsByPath` và reporter `json`
+  # (coverage-final.json để gộp). Job gộp `integration-coverage-merge` kiểm đủ shard, gộp rồi ratchet `--suite integration`.
+  # Cả hai nằm trong `quality.needs` (không thêm required check). Số shard: tổng ≈ 3 940 s (đo không coverage, máy dev tải)
+  # / 8 ≈ 490 s mỗi shard; + overhead v8 10–35 % + cài/dựng ≈ 15 phút < trần 20. Đổi số shard: sửa matrix bên dưới
+  # (shards.test.mjs kiểm độ cân với N này); suite dài thêm: cập nhật http-durations.json từ step summary của job.
+  # Song song với `gate` (không `needs`); `gate` vẫn chạy cả bộ tích hợp không coverage qua `test` của xt.yaml.
+  # D-157: phạm vi đo tích hợp bỏ src/admin/** (UI trình duyệt; vẫn đo + ratchet ở coverage unit) — jest.config.js.
+  integration-coverage:
+    name: integration-coverage ${{ matrix.shard }}/${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false # shard khác vẫn chạy hết để thấy mọi suite đỏ; kết quả gộp của job vẫn là `failure`
+      matrix:
+        # integration-coverage-shards
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    services:
+      postgres:
+        # Cùng digest với job `gate` (BASE-DEP-008).
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_USER: xshop
+          POSTGRES_PASSWORD: xshop
+          POSTGRES_DB: xshop
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xshop" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        # Cùng digest với job `gate` (D-147, BSD-3).
+        image: redis:7.2-alpine@sha256:2c933526722b4126a61d5c170f766dc159adf97682f0b1cbbc27b1666ba96d84
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://xshop:xshop@localhost:5432/xshop
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      # Như `gate`: db-roles.spec kiểm vai trò xshop_app/xshop_migrator (DB-SEC-002) — mật khẩu GIẢ mặc định của script.
+      - name: Vai trò DB tách quyền — `scripts/db-roles.sh` (DB-SEC-002)
+        env:
+          XS_PG_ADMIN_URL: postgres://xshop:xshop@localhost:5432/xshop
+        run: bash scripts/db-roles.sh
+      # shutdown.spec chạy `medusa start` thật (không điều kiện export @x-shop/source) nên cần dist của @x-shop/domain; `gate`
+      # có nhờ `pnpm build` trong gate-par. Chỉ dựng gói domain (tsc, vài giây), không dựng cả app.
+      - name: Dựng @x-shop/domain (dist cho shutdown.spec)
+        run: pnpm --filter @x-shop/domain build
+      - name: Test tích hợp shard I/N kèm coverage — `list.mjs --http-shard` → `test:integration:coverage`
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ strategy.job-total }}
+        run: |
+          set -euo pipefail
+          out="$(node scripts/test-shards/list.mjs --http-shard "$SHARD/$TOTAL")"
+          mapfile -t ids <<<"$out"
+          [ -n "$out" ] && [ "${#ids[@]}" -gt 0 ] || { echo "::error::shard $SHARD/$TOTAL không có suite nào"; exit 1; }
+          specs=()
+          for id in "${ids[@]}"; do specs+=("integration-tests/http/${id#http:}.spec.ts"); done
+          printf '%s\n' "${specs[@]}"
+          start=$SECONDS
+          rc=0
+          pnpm --dir apps/backend run test:integration:coverage --runTestsByPath "${specs[@]}" \
+            --coverageReporters=json --coverageReporters=json-summary --coverageReporters=text-summary || rc=$?
+          echo "integration-coverage $SHARD/$TOTAL: ${#ids[@]} suite, $((SECONDS - start)) giây, exit $rc" | tee -a "$GITHUB_STEP_SUMMARY"
+          mkdir -p apps/backend/coverage-integration
+          node -e 'const [s, t, ...ids] = process.argv.slice(1);
+          require("node:fs").writeFileSync("apps/backend/coverage-integration/shard.json", JSON.stringify({ shard: +s, total: +t, ids }));' \
+            "$SHARD" "$TOTAL" "${ids[@]}"
+          exit "$rc"
+      # upload-artifact v7.0.2 — cùng SHA với bước coverage của `gate`.
+      - name: Lưu coverage của shard (artifact cho job gộp)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-integration-${{ matrix.shard }}
+          path: |
+            apps/backend/coverage-integration/coverage-final.json
+            apps/backend/coverage-integration/coverage-summary.json
+            apps/backend/coverage-integration/shard.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # Gộp coverage các shard (T-198): đủ bộ shard + hợp các suite = danh sách đủ của `list.mjs` (thiếu/trùng → exit 2, đo thiếu
+  # ≠ đạt), gộp bằng istanbul-lib-coverage/-report/-reports của chính jest (scripts/coverage-merge.mjs, không thêm phụ
+  # thuộc), rồi ratchet so mục `integration` của coverage-baseline.json (tụt → đỏ; `--against` của bước coverage trong
+  # `gate` đã chặn PR hạ baseline cả hai mục). Shard đỏ → job này `skipped` → `quality` đỏ.
+  integration-coverage-merge:
+    name: integration-coverage-merge
+    needs: [integration-coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      # Cần node_modules: coverage-merge.mjs nạp istanbul-lib-* qua jest của apps/backend.
+      - name: setup — khoá `setup:` của xt.yaml (vắng = bỏ qua)
+        run: bash .xtemplates/scripts/dev-task.sh setup
+      - name: Test của script chia shard/gộp/ratchet
+        run: node --test scripts/test-shards/shards.test.mjs scripts/coverage-merge.test.mjs && pnpm coverage:ratchet:test
+      # download-artifact v8.0.2 — SHA lấy bằng `git ls-remote` ngày 2026-10-31 (tag nhẹ, trỏ thẳng commit); đọc artifact
+      # của upload-artifact v4+ (cùng backend artifact v2).
+      - name: Tải coverage các shard
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-integration-*
+          path: ${{ runner.temp }}/cov-shards
+      - name: Gộp coverage shard — `scripts/coverage-merge.mjs`
+        run: |
+          set -euo pipefail
+          node scripts/test-shards/list.mjs | grep '^http:' > "$RUNNER_TEMP/http-ids.txt"
+          node scripts/coverage-merge.mjs --out apps/backend/coverage-integration \
+            --expect-ids "$RUNNER_TEMP/http-ids.txt" "$RUNNER_TEMP"/cov-shards/coverage-integration-*
+      - name: Ratchet coverage tích hợp — `node scripts/coverage-ratchet.mjs --suite integration`
+        run: node scripts/coverage-ratchet.mjs --suite integration
+      - name: Lưu báo cáo coverage tích hợp đã gộp (artifact 14 ngày)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-integration
+          path: apps/backend/coverage-integration/
+          retention-days: 14
+          if-no-files-found: warn
 
   # Required check `quality` (ruleset `.github/rulesets/main.json`): TỔNG HỢP mọi job con (WF-CI-001). `always()` — không
   # phải `!cancelled()`: run bị huỷ thì `quality` vẫn chạy và ĐỎ (job con `cancelled`/`skipped` ≠ `success`). Với
@@ -163,7 +512,7 @@ jobs:
   # `rules/branches` chỉ cần quyền đọc metadata mà GITHUB_TOKEN luôn có — `contents: read` của workflow là đủ.
   quality:
     name: quality
-    needs: [gate, e2e, readme-smoke]
+    needs: [gate, e2e, onboarding-smoke, integration-coverage, integration-coverage-merge]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

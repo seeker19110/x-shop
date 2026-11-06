@@ -121,30 +121,101 @@ export default class CatalogIndexModuleService {
     }
   }
 
-  /** Thay toàn bộ dòng của các sản phẩm (gồm xoá sản phẩm không còn dòng nào: draft, xoá, rời kênh). */
+  /**
+   * Thay toàn bộ dòng của các sản phẩm (gồm xoá sản phẩm không còn dòng nào: draft, xoá, rời kênh). Cùng giao dịch ghi
+   * mốc vào `catalog_index_write_log` (đồng hồ DB) — rebuild đang dựng ngoài khoá giữ bản này nếu mốc ≥ mốc bắt đầu của nó.
+   */
   async replaceProducts(productIds: string[], rows: CatalogIndexRow[]): Promise<void> {
     if (productIds.length === 0) return;
     await this.db.transaction(async (trx) => {
       const del = inList("product_id", productIds);
       await trx.raw(`DELETE FROM ${TABLE} WHERE ${del.sql}`, del.bindings as Knex.ValueDict[]);
       await this.insertRows(trx, rows);
+      await trx.raw(
+        `INSERT INTO catalog_index_write_log (product_id, written_at)
+         SELECT x, clock_timestamp() FROM jsonb_array_elements_text(?::jsonb) x
+         ON CONFLICT (product_id) DO UPDATE SET written_at = EXCLUDED.written_at`,
+        [JSON.stringify([...new Set(productIds)])],
+      );
     });
   }
 
-  /** Thay cả bảng trong một giao dịch (rebuild toàn phần). */
-  async replaceAll(rows: CatalogIndexRow[]): Promise<void> {
-    await this.db.transaction(async (trx) => {
-      await trx.raw(`DELETE FROM ${TABLE}`);
-      await this.insertRows(trx, rows);
+  /** Đồng hồ DB dạng text (micro giây) — mốc bắt đầu rebuild, so với `written_at` cùng đồng hồ. */
+  async clockNow(): Promise<string> {
+    const res = await this.db.raw(`SELECT clock_timestamp()::text AS now`);
+    return (res.rows[0] as { now: string }).now;
+  }
+
+  /**
+   * Thay cả bảng bằng ảnh chụp dựng từ mốc `since` (rebuild toàn phần, T-167/D-076) trong MỘT giao dịch:
+   * - ảnh chụp có mốc cũ hơn lần thay toàn bảng đã áp (`'*'` trong write log) → không ghi gì (`applied: false`);
+   * - sản phẩm được `replaceProducts` ghi từ `since` trở đi (đồng bộ chạy song song lúc rebuild đọc nguồn — kể cả ghi
+   *   "xoá hết dòng") giữ NGUYÊN dòng hiện tại, bỏ dòng của ảnh chụp (có thể đã cũ), và được đánh dấu bẩn lại (lượt
+   *   đồng bộ đó có thể đã đọc nguồn trước `since`);
+   * - mọi sản phẩm khác lấy theo ảnh chụp.
+   * Người gọi giữ khoá ghi index (không ai `replaceProducts` xen giữa). Write log cũ hơn `since` được dọn: rebuild sau phải
+   * có mốc ≥ `since` mới được áp nên không cần chúng.
+   */
+  async replaceAll(
+    rows: CatalogIndexRow[],
+    since: string,
+  ): Promise<{ applied: boolean; inserted: number; keptProducts: string[]; keptRows: number }> {
+    return this.db.transaction(async (trx) => {
+      await trx.raw(
+        `INSERT INTO catalog_index_write_log (product_id, written_at) VALUES ('*', '-infinity')
+         ON CONFLICT (product_id) DO NOTHING`,
+      );
+      const guard = await trx.raw(
+        `SELECT written_at > ?::timestamptz AS newer FROM catalog_index_write_log WHERE product_id = '*' FOR UPDATE`,
+        [since],
+      );
+      if ((guard.rows[0] as { newer: boolean }).newer) {
+        return { applied: false, inserted: 0, keptProducts: [], keptRows: 0 };
+      }
+      await trx.raw(`UPDATE catalog_index_write_log SET written_at = ?::timestamptz WHERE product_id = '*'`, [
+        since,
+      ]);
+      const kept = await trx.raw(
+        `SELECT product_id FROM catalog_index_write_log WHERE product_id <> '*' AND written_at >= ?::timestamptz`,
+        [since],
+      );
+      const keptProducts = (kept.rows as { product_id: string }[]).map((r) => r.product_id);
+      // Mốc ghi của lượt đồng bộ là lúc GHI, nó có thể đã đọc nguồn TRƯỚC `since` → bản giữ lại có thể cũ hơn ảnh chụp
+      // (thay đổi không phát sự kiện — price list tới giờ, bảng màu/size, link kho↔kênh — không có dấu bẩn nào sửa lại).
+      // Đánh dấu bẩn lại sản phẩm giữ lại trong cùng giao dịch: lượt xả kế tiếp đọc nguồn mới nhất (review T-167 🔴1).
+      await this.upsertDirty(trx, keptProducts);
+      await trx.raw(
+        `DELETE FROM catalog_index_write_log WHERE product_id <> '*' AND written_at < ?::timestamptz`,
+        [since],
+      );
+      // Danh sách rỗng → NOT IN (tập rỗng) đúng với mọi dòng → xoá cả bảng như trước.
+      await trx.raw(
+        `DELETE FROM catalog_variant_index WHERE product_id NOT IN (SELECT jsonb_array_elements_text(?::jsonb))`,
+        [JSON.stringify(keptProducts)],
+      );
+      const keptRows =
+        keptProducts.length === 0
+          ? 0
+          : ((await trx.raw(`SELECT count(*)::int AS n FROM catalog_variant_index`)).rows[0] as { n: number })
+              .n;
+      const skip = new Set(keptProducts);
+      const fresh = skip.size === 0 ? rows : rows.filter((r) => !skip.has(r.product_id));
+      await this.insertRows(trx, fresh);
+      return { applied: true, inserted: fresh.length, keptProducts, keptRows };
     });
   }
 
   /** Đánh dấu sản phẩm cần đồng bộ (idempotent; đánh dấu lại cập nhật mốc thời gian). '*' = rebuild toàn phần. */
   async markDirty(productIds: string[]): Promise<void> {
+    await this.upsertDirty(this.db, productIds);
+  }
+
+  /** Câu đánh dấu bẩn dùng chung (`markDirty` và `replaceAll` — trong giao dịch của nó). */
+  private async upsertDirty(conn: Knex | Knex.Transaction, productIds: string[]): Promise<void> {
     const ids = [...new Set(productIds.filter(Boolean))];
     if (ids.length === 0) return;
     const w = inList("x", ids);
-    await this.db.raw(
+    await conn.raw(
       `INSERT INTO catalog_index_dirty (product_id, marked_at)
        SELECT x, clock_timestamp() FROM (SELECT jsonb_array_elements_text(?::jsonb) AS x) s
        ON CONFLICT (product_id) DO UPDATE SET marked_at = EXCLUDED.marked_at, attempts = 0, next_attempt_at = NULL`,

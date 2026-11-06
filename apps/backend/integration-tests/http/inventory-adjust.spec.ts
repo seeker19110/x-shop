@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+import { isNonEmpty } from "@x-shop/domain";
 import { lockKeys } from "../../src/lib/checkout/locks";
 import { AUDIT_MODULE } from "../../src/modules/audit";
 import type AuditModuleService from "../../src/modules/audit/service";
@@ -51,7 +52,7 @@ medusaIntegrationTestRunner({
         method: "POST",
         url: URL,
         data: body,
-        headers: { ...who.headers, ...(key ? { "idempotency-key": key } : {}) },
+        headers: { ...who.headers, ...(isNonEmpty(key) ? { "idempotency-key": key } : {}) },
         ...noThrow,
       });
 
@@ -73,6 +74,7 @@ medusaIntegrationTestRunner({
       expect(await level()).toEqual({ stocked: 10, reserved: 4 });
     });
 
+    // S-404 (SPEC-admin): điều chỉnh tồn bắt buộc lý do/actor/trước-sau/idempotency, không giảm dưới số đã giữ (các test trong describe này).
     it("tăng tồn có lý do → 201 ghi trước/sau/actor + audit; gửi lại cùng khóa → 200 kết quả cũ, không cộng lần hai", async () => {
       const key = newKey();
       const res = await adjust({ ...body(5), note: "Nhập lô 24/10" }, key);

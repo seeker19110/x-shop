@@ -10,11 +10,14 @@ import {
 } from "@medusajs/medusa/core-flows";
 import {
   IMPORT_COLUMNS,
+  isNonEmpty,
+  mibToBytes,
   parseCsv,
   toCsv,
-  validateImport,
   type ImportRow,
   type ImportRowError,
+  validateImport,
+  minutesToMs,
 } from "@x-shop/domain";
 import { CATALOG_IMPORT_MODULE } from "../../modules/catalog-import";
 import type CatalogImportModuleService from "../../modules/catalog-import/service";
@@ -25,7 +28,7 @@ import { colorOf, loadDictionary, sizeOf } from "./dictionary";
 import { loadProductSources } from "./product-source";
 
 /** Giới hạn file nhập (ADM02): 2 MB — đủ cho ~20.000 dòng, chặn file làm treo tiến trình. */
-export const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
+export const MAX_IMPORT_BYTES = mibToBytes(2);
 
 export interface PlannedVariant {
   line: number;
@@ -88,7 +91,7 @@ function rawMaterials(text: string): Map<number, string> {
 
 async function storeDefaults(container: MedusaContainer) {
   const [store] = await container.resolve(Modules.STORE).listStores({}, { take: 1 });
-  if (!store?.default_sales_channel_id || !store.default_location_id) {
+  if (!store || !isNonEmpty(store.default_sales_channel_id) || !isNonEmpty(store.default_location_id)) {
     throw new MedusaError(
       MedusaError.Types.UNEXPECTED_STATE,
       "Store chưa có kênh bán/kho mặc định — chạy seed nền",
@@ -108,18 +111,20 @@ export async function previewImport(container: MedusaContainer, text: string): P
   const productService = container.resolve(Modules.PRODUCT);
   const handles = [...new Set(rows.map((r) => r.handle))];
   const skus = [...new Set(rows.map((r) => r.sku))];
+  const categoryHandles = [...new Set(rows.map((r) => r.category))];
+  // handle danh mục/sản phẩm và SKU là duy nhất → mỗi giá trị tra tối đa một dòng: `take` = số giá trị (không `take: null`).
   const [categories, products, variants, dict] = await Promise.all([
-    rows.length
-      ? productService.listProductCategories(
-          { handle: [...new Set(rows.map((r) => r.category))] },
-          { take: null },
-        )
+    categoryHandles.length
+      ? productService.listProductCategories({ handle: categoryHandles }, { take: categoryHandles.length })
       : Promise.resolve([]),
     handles.length
-      ? productService.listProducts({ handle: handles }, { select: ["id", "handle"], take: null })
+      ? productService.listProducts({ handle: handles }, { select: ["id", "handle"], take: handles.length })
       : Promise.resolve([]),
     skus.length
-      ? productService.listProductVariants({ sku: skus }, { select: ["id", "sku", "product_id"], take: null })
+      ? productService.listProductVariants(
+          { sku: skus },
+          { select: ["id", "sku", "product_id"], take: skus.length },
+        )
       : Promise.resolve([]),
     loadDictionary(container),
   ]);
@@ -136,7 +141,7 @@ export async function previewImport(container: MedusaContainer, text: string): P
     const rowErrors: ImportRowError[] = [];
     const err = (column: string, message: string) => rowErrors.push({ line: r.line, column, message });
     const catId = categoryId.get(r.category);
-    if (!catId) err("category", `Danh mục "${r.category}" không tồn tại`);
+    if (!isNonEmpty(catId)) err("category", `Danh mục "${r.category}" không tồn tại`);
     if (r.color !== null && !dict.colors.has(r.color))
       err("color", `Màu "${r.color}" chưa có trong bảng màu`);
     if (r.size !== null && !dict.sizes.has(r.size)) err("size", `Size "${r.size}" chưa có trong bảng size`);
@@ -146,7 +151,7 @@ export async function previewImport(container: MedusaContainer, text: string): P
         if (head[f] !== r[f]) err(f, `Khác dòng ${head.line} của cùng sản phẩm "${r.handle}"`);
       }
       const p = plan.get(r.handle);
-      if (p?.variants.some((v) => v.color === r.color && v.size === r.size))
+      if (p?.variants.some((v) => v.color === r.color && v.size === r.size) === true)
         err("color,size", `Trùng biến thể ${r.color ?? "-"}/${r.size ?? "-"} trong sản phẩm`);
       if (
         p &&
@@ -164,7 +169,7 @@ export async function previewImport(container: MedusaContainer, text: string): P
         `SKU đã thuộc sản phẩm khác (${handleByProductId.get(existingVariant.product_id ?? "") ?? existingVariant.product_id})`,
       );
     }
-    if (existingProductId && !existingVariant) {
+    if (isNonEmpty(existingProductId) && !existingVariant) {
       err("sku", "Thêm SKU mới vào sản phẩm đã có chưa hỗ trợ qua CSV — tạo biến thể trong Admin");
     }
     if (rowErrors.length) {
@@ -206,10 +211,11 @@ export async function previewImport(container: MedusaContainer, text: string): P
     summary: {
       rows_total: rows.length + new Set(errors.map((e) => e.line).filter((l) => l > 1)).size,
       rows_valid: valid.length,
-      products_new: planned.filter((p) => !p.existingId).length,
-      products_existing: planned.filter((p) => p.existingId).length,
-      variants_new: planned.flatMap((p) => p.variants).filter((v) => !v.existingVariantId).length,
-      variants_existing: planned.flatMap((p) => p.variants).filter((v) => v.existingVariantId).length,
+      products_new: planned.filter((p) => !isNonEmpty(p.existingId)).length,
+      products_existing: planned.filter((p) => isNonEmpty(p.existingId)).length,
+      variants_new: planned.flatMap((p) => p.variants).filter((v) => !isNonEmpty(v.existingVariantId)).length,
+      variants_existing: planned.flatMap((p) => p.variants).filter((v) => isNonEmpty(v.existingVariantId))
+        .length,
     },
   };
 }
@@ -277,7 +283,7 @@ async function setStock(
   qty: number,
   result: ImportResult,
 ): Promise<void> {
-  if (!inv.inventoryItemId || inv.stocked === qty) return;
+  if (!isNonEmpty(inv.inventoryItemId) || inv.stocked === qty) return;
   if (inv.stocked === null) {
     await createInventoryLevelsWorkflow(container).run({
       input: {
@@ -317,7 +323,7 @@ export async function applyImport(container: MedusaContainer, plan: PlannedProdu
       material: p.material,
       material_label: p.materialLabel,
     };
-    if (!productId) {
+    if (!isNonEmpty(productId)) {
       const colors = [...new Set(p.variants.map((v) => v.color).filter((c): c is string => c !== null))].sort(
         (a, b) => colorOf(dict, a).rank - colorOf(dict, b).rank,
       );
@@ -341,15 +347,18 @@ export async function applyImport(container: MedusaContainer, plan: PlannedProdu
               ...(options.length ? { options } : {}),
               variants: p.variants.map((v, i) => ({
                 title:
-                  [v.color && colorOf(dict, v.color).label, v.size && sizeOf(dict, v.size).label]
+                  [
+                    isNonEmpty(v.color) ? colorOf(dict, v.color).label : null,
+                    isNonEmpty(v.size) ? sizeOf(dict, v.size).label : null,
+                  ]
                     .filter(Boolean)
                     .join(" / ") || p.title,
                 sku: v.sku,
                 manage_inventory: true,
                 variant_rank: i,
                 options: {
-                  ...(v.color ? { [OPTION_COLOR]: v.color } : {}),
-                  ...(v.size ? { [OPTION_SIZE]: v.size } : {}),
+                  ...(isNonEmpty(v.color) ? { [OPTION_COLOR]: v.color } : {}),
+                  ...(isNonEmpty(v.size) ? { [OPTION_SIZE]: v.size } : {}),
                 },
                 prices: [{ amount: v.price, currency_code: CURRENCY }],
               })),
@@ -435,7 +444,7 @@ export async function exportProductsCsv(container: MedusaContainer): Promise<str
 /** Khoá ghi nhập CSV: mọi commit chạy tuần tự (hai import cùng tạo một handle không thể chen nhau). */
 export const CATALOG_IMPORT_LOCK = "x-shop:catalog-import";
 /** Chờ tối đa khi một commit khác đang giữ khóa (như `timeout: 300` của `locking.execute` trước đây). */
-const IMPORT_LOCK_WAIT_MS = 300_000;
+export const IMPORT_LOCK_WAIT_MS = minutesToMs(5);
 /**
  * Lease khóa nhập: gia hạn nền mỗi 1/3 TTL (20 s) suốt lúc commit chạy — file lớn chạy bao lâu cũng giữ khóa; tiến trình
  * chết thì khóa tự nhả sau ≤ 60 s (bằng hạn mặc định của `locking.execute` native).
@@ -480,7 +489,7 @@ export function jobView(j: JobRecord): ImportJobView {
     result: (j.result as ImportResult | null) ?? null,
     previewed_by: j.previewed_by,
     committed_by: j.committed_by,
-    committed_at: j.committed_at ? new Date(j.committed_at).toISOString() : null,
+    committed_at: isNonEmpty(j.committed_at) ? new Date(j.committed_at).toISOString() : null,
   };
 }
 

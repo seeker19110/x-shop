@@ -51,7 +51,7 @@ export type ValidateResult =
  */
 export function validateEvent(raw: unknown): ValidateResult {
   const pii = findPii(raw);
-  if (pii) return { ok: false, reason: "pii", path: pii };
+  if (pii !== null) return { ok: false, reason: "pii", path: pii };
   const r = eventSchema.safeParse(raw);
   if (!r.success) return { ok: false, reason: "schema", path: r.error.issues[0]?.path.join(".") };
   return { ok: true, event: r.data as AnalyticsEvent };

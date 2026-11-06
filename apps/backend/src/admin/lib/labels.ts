@@ -31,7 +31,18 @@ export const DISCREPANCY_KIND_LABELS: Record<string, string> = {
   cod_unsettled: "COD chưa đối soát đủ",
   late_payment: "Thanh toán muộn",
   overpayment: "Thanh toán dư",
+  // Ngoại lệ vận hành (ops_exception.kind) — test hàng rào giữ khớp OPS_EXCEPTION_KINDS.
+  payment_unknown: "Thanh toán chưa rõ kết quả",
+  refund_unknown: "Hoàn tiền chưa rõ kết quả",
+  refund_request: "Yêu cầu hoàn tiền",
+  webhook_rejected: "Webhook bị từ chối",
+  checkout_stuck: "Đặt hàng bị kẹt",
+  cod_confirm_overdue: "COD quá hạn xác nhận",
+  outbox_dead: "Sự kiện gửi hỏng",
+  notification_failed: "Thông báo khách gửi hỏng",
   catalog_index_mismatch: "Chỉ mục danh mục lệch giá",
+  catalog_compensation_failed: "Hoàn tác dữ liệu sản phẩm lỗi",
+  job_circuit_open: "Job nền tạm dừng gọi dịch vụ ngoài",
 };
 export const kindLabel = (c: string) => lookup(DISCREPANCY_KIND_LABELS, c);
 

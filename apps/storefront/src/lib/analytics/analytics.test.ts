@@ -1,5 +1,6 @@
 import { findPii, looksLikePii, type AnalyticsEvent } from "./schema";
 import { resetAnalyticsForTests, setAnalyticsConsent, track } from "./track";
+import { validateEvent } from "./validate";
 
 const layer = () => (window.dataLayer ?? []) as AnalyticsEvent[];
 
@@ -40,8 +41,9 @@ describe("analytics: track() mặc định đẩy vào dataLayer", () => {
     expect(layer()).toHaveLength(1);
   });
 
+  // S-508 (SPEC-storefront): sự kiện không chứa PII; purchase dedupe theo order_id (hai test kế tiếp).
   it("bỏ khi payload chứa email / SĐT / địa chỉ", () => {
-    expect(track({ event: "view_item", items: [{ item_id: "a@b.vn" }] })).toBe(false);
+    expect(track({ event: "view_item", items: [{ item_id: "a@example.test" }] })).toBe(false);
     expect(track({ event: "view_item", items: [{ item_id: "x", sku: "0912345678" }] })).toBe(false);
     expect(track({ event: "view_item", list_id: "12 Phố Điện Biên Phủ" } as never)).toBe(false);
     expect(layer()).toHaveLength(0);
@@ -144,8 +146,78 @@ describe("analytics: bộ quét PII", () => {
   );
 
   it("quét sâu cả khóa và mảng lồng", () => {
-    expect(findPii({ a: [{ b: "x@y.vn" }] })).toBe("$.a[0].b");
+    expect(findPii({ a: [{ b: "x@example.test" }] })).toBe("$.a[0].b");
     expect(findPii({ "0912345678": 1 })).toBe("$.0912345678");
     expect(findPii({ a: { b: ["ok"] } })).toBeNull();
+  });
+});
+
+/**
+ * CMP-PRIV-010 / T-090: PII không bao giờ rời trình duyệt qua `track()` (dataLayer, beacon) và không lọt qua
+ * `/api/analytics` — bộ mẫu PII tiếng Việt: SĐT, CCCD 12 số, email, địa chỉ (có dấu/không dấu), cả khi lẫn trong văn bản.
+ */
+describe("analytics: bộ mẫu PII tiếng Việt không ra ngoài (CMP-PRIV-010)", () => {
+  const beacon = vi.fn(() => true);
+  beforeEach(() => {
+    beacon.mockClear();
+    Object.defineProperty(navigator, "sendBeacon", { value: beacon, configurable: true });
+    vi.stubEnv("NEXT_PUBLIC_ANALYTICS_TRANSPORT", "beacon");
+    setAnalyticsConsent(true);
+  });
+
+  const SAMPLES: [string, string][] = [
+    ["SĐT liền", "0912345678"],
+    ["SĐT tách nhóm", "0912 345 678"],
+    ["SĐT chấm", "0912.345.678"],
+    ["SĐT +84", "+84 912 345 678"],
+    ["SĐT 84 liền", "84912345678"],
+    ["SĐT lẫn trong chữ", "goi-0912345678"],
+    ["CCCD liền", "099203001234"],
+    ["CCCD tách nhóm", "079 203 001 234"],
+    ["CCCD trong chữ", "cccd:099203001234"],
+    ["email", "nguyen.van.a@example.com"],
+    ["địa chỉ có dấu", "12 Nguyễn Trãi, P. Bến Thành, Q.1"],
+    ["địa chỉ hẻm", "25/3 hẻm 102 Lê Văn Sỹ"],
+    ["địa chỉ không dấu", "so 5 ngo 12 lang ha"],
+    ["cấp hành chính", "Phường Dịch Vọng, Quận Cầu Giấy"],
+  ];
+
+  const placements: [string, (s: string) => Record<string, unknown>][] = [
+    ["order_id", (s) => ({ event: "purchase", order_id: s, value: 1000 })],
+    ["list_id", (s) => ({ event: "view_item_list", list_id: s })],
+    ["items[].item_id", (s) => ({ event: "view_item", items: [{ item_id: s }] })],
+    ["items[].sku", (s) => ({ event: "view_item", items: [{ item_id: "ao", sku: s }] })],
+    ["trường lạ", (s) => ({ event: "view_item", note: s })],
+    ["khóa lạ", (s) => ({ event: "view_item", [s]: 1 })],
+  ];
+
+  it.each(SAMPLES)("%s (%s): track() bỏ ở mọi vị trí, không vào dataLayer, không beacon", (_n, sample) => {
+    for (const [, build] of placements) {
+      expect(track(build(sample) as never)).toBe(false);
+    }
+    expect(layer()).toHaveLength(0);
+    expect(beacon).not.toHaveBeenCalled();
+  });
+
+  it.each(SAMPLES)("%s (%s): /api/analytics (validateEvent) từ chối là PII", (_n, sample) => {
+    for (const [, build] of placements) {
+      const r = validateEvent({ v: 1, currency: "VND", ...build(sample) });
+      expect(r).toMatchObject({ ok: false, reason: "pii" });
+    }
+  });
+
+  it("sự kiện hợp lệ cùng bối cảnh vẫn được gửi (bộ quét không chặn nhầm)", () => {
+    expect(
+      track({
+        event: "purchase",
+        order_id: "XS-ABC123",
+        value: 1330000,
+        items: [{ item_id: "ao-so-mi-lua", sku: "AOSM-DEN-M", quantity: 2, price: 665000 }],
+      }),
+    ).toBe(true);
+    expect(beacon).toHaveBeenCalledTimes(1);
+    expect(validateEvent({ v: 1, currency: "VND", event: "view_item", list_id: "sale-1010" })).toMatchObject({
+      ok: true,
+    });
   });
 });

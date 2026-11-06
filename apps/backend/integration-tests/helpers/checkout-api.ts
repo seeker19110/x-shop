@@ -44,7 +44,7 @@ export interface Body {
   Message: string;
 }
 
-export const CONTACT = { name: "Nguyễn Văn An", phone: "0912 345 678", email: "an@example.vn" };
+export const CONTACT = { name: "Nguyễn Văn An", phone: "0912 345 678", email: "an@example.test" };
 export const DEV_VNPAY = {
   tmnCode: VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE,
   hashSecret: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows";
+import { isNonEmpty } from "@x-shop/domain";
 import { CURRENCY, OPTION_COLOR, OPTION_SIZE } from "../../src/lib/catalog/constants";
 
 export interface TestVariant {
@@ -49,10 +50,10 @@ export async function createTestProduct(container: MedusaContainer, input: TestP
           status: input.status ?? "draft",
           images: images.map(([color, alt], i) => ({
             url: `/static/demo/${color ?? "den"}.svg?i=${i}`,
-            metadata: { ...(color ? { color } : {}), ...(alt ? { alt } : {}) },
+            metadata: { ...(isNonEmpty(color) ? { color } : {}), ...(isNonEmpty(alt) ? { alt } : {}) },
           })),
           ...(input.categoryIds ? { category_ids: input.categoryIds } : {}),
-          ...(input.salesChannelId ? { sales_channels: [{ id: input.salesChannelId }] } : {}),
+          ...(isNonEmpty(input.salesChannelId) ? { sales_channels: [{ id: input.salesChannelId }] } : {}),
           options: [
             { title: OPTION_COLOR, values: [...new Set(variants.map((v) => v.color))] },
             { title: OPTION_SIZE, values: [...new Set(variants.map((v) => v.size))] },

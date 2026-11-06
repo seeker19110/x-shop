@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import type { AdminSessionPolicy } from "./config";
 import type { SecurityStore } from "./store";
+import { isNonEmpty, msToSecondsCeil, secondsToMs } from "@x-shop/domain";
 
 /**
  * Chính sách phiên admin (SEC02, SPEC-admin S-402) — hàm thuần + lớp lưu "lần thấy cuối" trong SecurityStore.
@@ -23,7 +24,7 @@ export type SessionCode = "SESSION_EXPIRED" | "SESSION_IDLE";
 export type MfaCode = "MFA_REQUIRED" | "REAUTH_REQUIRED";
 
 export function mfaCompletedAtMs(ctx: AdminAuthContext): number | null {
-  if (!ctx.mfa_challenge_completed_at) return null;
+  if (!isNonEmpty(ctx.mfa_challenge_completed_at)) return null;
   const t = new Date(ctx.mfa_challenge_completed_at).getTime();
   return Number.isNaN(t) ? null : t;
 }
@@ -31,7 +32,7 @@ export function mfaCompletedAtMs(ctx: AdminAuthContext): number | null {
 export function sessionAnchorMs(ctx: AdminAuthContext): number | null {
   const mfa = mfaCompletedAtMs(ctx);
   if (mfa !== null) return mfa;
-  return typeof ctx.iat === "number" && Number.isFinite(ctx.iat) ? ctx.iat * 1000 : null;
+  return typeof ctx.iat === "number" && Number.isFinite(ctx.iat) ? secondsToMs(ctx.iat) : null;
 }
 
 /** Không có mốc → không thể áp hạn phiên → từ chối (fail-closed). */
@@ -43,9 +44,9 @@ export function evaluateSession(input: {
 }): { ok: true } | { ok: false; code: SessionCode } {
   const { anchorMs, lastSeenMs, nowMs, policy } = input;
   if (anchorMs === null) return { ok: false, code: "SESSION_EXPIRED" };
-  if (nowMs - anchorMs > policy.maxAgeSeconds * 1000) return { ok: false, code: "SESSION_EXPIRED" };
+  if (nowMs - anchorMs > secondsToMs(policy.maxAgeSeconds)) return { ok: false, code: "SESSION_EXPIRED" };
   const last = lastSeenMs ?? anchorMs;
-  if (nowMs - last > policy.idleSeconds * 1000) return { ok: false, code: "SESSION_IDLE" };
+  if (nowMs - last > secondsToMs(policy.idleSeconds)) return { ok: false, code: "SESSION_IDLE" };
   return { ok: true };
 }
 
@@ -56,16 +57,22 @@ export function evaluateMfa(
   reauthSeconds: number | null,
 ): { ok: true } | { ok: false; code: MfaCode } {
   const at = mfaCompletedAtMs(ctx);
-  if (!ctx.mfa_enabled || at === null) return { ok: false, code: "MFA_REQUIRED" };
-  if (reauthSeconds !== null && nowMs - at > reauthSeconds * 1000)
+  if (ctx.mfa_enabled !== true || at === null) return { ok: false, code: "MFA_REQUIRED" };
+  if (reauthSeconds !== null && nowMs - at > secondsToMs(reauthSeconds))
     return { ok: false, code: "REAUTH_REQUIRED" };
   return { ok: true };
 }
 
-/** Khóa phiên ổn định qua refresh: băm (auth identity, mốc xác thực) — không lưu token/định danh thô. */
-export function sessionKey(ctx: AdminAuthContext, anchorMs: number): string {
-  const h = createHash("sha256")
-    .update(`${ctx.auth_identity_id ?? ""}|${anchorMs}`)
+/** Nhãn cố định của HMAC dẫn xuất khóa phiên (không phải bí mật — chỉ tách miền băm; đầu vào không phải mật khẩu). */
+const SESSION_KEY_LABEL = "x-shop/admin-session-key/v1";
+
+/**
+ * Khóa phiên ổn định qua refresh: HMAC-SHA256 (auth identity, mốc xác thực) — không lưu token/định danh thô.
+ * Đổi từ SHA-256 trần sang HMAC làm khóa phiên đang có (Redis/DB) mất khớp một lần: phiên phải đăng nhập lại.
+ */
+export function sessionKey(authIdentityId: string | null | undefined, anchorMs: number): string {
+  const h = createHmac("sha256", SESSION_KEY_LABEL)
+    .update(`${authIdentityId ?? ""}|${anchorMs}`)
     .digest("hex");
   return `sess:${h.slice(0, 40)}`;
 }
@@ -79,7 +86,7 @@ export async function checkAndTouchSession(
 ): Promise<{ ok: true } | { ok: false; code: SessionCode }> {
   const anchorMs = sessionAnchorMs(ctx);
   if (anchorMs === null) return { ok: false, code: "SESSION_EXPIRED" };
-  const key = sessionKey(ctx, anchorMs);
+  const key = sessionKey(ctx.auth_identity_id, anchorMs);
   const raw = await store.get(key);
   const lastSeenMs = raw === null ? null : Number(raw);
   const verdict = evaluateSession({
@@ -89,7 +96,7 @@ export async function checkAndTouchSession(
     policy,
   });
   if (!verdict.ok) return verdict;
-  const remaining = Math.ceil((anchorMs + policy.maxAgeSeconds * 1000 - nowMs) / 1000);
+  const remaining = msToSecondsCeil(anchorMs + secondsToMs(policy.maxAgeSeconds) - nowMs);
   await store.set(key, String(nowMs), Math.max(1, remaining));
   return verdict;
 }

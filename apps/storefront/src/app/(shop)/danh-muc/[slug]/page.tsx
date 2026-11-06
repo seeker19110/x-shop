@@ -8,6 +8,8 @@ import { buildBreadcrumbJsonLd } from "../../../../lib/seo/breadcrumb-jsonld";
 import { serializeJsonLd } from "../../../../lib/seo/product-jsonld";
 import { getClientEnv } from "../../../../lib/env";
 import { catalogMetadata } from "../../../../lib/seo/catalog-meta";
+import { t } from "../../../../lib/i18n";
+import { isNonEmpty } from "../../../../lib/presence";
 
 interface Props {
   params: Promise<{ slug: string }>;
@@ -17,13 +19,13 @@ interface Props {
 export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
   const { slug } = await params;
   const name = await getCategoryName(slug);
-  if (!name) return { title: "Không tìm thấy danh mục", robots: { index: false } };
+  if (!isNonEmpty(name)) return { title: t("catalog.categoryNotFound"), robots: { index: false } };
   const { filter, result } = await loadListing("category", slug, toQueryString(await searchParams));
   return catalogMetadata({
     basePath: categoryHref(slug),
     filter,
     title: name,
-    description: `Mua ${name.toLowerCase()} tại X-Shop: lọc theo màu, size, giá và còn hàng.`,
+    description: t("catalog.categoryDescription", { name: name.toLowerCase() }),
     total: result?.total ?? null,
     pageSize: result?.page_size ?? CATALOG_PAGE_SIZE,
   });
@@ -32,7 +34,7 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
 export default async function CategoryPage({ params, searchParams }: Props) {
   const { slug } = await params;
   const name = await getCategoryName(slug);
-  if (!name) notFound();
+  if (!isNonEmpty(name)) notFound();
   const { filter, issues, result, error } = await loadListing(
     "category",
     slug,
@@ -41,7 +43,7 @@ export default async function CategoryPage({ params, searchParams }: Props) {
   const crumbsLd = serializeJsonLd(
     buildBreadcrumbJsonLd(
       [
-        { name: "Trang chủ", path: "/" },
+        { name: t("catalog.breadcrumbHome"), path: "/" },
         { name: name, path: categoryHref(slug) },
       ],
       getClientEnv().NEXT_PUBLIC_SITE_URL,
@@ -58,6 +60,7 @@ export default async function CategoryPage({ params, searchParams }: Props) {
         error={error}
         category={slug}
       />
+      {/* eslint-disable-next-line react/no-danger -- JSON-LD do serializeJsonLd tạo (thoát "<", U+2028/2029), không có dữ liệu thô */}
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: crumbsLd }} />
     </>
   );

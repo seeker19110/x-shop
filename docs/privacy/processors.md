@@ -14,7 +14,7 @@
 ## Dữ liệu từng bên nhận (theo cột)
 
 Lấy từ `recipients` trong `docs/privacy/data-map.yaml`: `order_finance.contact` → GHN, nhà cung cấp thông báo · `order_finance.address` → GHN ·
-`checkout_quote.address` → GHN (tính phí) · `shipment.label_url` → GHN · `webhook_inbox.payload`, `payment_attempt.payment_url` → VNPAY.
+`checkout_quote.address`, `checkout_quote.shipping` → GHN (tính phí) · `shipment.label_url` → GHN · `webhook_inbox.payload`, `payment_attempt.payment_url` → VNPAY.
 Hạ tầng triển khai chạm mọi cột nhưng chưa được chọn nên không đứng trong `recipients`; khi chọn, thêm vào vendors.yaml và ghi ở đây.
 
 ## Quy trình thay đổi bên xử lý

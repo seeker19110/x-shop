@@ -40,7 +40,8 @@ export interface AdminAccount {
 }
 
 /**
- * Tạo admin thật qua luồng native (đăng ký emailpass → tạo user gắn auth identity → đăng nhập) và trả header Bearer.
+ * Tạo admin thật qua luồng native (lời mời → đăng ký emailpass kèm token mời → tạo user gắn auth identity → đăng nhập) và
+ * trả header Bearer. Đăng ký `user` chỉ qua cổng khi có lời mời hợp lệ (T-138, lib/admin-security/register-gate.ts).
  * Không giả token: route admin chạy đúng middleware authenticate của Medusa. Mặc định cấp vai trò `owner` (RBAC T-023)
  * để test chức năng không vướng quyền; `roles: []` = user chưa có vai trò.
  */
@@ -51,11 +52,19 @@ export async function createAdmin(
 ): Promise<AdminAccount> {
   const email = `admin-${randomUUID()}@x-shop.test`;
   const password = `pw-${randomUUID()}`;
-  const reg = await api.post("/auth/user/emailpass/register", { email, password });
+  const users = container.resolve(Modules.USER);
+  const [invite] = await users.createInvites([{ email }]);
+  const reg = await api.post("/auth/user/emailpass/register", {
+    email,
+    password,
+    invite_token: invite!.token,
+  });
   const authIdentityId = jwtPayload(String(reg.data.token)).auth_identity_id as string;
   const { result: user } = await createUserAccountWorkflow(container).run({
     input: { userData: { email }, authIdentityId },
   });
+  // Như acceptInviteWorkflow: lời mời đã dùng bị xoá (mềm) — không để lại lời mời còn hạn cho email của admin đã có.
+  await users.deleteInvites([invite!.id]);
   const rbac = container.resolve<RbacModuleService>(RBAC_MODULE);
   for (const role of opts.roles ?? ["owner"]) await rbac.grant(user.id, role, "test");
   const login = await api.post("/auth/user/emailpass", { email, password });

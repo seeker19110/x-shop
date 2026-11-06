@@ -1,0 +1,58 @@
+[
+  {
+    "column": "catalog_variant_index.price",
+    "reason": "Giá VND số nguyên (chỉ mục tìm kiếm); cột đã áp ở migration catalog-index, không đổi tên được (DB-MIG-003); đơn vị VND theo quy ước dự án (AGENTS.md §9)."
+  },
+  {
+    "column": "checkout_quote.total",
+    "reason": "Tổng tiền VND số nguyên của báo giá; cột đã áp, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "order_finance.total",
+    "reason": "Tổng tiền VND số nguyên của đơn; cột đã áp, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "*.amount",
+    "reason": "Cột `amount` = tiền VND số nguyên (AGENTS.md §9), cùng tên với cột Medusa core/cổng thanh toán; ops_exception, payment_attempt, payment_ledger, refund, settlement_discrepancy, settlement_line đã áp, không đổi tên được (DB-MIG-003)."
+  },
+  {
+    "column": "*.expected_amount",
+    "reason": "Tiền kỳ vọng VND số nguyên (đối soát); cột đã áp ở migration settlement, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "settlement_discrepancy.actual_amount",
+    "reason": "Tiền thực nhận VND số nguyên (đối soát); cột đã áp (Migration20261026220000), không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "settlement_batch.total_amount",
+    "reason": "Tổng tiền đối soát VND số nguyên; cột đã áp ở migration settlement, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "return_line.refund_amount",
+    "reason": "Tiền hoàn VND số nguyên; cột đã áp ở migration returns, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "shipment.cod_amount",
+    "reason": "Tiền thu hộ COD VND số nguyên; cột đã áp ở migration shipping, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "shipment.cod_reported_amount",
+    "reason": "Tiền COD hãng báo VND số nguyên; cột đã áp ở migration shipping, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "shipment.shipping_fee",
+    "reason": "Phí vận chuyển VND số nguyên; cột đã áp ở migration shipping, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "catalog_variant_index.compare_at",
+    "reason": "Giá gốc (so sánh) VND số nguyên của chỉ mục tìm kiếm; cột đã áp ở migration catalog-index, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "settlement_line.difference",
+    "reason": "Chênh lệch tiền VND số nguyên (thực nhận trừ kỳ vọng, có thể âm); cột đã áp ở migration settlement, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  },
+  {
+    "column": "settlement_discrepancy.difference",
+    "reason": "Chênh lệch tiền VND số nguyên của sai lệch đối soát (có thể âm); cột đã áp ở migration settlement, không đổi tên được (DB-MIG-003); đơn vị VND theo AGENTS.md §9."
+  }
+]

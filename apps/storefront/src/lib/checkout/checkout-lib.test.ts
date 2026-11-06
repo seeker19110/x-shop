@@ -93,6 +93,9 @@ describe("map: phản hồi thật của backend", () => {
     expect(mapSubmitResponse(503, body)).toEqual({ kind: "unavailable", retryAfterSeconds: null });
     expect(mapSubmitResponse(503, body, "0")).toEqual({ kind: "unavailable", retryAfterSeconds: null });
     expect(mapSubmitResponse(503, body, "abc")).toEqual({ kind: "unavailable", retryAfterSeconds: null });
+    // BASE-DATA-003: header rỗng là "thiếu", không phải 0 giây (Number("") === 0).
+    expect(mapSubmitResponse(503, body, "")).toEqual({ kind: "unavailable", retryAfterSeconds: null });
+    expect(mapSubmitResponse(503, body, null)).toEqual({ kind: "unavailable", retryAfterSeconds: null });
     expect(mapSubmitResponse(503, { code: "SHIPPING_UNAVAILABLE" }, "60")).toEqual({ kind: "network" });
   });
 
@@ -123,6 +126,9 @@ describe("map: phản hồi thật của backend", () => {
       retryAfterMs: 5000,
     });
     expect(mapSubmitResponse(409, { code: "BUSY_RETRY" })).toEqual({ kind: "busy", retryAfterMs: 1000 });
+    // Retry-After rỗng → mặc định 1000 ms, KHÔNG phải 0 ms (vòng lặp gửi dồn); "0" là giá trị thật → 0.
+    expect(mapSubmitResponse(409, { code: "BUSY_RETRY" }, "")).toEqual({ kind: "busy", retryAfterMs: 1000 });
+    expect(mapSubmitResponse(409, { code: "BUSY_RETRY" }, "0")).toEqual({ kind: "busy", retryAfterMs: 0 });
     expect(mapSubmitResponse(409, { code: "IDEMPOTENCY_CONFLICT", detail: "x" })).toMatchObject({
       kind: "error",
       newKey: true,

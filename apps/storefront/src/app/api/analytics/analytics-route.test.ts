@@ -88,6 +88,21 @@ describe("analytics: POST /api/analytics", () => {
     expect((await post({ ...ok, pad: "x".repeat(9000) })).status).toBe(413);
   });
 
+  it('trần 8 KiB đo bằng BYTE UTF-8, không phải số ký tự (8000 × "ệ" = 24000 byte → 413)', async () => {
+    const pad = "ệ".repeat(8000);
+    expect(pad.length).toBeLessThan(8192); // đo theo ký tự thì lọt
+    expect((await post(JSON.stringify({ ...ok, pad }))).status).toBe(413);
+  });
+
+  it("đúng 8192 byte không bị 413 (biên); 8193 byte → 413", async () => {
+    const mk = (n: number) => {
+      const fixed = JSON.stringify({ ...ok, pad: "" });
+      return JSON.stringify({ ...ok, pad: "x".repeat(n - new TextEncoder().encode(fixed).length) });
+    };
+    expect((await post(mk(8192))).status).not.toBe(413);
+    expect((await post(mk(8193))).status).toBe(413);
+  });
+
   it("value = 0 hợp lệ (khác thiếu)", async () => {
     expect((await post({ ...ok, value: 0 })).status).toBe(204);
   });

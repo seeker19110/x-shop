@@ -3,6 +3,7 @@ import { auditContextOf } from "../../../../../../lib/audit/record";
 import { handleReturnsRouteError } from "../../../../../../workflows/returns/errors";
 import { actorOf, CancelBody, parseBody } from "../../../../../../workflows/returns/http";
 import { cancelRefund, presentRefund } from "../../../../../../workflows/returns/refunds";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/refunds/:id/cancel — hủy yêu cầu hoàn đã thất bại (quyền `refund.execute`, `reason` bắt buộc — T-044):
@@ -13,9 +14,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
   try {
     const actor = actorOf(req, "refund.execute");
     const body = parseBody(CancelBody, req.body);
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
     const { refund, changed } = await cancelRefund(
       req.scope,
-      String(req.params.id),
+      params.data.id,
       actor,
       body.reason,
       auditContextOf(req),

@@ -2,9 +2,10 @@ import type { Metadata } from "next";
 import styles from "../../../../components/orders/Order.module.css";
 import { Button } from "../../../../components/ui/Button";
 import { redeemLinkAction } from "../../../../lib/orders/actions";
+import { t } from "../../../../lib/i18n";
 
 export const metadata: Metadata = {
-  title: "Xem đơn hàng",
+  title: t("orders.viewTitle"),
   robots: { index: false, follow: false },
   referrer: "no-referrer",
 };
@@ -27,18 +28,18 @@ export default async function RedeemPage({
   return (
     <section className={styles.page} aria-labelledby="xac-thuc-tieu-de">
       <h1 id="xac-thuc-tieu-de" className={styles.title}>
-        Xem đơn hàng
+        {t("orders.viewTitle")}
       </h1>
       {token ? (
         <form action={redeemLinkAction} className={styles.form}>
           <input type="hidden" name="token" value={token} />
-          <p>Bấm nút dưới đây để mở đơn hàng của bạn trên thiết bị này.</p>
-          <Button type="submit">Xem đơn hàng</Button>
+          <p>{t("orders.redeemIntro")}</p>
+          <Button type="submit">{t("orders.viewTitle")}</Button>
         </form>
       ) : (
         <>
-          <p>Liên kết không hợp lệ.</p>
-          <Button href="/tra-cuu-don">Tra cứu đơn hàng</Button>
+          <p>{t("orders.redeemInvalid")}</p>
+          <Button href="/tra-cuu-don">{t("orders.lookupTitle")}</Button>
         </>
       )}
     </section>

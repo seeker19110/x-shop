@@ -25,7 +25,7 @@ describe("lib/checkout/address (danh mục 2 cấp từ backend)", () => {
     );
     vi.stubGlobal("fetch", f);
     expect(await getProvinces()).toEqual([{ code: "01", name: "Hà Nội" }]);
-    expect(await getWards("01")).toEqual([{ code: "00004", name: "Ba Đình" }]);
+    expect(await getWards("01")).toEqual({ status: "ok", wards: [{ code: "00004", name: "Ba Đình" }] });
     expect(f.mock.calls.map((c) => c[0])).toEqual([
       "http://backend.test:9000/store/x/addresses/provinces",
       "http://backend.test:9000/store/x/addresses/provinces/01/wards",
@@ -36,18 +36,21 @@ describe("lib/checkout/address (danh mục 2 cấp từ backend)", () => {
     backend();
     const f = vi.fn(async () => new Response("{}", { status: 404 }));
     vi.stubGlobal("fetch", f);
-    expect(await getWards("../x")).toBeNull();
-    expect(await getWards("")).toBeNull();
+    expect(await getWards("../x")).toEqual({ status: "not_found" });
+    expect(await getWards("")).toEqual({ status: "not_found" });
     expect(f).not.toHaveBeenCalled();
-    expect(await getWards("99")).toBeNull();
+    expect(await getWards("99")).toEqual({ status: "not_found" });
     expect(await getProvinces()).toEqual([]);
     vi.stubGlobal("fetch", async () => {
       throw new TypeError("down");
     });
     expect(await getProvinces()).toEqual([]);
+    expect(await getWards("01")).toEqual({ status: "unavailable" }); // nguồn lỗi ≠ mã sai
+    vi.stubGlobal("fetch", async () => new Response("x", { status: 500 }));
+    expect(await getWards("01")).toEqual({ status: "unavailable" });
     process.env.XS_DATA_SOURCE = "fixtures";
     resetEnvCacheForTests();
     expect(await getProvinces()).toEqual([]);
-    expect(await getWards("01")).toBeNull();
+    expect(await getWards("01")).toEqual({ status: "not_found" });
   });
 });

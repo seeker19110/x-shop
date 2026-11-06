@@ -9,6 +9,9 @@ import { Drawer } from "../ui/Drawer";
 import { FilterFields } from "./FilterFields";
 import { hrefFor, serializeQuery, withoutConditions } from "./filter-url";
 import styles from "./Filters.module.css";
+import { CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS, clientFetch } from "../../lib/client-fetch";
+import { t } from "../../lib/i18n";
+import { isNonEmpty } from "../../lib/presence";
 
 export interface FilterDrawerProps {
   basePath: string;
@@ -44,8 +47,12 @@ export function FilterDrawer({ basePath, applied, facets, total, activeCount, ca
     const timer = setTimeout(async () => {
       try {
         const qs = new URLSearchParams(draftKey);
-        if (category) qs.set("category", category);
-        const res = await fetch(`/api/catalog/count?${qs.toString()}`, { signal: ctrl.signal });
+        if (isNonEmpty(category)) qs.set("category", category);
+        const res = await clientFetch(
+          `/api/catalog/count?${qs.toString()}`,
+          { signal: ctrl.signal },
+          { maxRetries: 1, timeoutMs: CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS },
+        );
         if (!res.ok) return;
         const body = (await res.json()) as { total?: unknown };
         if (typeof body.total === "number") setCounted({ key: draftKey, total: body.total });
@@ -78,23 +85,25 @@ export function FilterDrawer({ basePath, applied, facets, total, activeCount, ca
           setOpen(true);
         }}
       >
-        {`Bộ lọc (${activeCount})`}
+        {t("catalog.filters.openButton", { count: activeCount })}
       </Button>
       <Drawer
         open={open}
         onClose={close}
-        title="Bộ lọc"
+        title={t("catalog.filters.title")}
         side="bottom"
         returnFocusRef={openerRef}
-        closeLabel="Đóng bộ lọc"
+        closeLabel={t("catalog.filters.close")}
       >
         <FilterFields idPrefix="dr" facets={facets} value={draft} onChange={setDraft} />
         <div className={styles.drawerFooter}>
           <Button size="lg" fullWidth onClick={apply}>
-            {shown === null ? "Xem kết quả" : `Xem ${shown} sản phẩm`}
+            {shown === null
+              ? t("catalog.filters.viewResults")
+              : t("catalog.filters.viewCount", { count: shown })}
           </Button>
           <Button variant="ghost" onClick={() => setDraft(withoutConditions(draft, { keepQuery: true }))}>
-            Xóa lựa chọn trong bộ lọc
+            {t("catalog.filters.clear")}
           </Button>
         </div>
       </Drawer>

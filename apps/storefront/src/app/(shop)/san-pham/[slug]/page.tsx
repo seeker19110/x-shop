@@ -7,6 +7,7 @@ import { Breadcrumb } from "../../../../components/ui/Breadcrumb";
 import { getProduct } from "../../../../lib/catalog/client";
 import { categoryHref } from "../../../../lib/content/navigation";
 import { getClientEnv } from "../../../../lib/env";
+import { t } from "../../../../lib/i18n";
 import { buildBreadcrumbJsonLd } from "../../../../lib/seo/breadcrumb-jsonld";
 import { buildProductJsonLd, productPath, serializeJsonLd } from "../../../../lib/seo/product-jsonld";
 
@@ -16,18 +17,18 @@ interface Props {
 }
 
 function shorten(text: string, max = 160): string {
-  const t = text.replace(/\s+/g, " ").trim();
-  return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= max ? compact : `${compact.slice(0, max - 1).trimEnd()}…`;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
   const p = await getProduct(slug);
-  if (!p) return { title: "Không tìm thấy sản phẩm", robots: { index: false } };
+  if (!p) return { title: t("product.notFound"), robots: { index: false } };
   const image = p.images[0];
   return {
     title: p.title,
-    description: shorten(p.description || `${p.title} tại X-Shop.`),
+    description: shorten(p.description || t("product.descriptionFallback", { title: p.title })),
     // Mọi biến thể (?color=&size=) cùng một canonical: trang sản phẩm gốc (đặc tả §12.1, mô hình một PDP).
     alternates: { canonical: productPath(p.handle) },
     openGraph: {
@@ -53,7 +54,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
   const crumbsLd = serializeJsonLd(
     buildBreadcrumbJsonLd(
       [
-        { name: "Trang chủ", path: "/" },
+        { name: t("product.breadcrumbHome"), path: "/" },
         ...(product.category
           ? [{ name: product.category.name, path: categoryHref(product.category.handle) }]
           : []),
@@ -67,7 +68,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
     <>
       <Breadcrumb
         items={[
-          { label: "Trang chủ", href: "/" },
+          { label: t("product.breadcrumbHome"), href: "/" },
           ...(product.category
             ? [{ label: product.category.name, href: categoryHref(product.category.handle) }]
             : []),
@@ -77,7 +78,9 @@ export default async function ProductPage({ params, searchParams }: Props) {
       <ProductExperience product={product} initial={initial}>
         <ProductDetails product={product} />
       </ProductExperience>
+      {/* eslint-disable-next-line react/no-danger -- JSON-LD do serializeJsonLd tạo (thoát "<", U+2028/2029), không có dữ liệu thô */}
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />
+      {/* eslint-disable-next-line react/no-danger -- JSON-LD do serializeJsonLd tạo (thoát "<", U+2028/2029), không có dữ liệu thô */}
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: crumbsLd }} />
     </>
   );

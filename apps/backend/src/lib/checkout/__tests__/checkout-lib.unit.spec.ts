@@ -129,6 +129,18 @@ describe("locks", () => {
     expect(l.owners.size).toBe(0);
   });
 
+  it("activeLeaseCount(exceptKeys): bỏ qua chủ chỉ giữ khóa được loại trừ, vẫn đếm chủ giữ khóa khác", async () => {
+    const l = new FakeLocking();
+    await acquireOrdered(l, ["x-shop:catalog-index"], opts("drain"));
+    expect(activeLeaseCount()).toBe(1);
+    expect(activeLeaseCount(["x-shop:catalog-index"])).toBe(0);
+    await acquireOrdered(l, ["cart:1"], opts("checkout"));
+    expect(activeLeaseCount(["x-shop:catalog-index"])).toBe(1);
+    await releaseOwned(l, "drain", null);
+    await releaseOwned(l, "checkout", null);
+    expect(activeLeaseCount()).toBe(0);
+  });
+
   it("releaseOwned lỗi hạ tầng → LOCK_UNAVAILABLE; releaseOwnedQuietly không ném và vẫn ngừng gia hạn", async () => {
     const l = new FakeLocking();
     await acquireOrdered(l, ["k1"], opts("A"));

@@ -7,6 +7,10 @@ import { markCatalogDirty, REBUILD_MARK, scheduleCatalogDrain } from "../lib/cat
  * Đồng bộ read model `catalog_variant_index` theo sự kiện (nhất quán cuối cùng, đặc tả §7.4: mục tiêu ≤ 60 giây):
  * đánh dấu sản phẩm bẩn (một câu INSERT) rồi hẹn một lượt xả gom lô. Lỗi được ghi log; dấu còn lại được job mỗi phút
  * xả tiếp — index chỉ là bản đọc, checkout luôn đọc nguồn có thẩm quyền.
+ *
+ * Cùng đường này vô hiệu hoá cache catalog của storefront (T-142, D-070): lượt xả đồng bộ xong thì ghi outbox
+ * `catalog.revalidate` → webhook ký HMAC tới `/api/revalidate` (lib/catalog/revalidate.ts). Đi SAU read model để danh sách
+ * storefront nạp lại đọc được bản mới; không có subscriber riêng (một lần tra phạm vi sản phẩm cho cả hai việc).
  */
 export default async function catalogIndexSync({
   event,

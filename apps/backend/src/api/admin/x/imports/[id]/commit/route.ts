@@ -9,6 +9,7 @@ import {
 } from "../../../../../../lib/catalog/import-audit";
 import { readCheckoutError, sendProblem as sendCheckoutProblem } from "../../../../../../lib/checkout/errors";
 import { sendProblem } from "../../../../../../lib/http/problem";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/imports/:id/commit — ghi kế hoạch đã preview. Idempotent theo import id: gọi lại trả kết quả đã lưu
@@ -20,7 +21,9 @@ import { sendProblem } from "../../../../../../lib/http/problem";
  */
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const actorId = requirePermission(req, "catalog.import", "price.write", "inventory.adjust");
-  const importId = req.params.id as string;
+  const params = readParams(req, IdParams);
+  if (!params.ok) return sendParamNotFound(res);
+  const importId = params.data.id;
   let outcome: Awaited<ReturnType<typeof commitImportJob>>;
   try {
     outcome = await commitImportJob(req.scope, importId, actorId, auditImportCommitted(req));

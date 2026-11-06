@@ -1,0 +1,655 @@
+diff --git a/apps/backend/integration-tests/http/checkout-submit.spec.ts b/apps/backend/integration-tests/http/checkout-submit.spec.ts
+index 9e6f9c2..a995f41 100644
+--- a/apps/backend/integration-tests/http/checkout-submit.spec.ts
++++ b/apps/backend/integration-tests/http/checkout-submit.spec.ts
+@@ -1,12 +1,14 @@
+ import { randomUUID } from "node:crypto";
+ import type { MedusaContainer } from "@medusajs/framework/types";
+-import { Modules } from "@medusajs/framework/utils";
++import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
+ import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
+ import { vnpay } from "@x-shop/domain";
+ import Redis from "ioredis";
+ import { CHECKOUT_CONFIG } from "../../src/lib/checkout/config";
++import { presentAttempt } from "../../src/lib/checkout/submit";
+ import { VNPAY_DEV_DEFAULTS } from "../../src/lib/env";
+ import { CHECKOUT_MODULE } from "../../src/modules/checkout";
++import { REDACT_PAYMENT_URL_SQL } from "../../src/modules/checkout/migrations/Migration20261026140000";
+ import type CheckoutModuleService from "../../src/modules/checkout/service";
+ import { submitCheckoutWorkflow } from "../../src/workflows/checkout/submit-checkout";
+ import {
+@@ -344,6 +346,108 @@ medusaIntegrationTestRunner({
+       });
+     });
+ 
++    describe("T-130 (D-049) — payment_attempt.payment_url không lưu IP khách", () => {
++      const DEV = {
++        tmnCode: VNPAY_DEV_DEFAULTS.VNPAY_TMN_CODE,
++        hashSecret: VNPAY_DEV_DEFAULTS.VNPAY_HASH_SECRET,
++      };
++      /** URL hợp lệ chữ ký với khoá dev (đúng thuật toán VNPAY kiểm) → trả bộ tham số. */
++      function signedParams(u: string): Record<string, string> {
++        const p = Object.fromEntries(new URL(u).searchParams.entries());
++        expect(p.vnp_SecureHash).toBe(vnpay.hmacSha512(DEV.hashSecret, vnpay.signData(p)));
++        return p;
++      }
++      const pg = () => container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
++      async function storedUrl(orderId: string): Promise<string> {
++        const [pa] = await service().listPaymentAttempts({ order_id: orderId });
++        return pa!.payment_url as string;
++      }
++
++      it("DB chỉ giữ bản đã bỏ vnp_IpAddr + chữ ký; submit/replay/GET attempt (cả song song) trả cùng URL đã ký hợp lệ", async () => {
++        const cartId = await createCart([["Đen/M", 1]]);
++        const q = await quoteOk(cartId, { payment_method: "vnpay" });
++        const key = newKey();
++        const res = await submit(submitBody(q), key);
++        expect(res.status).toBe(200);
++        const sent = signedParams(res.data.payment_url);
++        expect(sent.vnp_IpAddr).toMatch(/^(127\.0\.0\.1|::1)$/);
++
++        const stored = await storedUrl(res.data.order.id);
++        expect(stored).toBe(vnpay.toStoredPaymentUrl(res.data.payment_url));
++        expect(stored).not.toMatch(/vnp_IpAddr|vnp_SecureHash/);
++        expect(decodeURIComponent(stored)).not.toContain(sent.vnp_IpAddr);
++        expect(new URL(stored).searchParams.get("vnp_TxnRef")).toBe(sent.vnp_TxnRef);
++
++        // Replay cùng key + 5 GET attempt song song: cùng IP → trùng từng ký tự URL gốc (ký lại tất định).
++        const statusUrl = `/store/x/checkout/attempts/${res.data.checkout_attempt_id}?cart_id=${cartId}`;
++        const again = await Promise.all([
++          submit(submitBody(q), key),
++          submit(submitBody(q), key),
++          ...Array.from({ length: 5 }, () => api.get(statusUrl, cfg())),
++        ]);
++        for (const r of again) {
++          expect(r.status).toBe(200);
++          expect(r.data.payment_url).toBe(res.data.payment_url);
++        }
++        // Đọc không ghi lại DB.
++        expect(await storedUrl(res.data.order.id)).toBe(stored);
++
++        // Khách đổi mạng (IP khác) → URL ký với IP mới, mọi tham số khác giữ nguyên, vẫn hợp lệ chữ ký.
++        const view = await presentAttempt(container, res.data.checkout_attempt_id, "198.51.100.7");
++        const moved = signedParams(view!.payment_url!);
++        expect(moved.vnp_IpAddr).toBe("198.51.100.7");
++        const { vnp_IpAddr: _a, vnp_SecureHash: _b, ...rest } = sent;
++        expect(moved).toMatchObject(rest);
++
++        // Người không sở hữu giỏ không thấy URL (404 như cũ).
++        const foreign = await api.get(
++          `/store/x/checkout/attempts/${res.data.checkout_attempt_id}?cart_id=cart_khac`,
++          cfg(),
++        );
++        expect(foreign.status).toBe(404);
++        expect(foreign.data.payment_url).toBeUndefined();
++      });
++
++      it("migration làm sạch dữ liệu cũ: khớp toStoredPaymentUrl, chạy lại không đổi gì; URL trả khách vẫn hợp lệ", async () => {
++        const cartId = await createCart([["Trắng/M", 1]]);
++        const q = await quoteOk(cartId, { payment_method: "vnpay" });
++        const res = await submit(submitBody(q));
++        expect(res.status).toBe(200);
++        const orderId = res.data.order.id;
++        const legacy = res.data.payment_url; // dạng lưu trước T-130: URL đầy đủ có IP + chữ ký
++        const base = `${VNPAY_DEV_DEFAULTS.VNPAY_PAYMENT_URL}?`;
++        const tail = legacy.slice(base.length);
++        const variants = [
++          legacy,
++          // IP ở đầu query / chỉ có IP / có SecureHashType — ca biên của regexp.
++          `${base}vnp_IpAddr=10.0.0.1&${tail}`,
++          `${base}vnp_IpAddr=10.0.0.1`,
++          `${legacy}&vnp_SecureHashType=HmacSHA512`,
++        ];
++        for (const v of variants) {
++          await pg().raw(`UPDATE payment_attempt SET payment_url = ? WHERE order_id = ?`, [v, orderId]);
++          const first = await pg().raw(REDACT_PAYMENT_URL_SQL);
++          expect(first.rowCount).toBeGreaterThanOrEqual(1);
++          const cleaned = await storedUrl(orderId);
++          expect(cleaned).toBe(vnpay.toStoredPaymentUrl(v));
++          expect(cleaned).not.toMatch(/vnp_IpAddr|vnp_SecureHash|10\.0\.0\.1/);
++          expect((await pg().raw(REDACT_PAYMENT_URL_SQL)).rowCount).toBe(0);
++        }
++        // Dữ liệu cũ đã làm sạch → GET attempt dựng lại đúng URL gốc (cùng IP), hợp lệ chữ ký.
++        await pg().raw(`UPDATE payment_attempt SET payment_url = ? WHERE order_id = ?`, [legacy, orderId]);
++        await pg().raw(REDACT_PAYMENT_URL_SQL);
++        const status = await api.get(
++          `/store/x/checkout/attempts/${res.data.checkout_attempt_id}?cart_id=${cartId}`,
++          cfg(),
++        );
++        expect(status.data.payment_url).toBe(legacy);
++        const left = await pg().raw(
++          `SELECT count(*)::int AS n FROM payment_attempt WHERE payment_url ~ 'vnp_IpAddr'`,
++        );
++        expect(left.rows[0].n).toBe(0);
++      });
++    });
++
+     describe("AT03 — giá đổi giữa quote và submit", () => {
+       it("409 PRICE_CHANGED kèm quote mới; không đơn, không reservation; xác nhận quote mới thì đặt được", async () => {
+         const cartId = await createCart([["Đen/M", 1]]);
+diff --git a/apps/backend/integration-tests/http/order-lookup.spec.ts b/apps/backend/integration-tests/http/order-lookup.spec.ts
+index 7c7bcd0..c7f6403 100644
+--- a/apps/backend/integration-tests/http/order-lookup.spec.ts
++++ b/apps/backend/integration-tests/http/order-lookup.spec.ts
+@@ -273,9 +273,10 @@ medusaIntegrationTestRunner({
+         expect(ra.searchParams.get("attempt")).toBe(a.attemptId);
+         expect(returnOf(b.paymentUrl).searchParams.get("attempt")).toBe(b.attemptId);
+         expect(a.attemptId).not.toBe(b.attemptId);
+-        // URL lưu ở payment attempt là bản đã ký có attempt (không token, không PII).
++        // URL lưu ở payment attempt là bản đã bỏ vnp_IpAddr + chữ ký (D-049, T-130), vẫn có attempt (không token, không PII).
+         const [pa] = await service().listPaymentAttempts({ order_id: a.orderId });
+-        expect(pa?.payment_url).toBe(a.paymentUrl);
++        expect(pa?.payment_url).toBe(vnpay.toStoredPaymentUrl(a.paymentUrl));
++        expect(pa?.payment_url).not.toMatch(/vnp_IpAddr|vnp_SecureHash/);
+         expect(a.paymentUrl).not.toContain(a.access);
+         // SĐT đầy đủ/che/không số 0 đầu — không dò "0912" trần: vnp_ExpireDate (yyyyMMddHHmmss) có thể chứa nó theo giờ chạy.
+         expect(decodeURIComponent(a.paymentUrl)).not.toMatch(/0?912345678|0912\*+678|an@example/);
+diff --git a/apps/backend/integration-tests/http/payment-ipn.spec.ts b/apps/backend/integration-tests/http/payment-ipn.spec.ts
+index 2b102d1..9c15430 100644
+--- a/apps/backend/integration-tests/http/payment-ipn.spec.ts
++++ b/apps/backend/integration-tests/http/payment-ipn.spec.ts
+@@ -8,6 +8,7 @@ import {
+   setVnpayGatewayForTest,
+ } from "../../src/lib/checkout/vnpay-gateway";
+ import { CHECKOUT_MODULE } from "../../src/modules/checkout";
++import { REDACT_PAYMENT_URL_SQL } from "../../src/modules/checkout/migrations/Migration20261026140000";
+ import type CheckoutModuleService from "../../src/modules/checkout/service";
+ import { checkoutClient, DEV_VNPAY, ipn, type Api } from "../helpers/checkout-api";
+ import {
+@@ -251,6 +252,48 @@ medusaIntegrationTestRunner({
+       });
+     });
+ 
++    describe("T-130 (D-049) — payment_url lưu không có IP khách, IPN/recheck vẫn đúng", () => {
++      it("dữ liệu cũ (URL có IP) qua migration làm sạch: recheck trả URL ký lại hợp lệ; IPN xác nhận đúng một lần", async () => {
++        const o = await client.placeOrder([["Đen/S", 1]], "vnpay");
++        const pg = container.resolve(ContainerRegistrationKeys.PG_CONNECTION);
++        await pg.raw(`UPDATE payment_attempt SET payment_url = ? WHERE order_id = ?`, [
++          o.paymentUrl,
++          o.orderId,
++        ]);
++        await pg.raw(REDACT_PAYMENT_URL_SQL);
++        const [pa] = await service().listPaymentAttempts({ order_id: o.orderId });
++        expect(pa!.payment_url).not.toMatch(/vnp_IpAddr|vnp_SecureHash/);
++
++        const unpaid = new MockModeVnpayGateway(DEV_VNPAY);
++        setVnpayGatewayForTest(unpaid);
++        try {
++          const re = await api.post(
++            `/store/x/checkout/attempts/${o.attemptId}/recheck?cart_id=${o.cartId}`,
++            {},
++            client.cfg(),
++          );
++          expect(re.status).toBe(200);
++          expect(re.data).toMatchObject({ payment_check: "not_paid", order: { state: "awaiting_payment" } });
++          expect(re.data.payment_url).toBe(o.paymentUrl);
++          const p = Object.fromEntries(new URL(re.data.payment_url).searchParams.entries());
++          expect(p.vnp_SecureHash).toBe(vnpay.hmacSha512(DEV_VNPAY.hashSecret, vnpay.signData(p)));
++        } finally {
++          setVnpayGatewayForTest(gateway);
++        }
++        const params = gateway.mock.pay(o.paymentUrl, "success");
++        expect((await ipn(api, params)).data).toEqual(R.success);
++        expect((await ipn(api, params)).data).toEqual(R.alreadyConfirmed);
++        expect((await finance(o.orderId)).state).toBe("confirmed");
++        expect(await ledger(o.orderId)).toHaveLength(1);
++        // Đơn đã chốt → attempt không còn pending → không trả URL thanh toán nữa.
++        const after = await api.get(
++          `/store/x/checkout/attempts/${o.attemptId}?cart_id=${o.cartId}`,
++          client.cfg(),
++        );
++        expect(after.data.payment_url).toBeNull();
++      });
++    });
++
+     describe("AT36 — hai giao dịch thật cùng thành công", () => {
+       it("2 capture, xác nhận một lần, ngoại lệ overpayment đúng số dư", async () => {
+         const o = await client.placeOrder([["Đen/S", 1]], "vnpay");
+diff --git a/apps/backend/src/api/store/x/checkout/attempts/[id]/recheck/route.ts b/apps/backend/src/api/store/x/checkout/attempts/[id]/recheck/route.ts
+index e042a97..5d9b82f 100644
+--- a/apps/backend/src/api/store/x/checkout/attempts/[id]/recheck/route.ts
++++ b/apps/backend/src/api/store/x/checkout/attempts/[id]/recheck/route.ts
+@@ -4,7 +4,7 @@ import { z } from "zod";
+ import { assertCartAccess, loadCheckoutCart } from "../../../../../../../lib/checkout/cart";
+ import { CHECKOUT_CONFIG } from "../../../../../../../lib/checkout/config";
+ import { CheckoutError } from "../../../../../../../lib/checkout/errors";
+-import { accessContext, handleRouteError } from "../../../../../../../lib/checkout/http";
++import { accessContext, clientIp, handleRouteError } from "../../../../../../../lib/checkout/http";
+ import { tryAcquireExpiring } from "../../../../../../../lib/checkout/locks";
+ import { recheckAttempt } from "../../../../../../../lib/checkout/recheck";
+ import { presentAttempt } from "../../../../../../../lib/checkout/submit";
+@@ -29,7 +29,7 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
+     const cartId = input.success ? input.data.cart_id : "";
+     const attemptId = String(req.params.id ?? "");
+     const notFound = () => new CheckoutError("NOT_FOUND", "Không tìm thấy lần đặt hàng");
+-    const before = cartId && attemptId ? await presentAttempt(req.scope, attemptId) : null;
++    const before = cartId && attemptId ? await presentAttempt(req.scope, attemptId, clientIp(req)) : null;
+     if (!before || before.cart_id !== cartId) throw notFound();
+     try {
+       assertCartAccess(await loadCheckoutCart(req.scope, cartId), accessContext(req));
+@@ -51,7 +51,7 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
+       });
+     }
+     const check = await recheckAttempt(req.scope, attemptId);
+-    const view = await presentAttempt(req.scope, attemptId);
++    const view = await presentAttempt(req.scope, attemptId, clientIp(req));
+     res.setHeader("Cache-Control", "no-store");
+     res.status(200).json({ ...view, payment_check: check.outcome });
+   } catch (error) {
+diff --git a/apps/backend/src/api/store/x/checkout/attempts/[id]/route.ts b/apps/backend/src/api/store/x/checkout/attempts/[id]/route.ts
+index f693637..d9733d0 100644
+--- a/apps/backend/src/api/store/x/checkout/attempts/[id]/route.ts
++++ b/apps/backend/src/api/store/x/checkout/attempts/[id]/route.ts
+@@ -1,7 +1,7 @@
+ import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
+ import { assertCartAccess, loadCheckoutCart } from "../../../../../../lib/checkout/cart";
+ import { CheckoutError } from "../../../../../../lib/checkout/errors";
+-import { accessContext, handleRouteError } from "../../../../../../lib/checkout/http";
++import { accessContext, clientIp, handleRouteError } from "../../../../../../lib/checkout/http";
+ import { presentAttempt } from "../../../../../../lib/checkout/submit";
+ import { orderAccessFor } from "../../../../../../lib/orders/http";
+ 
+@@ -13,7 +13,7 @@ export const GET = async (req: MedusaStoreRequest, res: MedusaResponse): Promise
+   try {
+     const cartId = typeof req.query.cart_id === "string" ? req.query.cart_id : "";
+     const attemptId = String(req.params.id ?? "");
+-    const view = cartId && attemptId ? await presentAttempt(req.scope, attemptId) : null;
++    const view = cartId && attemptId ? await presentAttempt(req.scope, attemptId, clientIp(req)) : null;
+     if (!view || view.cart_id !== cartId) throw new CheckoutError("NOT_FOUND", "Không tìm thấy lần đặt hàng");
+     const cart = await loadCheckoutCart(req.scope, cartId);
+     try {
+diff --git a/apps/backend/src/lib/checkout/submit.ts b/apps/backend/src/lib/checkout/submit.ts
+index dcbb250..85130f3 100644
+--- a/apps/backend/src/lib/checkout/submit.ts
++++ b/apps/backend/src/lib/checkout/submit.ts
+@@ -1,12 +1,12 @@
+ import type { MedusaContainer } from "@medusajs/framework/types";
+ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
+-import { decideIdempotency, payloadHash, type AddressSnapshot } from "@x-shop/domain";
++import { decideIdempotency, payloadHash, vnpay, type AddressSnapshot } from "@x-shop/domain";
+ import { CHECKOUT_MODULE } from "../../modules/checkout";
+ import type { PaymentMethod } from "../../modules/checkout/models/constants";
+ import type CheckoutModuleService from "../../modules/checkout/service";
+ import { submitCheckoutWorkflow } from "../../workflows/checkout/submit-checkout";
+ import type { CheckoutContact } from "../../workflows/checkout/steps";
+-import { CHECKOUT_CONFIG } from "./config";
++import { CHECKOUT_CONFIG, getVnpayConfig } from "./config";
+ import { leftoversOfAttempt } from "./jobs";
+ import { releaseOwnedQuietly } from "./locks";
+ import {
+@@ -75,9 +75,21 @@ export function submitPayloadHash(r: SubmitRequest): string {
+ 
+ const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
+ 
++/**
++ * URL thanh toán trả khách: DB chỉ lưu bản đã bỏ `vnp_IpAddr` + chữ ký (D-049) → thêm IP khách của request hiện tại và
++ * ký lại bằng khoá hiện hành (cùng IP với lúc tạo → trùng URL gốc). VNPAY đã tắt → không trả URL (không thanh toán được).
++ */
++function presentPaymentUrl(stored: string | null | undefined, ip: string): string | null {
++  if (!stored) return null;
++  const cfg = getVnpayConfig();
++  return cfg ? vnpay.signStoredPaymentUrl(cfg, stored, ip) : null;
++}
++
++/** `ip` = IP khách của request đang hỏi (`clientIp(req)`) — chỉ để ký lại `payment_url`, không lưu. */
+ export async function presentAttempt(
+   container: MedusaContainer,
+   attemptId: string,
++  ip: string,
+ ): Promise<AttemptView | null> {
+   const s = service(container);
+   const [a] = await s.listCheckoutAttempts({ id: attemptId });
+@@ -98,7 +110,7 @@ export async function presentAttempt(
+       };
+     }
+     const [pay] = await s.listPaymentAttempts({ order_id: a.order_id, state: ["pending", "created"] });
+-    paymentUrl = pay?.payment_url ?? null;
++    paymentUrl = pay?.provider === "vnpay" ? presentPaymentUrl(pay.payment_url, ip) : null;
+   }
+   const detail = (a.error_detail ?? null) as { message?: string } | null;
+   return {
+@@ -130,7 +142,7 @@ async function waitWhilePreparing(container: MedusaContainer, attemptId: string)
+ }
+ 
+ /** Trả kết quả của một attempt đã có (replay/hai tab): chờ ngắn nếu đang chạy. */
+-async function outcomeOf(container: MedusaContainer, attemptId: string): Promise<SubmitOutcome> {
++async function outcomeOf(container: MedusaContainer, attemptId: string, ip: string): Promise<SubmitOutcome> {
+   await waitWhilePreparing(container, attemptId);
+   const [a] = await service(container).listCheckoutAttempts({ id: attemptId });
+   if (!a) return { kind: "error", error: new CheckoutError("INTERNAL"), attemptId };
+@@ -138,7 +150,7 @@ async function outcomeOf(container: MedusaContainer, attemptId: string): Promise
+     return { kind: "error", error: storedError(a.error_code, a.error_detail), attemptId };
+   if (a.state === "compensated")
+     return { kind: "error", error: new CheckoutError("ATTEMPT_ABORTED"), attemptId };
+-  const view = (await presentAttempt(container, attemptId)) as AttemptView;
++  const view = (await presentAttempt(container, attemptId, ip)) as AttemptView;
+   return a.state === "ready" ? { kind: "ok", view } : { kind: "pending", view };
+ }
+ 
+@@ -185,7 +197,7 @@ async function runAttempt(
+     },
+     throwOnError: false,
+   });
+-  if (!errors || errors.length === 0) return outcomeOf(container, attemptId);
++  if (!errors || errors.length === 0) return outcomeOf(container, attemptId, r.ip);
+   // Lưới an toàn: bù trừ dừng giữa chừng thì bước nhả khóa có thể không chạy → ngừng gia hạn khóa của attempt (khóa tự
+   // hết hạn theo TTL nếu Redis đang mất) để job đối chiếu/retry không bị chặn bởi một khóa được gia hạn mãi.
+   await releaseOwnedQuietly(container.resolve(Modules.LOCKING), attemptId, null);
+@@ -216,7 +228,7 @@ async function runAttempt(
+   const stored = { message: error.message, field: error.field, detail: error.detail };
+   const failedNow = await service(container).failAttempt(attemptId, error.code, stored);
+   // Không chuyển được (vd job đối chiếu đã xử lý) → trả trạng thái thật của attempt.
+-  if (!failedNow) return outcomeOf(container, attemptId);
++  if (!failedNow) return outcomeOf(container, attemptId, r.ip);
+   return { kind: "error", error, attemptId };
+ }
+ 
+@@ -244,12 +256,12 @@ export async function submitCheckout(container: MedusaContainer, r: SubmitReques
+       ) {
+         return runAttempt(container, byKey.id, r);
+       }
+-      return outcomeOf(container, byKey.id);
++      return outcomeOf(container, byKey.id, r.ip);
+     }
+ 
+     // DATA02: phiên bản giỏ đã có checkout hoạt động (tab khác, key khác) → trả attempt đó, không tạo đơn thứ hai.
+     const activeId = await s.findActiveAttemptId(r.cart_id, r.cart_version);
+-    if (activeId) return outcomeOf(container, activeId);
++    if (activeId) return outcomeOf(container, activeId, r.ip);
+ 
+     const insertedId = await s.insertAttemptIfAbsent({
+       cart_id: r.cart_id,
+diff --git a/apps/backend/src/modules/checkout/migrations/Migration20261026140000.ts b/apps/backend/src/modules/checkout/migrations/Migration20261026140000.ts
+new file mode 100644
+index 0000000..c5f85d5
+--- /dev/null
++++ b/apps/backend/src/modules/checkout/migrations/Migration20261026140000.ts
+@@ -0,0 +1,30 @@
++import { Migration } from "@medusajs/framework/mikro-orm/migrations";
++
++/**
++ * Câu lệnh làm sạch, dùng chung với test tích hợp: bỏ `vnp_IpAddr` (IP khách thô), `vnp_SecureHash`/`vnp_SecureHashType`
++ * (HMAC tính trên tham số có IP — giữ lại thì ai có khoá dò lại được IPv4) khỏi `payment_attempt.payment_url`; dọn `&`/`?`
++ * thừa ở cuối. Kết quả trùng `vnpay.toStoredPaymentUrl` của packages/domain cho URL do `buildPaymentUrl` tạo. Chạy lại
++ * không đổi gì (WHERE chỉ khớp dòng còn tham số cần bỏ). Không đụng `updated_at` (job/đối soát đọc cột này).
++ */
++export const REDACT_PAYMENT_URL_SQL = `update "payment_attempt"
++  set "payment_url" = regexp_replace(
++    regexp_replace("payment_url", '(?<=[?&])vnp_(IpAddr|SecureHash|SecureHashType)=[^&]*(&|$)', '', 'g'),
++    '&$', '')
++  where "payment_url" ~ '[?&]vnp_(IpAddr|SecureHash|SecureHashType)=';`;
++
++/**
++ * T-130 (D-049): không lưu IP thô của khách trong `payment_attempt.payment_url`. Từ bản này workflow chỉ lưu URL đã bỏ
++ * `vnp_IpAddr` + chữ ký; URL trả khách được ký lại lúc trình bày (`presentAttempt`). Migration này che dữ liệu cũ.
++ * Không đổi schema; không sửa migration cũ.
++ */
++export class Migration20261026140000 extends Migration {
++  override async up(): Promise<void> {
++    this.addSql(REDACT_PAYMENT_URL_SQL);
++  }
++
++  override async down(): Promise<void> {
++    // KHÔNG PHỤC HỒI ĐƯỢC: IP và chữ ký đã xoá khỏi dữ liệu, không có bản sao — down() cố ý không làm gì. Lùi về mã trước
++    // T-130 (trả `payment_url` đọc thẳng từ DB) thì attempt còn `pending` trả URL không chữ ký → khách bấm thanh toán lại
++    // bị VNPAY từ chối cho tới khi hết hạn giữ hàng (15 phút) hoặc đặt lại; attempt đã chốt không bị ảnh hưởng.
++  }
++}
+diff --git a/apps/backend/src/workflows/checkout/steps.ts b/apps/backend/src/workflows/checkout/steps.ts
+index 76d09e6..52c5157 100644
+--- a/apps/backend/src/workflows/checkout/steps.ts
++++ b/apps/backend/src/workflows/checkout/steps.ts
+@@ -517,7 +517,8 @@ export const createPaymentAttemptStep = createStep(
+       // Storefront `/thanh-toan/ket-qua?attempt=` (API-CONTRACT): attempt của giỏ trong phiên → đúng đơn, không lấy từ URL.
+       returnParams: { attempt: input.attempt_id },
+     });
+-    await service.markPaymentAttemptPending(id, paymentUrl);
++    // D-049: DB chỉ giữ bản đã bỏ vnp_IpAddr + chữ ký; URL đầy đủ chỉ ở bộ nhớ, trả khách thì ký lại (presentAttempt).
++    await service.markPaymentAttemptPending(id, vnpay.toStoredPaymentUrl(paymentUrl));
+     return new StepResponse({ payment_attempt_id: id, txn_ref: txnRef, payment_url: paymentUrl }, { id });
+   },
+   async (data, { container }) => {
+diff --git a/docs/compliance/data-inventory.csv b/docs/compliance/data-inventory.csv
+index 6aea3ed..a869bfc 100644
+--- a/docs/compliance/data-inventory.csv
++++ b/docs/compliance/data-inventory.csv
+@@ -20,7 +20,7 @@ x-shop/backend/checkout,order_finance,contact,basic,"giao kết và thực hiệ
+ x-shop/backend/checkout,order_finance,address,basic,giao hàng: tỉnh/phường và địa chỉ chi tiết (JSON),contract,contact-anonymize
+ x-shop/backend/notify,outbound_message,recipient_masked,basic,ghi nhận đã gửi thông báo cho ai (SĐT/email đã che một phần); chống gửi lặp,contract,transient-90d
+ x-shop/backend/checkout,outbox_event,payload,basic,"hàng đợi sự kiện: mã đơn, display_ref, và với order.lookup_link là token liên kết tra cứu một lần 15 phút (cho phép xem đơn của khách)",contract,transient-90d
+-x-shop/backend/checkout,payment_attempt,payment_url,basic,URL thanh toán đã ký; chứa vnp_IpAddr = IP khách ở dạng thô (xem DPIA §1) và mã đơn,contract,payment-evidence
++x-shop/backend/checkout,payment_attempt,payment_url,basic,URL thanh toán VNPAY đã bỏ vnp_IpAddr và chữ ký (D-049/T-130); còn mã đơn và mã attempt; không có IP khách,contract,payment-evidence
+ x-shop/backend/checkout,rate_limit_counter,bucket,basic,"khoá giới hạn tần suất theo IP/SĐT/mã đơn, chỉ lưu bản băm (giả danh hoá) — chống dò và lạm dụng",legitimate_interests,rate-limit-2d
+ x-shop/backend/shipping,shipment,created_by,basic,"định danh (giả danh) nhân viên thực hiện thao tác để kiểm toán, truy vết, chống gian lận",legitimate_interests,audit-1y
+ x-shop/backend/shipping,shipment,label_url,basic,liên kết nhãn vận đơn do GHN cấp (nhãn in có tên/SĐT/địa chỉ người nhận),contract,order-record
+diff --git a/docs/design/checkout-flow.md b/docs/design/checkout-flow.md
+index 73558e6..49ef486 100644
+--- a/docs/design/checkout-flow.md
++++ b/docs/design/checkout-flow.md
+@@ -43,7 +43,7 @@ POST /store/x/checkout/submit   Idempotency-Key: <uuid>
+ 7. Coupon: đếm `coupon_usage` held+used dưới khóa `promotion:<code>`; hết → `409 DISCOUNT_EXHAUSTED`; còn → INSERT `held`.
+ 8. Tạo order native (`createOrderWorkflow`) với snapshot giá/địa chỉ/quote → `createReservationsWorkflow` với `line_item_id` từng dòng (đúng một bộ). Ghi `order_finance` state `preparing`.
+ 9. Chuyển: COD → `placed` (cod_confirm_by = now + 24h, D-002); online → `awaiting_payment` (hold_expires_at = now + 15 phút, D-002). Attempt `ready`, order_id. Cart version đóng băng.
+-10. Online: tạo `payment_attempt` (txn_ref = `PA_<ulid>`), `buildPaymentUrl` với `vnp_ExpireDate = hold_expires_at`. Trả `payment_url`.
++10. Online: tạo `payment_attempt` (txn_ref = `PA_<ulid>`), `buildPaymentUrl` với `vnp_ExpireDate = hold_expires_at`. Trả `payment_url`; DB chỉ lưu bản đã bỏ `vnp_IpAddr` + chữ ký, URL trả khách (cả replay/GET attempt) ký lại với IP của request (D-049, T-130).
+ 11. Nhả khóa. Outbox `order.placed_pending` (thông báo chỉ gửi sau finalization — AT34).
+ 
+ Lỗi ở bước 8–10 → bước bù trừ của workflow: xóa reservation đã tạo, hủy order native, `coupon_usage` → `released`, attempt `failed`. Tiến trình chết → job reconcile (mục 6). Bù trừ không xong (còn đơn native/reservation `checkout <attempt_id>` sau khi workflow trả lỗi — vd Redis mất nên không xoá được reservation) → attempt giữ `preparing`, không mở lại cho retry; job reconcile dọn sau lease. Nhả khóa ở bù trừ/bước 11 không ném (khóa tự hết hạn theo TTL).
+diff --git a/docs/ops/DPIA.md b/docs/ops/DPIA.md
+index 3f2eb62..894059a 100644
+--- a/docs/ops/DPIA.md
++++ b/docs/ops/DPIA.md
+@@ -42,7 +42,7 @@ Khách vãng lai không có tài khoản/mật khẩu; khách chỉ được xem
+ | Thanh toán | mã đơn, mã giao dịch, số tiền, tham số IPN VNPAY | `payment_attempt`, `payment_ledger`, `webhook_inbox.payload` | không lưu PAN/thẻ (thanh toán trên trang VNPAY); `vnp_IpAddr` gửi VNPAY lúc tạo giao dịch |
+ | Vận chuyển | sự kiện callback GHN đã lọc PII | `shipping` module: bảng sự kiện (`raw` JSON, lọc PII trước khi lưu) — `apps/backend/src/modules/shipping/models/shipping-models.ts` | không lưu địa chỉ/SĐT đầy đủ trong `raw` |
+ | Đổi trả/hoàn tiền | lý do, ghi chú tự do (≤ 500 ký tự), ghi chú kiểm định | module `returns` (`note`, `decision_note`, `inspection_note`, `reject_reason`, `cancel_reason`) | khách có thể gõ PII vào ghi chú; trả ra qua `maskFreeText` (§6). **Chưa lưu ảnh đổi trả** (bản nháp 0.1 từng ghi object storage — chưa có tính năng này) |
+-| IP | IP khách | (a) khoá `rate_limit_counter.bucket` chỉ lưu **băm** (`sec.<tên>:<digest>`); (b) `audit_log.ip_hash` (băm); (c) gửi VNPAY làm `vnp_IpAddr`; (d) **`payment_attempt.payment_url` lưu nguyên URL thanh toán đã ký, trong đó có `vnp_IpAddr` = IP khách ở dạng thô** (`packages/domain/src/providers/vnpay/vnpay.ts`, `UPDATE payment_attempt SET payment_url` trong `apps/backend/src/modules/checkout/service.ts`); (e) log máy chủ có thể chứa IP — chưa kiểm nhật ký thật | IP thô còn nằm ở (c) và (d); (d) theo thời hạn `payment-evidence` trong data-map — giảm thiểu là việc mở (cân nhắc cắt `vnp_IpAddr` khỏi URL lưu hoặc ẩn danh sau khi giao dịch chốt) |
++| IP | IP khách | (a) khoá `rate_limit_counter.bucket` chỉ lưu **băm** (`sec.<tên>:<digest>`); (b) `audit_log.ip_hash` (băm); (c) gửi VNPAY làm `vnp_IpAddr`; (d) `payment_attempt.payment_url` **chỉ lưu URL đã bỏ `vnp_IpAddr` và chữ ký** (D-049, T-130: `vnpay.toStoredPaymentUrl` trong `packages/domain/src/providers/vnpay/vnpay.ts`, gọi ở `createPaymentAttemptStep`); URL trả khách được ký lại lúc trình bày với IP của request hiện tại (`signStoredPaymentUrl`, `presentAttempt` ở `apps/backend/src/lib/checkout/submit.ts`) — không ghi DB. Chữ ký cũng không lưu vì HMAC trên tham số có IP cho phép ai có khoá dò lại IPv4. Dữ liệu cũ: migration `Migration20261026140000` che `vnp_IpAddr`/chữ ký (down không phục hồi được — IP đã xoá). Test: `checkout-submit.spec.ts` + `payment-ipn.spec.ts` (T-130); (e) log máy chủ có thể chứa IP — chưa kiểm nhật ký thật | IP thô chỉ còn ở (c) (gửi VNPAY, không lưu phía shop) và có thể ở (e) |
+ | Tra cứu đơn | băm token đã đổi | `order_access_redemption.token_hash` (SHA-256) | token thô không lưu |
+ | Vận hành/an ninh | audit admin: actor, hành động, lý do, thay đổi đã che | `audit_log` (append-only) | `changes` qua `sanitizeChanges` — `apps/backend/src/lib/audit/sanitize.ts` |
+ | Nhân viên | tài khoản admin (email), vai trò, yếu tố MFA | bảng user/auth của Medusa, `rbac` | dữ liệu của nhân viên, không phải khách |
+diff --git a/docs/privacy/CHANGELOG.md b/docs/privacy/CHANGELOG.md
+index 22829d0..6fbe961 100644
+--- a/docs/privacy/CHANGELOG.md
++++ b/docs/privacy/CHANGELOG.md
+@@ -9,3 +9,4 @@ Mỗi lần đổi sổ dữ liệu (`data-map.yaml`, `data-inventory.csv`), bê
+ - Tạo `docs/privacy/processors.md`, `docs/privacy/transfers.md`, `docs/compliance/vendors.yaml` (VNPAY, GHN, nhà cung cấp email/SMS và hạ tầng — hai bên sau chưa chọn).
+ - Sửa DPIA §1/§5 cho khớp mã: `payment_attempt.payment_url` lưu `vnp_IpAddr` (IP thô); bản sao PII ở đơn Medusa native; token liên kết tra cứu nằm ở URL, token phiên đơn nằm ở header.
+ - Thời hạn lưu: các lớp đề xuất trong `retention_classes`; pháp chế xác nhận trước G7 (PLAN-2 Q-20).
++- T-130 (D-049): `payment_attempt.payment_url` không còn lưu `vnp_IpAddr` (IP thô) và chữ ký; URL trả khách ký lại lúc trình bày, không ghi DB; migration `Migration20261026140000` che dữ liệu cũ (không phục hồi được). Cập nhật `data-map.yaml`, `data-inventory.csv`, DPIA §1.
+diff --git a/docs/privacy/data-map.yaml b/docs/privacy/data-map.yaml
+index 351c76e..55b360e 100644
+--- a/docs/privacy/data-map.yaml
++++ b/docs/privacy/data-map.yaml
+@@ -475,12 +475,12 @@ tables:
+     pii:
+       payment_url:
+         category: basic
+-        purpose: URL thanh toán đã ký; chứa vnp_IpAddr = IP khách ở dạng thô (xem DPIA §1) và mã đơn
++        purpose: URL thanh toán VNPAY đã bỏ vnp_IpAddr và chữ ký (D-049/T-130); còn mã đơn và mã attempt; không có IP khách
+         legal_basis: contract
+         retention: payment-evidence
+         recipients:
+           - vnpay
+-        copies: VNPAY nhận cùng URL khi khách chuyển hướng
++        copies: VNPAY nhận URL đầy đủ (kèm vnp_IpAddr của request, ký lúc trả khách — không lưu) khi khách chuyển hướng
+     non_pii:
+       - id
+       - order_id
+diff --git a/packages/domain/src/providers/vnpay/vnpay.test.ts b/packages/domain/src/providers/vnpay/vnpay.test.ts
+index bf10495..0faff6f 100644
+--- a/packages/domain/src/providers/vnpay/vnpay.test.ts
++++ b/packages/domain/src/providers/vnpay/vnpay.test.ts
+@@ -1,3 +1,4 @@
++import fc from "fast-check";
+ import { describe, expect, it } from "vitest";
+ import { MockVnpayGateway } from "./mock.js";
+ import {
+@@ -11,6 +12,8 @@ import {
+   interpretQueryResponse,
+   sanitizeOrderInfo,
+   signData,
++  signStoredPaymentUrl,
++  toStoredPaymentUrl,
+   toVnpDate,
+   verifyNotification,
+   vnpEncode,
+@@ -119,6 +122,77 @@ describe("buildPaymentUrl — vnp_ReturnUrl kèm attempt", () => {
+   });
+ });
+ 
++describe("URL thanh toán lưu bền không có IP khách (D-049, T-130)", () => {
++  const full = buildPaymentUrl(cfg, { ...input, returnParams: { attempt: "chk_01JABC" } });
++
++  it("bản lưu bỏ vnp_IpAddr và chữ ký, giữ nguyên mọi tham số khác (cùng chuỗi đã encode)", () => {
++    const stored = toStoredPaymentUrl(full);
++    expect(stored).not.toContain("vnp_IpAddr");
++    expect(stored).not.toContain("203.0.113.5");
++    expect(stored).not.toContain("vnp_SecureHash");
++    expect(stored.startsWith(`${cfg.paymentUrl}?`)).toBe(true);
++    const kept = new URL(stored).searchParams;
++    const orig = new URL(full).searchParams;
++    for (const [k, v] of orig) {
++      if (k === "vnp_IpAddr" || k === "vnp_SecureHash") continue;
++      expect(kept.get(k)).toBe(v);
++    }
++    expect([...kept.keys()]).toHaveLength([...orig.keys()].length - 2);
++    // Idempotent: làm sạch lần hai không đổi gì (migration chạy lại / dữ liệu đã sạch).
++    expect(toStoredPaymentUrl(stored)).toBe(stored);
++  });
++
++  it("dựng lại cùng IP + cùng khoá → trùng từng ký tự URL gốc; IP khác → vẫn ký hợp lệ với IP mới", () => {
++    const stored = toStoredPaymentUrl(full);
++    expect(signStoredPaymentUrl(cfg, stored, input.ipAddr)).toBe(full);
++    const other = new URL(signStoredPaymentUrl(cfg, stored, "2001:db8::1"));
++    const p = Object.fromEntries(other.searchParams);
++    expect(p.vnp_IpAddr).toBe("2001:db8::1");
++    expect(p.vnp_SecureHash).toBe(hmacSha512(cfg.hashSecret, signData(p)));
++    expect(p.vnp_ReturnUrl).toBe(`${cfg.returnUrl}?attempt=chk_01JABC`);
++    // Khoá khác → chữ ký khác (không dùng lại chữ ký cũ).
++    expect(signStoredPaymentUrl({ hashSecret: "KHAC" }, stored, input.ipAddr)).not.toBe(full);
++  });
++
++  it("bản lưu vẫn còn IP/chữ ký (dữ liệu cũ chưa làm sạch) → IP cũ bị thay, không lọt ra", () => {
++    const resigned = signStoredPaymentUrl(cfg, full, "198.51.100.7");
++    expect(resigned).not.toContain("203.0.113.5");
++    expect(resigned.match(/vnp_SecureHash=/g)).toHaveLength(1);
++    expect(resigned).toBe(
++      buildPaymentUrl(cfg, { ...input, ipAddr: "198.51.100.7", returnParams: { attempt: "chk_01JABC" } }),
++    );
++  });
++
++  it("ca biên: IP rỗng/khoảng trắng/quá dài, thiếu query, tham số lạ/lặp/thiếu bắt buộc, encode hỏng → ném lỗi", () => {
++    const stored = toStoredPaymentUrl(full);
++    expect(() => signStoredPaymentUrl(cfg, stored, "")).toThrow(/ipAddr/);
++    expect(() => signStoredPaymentUrl(cfg, stored, "   ")).toThrow(/ipAddr/);
++    expect(() => signStoredPaymentUrl(cfg, stored, "1".repeat(65))).toThrow(/ipAddr/);
++    expect(() => toStoredPaymentUrl(cfg.paymentUrl)).toThrow(/query/);
++    expect(() => signStoredPaymentUrl(cfg, cfg.paymentUrl, "1.2.3.4")).toThrow(/query/);
++    expect(() => signStoredPaymentUrl(cfg, `${stored}&token=abc`, "1.2.3.4")).toThrow(/lạ/);
++    expect(() => signStoredPaymentUrl(cfg, `${stored}&vnp_Amount=1`, "1.2.3.4")).toThrow(/lặp/);
++    expect(() => signStoredPaymentUrl(cfg, `${stored}&vnp_Flag`, "1.2.3.4")).toThrow(/giá trị/);
++    expect(() => signStoredPaymentUrl(cfg, stored.replace(/vnp_TxnRef=[^&]*&?/, ""), "1.2.3.4")).toThrow(
++      /vnp_TxnRef/,
++    );
++    expect(() => signStoredPaymentUrl(cfg, `${stored}&vnp_X=%E0%A4%A`, "1.2.3.4")).toThrow();
++    expect(toStoredPaymentUrl(`${cfg.paymentUrl}?`)).toBe(`${cfg.paymentUrl}?`);
++  });
++
++  it("thuộc tính: mọi IP/orderInfo (Unicode, ký tự đặc biệt) → vòng khứ hồi lưu → ký lại trùng URL gốc", () => {
++    const ip = fc.oneof(fc.ipV4(), fc.ipV6());
++    fc.assert(
++      fc.property(ip, fc.string({ maxLength: 80 }), fc.boolean(), (ipAddr, orderInfo, en) => {
++        const src = buildPaymentUrl(cfg, { ...input, ipAddr, orderInfo, locale: en ? "en" : "vn" });
++        const stored = toStoredPaymentUrl(src);
++        expect(stored).not.toContain("vnp_IpAddr");
++        expect(signStoredPaymentUrl(cfg, stored, ipAddr)).toBe(src);
++      }),
++    );
++  });
++});
++
+ describe("verifyNotification — S-101, S-103 (AT07)", () => {
+   const gw = new MockVnpayGateway(cfg);
+   const url = buildPaymentUrl(cfg, input);
+diff --git a/packages/domain/src/providers/vnpay/vnpay.ts b/packages/domain/src/providers/vnpay/vnpay.ts
+index e99c116..112b694 100644
+--- a/packages/domain/src/providers/vnpay/vnpay.ts
++++ b/packages/domain/src/providers/vnpay/vnpay.ts
+@@ -134,6 +134,76 @@ export function buildPaymentUrl(cfg: VnpayConfig, input: CreatePaymentInput): st
+   return `${cfg.paymentUrl}?${data}&vnp_SecureHash=${hmacSha512(cfg.hashSecret, data)}`;
+ }
+ 
++/**
++ * Tham số KHÔNG được lưu bền cùng URL thanh toán (D-049): `vnp_IpAddr` = IP khách (dữ liệu cá nhân) và chữ ký — HMAC
++ * tính trên tham số có IP, giữ lại thì ai có khoá vẫn dò lại được IPv4 (2^32 lần thử).
++ */
++const UNSTORED_PAYMENT_PARAMS: ReadonlySet<string> = new Set([
++  "vnp_IpAddr",
++  "vnp_SecureHash",
++  "vnp_SecureHashType",
++]);
++
++/** Giải mã một thành phần query kiểu form (`+` = khoảng trắng) — ngược của `vnpEncode`. */
++function formDecode(s: string): string {
++  return decodeURIComponent(s.replace(/\+/g, " "));
++}
++
++function splitPaymentUrl(url: string): { base: string; parts: string[] } {
++  const q = url.indexOf("?");
++  if (q <= 0) throw new Error("URL thanh toán VNPAY không hợp lệ (thiếu query)");
++  const query = url.slice(q + 1);
++  return { base: url.slice(0, q), parts: query === "" ? [] : query.split("&") };
++}
++
++function keyOf(part: string): string {
++  const eq = part.indexOf("=");
++  return formDecode(eq === -1 ? part : part.slice(0, eq));
++}
++
++/**
++ * Bản lưu bền của URL thanh toán (`payment_attempt.payment_url`, D-049): bỏ `vnp_IpAddr` và chữ ký, giữ nguyên từng
++ * thành phần còn lại như đã gửi (cùng chuỗi đã encode). Bản lưu KHÔNG dùng được để thanh toán — trả khách phải qua
++ * `signStoredPaymentUrl`. Gọi lại trên bản lưu cho cùng kết quả (idempotent).
++ */
++export function toStoredPaymentUrl(paymentUrl: string): string {
++  const { base, parts } = splitPaymentUrl(paymentUrl);
++  const kept = parts.filter((p) => p !== "" && !UNSTORED_PAYMENT_PARAMS.has(keyOf(p)));
++  return `${base}?${kept.join("&")}`;
++}
++
++/**
++ * Dựng lại URL đã ký từ bản lưu: thêm `vnp_IpAddr = ipAddr` (IP khách của request hiện tại) và ký lại bằng khoá hiện
++ * hành. Cùng IP + cùng khoá với lúc tạo → trùng từng ký tự với URL gốc của `buildPaymentUrl`. Bản lưu có tham số ngoài
++ * `vnp_*`, khoá lặp, thiếu tham số bắt buộc hoặc giải mã lỗi → ném lỗi (không ký dữ liệu lạ).
++ */
++export function signStoredPaymentUrl(
++  cfg: Pick<VnpayConfig, "hashSecret">,
++  storedUrl: string,
++  ipAddr: string,
++): string {
++  if (typeof ipAddr !== "string" || ipAddr.trim() === "" || ipAddr.length > 64)
++    throw new Error("ipAddr không hợp lệ");
++  const { base, parts } = splitPaymentUrl(storedUrl);
++  const params: Record<string, string> = {};
++  for (const part of parts) {
++    if (part === "") continue;
++    const eq = part.indexOf("=");
++    if (eq === -1) throw new Error("URL thanh toán lưu trữ có tham số không có giá trị");
++    const key = formDecode(part.slice(0, eq));
++    if (!key.startsWith("vnp_")) throw new Error(`URL thanh toán lưu trữ có tham số lạ (${key})`);
++    if (UNSTORED_PAYMENT_PARAMS.has(key)) continue;
++    if (Object.hasOwn(params, key)) throw new Error(`URL thanh toán lưu trữ lặp tham số ${key}`);
++    params[key] = formDecode(part.slice(eq + 1));
++  }
++  for (const required of ["vnp_TmnCode", "vnp_TxnRef", "vnp_Amount"]) {
++    if (!params[required]) throw new Error(`URL thanh toán lưu trữ thiếu ${required}`);
++  }
++  params.vnp_IpAddr = ipAddr;
++  const data = signData(params);
++  return `${base}?${data}&vnp_SecureHash=${hmacSha512(cfg.hashSecret, data)}`;
++}
++
+ export function sanitizeOrderInfo(s: string): string {
+   return s
+     .normalize("NFD")

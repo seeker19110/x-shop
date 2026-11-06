@@ -35,6 +35,12 @@ export const PERMISSIONS = [
   "refund.approve",
   "refund.execute",
   "payment.read",
+  /**
+   * Ghi đè trạng thái thanh toán CHƯA XÁC MINH (T-165, D-118): hủy đơn `awaiting_payment` có attempt `unknown`/pending quá
+   * hạn sau khi đối chiếu tay trên cổng merchant. Không vai trò nào ngoài `owner` (`*`) có — kể cả kế toán (`payment.read`
+   * là quyền đọc, không phải `payment.*`); cấp thêm là đổi ma trận có chủ đích.
+   */
+  "payment.override",
   "settlement.read",
   "settlement.import",
   "report.read",

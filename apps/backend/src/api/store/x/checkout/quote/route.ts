@@ -1,12 +1,12 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
+import { checkoutQuoteRequestSchema } from "@x-shop/domain/validation";
 import { assertCartAccess, cartFingerprint, loadCheckoutCart } from "../../../../../lib/checkout/cart";
 import { CHECKOUT_CONFIG, getVnpayConfig } from "../../../../../lib/checkout/config";
 import { CheckoutError } from "../../../../../lib/checkout/errors";
 import {
   accessContext,
   handleRouteError,
-  parseBody,
-  quoteBodySchema,
+  parseCheckoutBody,
   toAddressSnapshot,
 } from "../../../../../lib/checkout/http";
 import { buildQuote, normalizeDiscountCode, presentQuote } from "../../../../../lib/checkout/quote";
@@ -20,7 +20,8 @@ import type CheckoutModuleService from "../../../../../modules/checkout/service"
  */
 export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promise<void> => {
   try {
-    const body = parseBody(quoteBodySchema, req.body);
+    // Cùng schema với form storefront (FE-FORM-001); dữ liệu sai → 422 VALIDATION có `field` + `errors[]`.
+    const body = parseCheckoutBody(checkoutQuoteRequestSchema, req.body);
     const address = toAddressSnapshot(body.address);
     const cart = await loadCheckoutCart(req.scope, body.cart_id);
     assertCartAccess(cart, accessContext(req));
@@ -48,6 +49,7 @@ export const POST = async (req: MedusaStoreRequest, res: MedusaResponse): Promis
       discount_code: discountCode,
       address: address as unknown as Record<string, unknown>,
       breakdown: built.breakdown as unknown as Record<string, unknown>,
+      shipping: built.shipping as unknown as Record<string, unknown>,
       total: built.breakdown.total,
       expires_at: new Date(now.getTime() + CHECKOUT_CONFIG.quoteTtlMs),
     });

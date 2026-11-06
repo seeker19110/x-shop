@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { categoryHref } from "../../lib/content/navigation";
 import styles from "./Header.module.css";
+import { safeHref } from "../../lib/safe-url";
 
 export interface NavItem {
   handle: string;
@@ -20,7 +21,7 @@ export function NavLinks({ items, onNavigate }: { items: readonly NavItem[]; onN
         return (
           <li key={c.handle}>
             <Link
-              href={href}
+              href={safeHref(href)}
               prefetch={false}
               className={styles.navLink}
               aria-current={pathname === href ? "page" : undefined}

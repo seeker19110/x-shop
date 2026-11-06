@@ -1,5 +1,7 @@
 import { formatVnd } from "../format-vnd";
 import type { OrderDetails } from "./types";
+import { isNonEmpty } from "../presence";
+import { t } from "../i18n";
 
 /**
  * Nội dung 3 khối "Đặt đơn" / "Thanh toán" / "Giao hàng" (CHK06) — thuần, dễ test. Chỉ nói "đã thanh toán" khi server
@@ -35,38 +37,41 @@ const TIME = new Intl.DateTimeFormat("vi-VN", {
 
 /** Giờ Việt Nam để hiển thị (dữ liệu luôn lưu UTC). */
 export function formatOrderTime(iso: string | null): string {
-  if (!iso) return "";
-  const t = Date.parse(iso);
-  return Number.isNaN(t) ? "" : TIME.format(new Date(t));
+  if (!isNonEmpty(iso)) return "";
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? "" : TIME.format(new Date(ms));
 }
 
 function placement(o: OrderDetails): StatusBlock {
-  const title = "Đặt đơn";
+  const title = t("orders.present.placement.title");
   switch (o.state) {
     case "placed":
       return {
         title,
-        status: "Đã nhận đơn — chờ xác nhận",
-        detail: o.codConfirmBy
-          ? `Nhân viên sẽ gọi xác nhận qua số ${o.contact.phone} trước ${formatOrderTime(o.codConfirmBy)}.`
+        status: t("orders.present.placement.placed"),
+        detail: isNonEmpty(o.codConfirmBy)
+          ? t("orders.present.placement.placedCod", {
+              phone: o.contact.phone,
+              time: formatOrderTime(o.codConfirmBy),
+            })
           : null,
         tone: "info",
       };
     case "awaiting_payment":
-      return { title, status: "Đã nhận đơn — chờ thanh toán", detail: null, tone: "info" };
+      return { title, status: t("orders.present.placement.awaitingPayment"), detail: null, tone: "info" };
     case "confirmed":
-      return { title, status: "Đơn đã được xác nhận", detail: null, tone: "success" };
+      return { title, status: t("orders.present.placement.confirmed"), detail: null, tone: "success" };
     case "completed":
-      return { title, status: "Đơn đã hoàn tất", detail: null, tone: "success" };
+      return { title, status: t("orders.present.placement.completed"), detail: null, tone: "success" };
     case "cancelled":
       return {
         title,
-        status: "Đơn đã hủy",
+        status: t("orders.present.placement.cancelled"),
         detail:
           o.cancelReason === "HOLD_EXPIRED"
-            ? "Đơn hủy tự động vì quá thời hạn thanh toán."
+            ? t("orders.present.placement.holdExpired")
             : o.cancelReason === "CUSTOMER_CANCELLED"
-              ? "Bạn đã hủy đơn này."
+              ? t("orders.present.placement.customerCancelled")
               : null,
         tone: "neutral",
       };
@@ -74,66 +79,75 @@ function placement(o: OrderDetails): StatusBlock {
 }
 
 function payment(o: OrderDetails, now: Date): StatusBlock {
-  const title = "Thanh toán";
+  const title = t("orders.present.payment.title");
   const holdOver = o.holdExpiresAt !== null && Date.parse(o.holdExpiresAt) <= now.getTime();
   switch (o.paymentState) {
     case "cod":
       return {
         title,
-        status: "Thanh toán khi nhận hàng",
-        detail: `Số tiền cần trả khi nhận hàng: ${formatVnd(o.totals.total)}.`,
+        status: t("orders.present.payment.cod"),
+        detail: t("orders.present.payment.codDetail", { amount: formatVnd(o.totals.total) }),
         tone: "info",
       };
     case "paid":
-      return { title, status: `Đã thanh toán ${formatVnd(o.totals.paid)}`, detail: null, tone: "success" };
+      return {
+        title,
+        status: t("orders.present.payment.paid", { amount: formatVnd(o.totals.paid) }),
+        detail: null,
+        tone: "success",
+      };
     case "refund_pending":
       return {
         title,
-        status: "Đang xử lý hoàn tiền",
-        detail: `Chúng tôi đã nhận ${formatVnd(o.totals.paid)} và sẽ hoàn lại theo chính sách hoàn tiền.`,
+        status: t("orders.present.payment.refundPending"),
+        detail: t("orders.present.payment.refundDetail", { amount: formatVnd(o.totals.paid) }),
         tone: "warning",
       };
     case "expired":
       return {
         title,
-        status: "Hết thời hạn thanh toán",
-        detail: "Không có khoản tiền nào được ghi nhận cho đơn này.",
+        status: t("orders.present.payment.expired"),
+        detail: t("orders.present.payment.expiredDetail"),
         tone: "neutral",
       };
     case "void":
-      return { title, status: "Không phát sinh thanh toán", detail: null, tone: "neutral" };
+      return { title, status: t("orders.present.payment.void"), detail: null, tone: "neutral" };
     case "pending":
     case "unknown":
       return {
         title,
-        status: "Đang xác nhận thanh toán",
+        status: t("orders.present.payment.pending"),
         detail: holdOver
-          ? "Thời gian giữ hàng đã hết — hệ thống đang kiểm tra kết quả cuối cùng với cổng thanh toán. Bạn không cần thanh toán lại."
-          : o.holdExpiresAt
-            ? `Hàng được giữ đến ${formatOrderTime(o.holdExpiresAt)}. Nếu bạn đã thanh toán, không cần thanh toán lại — bấm "Kiểm tra lại" để cập nhật.`
-            : 'Nếu bạn đã thanh toán, không cần thanh toán lại — bấm "Kiểm tra lại" để cập nhật.',
+          ? t("orders.present.payment.holdOver")
+          : isNonEmpty(o.holdExpiresAt)
+            ? t("orders.present.payment.holdUntil", { time: formatOrderTime(o.holdExpiresAt) })
+            : t("orders.present.payment.noHold"),
         tone: "warning",
       };
   }
 }
 
 const SHIPMENT_LABELS: Record<OrderDetails["shipmentState"], string> = {
-  unfulfilled: "Chưa giao — đơn sẽ được chuẩn bị sau khi xác nhận",
-  picking: "Đang chuẩn bị hàng",
-  packed: "Đã đóng gói, chờ bàn giao vận chuyển",
-  shipped: "Đang giao hàng",
-  delivered: "Đã giao hàng",
+  unfulfilled: t("orders.present.shipment.unfulfilled"),
+  picking: t("orders.present.shipment.picking"),
+  packed: t("orders.present.shipment.packed"),
+  shipped: t("orders.present.shipment.shipped"),
+  delivered: t("orders.present.shipment.delivered"),
 };
 
 function shipment(o: OrderDetails): StatusBlock {
-  const title = "Giao hàng";
+  const title = t("orders.present.shipment.title");
   if (o.state === "cancelled" && o.shipmentState === "unfulfilled") {
-    return { title, status: "Không giao (đơn đã hủy)", detail: null, tone: "neutral" };
+    return { title, status: t("orders.present.shipment.cancelledNone"), detail: null, tone: "neutral" };
   }
   return {
     title,
     status: SHIPMENT_LABELS[o.shipmentState],
-    detail: `${o.address.line}, ${o.address.wardName}, ${o.address.provinceName}`,
+    detail: t("orders.detail.address", {
+      line: o.address.line,
+      ward: o.address.wardName,
+      province: o.address.provinceName,
+    }),
     tone: o.shipmentState === "delivered" ? "success" : "info",
   };
 }

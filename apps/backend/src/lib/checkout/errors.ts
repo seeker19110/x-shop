@@ -1,3 +1,5 @@
+import { traceIdOf } from "../errors/trace";
+
 /**
  * Lỗi checkout có mã ổn định (đặc tả §9.1): HTTP trả `application/problem+json` (RFC 9457) với `code` cố định, thông
  * báo tiếng Việt và `field` khi là lỗi dữ liệu. Lỗi đi qua workflow bị engine tuần tự hoá (serializeError giữ thuộc
@@ -36,6 +38,19 @@ export const RETRYABLE_CODES: readonly CheckoutErrorCode[] = [
   "SHIPPING_UNAVAILABLE",
   "LOCK_UNAVAILABLE",
 ];
+
+/**
+ * Mã lỗi TẠM của checkout cho job/outbox (T-093): RETRYABLE_CODES + thanh toán đang chờ, bị giới hạn tần suất, lỗi nội
+ * bộ chưa rõ. Mã khác (validate, hết hàng, không huỷ được…) là quyết định nghiệp vụ — thử lại không đổi kết quả.
+ */
+export function isTransientCheckoutCode(code: CheckoutErrorCode): boolean {
+  return (
+    RETRYABLE_CODES.includes(code) ||
+    code === "PAYMENT_PENDING" ||
+    code === "RATE_LIMITED" ||
+    code === "INTERNAL"
+  );
+}
 
 /** Giây gợi ý chờ trước khi gửi lại khi hạ tầng khóa (Redis) mất — đặc tả §13.2 "tạm dừng checkout cần giữ tồn". */
 export const LOCK_UNAVAILABLE_RETRY_AFTER_SECONDS = 60;
@@ -158,6 +173,8 @@ export function toProblem(error: CheckoutError): ProblemBody {
 }
 
 interface ProblemResponse {
+  /** Request gốc (Express gắn `res.req`) — nguồn `trace_id`; vắng (test) → mã mới. */
+  req?: unknown;
   status(code: number): ProblemResponse;
   setHeader(name: string, value: string): unknown;
   json(body: unknown): unknown;
@@ -174,5 +191,5 @@ export function sendProblem(res: ProblemResponse, error: CheckoutError): void {
     const after = error.detail?.retry_after_seconds;
     res.setHeader("Retry-After", String(typeof after === "number" ? after : 10));
   }
-  res.status(error.status).json(toProblem(error));
+  res.status(error.status).json({ ...toProblem(error), trace_id: traceIdOf(res.req) });
 }

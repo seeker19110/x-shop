@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS, clientFetch } from "../../lib/client-fetch";
 import { CART_CHANGED_EVENT } from "../../lib/cart/events";
+import { t } from "../../lib/i18n";
 
 /**
  * Số lượng giỏ ở header. Trang vẫn tĩnh/cache được: số được lấy sau khi tải từ `/api/cart/count` (private, no-store)
@@ -11,11 +13,15 @@ export function CartBadge({ initial = 0, className }: { initial?: number; classN
   const [count, setCount] = useState(initial);
 
   useEffect(() => {
-    let alive = true;
-    fetch("/api/cart/count", { cache: "no-store", credentials: "same-origin" })
+    const ctrl = new AbortController();
+    clientFetch(
+      "/api/cart/count",
+      { cache: "no-store", credentials: "same-origin", signal: ctrl.signal },
+      { maxRetries: 1, timeoutMs: CLIENT_FETCH_INTERACTIVE_TIMEOUT_MS },
+    )
       .then((r) => (r.ok ? (r.json() as Promise<{ count?: number }>) : null))
       .then((j) => {
-        if (alive && j && Number.isInteger(j.count)) setCount(j.count as number);
+        if (!ctrl.signal.aborted && j && Number.isInteger(j.count)) setCount(j.count as number);
       })
       .catch(() => undefined);
     const onChange = (e: Event) => {
@@ -24,7 +30,7 @@ export function CartBadge({ initial = 0, className }: { initial?: number; classN
     };
     window.addEventListener(CART_CHANGED_EVENT, onChange);
     return () => {
-      alive = false;
+      ctrl.abort();
       window.removeEventListener(CART_CHANGED_EVENT, onChange);
     };
   }, []);
@@ -34,7 +40,7 @@ export function CartBadge({ initial = 0, className }: { initial?: number; classN
       <span aria-hidden="true" className={className}>
         {count}
       </span>
-      <span className="visually-hidden">{`Giỏ hàng, ${count} sản phẩm`}</span>
+      <span className="visually-hidden">{t("cart.badge", { count })}</span>
     </>
   );
 }

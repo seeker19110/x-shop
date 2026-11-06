@@ -1,7 +1,7 @@
 import { LogNotificationAdapter, maskRecipient } from "../adapters";
 import { renderTemplate, TEMPLATE_NAMES } from "../templates";
 
-const PII = { name: "Trần Thị Bình", email: "binh.tran@example.vn", phone: "0987654321" };
+const PII = { name: "Trần Thị Bình", email: "binh.tran@example.test", phone: "0987654321" };
 
 describe("mẫu thông báo tiếng Việt", () => {
   it("đủ 4 mẫu, có mã đơn; SMS không dấu; link chỉ có trong mẫu tra cứu", () => {

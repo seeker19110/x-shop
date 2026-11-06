@@ -3,7 +3,7 @@ import type { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusaj
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { CHECKOUT_MODULE } from "../../modules/checkout";
 import type CheckoutModuleService from "../../modules/checkout/service";
-import { parseFilter } from "@x-shop/domain";
+import { parseFilter, isNonEmpty, hoursToMs, minutesToMs } from "@x-shop/domain";
 import { CheckoutError, sendProblem } from "../checkout/errors";
 import { sanitizeQuery } from "../catalog/listing";
 import { ipRateKey } from "./client-ip";
@@ -15,6 +15,7 @@ import {
   type NextRequestRule,
   type WindowSample,
 } from "./sliding-window";
+import { readQueryBag } from "../http/request-input";
 
 export * from "./sliding-window";
 
@@ -41,17 +42,17 @@ export interface RateWindow {
 
 export const STORE_RATE_LIMITS = {
   /** GET /store/x/search: mỗi IP 60 lần/phút. */
-  searchIp: { limit: 60, windowMs: 60_000 },
+  searchIp: { limit: 60, windowMs: minutesToMs(1) },
   /** POST /store/x/checkout/quote: mỗi IP 60 lần/phút. */
-  quoteIp: { limit: 60, windowMs: 60_000 },
+  quoteIp: { limit: 60, windowMs: minutesToMs(1) },
   /** Mã giảm giá KHÁC NHAU mỗi IP / giờ. */
-  couponIp: { limit: 30, windowMs: 3_600_000 },
+  couponIp: { limit: 30, windowMs: hoursToMs(1) },
   /** Mã giảm giá KHÁC NHAU mỗi giỏ / giờ. */
-  couponCart: { limit: 10, windowMs: 3_600_000 },
+  couponCart: { limit: 10, windowMs: hoursToMs(1) },
   /** Idempotency-Key KHÁC NHAU (lần đặt mới) mỗi IP / 10 phút. */
-  submitIp: { limit: 20, windowMs: 600_000 },
+  submitIp: { limit: 20, windowMs: minutesToMs(10) },
   /** Idempotency-Key KHÁC NHAU mỗi giỏ / 10 phút. */
-  submitCart: { limit: 10, windowMs: 600_000 },
+  submitCart: { limit: 10, windowMs: minutesToMs(10) },
 } as const satisfies Record<string, RateWindow>;
 
 export type StoreRateLimit = keyof typeof STORE_RATE_LIMITS;
@@ -144,7 +145,7 @@ const counterOf = (req: MedusaRequest): RateCounter => {
 /** Khoá IP cho giới hạn; `null` khi request do chính hạ tầng tin cậy gửi (không có khách đứng sau) hoặc không rõ IP. */
 function ipKey(req: MedusaRequest): string | null {
   const { ip, internal } = clientIpOf(req);
-  return ip && !internal ? ipRateKey(ip) : null;
+  return isNonEmpty(ip) && !internal ? ipRateKey(ip) : null;
 }
 
 const bodyOf = (req: MedusaRequest): Record<string, unknown> => {
@@ -187,7 +188,7 @@ function rateLimitMiddleware(checksOf: (req: MedusaRequest) => Check[]) {
 /** GET /store/x/search. */
 export const searchRateLimit = rateLimitMiddleware((req) => {
   const ip = ipKey(req);
-  return [(c, now) => (ip ? consume(c, "searchIp", ip, now) : null)];
+  return [(c, now) => (isNonEmpty(ip) ? consume(c, "searchIp", ip, now) : null)];
 });
 
 /**
@@ -197,8 +198,9 @@ export const searchRateLimit = rateLimitMiddleware((req) => {
  */
 export const productSearchRateLimit = rateLimitMiddleware((req) => {
   const ip = ipKey(req);
-  const searching = parseFilter(sanitizeQuery(req.query as Record<string, unknown>)).filter.q !== null;
-  return [(c, now) => (ip && searching ? consume(c, "searchIp", ip, now) : null)];
+  const query = readQueryBag(req);
+  const searching = query.ok && parseFilter(sanitizeQuery(query.data)).filter.q !== null;
+  return [(c, now) => (isNonEmpty(ip) && searching ? consume(c, "searchIp", ip, now) : null)];
 });
 
 /** POST /store/x/checkout/quote: mọi báo giá theo IP + mã giảm giá khác nhau theo IP và theo giỏ. */
@@ -208,9 +210,10 @@ export const quoteRateLimit = rateLimitMiddleware((req) => {
   const cart = shortText(body.cart_id, 64);
   const code = shortText(body.discount_code, 64)?.toUpperCase() ?? null;
   return [
-    (c, now) => (ip ? consume(c, "quoteIp", ip, now) : null),
-    (c, now) => (ip && code ? consumeDistinct(c, "couponIp", ip, code, now) : null),
-    (c, now) => (cart && code ? consumeDistinct(c, "couponCart", cart, code, now) : null),
+    (c, now) => (isNonEmpty(ip) ? consume(c, "quoteIp", ip, now) : null),
+    (c, now) => (isNonEmpty(ip) && isNonEmpty(code) ? consumeDistinct(c, "couponIp", ip, code, now) : null),
+    (c, now) =>
+      isNonEmpty(cart) && isNonEmpty(code) ? consumeDistinct(c, "couponCart", cart, code, now) : null,
   ];
 });
 
@@ -221,7 +224,7 @@ export const submitRateLimit = rateLimitMiddleware((req) => {
   // Khoá sai định dạng vẫn tính lượt (route trả 422) — mỗi giá trị lạ là một "lần đặt mới".
   const key = shortText(req.get("Idempotency-Key"), 256) ?? "(none)";
   return [
-    (c, now) => (ip ? consumeDistinct(c, "submitIp", ip, key, now) : null),
-    (c, now) => (cart ? consumeDistinct(c, "submitCart", cart, key, now) : null),
+    (c, now) => (isNonEmpty(ip) ? consumeDistinct(c, "submitIp", ip, key, now) : null),
+    (c, now) => (isNonEmpty(cart) ? consumeDistinct(c, "submitCart", cart, key, now) : null),
   ];
 });

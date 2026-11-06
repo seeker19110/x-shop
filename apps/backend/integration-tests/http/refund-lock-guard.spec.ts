@@ -4,7 +4,6 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import { MockModeVnpayGateway, setVnpayGatewayForTest } from "../../src/lib/checkout/vnpay-gateway";
 import { MockModeGhnClient, setGhnClientForTest } from "../../src/lib/shipping/ghn-client";
-import { clearShippingFeeCache } from "../../src/lib/shipping/rates";
 import { RETURNS_MODULE } from "../../src/modules/returns";
 import {
   ORDER_LOCK_KEY_PREFIX,
@@ -149,7 +148,6 @@ medusaIntegrationTestRunner({
       fx = await seedCatalog(container);
       ghn = new MockModeGhnClient();
       setGhnClientForTest(ghn);
-      clearShippingFeeCache();
       setRefundGatewayForTest(new MockVnpayRefundGateway(DEV_VNPAY));
       ip = newIp();
     });

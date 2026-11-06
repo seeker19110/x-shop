@@ -2,6 +2,8 @@
  * Lỗi API Admin (`application/problem+json`, đặc tả §9.1) → thông điệp tiếng Việt cho người dùng + lỗi theo dòng/cột
  * của file CSV. Thuần (không React/fetch) để test đơn vị.
  */
+import { returnRefundHint } from "./refund-actions";
+
 export interface RowError {
   /** Dòng trong file (1 = header); `null` khi server không nêu. */
   line: number | null;
@@ -33,7 +35,7 @@ export class AdminApiError extends Error {
 /** Dựng lỗi từ status + thân JSON (thân không phải problem+json → mã `HTTP_<status>`). */
 export function toApiError(status: number, json: unknown): AdminApiError {
   const body: ProblemBody =
-    json && typeof json === "object" && !Array.isArray(json) ? (json as ProblemBody) : {};
+    typeof json === "object" && json !== null && !Array.isArray(json) ? (json as ProblemBody) : {};
   const code = typeof body.code === "string" && body.code ? body.code : `HTTP_${status}`;
   const title = typeof body.title === "string" && body.title ? body.title : `Lỗi ${status}`;
   return new AdminApiError(status, code, title, body);
@@ -65,6 +67,8 @@ const MESSAGES: Record<string, string> = {
   NOT_FOUND: "Không tìm thấy bản ghi.",
   IDEMPOTENCY_CONFLICT: "Yêu cầu trùng khoá nhưng khác nội dung. Tải lại trang rồi thử lại.",
   BATCH_CONFLICT: "Mã batch của hãng đã nhập với nội dung khác.",
+  IMPORT_IN_PROGRESS:
+    "Đang có một lần nhập đối soát khác cùng nguồn — chưa ghi gì. Thử lại sau khoảng 10 giây.",
   EMPTY_FILE: "File rỗng.",
   EMPTY_BATCH: "File không có dòng dữ liệu nào.",
   IMPORT_HAS_ERRORS: "File nhập còn lỗi — sửa file rồi xem trước lại.",
@@ -74,6 +78,8 @@ const MESSAGES: Record<string, string> = {
   HTTP_502:
     "Cổng thanh toán báo lỗi khi hoàn tiền. Yêu cầu được giữ nguyên — có thể thử lại (cùng mã yêu cầu).",
   NETWORK: "Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.",
+  TIMEOUT:
+    "Máy chủ không phản hồi kịp — kết quả CHƯA RÕ. Tải lại để xem trạng thái mới nhất trước khi thử lại.",
 };
 
 const minutes = (seconds: unknown): number | null =>
@@ -96,7 +102,7 @@ export function describeProblem(error: AdminApiError): ProblemView {
       const m = minutes(error.body.max_age_seconds);
       return {
         action: "reauth",
-        message: `Thao tác nhạy cảm cần xác thực lại: đăng xuất, đăng nhập lại và nhập mã TOTP${m ? ` (hiệu lực ${m} phút)` : ""}, rồi thực hiện lại.`,
+        message: `Thao tác nhạy cảm cần xác thực lại: đăng xuất, đăng nhập lại và nhập mã TOTP${m !== null ? ` (hiệu lực ${m} phút)` : ""}, rồi thực hiện lại.`,
       };
     }
     case "MFA_REQUIRED":
@@ -120,6 +126,11 @@ export function describeProblem(error: AdminApiError): ProblemView {
         message: detail.length ? `Dữ liệu không hợp lệ: ${detail.join("; ")}` : "Dữ liệu không hợp lệ.",
       };
     }
+    case "RETURN_REFUND_NOT_REJECTABLE": {
+      // Bước tiếp do server tính theo cách hoàn + trạng thái (T-173); thân thiếu/hỏng → coi như không có bước (tải lại).
+      const steps = Array.isArray(error.body.next_steps) ? error.body.next_steps : [];
+      return { action: "none", message: returnRefundHint(steps, error.body.evidence_required === true) };
+    }
     default:
       return { action: "none", message: MESSAGES[error.code] ?? error.message };
   }
@@ -132,7 +143,7 @@ export function normalizeRowErrors(list: unknown): RowError[] {
   if (!Array.isArray(list)) return [];
   const out: RowError[] = [];
   for (const raw of list) {
-    if (!raw || typeof raw !== "object") continue;
+    if (typeof raw !== "object" || raw === null) continue;
     const e = raw as Record<string, unknown>;
     if (typeof e.message !== "string") continue;
     out.push({
@@ -157,7 +168,10 @@ export function rowErrorsOf(error: AdminApiError): RowError[] {
   for (const e of Array.isArray(error.body.errors) ? error.body.errors : []) {
     if (typeof e?.param !== "string" || typeof e.reason !== "string") continue;
     const m = LINE_PARAM.exec(e.param);
-    if (m) fallback.push({ line: Number(m[1]), column: m[2] || "*", message: e.reason });
+    if (!m) continue;
+    // Cột rỗng ("line 3: ") cố ý quy về "*" (cả dòng), như khi thiếu.
+    const column = m[2] === undefined || m[2] === "" ? "*" : m[2];
+    fallback.push({ line: Number(m[1]), column, message: e.reason });
   }
   return fallback;
 }

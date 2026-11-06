@@ -3,7 +3,7 @@
   inset: 0;
   z-index: 200;
   display: flex;
-  background: rgb(25 25 25 / 55%);
+  background: var(--overlay);
   animation: fade var(--motion-base) var(--ease);
 }
 
@@ -67,8 +67,10 @@
   cursor: pointer;
 }
 
-.close:hover {
-  background: var(--divider);
+@media (hover: hover) {
+  .close:hover {
+    background: var(--divider);
+  }
 }
 
 .body {

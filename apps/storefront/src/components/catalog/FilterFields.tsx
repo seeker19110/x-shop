@@ -1,5 +1,6 @@
 import type { CatalogFilter } from "@x-shop/domain";
 import type { FacetValue, Facets } from "../../lib/catalog/types";
+import { t } from "../../lib/i18n";
 import styles from "./Filters.module.css";
 
 export interface FilterFieldsProps {
@@ -54,7 +55,7 @@ export function FilterFields({ idPrefix, facets, value, onChange }: FilterFields
                       : { defaultChecked: checked })}
                   />
                   <span>{f.label}</span>
-                  <span className={styles.count}>({f.count})</span>
+                  <span className={styles.count}>{t("catalog.filters.facetCount", { count: f.count })}</span>
                 </label>
               </li>
             );
@@ -75,14 +76,14 @@ export function FilterFields({ idPrefix, facets, value, onChange }: FilterFields
 
   return (
     <div className={styles.fields}>
-      {group("Màu", "color", "colors", facets?.color)}
-      {group("Size", "size", "sizes", facets?.size)}
-      {group("Chất liệu", "material", "materials", facets?.material)}
+      {group(t("catalog.filters.color"), "color", "colors", facets?.color)}
+      {group(t("catalog.filters.size"), "size", "sizes", facets?.size)}
+      {group(t("catalog.filters.material"), "material", "materials", facets?.material)}
       <fieldset className={styles.group}>
-        <legend className={styles.legend}>Giá (₫)</legend>
+        <legend className={styles.legend}>{t("catalog.filters.price")}</legend>
         <div className={styles.price}>
           <label htmlFor={`${idPrefix}-price-min`} className={styles.priceField}>
-            <span>Từ</span>
+            <span>{t("catalog.filters.from")}</span>
             <input
               id={`${idPrefix}-price-min`}
               className={styles.input}
@@ -95,7 +96,7 @@ export function FilterFields({ idPrefix, facets, value, onChange }: FilterFields
             />
           </label>
           <label htmlFor={`${idPrefix}-price-max`} className={styles.priceField}>
-            <span>Đến</span>
+            <span>{t("catalog.filters.to")}</span>
             <input
               id={`${idPrefix}-price-max`}
               className={styles.input}
@@ -123,7 +124,7 @@ export function FilterFields({ idPrefix, facets, value, onChange }: FilterFields
               }
             : { defaultChecked: value.inStock })}
         />
-        <span>Chỉ hiện còn hàng</span>
+        <span>{t("catalog.filters.inStockOnly")}</span>
       </label>
     </div>
   );

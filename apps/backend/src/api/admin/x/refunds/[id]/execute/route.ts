@@ -3,6 +3,7 @@ import { auditContextOf } from "../../../../../../lib/audit/record";
 import { handleReturnsRouteError } from "../../../../../../workflows/returns/errors";
 import { actorOf, ExecuteBody, parseBody } from "../../../../../../workflows/returns/http";
 import { executeRefund, presentRefund } from "../../../../../../workflows/returns/refunds";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/refunds/:id/execute — thực hiện hoàn đã duyệt (quyền `refund.execute`). Cổng: retry/timeout dùng CÙNG
@@ -13,9 +14,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
   try {
     const actor = actorOf(req, "refund.execute");
     const body = parseBody(ExecuteBody, req.body);
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
     const { refund, outcome } = await executeRefund(
       req.scope,
-      String(req.params.id),
+      params.data.id,
       actor,
       { evidence_ref: body.evidence_ref ?? null },
       auditContextOf(req),

@@ -1,5 +1,6 @@
 import type { ExecArgs } from "@medusajs/framework/types";
 import { writeFileSync } from "node:fs";
+import { isNonEmpty } from "@x-shop/domain";
 import { dispatchOutbox, reconcileAttempts, type DispatchSummary } from "../../src/lib/checkout/jobs";
 import {
   LogNotificationAdapter,
@@ -42,6 +43,8 @@ function mergeDispatch(a: DispatchSummary, b: DispatchSummary): DispatchSummary 
     sent: [...a.sent, ...b.sent],
     retried: [...a.retried, ...b.retried],
     dead: [...a.dead, ...b.dead],
+    deferred: [...a.deferred, ...b.deferred],
+    stopped: a.stopped ?? b.stopped,
   };
 }
 
@@ -108,7 +111,7 @@ export default async function redisLossDrill({ container }: ExecArgs): Promise<v
       failures,
     };
     const out = process.env.XS_DRILL_RESULT_FILE;
-    if (out) writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
+    if (isNonEmpty(out)) writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
     if (failures.length > 0) throw new Error(`diễn tập mất Redis FAIL:\n- ${failures.join("\n- ")}`);
   } finally {
     setNotificationAdapterForTest(null);

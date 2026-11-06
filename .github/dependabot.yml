@@ -18,3 +18,50 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # pnpm workspace: Dependabot dùng hệ sinh thái `npm` cho pnpm; mỗi manifest một khối (BASE-DEP-007, OPS-MAINT-001).
+  # Gom minor+patch thành một PR; nâng MAJOR tách PR riêng (không vào group) để theo mẫu PR `major-upgrade` (OPS-MAINT-005).
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      root-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /apps/backend
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      backend-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /apps/storefront
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      storefront-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /packages/domain
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 2
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      domain-minor-patch: { update-types: [minor, patch] }
+  # Base image của `Dockerfile` gốc (T-191, ghim tag + digest manifest list): Dependabot nâng cả tag lẫn digest. Node phải
+  # khớp `.nvmrc` — PR nâng image đi kèm đổi `.nvmrc` trong cùng PR (xem ghi chú đầu Dockerfile). Image service CI nằm trong
+  # `services:` của workflow — Dependabot không quét (digest ghim tay ở T-106). `scripts/check-dependabot.mjs` giữ khối này
+  # khớp với Dockerfile thật (thêm/xoá Dockerfile → sửa file này cùng PR).
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 2
+    cooldown: { default-days: 7 }
+    labels: [dependencies]
+    groups:
+      docker-minor-patch: { update-types: [minor, patch] }

@@ -636,6 +636,22 @@
           "enumItems": [],
           "mappedType": "json"
         },
+        "shipping": {
+          "name": "shipping",
+          "type": "jsonb",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "json"
+        },
         "total": {
           "name": "total",
           "type": "integer",
@@ -979,6 +995,256 @@
           "enumItems": [],
           "mappedType": "text"
         },
+        "breaker_key": {
+          "name": "breaker_key",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "text"
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": "'closed'",
+          "comment": null,
+          "enumItems": ["closed", "open", "half_open"],
+          "mappedType": "enum"
+        },
+        "consecutive_failures": {
+          "name": "consecutive_failures",
+          "type": "integer",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": "0",
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "integer"
+        },
+        "last_failed_event_id": {
+          "name": "last_failed_event_id",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "text"
+        },
+        "open_until": {
+          "name": "open_until",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
+        "probe_until": {
+          "name": "probe_until",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
+        "trip_reason": {
+          "name": "trip_reason",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": ["consecutive_failures", "budget_exhausted"],
+          "mappedType": "enum"
+        },
+        "trip_count": {
+          "name": "trip_count",
+          "type": "integer",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": "0",
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "integer"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": "now()",
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": "now()",
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        }
+      },
+      "name": "job_breaker",
+      "schema": "public",
+      "indexes": [
+        {
+          "keyName": "IDX_job_breaker_deleted_at",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE INDEX IF NOT EXISTS \"IDX_job_breaker_deleted_at\" ON \"job_breaker\" (\"deleted_at\") WHERE deleted_at IS NULL"
+        },
+        {
+          "keyName": "IDX_job_breaker_key_unique",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE UNIQUE INDEX IF NOT EXISTS \"IDX_job_breaker_key_unique\" ON \"job_breaker\" (\"breaker_key\")"
+        },
+        {
+          "keyName": "job_breaker_pkey",
+          "columnNames": ["id"],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [
+        {
+          "name": "job_breaker_consecutive_failures_nonneg",
+          "expression": "consecutive_failures >= 0",
+          "definition": "check ((consecutive_failures >= 0))"
+        },
+        {
+          "name": "job_breaker_trip_count_nonneg",
+          "expression": "trip_count >= 0",
+          "definition": "check ((trip_count >= 0))"
+        },
+        {
+          "name": "job_breaker_open_has_until",
+          "expression": "state <> 'open' OR open_until IS NOT NULL",
+          "definition": "check ((state <> 'open' OR open_until IS NOT NULL))"
+        },
+        {
+          "name": "job_breaker_half_open_has_probe",
+          "expression": "state <> 'half_open' OR probe_until IS NOT NULL",
+          "definition": "check ((state <> 'half_open' OR probe_until IS NOT NULL))"
+        }
+      ],
+      "foreignKeys": {},
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": true,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "text"
+        },
         "kind": {
           "name": "kind",
           "type": "text",
@@ -1002,7 +1268,10 @@
             "cod_confirm_overdue",
             "outbox_dead",
             "notification_failed",
-            "refund_request"
+            "refund_request",
+            "catalog_index_mismatch",
+            "catalog_compensation_failed",
+            "job_circuit_open"
           ],
           "mappedType": "enum"
         },
@@ -1212,6 +1481,15 @@
           "primary": false,
           "unique": false,
           "expression": "CREATE INDEX IF NOT EXISTS \"IDX_ops_exception_state_due\" ON \"ops_exception\" (\"state\", \"due_at\")"
+        },
+        {
+          "keyName": "IDX_ops_exception_order_id",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE INDEX IF NOT EXISTS \"IDX_ops_exception_order_id\" ON \"ops_exception\" (\"order_id\")"
         },
         {
           "keyName": "ops_exception_pkey",
@@ -1536,6 +1814,38 @@
           "enumItems": [],
           "mappedType": "datetime"
         },
+        "next_check_at": {
+          "name": "next_check_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
+        "hold_check_attempts": {
+          "name": "hold_check_attempts",
+          "type": "integer",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": "0",
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "integer"
+        },
         "cod_confirm_by": {
           "name": "cod_confirm_by",
           "type": "timestamptz",
@@ -1739,6 +2049,11 @@
           "name": "order_finance_version_pos",
           "expression": "version >= 1",
           "definition": "check ((version >= 1))"
+        },
+        {
+          "name": "order_finance_hold_check_attempts_nonneg",
+          "expression": "hold_check_attempts >= 0",
+          "definition": "check ((hold_check_attempts >= 0))"
         }
       ],
       "foreignKeys": {},
@@ -1970,6 +2285,15 @@
           "expression": "CREATE INDEX IF NOT EXISTS \"IDX_outbox_event_state_next\" ON \"outbox_event\" (\"state\", \"next_attempt_at\")"
         },
         {
+          "keyName": "IDX_outbox_event_aggregate_id",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE INDEX IF NOT EXISTS \"IDX_outbox_event_aggregate_id\" ON \"outbox_event\" (\"aggregate_id\")"
+        },
+        {
           "keyName": "outbox_event_pkey",
           "columnNames": ["id"],
           "composite": false,
@@ -2134,6 +2458,22 @@
           "enumItems": [],
           "mappedType": "text"
         },
+        "vnp_create_date": {
+          "name": "vnp_create_date",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "text"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamptz",
@@ -2214,6 +2554,15 @@
           "expression": "CREATE UNIQUE INDEX IF NOT EXISTS \"IDX_payment_attempt_order_active_unique\" ON \"payment_attempt\" (\"order_id\") WHERE state IN ('created', 'pending', 'unknown') AND deleted_at IS NULL"
         },
         {
+          "keyName": "IDX_payment_attempt_order_id",
+          "columnNames": [],
+          "composite": false,
+          "constraint": false,
+          "primary": false,
+          "unique": false,
+          "expression": "CREATE INDEX IF NOT EXISTS \"IDX_payment_attempt_order_id\" ON \"payment_attempt\" (\"order_id\")"
+        },
+        {
           "keyName": "payment_attempt_pkey",
           "columnNames": ["id"],
           "composite": false,
@@ -2227,6 +2576,11 @@
           "name": "payment_attempt_amount_pos",
           "expression": "amount > 0",
           "definition": "check ((amount > 0))"
+        },
+        {
+          "name": "payment_attempt_vnp_create_date_format",
+          "expression": "vnp_create_date IS NULL OR vnp_create_date ~ '^[0-9]{14}$'",
+          "definition": "check ((vnp_create_date IS NULL OR vnp_create_date ~ '^[0-9]{14}$'))"
         }
       ],
       "foreignKeys": {},

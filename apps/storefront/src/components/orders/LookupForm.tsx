@@ -5,6 +5,8 @@ import { lookupOrderAction } from "../../lib/orders/actions";
 import type { LookupState } from "../../lib/orders/types";
 import { Button } from "../ui/Button";
 import styles from "./Order.module.css";
+import { isNonEmpty } from "../../lib/presence";
+import { t } from "../../lib/i18n";
 
 const INITIAL: LookupState = { status: "idle" };
 
@@ -19,27 +21,27 @@ export function LookupForm({ defaultRef = "" }: { defaultRef?: string }) {
   return (
     <form action={action} className={styles.form} noValidate>
       <div className={styles.field}>
-        <label htmlFor="tra-cuu-ma">Mã đơn hàng</label>
+        <label htmlFor="tra-cuu-ma">{t("orders.lookup.refLabel")}</label>
         <input
           id="tra-cuu-ma"
           name="ma"
           defaultValue={defaultRef}
           autoComplete="off"
           autoCapitalize="characters"
-          placeholder="XS-ABC123"
+          placeholder={t("orders.lookup.refPlaceholder")}
           required
           maxLength={32}
-          aria-invalid={refError ? true : undefined}
-          aria-describedby={refError ? "tra-cuu-ma-loi" : undefined}
+          aria-invalid={isNonEmpty(refError) ? true : undefined}
+          aria-describedby={isNonEmpty(refError) ? "tra-cuu-ma-loi" : undefined}
         />
-        {refError ? (
+        {isNonEmpty(refError) ? (
           <p id="tra-cuu-ma-loi" className={styles.alert}>
             {refError}
           </p>
         ) : null}
       </div>
       <div className={styles.field}>
-        <label htmlFor="tra-cuu-sdt">Số điện thoại đặt hàng</label>
+        <label htmlFor="tra-cuu-sdt">{t("orders.lookup.phoneLabel")}</label>
         <input
           id="tra-cuu-sdt"
           name="sdt"
@@ -48,17 +50,17 @@ export function LookupForm({ defaultRef = "" }: { defaultRef?: string }) {
           autoComplete="tel"
           required
           maxLength={32}
-          aria-invalid={phoneError ? true : undefined}
-          aria-describedby={phoneError ? "tra-cuu-sdt-loi" : undefined}
+          aria-invalid={isNonEmpty(phoneError) ? true : undefined}
+          aria-describedby={isNonEmpty(phoneError) ? "tra-cuu-sdt-loi" : undefined}
         />
-        {phoneError ? (
+        {isNonEmpty(phoneError) ? (
           <p id="tra-cuu-sdt-loi" className={styles.alert}>
             {phoneError}
           </p>
         ) : null}
       </div>
-      <Button type="submit" loading={pending} loadingLabel="Đang gửi">
-        Gửi liên kết xem đơn
+      <Button type="submit" loading={pending} loadingLabel={t("orders.lookup.sending")}>
+        {t("orders.lookup.submit")}
       </Button>
       <p role="status" aria-live="polite" className={state.status === "sent" ? styles.notice : undefined}>
         {state.status === "sent" ? state.message : ""}

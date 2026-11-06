@@ -1,4 +1,5 @@
 import type { OrderDetails, OrderResult, OrderState, PaymentState, ShipmentState } from "./types";
+import { t } from "../i18n";
 
 /**
  * Ánh xạ phản hồi của `/store/x/orders/*` sang kiểu storefront. Thuần, không I/O. Dữ liệu sai hình dạng → null/lỗi có
@@ -11,7 +12,7 @@ const strOrNull = (v: unknown): string | null => (typeof v === "string" && v !==
 const int = (v: unknown): number | null =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
 
-const UNAVAILABLE = "Không tải được thông tin đơn lúc này. Vui lòng thử lại sau ít phút.";
+const UNAVAILABLE = t("orders.fetchError");
 
 /** Mã đơn hiển thị (XS-xxxxxx) — kiểm chặt trước khi đưa vào URL/cookie/lời gọi backend. */
 export const ORDER_REF_RE = /^XS-[A-Z0-9]{4,12}$/;
@@ -48,13 +49,13 @@ export function mapOrder(raw: unknown): OrderDetails | null {
   if (!ORDER_REF_RE.test(ref) || !ORDER_STATES.includes(state) || (method !== "cod" && method !== "vnpay")) {
     return null;
   }
-  const t = isObj(raw.totals) ? raw.totals : {};
+  const rawTotals = isObj(raw.totals) ? raw.totals : {};
   const totals = {
-    subtotal: int(t.subtotal),
-    discountTotal: int(t.discount_total),
-    shippingTotal: int(t.shipping_total),
-    total: int(t.total),
-    paid: int(t.paid),
+    subtotal: int(rawTotals.subtotal),
+    discountTotal: int(rawTotals.discount_total),
+    shippingTotal: int(rawTotals.shipping_total),
+    total: int(rawTotals.total),
+    paid: int(rawTotals.paid),
   };
   if (Object.values(totals).some((v) => v === null)) return null;
   const lines: OrderDetails["lines"] = [];
@@ -65,7 +66,7 @@ export function mapOrder(raw: unknown): OrderDetails | null {
     const total = int(l.total);
     if (quantity === null || unitPrice === null || total === null) return null;
     lines.push({
-      title: str(l.title, "Sản phẩm"),
+      title: str(l.title, t("orders.defaultTitle")),
       variantTitle: strOrNull(l.variant_title),
       quantity,
       unitPrice,

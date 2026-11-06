@@ -13,8 +13,10 @@
   transition: background-color var(--motion-fast) var(--ease);
 }
 
-.iconButton:hover {
-  background: var(--divider);
+@media (hover: hover) {
+  .iconButton:hover {
+    background: var(--divider);
+  }
 }
 
 .iconButton:disabled {

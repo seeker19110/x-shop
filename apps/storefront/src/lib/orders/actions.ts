@@ -3,6 +3,8 @@
 import { redirect } from "next/navigation";
 import { cancelOrder, lookupOrder, recheckOrder, redeemLink } from "./service";
 import type { LookupState, OrderResult } from "./types";
+import { isNonEmpty } from "../presence";
+import { t } from "../i18n";
 
 /**
  * Server Actions của trang đơn/tra cứu — mỏng, logic ở `service.ts`. Token phiên đơn chỉ nằm trong cookie HttpOnly;
@@ -25,8 +27,8 @@ const field = (form: FormData, name: string) => {
 export async function lookupOrderAction(_prev: LookupState, form: FormData): Promise<LookupState> {
   const ref = field(form, "ma").toUpperCase();
   const phone = field(form, "sdt");
-  if (ref === "") return { status: "invalid", field: "ref", message: "Vui lòng nhập mã đơn hàng" };
-  if (phone === "") return { status: "invalid", field: "phone", message: "Vui lòng nhập số điện thoại" };
+  if (ref === "") return { status: "invalid", field: "ref", message: t("orders.lookup.refRequired") };
+  if (phone === "") return { status: "invalid", field: "phone", message: t("orders.lookup.phoneRequired") };
   return lookupOrder(ref, phone);
 }
 
@@ -36,5 +38,5 @@ export async function lookupOrderAction(_prev: LookupState, form: FormData): Pro
  */
 export async function redeemLinkAction(form: FormData): Promise<void> {
   const ref = await redeemLink(field(form, "token"));
-  redirect(ref ? `/don-hang/${encodeURIComponent(ref)}` : "/tra-cuu-don?loi=lien-ket");
+  redirect(isNonEmpty(ref) ? `/don-hang/${encodeURIComponent(ref)}` : "/tra-cuu-don?loi=lien-ket");
 }

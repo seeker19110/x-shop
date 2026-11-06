@@ -1,3 +1,4 @@
+/* eslint-disable testing-library/no-container -- kiểm cấu trúc <picture> (không có vai trò ARIA) */
 import { render, screen, within } from "@testing-library/react";
 import { HOME_CONTENT } from "../lib/content/home";
 import HomePage from "./page";

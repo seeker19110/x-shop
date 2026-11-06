@@ -146,7 +146,9 @@ export function parseCallback(body: unknown): GhnCallback | null {
   const orderCode = str("OrderCode");
   const type = str("Type");
   const time = str("Time");
-  if (!orderCode || !type || !time || orderCode.length > 64) return null;
+  // Thiếu (null) hoặc rỗng ("") đều không hợp lệ.
+  if (orderCode === null || orderCode === "" || orderCode.length > 64) return null;
+  if (type === null || type === "" || time === null || time === "") return null;
   const status = str("Status") ?? "";
   const cod = typeof b.CODAmount === "number" && Number.isSafeInteger(b.CODAmount) ? b.CODAmount : null;
   return {

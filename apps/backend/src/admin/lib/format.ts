@@ -26,7 +26,7 @@ export function formatAge(seconds: number | null | undefined): string {
 
 /** ISO 8601 → giờ Việt Nam ngắn gọn; rỗng/không hợp lệ → "—". */
 export function formatInstant(iso: string | null | undefined): string {
-  if (!iso) return "—";
+  if (iso === null || iso === undefined || iso === "") return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return new Intl.DateTimeFormat("vi-VN", {

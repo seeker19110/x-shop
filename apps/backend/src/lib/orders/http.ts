@@ -1,7 +1,9 @@
 import type { MedusaResponse, MedusaStoreRequest } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { clientIp } from "../checkout/http";
+import { readParams } from "../http/request-input";
 import { authorizedOrder, issueOrderToken, orderNotFound } from "./access";
 import { assertNotBlocked, consumeRate, recordDenied } from "./rate-limit";
 
@@ -22,7 +24,9 @@ const ipTag = (ip: string) => createHash("sha256").update(ip).digest("hex").slic
  */
 export async function requireOrderAccess(req: MedusaStoreRequest, rateName: "viewIpRef" | "cancelIpRef") {
   const ip = clientIp(req);
-  const ref = String(req.params.display_ref ?? "");
+  // Sai kiểu/quá dài → ref rỗng: không khớp đơn nào → cùng 404 như không tồn tại.
+  const params = readParams(req, z.object({ display_ref: z.string().max(64) }));
+  const ref = params.ok ? params.data.display_ref : "";
   const now = new Date();
   await assertNotBlocked(req.scope, "deniedIp", ip, now);
   await consumeRate(req.scope, rateName, `${ip}|${ref}`, now);

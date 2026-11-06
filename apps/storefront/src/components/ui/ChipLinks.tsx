@@ -1,5 +1,7 @@
 import Link from "next/link";
 import styles from "./Chip.module.css";
+import { safeHref } from "../../lib/safe-url";
+import { t } from "../../lib/i18n";
 
 export interface ChipLinkItem {
   key: string;
@@ -15,7 +17,7 @@ export interface ChipLinkItem {
 export function ChipLinks({
   items,
   clearAllHref,
-  label = "Bộ lọc đang áp",
+  label = t("ui.chip.listLabel"),
 }: {
   items: readonly ChipLinkItem[];
   clearAllHref: string;
@@ -29,19 +31,19 @@ export function ChipLinks({
           <li key={it.key} className={styles.chip}>
             <span className={styles.text}>{it.label}</span>
             <Link
-              href={it.href}
+              href={safeHref(it.href)}
               prefetch={false}
               className={styles.remove}
-              aria-label={`Bỏ lọc: ${it.label}`}
+              aria-label={t("catalog.removeFilter", { label: it.label })}
               scroll={false}
             >
-              <span aria-hidden="true">×</span>
+              <span aria-hidden="true">{t("ui.glyph.close")}</span>
             </Link>
           </li>
         ))}
       </ul>
-      <Link href={clearAllHref} prefetch={false} className={styles.clear}>
-        Xóa tất cả
+      <Link href={safeHref(clearAllHref)} prefetch={false} className={styles.clear}>
+        {t("ui.chip.clearAll")}
       </Link>
     </div>
   );

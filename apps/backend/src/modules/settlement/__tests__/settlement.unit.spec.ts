@@ -1,5 +1,7 @@
 import { contentHashOf, parseSettlementCsv, parseVnd } from "../csv";
 import { classifyLine, nextSettlementState, settlementStateFor, type SettlementTarget } from "../match";
+import { SETTLEMENT_CONFIG } from "../constants";
+import SettlementModuleService, { SettlementError, type ImportBatchInput } from "../service";
 
 const NOW = new Date("2026-10-25T05:00:00Z");
 const HEADER = "reference,amount,occurred_at,type";
@@ -176,5 +178,90 @@ describe("classifyLine / settlementState", () => {
     expect(nextSettlementState("settled", 500, 600)).toBeNull();
     expect(nextSettlementState("unsettled", 500, 0)).toBeNull();
     expect(nextSettlementState("disputed", 500, 700)).toBeNull();
+  });
+});
+
+describe("importBatch — chờ khoá nhập có hạn (T-140)", () => {
+  const input: ImportBatchInput = {
+    source: "ghn_cod",
+    content_hash: "a".repeat(64),
+    external_ref: null,
+    period_end: null,
+    imported_by: "user_1",
+    rows: [],
+  };
+  /** knex giả: `raw` ghi lại câu lệnh; câu chờ khoá ném `lockError` (nếu có); bước sau khoá dừng bằng lỗi STOP. */
+  function fakeDb(lockError?: unknown) {
+    const calls: Array<{ sql: string; bindings: unknown }> = [];
+    const raw = jest.fn(async (sql: string, bindings?: unknown) => {
+      calls.push({ sql, bindings });
+      if (lockError !== undefined && sql.includes("pg_advisory_xact_lock")) throw lockError;
+      return { rows: [] };
+    });
+    const trx = Object.assign(
+      () => {
+        throw new Error("STOP");
+      },
+      { raw },
+    );
+    const db = { transaction: async (fn: (t: typeof trx) => Promise<unknown>) => fn(trx) };
+    const logger = { warn: jest.fn() };
+    const svc = new SettlementModuleService({ __pg_connection__: db as never, logger: logger as never });
+    return { svc, calls, logger };
+  }
+
+  it("đặt lock_timeout cục bộ = hạn chờ TRƯỚC câu chờ khoá, trả về mặc định NGAY SAU khi giành được", async () => {
+    const { svc, calls } = fakeDb();
+    await expect(svc.importBatch(input)).rejects.toThrow("STOP");
+    expect(calls.map((c) => c.sql)).toEqual([
+      "select set_config('lock_timeout', ?, true)",
+      "select pg_advisory_xact_lock(hashtext(?))",
+      "set local lock_timeout to default",
+    ]);
+    expect(calls[0]!.bindings).toEqual([`${SETTLEMENT_CONFIG.importLockWaitMs}ms`]);
+    expect(calls[1]!.bindings).toEqual(["x-settlement:ghn_cod"]);
+  });
+
+  it.each([
+    ["55P03", "lock_timeout"],
+    ["57014", "statement_timeout nhỏ hơn hạn chờ"],
+  ])(
+    "câu chờ khoá lỗi %s (%s) → SettlementError IMPORT_IN_PROGRESS, không chạy câu nào sau đó",
+    async (code) => {
+      const { svc, calls, logger } = fakeDb(Object.assign(new Error("canceling statement"), { code }));
+      const err = (await svc.importBatch(input).catch((e: unknown) => e)) as SettlementError;
+      expect(err).toBeInstanceOf(SettlementError);
+      expect(err.code).toBe("IMPORT_IN_PROGRESS");
+      expect(err.detail).toEqual({ source: "ghn_cod" });
+      expect(err.message).toContain(`khoảng ${Math.ceil(SETTLEMENT_CONFIG.importLockWaitMs / 1000)} giây`);
+      expect(calls).toHaveLength(2);
+      // Log warn đo tần suất: đúng một dòng, có nguồn + mã lỗi, không dữ liệu chứng từ.
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const msg = String(logger.warn.mock.calls[0]![0]);
+      expect(msg).toContain("IMPORT_IN_PROGRESS");
+      expect(msg).toContain("ghn_cod");
+      expect(msg).toContain(`code=${code}`);
+      expect(msg).not.toContain(input.content_hash);
+    },
+  );
+
+  it("lỗi khác ở câu chờ khoá (mất kết nối, lỗi lạ, giá trị không phải Error) → ném nguyên lỗi gốc", async () => {
+    for (const e of [
+      Object.assign(new Error("terminated"), { code: "57P01" }),
+      new Error("ECONNRESET"),
+      null,
+    ]) {
+      const { svc, logger } = fakeDb(e);
+      await expect(svc.importBatch(input)).rejects.toBe(e);
+      expect(logger.warn).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe("hạn chờ khoá nhập: cấu hình hợp lệ", () => {
+  it("số nguyên dương, nhỏ hơn hẳn statement_timeout mặc định 30 s", () => {
+    expect(Number.isSafeInteger(SETTLEMENT_CONFIG.importLockWaitMs)).toBe(true);
+    expect(SETTLEMENT_CONFIG.importLockWaitMs).toBeGreaterThan(0);
+    expect(SETTLEMENT_CONFIG.importLockWaitMs).toBeLessThanOrEqual(15_000);
   });
 });

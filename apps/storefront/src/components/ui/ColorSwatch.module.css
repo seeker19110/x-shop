@@ -33,8 +33,10 @@
   transition: border-color var(--motion-fast) var(--ease);
 }
 
-.swatch:hover {
-  border-color: var(--foreground);
+@media (hover: hover) {
+  .swatch:hover {
+    border-color: var(--foreground);
+  }
 }
 
 .selected {

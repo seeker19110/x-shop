@@ -5,6 +5,7 @@ import { Drawer } from "../ui/Drawer";
 import { MenuIcon } from "./icons";
 import styles from "./Header.module.css";
 import { NavLinks, type NavItem } from "./NavLinks";
+import { t } from "../../lib/i18n";
 
 /** Menu di động: nút mở `Drawer` (khóa focus, Esc đóng, trả focus về nút). Chỉ hiện dưới 48em. */
 export function MobileMenu({ items }: { items: readonly NavItem[] }) {
@@ -21,20 +22,20 @@ export function MobileMenu({ items }: { items: readonly NavItem[] }) {
         onClick={() => setOpen(true)}
       >
         <MenuIcon />
-        <span className="visually-hidden">Mở menu danh mục</span>
+        <span className="visually-hidden">{t("header.menuOpen")}</span>
       </button>
       <Drawer
         open={open}
         onClose={() => setOpen(false)}
-        title="Danh mục"
+        title={t("mobileMenu.title")}
         returnFocusRef={openerRef}
-        closeLabel="Đóng menu"
+        closeLabel={t("mobileMenu.close")}
       >
-        <nav aria-label="Danh mục (menu di động)">
+        <nav aria-label={t("mobileMenu.navLabel")}>
           {items.length > 0 ? (
             <NavLinks items={items} onNavigate={() => setOpen(false)} />
           ) : (
-            <p>Chưa có danh mục.</p>
+            <p>{t("mobileMenu.empty")}</p>
           )}
         </nav>
       </Drawer>

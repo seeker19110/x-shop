@@ -1,6 +1,7 @@
 import { Text } from "@medusajs/ui";
 import { useState, type ReactNode } from "react";
 import { checkCsvFile } from "../lib/csv-file";
+import { isNonEmpty } from "../lib/presence";
 
 /** Chọn file CSV, kiểm đuôi/cỡ ngay, đọc nội dung UTF-8 (server kiểm lại). Báo `null` khi bỏ chọn/không hợp lệ. */
 export function CsvPicker(props: {
@@ -24,7 +25,7 @@ export function CsvPicker(props: {
             setProblem(null);
             if (!file) return props.onText(null);
             const bad = checkCsvFile(file, props.maxBytes);
-            if (bad) {
+            if (bad !== null) {
               setProblem(bad);
               return props.onText(null);
             }
@@ -32,7 +33,7 @@ export function CsvPicker(props: {
           }}
         />
       </label>
-      {problem && <Text className="text-ui-fg-error">{problem}</Text>}
+      {isNonEmpty(problem) && <Text className="text-ui-fg-error">{problem}</Text>}
     </div>
   );
 }

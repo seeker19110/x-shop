@@ -132,7 +132,9 @@ export type RefundState = (typeof REFUND_STATES)[number];
  */
 export const refundMachine = defineMachine<RefundState>("refund", {
   requested: ["approved", "rejected"],
-  approved: ["processing"],
+  // approved → failed (T-169): cổng/hệ thống từ chối dứt khoát TRƯỚC khi gửi (cổng hoàn tắt, không có giao dịch gốc) —
+  // chưa có gì rời hệ thống nên hủy được ngay mà không cần đối chiếu.
+  approved: ["processing", "failed"],
   processing: ["succeeded", "failed", "unknown"],
   unknown: ["succeeded", "failed"],
   // failed → succeeded: chỉ bằng ĐỐI CHIẾU với cổng (hỏi cùng mã trước khi hủy thấy cổng đã hoàn) — không hủy nhầm.

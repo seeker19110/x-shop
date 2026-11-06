@@ -1,13 +1,25 @@
+import { randomUUID } from "node:crypto";
 import type { Logger, MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils";
 import { medusaIntegrationTestRunner } from "@medusajs/test-utils";
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
-import { drainCatalogIndex, rebuildCatalogIndex, syncCatalogProducts } from "../../src/lib/catalog/indexer";
+import {
+  CATALOG_INDEX_LOCK,
+  CATALOG_REBUILD_LOCK,
+  drainCatalogIndex,
+  rebuildCatalogIndex,
+  syncCatalogProducts,
+} from "../../src/lib/catalog/indexer";
 import { Migration20261026120000 } from "../../src/modules/catalog-index/migrations/Migration20261026120000";
 import { Migration20261026030000 } from "../../src/modules/checkout/migrations/Migration20261026030000";
 import { CATALOG_INDEX_MODULE } from "../../src/modules/catalog-index";
 import type CatalogIndexModuleService from "../../src/modules/catalog-index/service";
+import type { CatalogIndexRow } from "../../src/modules/catalog-index/service";
+import catalogIndexRebuildJob from "../../src/jobs/catalog-index-rebuild";
 import seedCatalog, { type CatalogSeedResult } from "../../src/scripts/seed-catalog";
+import { acquireOrdered, releaseOwned } from "../../src/lib/checkout/locks";
+import { type ExclusiveRebuilds, exclusiveRebuilds, pauseAfterPriceRead } from "../helpers/catalog-rebuild";
+import { createCountScope } from "../helpers/scoped-counter";
 
 jest.setTimeout(300 * 1000);
 
@@ -135,7 +147,16 @@ medusaIntegrationTestRunner({
       expectedTotal = await sellableRows(db);
     });
 
-    afterEach(() => jest.restoreAllMocks());
+    /**
+     * Thả mọi móc dừng/cửa sổ độc quyền của ca — kể cả khi ca hết hạn giữa chừng (jest bỏ dở thân ca, `finally` của nó
+     * không chạy): lượt xả bị móc dừng mà không thả thì giữ khoá ghi (lease gia hạn mãi) → mọi ca sau chờ khoá ghi tới
+     * hết hạn, cả bộ treo im thay vì đỏ một ca.
+     */
+    const cleanups: Array<() => void> = [];
+    afterEach(() => {
+      for (const release of cleanups.splice(0)) release();
+      jest.restoreAllMocks();
+    });
 
     it("oracle: dữ liệu sinh đủ > 5.000 biến thể có giá", async () => {
       expect(PRICED_VARIANTS).toBeGreaterThan(5_000);
@@ -169,6 +190,52 @@ medusaIntegrationTestRunner({
       expect((perProduct.rows[0] as { n: number }).n).toBe(PRODUCTS);
     });
 
+    it("T-140: rebuild ghi theo lô cố định — mỗi INSERT ≤ 500 dòng, số INSERT = ⌈dòng/500⌉ (chi phí mỗi câu không lớn theo catalog, xa statement_timeout)", async () => {
+      // Đo 50k SKU (docs/db/connections.md §5): câu dài nhất 60–71 ms (DELETE cả bảng), INSERT ≤ 45 ms/lô. Hàng rào:
+      // gộp ghi thành một câu cho cả catalog (chi phí tăng theo số SKU) sẽ làm đỏ ở đây trước khi chạm 30 s production.
+      const CHUNK_ROWS = 500;
+      const COLUMNS = 25;
+      const inserts: number[] = [];
+      // Chỉ đếm INSERT trong giao dịch replaceAll của rebuild CỦA CA: từ T-167 lượt xả nền (job mỗi phút, lượt hẹn) được
+      // phép đồng bộ song song lúc rebuild đọc nguồn — INSERT của nó không thuộc phép đo; replaceAll giữ khoá ghi nên
+      // trong khoảng này không lượt đồng bộ nào ghi xen. Rebuild nền (job */30) bị cửa sổ độc quyền chặn, và replaceAll
+      // ngoài ngữ cảnh của ca không được đếm (T-238).
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      let inReplace = false;
+      let inserted = -1;
+      const svc = index();
+      const replace = svc.replaceAll.bind(svc);
+      jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        if (!ex.owns()) return replace(rows, since);
+        inReplace = true;
+        try {
+          const r = await replace(rows, since);
+          inserted = r.inserted;
+          return r;
+        } finally {
+          inReplace = false;
+        }
+      });
+      const onQuery = (q: { sql?: string; bindings?: unknown[] }) => {
+        if (inReplace && /^insert into "catalog_variant_index"/i.test(q.sql ?? ""))
+          inserts.push((q.bindings ?? []).length);
+      };
+      db.on("query", onQuery);
+      try {
+        const result = await ex.run(() => rebuildCatalogIndex(container));
+        expect(result.rows).toBe(expectedTotal);
+      } finally {
+        db.removeListener("query", onQuery);
+        ex.close();
+      }
+      // `inserted` = dòng ảnh chụp thực ghi (trừ sản phẩm giữ bản đồng bộ nếu lượt xả nền chen lúc đọc — thường 0).
+      expect(inserted).toBeGreaterThan(expectedTotal - 10 * SKUS_PER_PRODUCT);
+      expect(inserts).toHaveLength(Math.ceil(inserted / CHUNK_ROWS));
+      expect(Math.max(...inserts)).toBe(CHUNK_ROWS * COLUMNS);
+      expect(inserts.reduce((a, b) => a + b, 0)).toBe(inserted * COLUMNS);
+    });
+
     it("đồng bộ theo lô lớn (mọi sản phẩm sinh một lần gọi) cũng đủ dòng", async () => {
       await db.raw(`DELETE FROM catalog_variant_index WHERE product_id LIKE 'prod_SCALE%'`);
       const error = jest.spyOn(logger, "error");
@@ -193,6 +260,536 @@ medusaIntegrationTestRunner({
       expect(await count()).toBe(expectedTotal);
       expect(await distinctKeys()).toBe(expectedTotal);
       expect(await scaleRows()).toBe(PRICED_VARIANTS);
+    });
+
+    // ---- T-167 (D-076): rebuild dựng dòng NGOÀI khoá ghi, chỉ giữ khoá lúc replaceAll ----
+    const pricesOf = async (variantId: string): Promise<number[]> =>
+      (
+        await db.raw(
+          `SELECT price FROM catalog_variant_index WHERE variant_id = ? ORDER BY sales_channel_id`,
+          [variantId],
+        )
+      ).rows.map((r: { price: string | number }) => Number(r.price));
+    /** Đổi giá niêm yết ở NGUỒN (bảng price của biến thể sinh ở `generate`) — không phát sự kiện. */
+    const setSourcePrice = (variantId: string, amount: number) =>
+      db.raw(
+        `UPDATE price SET amount = ?, raw_amount = jsonb_build_object('value', ?::text, 'precision', 20)
+          WHERE price_set_id = ?`,
+        [amount, amount, `pset_${variantId.slice("variant_".length)}`],
+      );
+    const isDirty = async (productId: string): Promise<boolean> =>
+      (await db.raw(`SELECT 1 FROM catalog_index_dirty WHERE product_id = ?`, [productId])).rows.length > 0;
+    /** Biến thể đầu (si = 0) của sản phẩm sinh ở `generate`. */
+    const firstVariant = (pid: string) => `variant_SCALE${pid.slice("prod_SCALE".length)}0`;
+    /**
+     * Xả tới khi không còn dấu đến hạn (gồm lượt xả rebuild hẹn cho sản phẩm giữ bản đồng bộ) — ca sau không gặp khoá
+     * ghi bận vì lượt xả nền của ca trước.
+     */
+    const settle = async () => {
+      for (let i = 0; i < 20 && (await index().dirtyCount(true)) > 0; i++)
+        await drainCatalogIndex(container, { waitMs: 5_000 });
+      expect(await index().dirtyCount(true)).toBe(0);
+      await new Promise((r) => setTimeout(r, 300));
+    };
+    /** Mốc sạch: bảng đúng nguồn và hàng đợi rỗng (dấu còn sót của ca trước đã được rebuild này phủ). */
+    const baseline = async () => {
+      await rebuildCatalogIndex(container);
+      await settle();
+      await db.raw(`DELETE FROM catalog_index_dirty`);
+    };
+    /**
+     * Chạy rebuild, dừng nó ngay sau khi đọc xong GIÁ của lô chứa `variantId` (ảnh chụp sản phẩm + giá CŨ đã nằm trong
+     * tay rebuild), chạy `during` trong lúc dừng rồi cho rebuild chạy tiếp tới hết. `atReplace` đọc trạng thái NGAY sau
+     * `replaceAll` (còn giữ khoá ghi — lượt xả hẹn sau rebuild chưa thể chen vào): bằng chứng ảnh chụp có ghi đè hay không.
+     */
+    const rebuildPausedAt = async <T>(
+      variantId: string,
+      during: () => Promise<void>,
+      atReplace: () => Promise<T>,
+    ) => {
+      const svc = index();
+      const replace = svc.replaceAll.bind(svc);
+      const seen: { value?: T } = {};
+      // Job rebuild nền không chen vào giữa: móc dừng ở lần đọc giá ĐẦU TIÊN, phải là của rebuild do ca chạy.
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      const spy = jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        const r = await replace(rows, since);
+        if (ex.owns()) seen.value = await atReplace();
+        return r;
+      });
+      try {
+        return await ex.run(async () => {
+          const gate = pauseAfterPriceRead(container, variantId);
+          cleanups.push(gate.restore);
+          const run = rebuildCatalogIndex(container);
+          try {
+            await gate.reached;
+            await during();
+          } finally {
+            gate.restore();
+          }
+          const result = await run.finally(() => spy.mockRestore());
+          return { result, atReplace: seen.value };
+        });
+      } finally {
+        ex.close();
+      }
+    };
+
+    it("T-167: sửa giá trong lúc rebuild đang đọc nguồn → lượt xả ghi ngay (khoá ghi không bị rebuild giữ), rebuild không ghi đè bằng ảnh chụp cũ", async () => {
+      await baseline();
+      const pid = "prod_SCALE00010";
+      const vid = firstVariant(pid);
+      const [before] = await pricesOf(vid);
+      const NEW = before! + 7_000;
+
+      const { result, atReplace } = await rebuildPausedAt(
+        vid,
+        async () => {
+          await setSourcePrice(vid, NEW);
+          await index().markDirty([pid]);
+          // Trước T-167 rebuild giữ khoá suốt lúc đọc → lượt xả hết hạn chờ, giá cũ tới hết rebuild (~1 phút ở 50k).
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await pricesOf(vid)).toEqual([NEW]);
+        },
+        async () => ({ price: await pricesOf(vid), dirty: await isDirty(pid) }),
+      );
+
+      expect(result.superseded).toBe(false);
+      expect(result.kept).toBe(1);
+      // Ảnh chụp (giá CŨ đã đọc) không ghi đè bản đồng bộ; sản phẩm giữ lại được đánh dấu bẩn lại (review 🔴1).
+      expect(atReplace).toEqual({ price: [NEW], dirty: true });
+      expect(result.rows).toBe(expectedTotal);
+      await settle();
+      expect(await pricesOf(vid)).toEqual([NEW]);
+      expect(await isDirty(pid)).toBe(false);
+      expect(await count()).toBe(expectedTotal);
+      expect(await distinctKeys()).toBe(expectedTotal);
+
+      await setSourcePrice(vid, before!);
+      await syncCatalogProducts(container, [pid]);
+      expect(await pricesOf(vid)).toEqual([before]);
+    });
+
+    it("T-167: ẩn sản phẩm (draft) trong lúc rebuild đọc nguồn → không còn dòng sau rebuild", async () => {
+      await baseline();
+      const pid = "prod_SCALE00011";
+      expect(await count("product_id = ?", [pid])).toBe(SKUS_PER_PRODUCT);
+
+      const { result, atReplace } = await rebuildPausedAt(
+        firstVariant(pid),
+        async () => {
+          await db.raw(`UPDATE product SET status = 'draft' WHERE id = ?`, [pid]);
+          await index().markDirty([pid]);
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await count("product_id = ?", [pid])).toBe(0);
+        },
+        () => count("product_id = ?", [pid]),
+      );
+
+      expect(result.kept).toBe(1);
+      expect(atReplace).toBe(0);
+      await settle();
+      expect(await count("product_id = ?", [pid])).toBe(0);
+      expect(await count()).toBe(expectedTotal - SKUS_PER_PRODUCT);
+
+      await db.raw(`UPDATE product SET status = 'published' WHERE id = ?`, [pid]);
+      await syncCatalogProducts(container, [pid]);
+      expect(await count()).toBe(expectedTotal);
+    });
+
+    it("T-167: xoá sản phẩm trong lúc rebuild đọc nguồn → không dòng ma sau rebuild", async () => {
+      await baseline();
+      const pid = "prod_SCALE00012";
+      expect(await count("product_id = ?", [pid])).toBe(SKUS_PER_PRODUCT);
+
+      const { result, atReplace } = await rebuildPausedAt(
+        firstVariant(pid),
+        async () => {
+          await db.raw(`UPDATE product SET deleted_at = now() WHERE id = ?`, [pid]);
+          await index().markDirty([pid]);
+          await drainCatalogIndex(container, { waitMs: 5_000 });
+          expect(await count("product_id = ?", [pid])).toBe(0);
+        },
+        () => count("product_id = ?", [pid]),
+      );
+
+      expect(result.kept).toBe(1);
+      expect(atReplace).toBe(0);
+      await settle();
+      expect(await count("product_id = ?", [pid])).toBe(0);
+      expect(await count()).toBe(expectedTotal - SKUS_PER_PRODUCT);
+      expect(await distinctKeys()).toBe(expectedTotal - SKUS_PER_PRODUCT);
+
+      await db.raw(`UPDATE product SET deleted_at = NULL WHERE id = ?`, [pid]);
+      await syncCatalogProducts(container, [pid]);
+      expect(await count()).toBe(expectedTotal);
+    });
+
+    it("T-167: thay đổi chưa kịp xả trước replaceAll → dấu bẩn còn nguyên sau rebuild, lượt xả kế tiếp ghi bản mới", async () => {
+      await baseline();
+      const pid = "prod_SCALE00013";
+      const vid = firstVariant(pid);
+      const [before] = await pricesOf(vid);
+      const NEW = before! + 9_000;
+
+      const { result, atReplace } = await rebuildPausedAt(
+        vid,
+        async () => {
+          await setSourcePrice(vid, NEW);
+          await index().markDirty([pid]);
+        },
+        async () => ({ price: await pricesOf(vid), dirty: await isDirty(pid) }),
+      );
+
+      // Hai nhánh hợp lệ (T-167 cố ý cho lượt xả nền — job mỗi phút, lượt hẹn — chạy song song lúc rebuild đọc nguồn):
+      if (result.kept === 0) {
+        // (a) Không lượt xả nào lấy dấu trước replaceAll: ảnh chụp (đã cầm giá CŨ — móc dừng SAU khi đọc giá) được ghi,
+        // dấu đặt sau mốc bắt đầu còn nguyên.
+        expect(atReplace).toEqual({ price: [before], dirty: true });
+      } else {
+        // (b) Lượt xả nền đã đồng bộ sản phẩm (đọc nguồn sau thay đổi) trước replaceAll: bản đồng bộ được giữ và sản phẩm
+        // được đánh dấu bẩn lại trong replaceAll.
+        expect(result.kept).toBe(1);
+        expect(atReplace).toEqual({ price: [NEW], dirty: true });
+      }
+      // Bất biến chung: dấu không bị rebuild nuốt → lượt xả kế ghi giá mới, hàng đợi sạch.
+      await settle();
+      expect(await pricesOf(vid)).toEqual([NEW]);
+      expect(await isDirty(pid)).toBe(false);
+
+      await setSourcePrice(vid, before!);
+      await syncCatalogProducts(container, [pid]);
+    });
+
+    /**
+     * Ca review 🔴1: đồng bộ đọc nguồn TRƯỚC mốc rebuild nhưng ghi SAU mốc. Lượt xả bị dừng GIỮ khoá ghi tới khi rebuild
+     * CỦA CA lấy mốc → ca giữ độc quyền rebuild (`exclusiveRebuilds`). `backgroundJob`: giả lập tick của job rebuild thật
+     * (mỗi 30 phút) tới đúng lúc rebuild của baseline đang giữ khoá rebuild — khe 04:00/22:00 của hai lần treo cả bộ: job
+     * chờ khoá, giành ngay khi baseline nhả, trước khi ca dừng lượt xả. `job` = kết quả job ("ok" | lỗi) hoặc null; bọc
+     * trong object để không bị await gộp (job chỉ chạy được sau khi cửa sổ đóng).
+     */
+    const syncBeforeSinceCase = async (
+      backgroundJob: boolean,
+    ): Promise<{ job: Promise<unknown> | null; jobSettledInWindow: boolean }> => {
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      try {
+        return await ex.run(async () => {
+          const svc = index();
+          const bg: { job: Promise<unknown> | null; settled: boolean; settledInWindow: boolean } = {
+            job: null,
+            settled: false,
+            settledInWindow: false,
+          };
+          if (backgroundJob) {
+            const clockReal = svc.clockNow.bind(svc);
+            const kick = jest.spyOn(svc, "clockNow").mockImplementationOnce(async () => {
+              // Đang trong rebuild của baseline (giữ khoá rebuild); job chạy NGOÀI ngữ cảnh ca như worker job.
+              bg.job = ex
+                .outside(() => catalogIndexRebuildJob(container))
+                .then(
+                  () => "ok",
+                  (e: unknown) => e,
+                )
+                .finally(() => (bg.settled = true));
+              return clockReal();
+            });
+            await baseline();
+            kick.mockRestore();
+            expect(bg.job).not.toBeNull();
+          } else {
+            await baseline();
+          }
+          const pid = "prod_SCALE00900";
+          const vid = firstVariant(pid);
+          const [before] = await pricesOf(vid);
+          const NEW = before! + 11_000;
+          let reachedWrite!: () => void;
+          const writeReached = new Promise<void>((r) => (reachedWrite = r));
+          let releaseWrite!: () => void;
+          const writeGate = new Promise<void>((r) => (releaseWrite = r));
+          cleanups.push(() => releaseWrite());
+          const replaceProducts = svc.replaceProducts.bind(svc);
+          jest.spyOn(svc, "replaceProducts").mockImplementation(async (ids, rows) => {
+            if (ids.includes(pid)) {
+              reachedWrite();
+              await writeGate;
+            }
+            return replaceProducts(ids, rows);
+          });
+          let sinceTaken!: (s: string) => void;
+          const sinceP = new Promise<string>((r) => (sinceTaken = r));
+          const clock = svc.clockNow.bind(svc);
+          jest.spyOn(svc, "clockNow").mockImplementation(async () => {
+            const s = await clock();
+            if (ex.owns()) sinceTaken(s);
+            return s;
+          });
+          const replace = svc.replaceAll.bind(svc);
+          let atReplace: { price: number[]; dirty: boolean } | undefined;
+          jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+            const r = await replace(rows, since);
+            if (ex.owns()) atReplace = { price: await pricesOf(vid), dirty: await isDirty(pid) };
+            return r;
+          });
+          try {
+            // 1) Lượt đồng bộ pid đã ĐỌC nguồn (giá cũ), dừng ngay trước replaceProducts (đang giữ khoá ghi).
+            // Lượt xả nền (job mỗi phút) cũng có thể lấy dấu này trước — móc trên replaceProducts dừng bất kỳ lượt nào ghi pid;
+            // lượt xả của ca chờ khoá (không đếm nó xử lý bao nhiêu).
+            await svc.markDirty([pid]);
+            const drain = drainCatalogIndex(container, { waitMs: 20_000 });
+            await writeReached;
+            // 2) Thay đổi KHÔNG phát sự kiện (price list tới giờ, bảng màu/size, link kho↔kênh): nguồn đổi, không dấu.
+            await setSourcePrice(vid, NEW);
+            const changedAt = (await db.raw(`SELECT clock_timestamp()::text AS t`)).rows[0].t as string;
+            // 3) Rebuild định kỳ (job */30) bắt đầu SAU thay đổi.
+            const run = rebuildCatalogIndex(container);
+            const since = await sinceP;
+            expect(
+              (await db.raw(`SELECT ?::timestamptz < ?::timestamptz AS ok`, [changedAt, since])).rows[0].ok,
+            ).toBe(true);
+            // 4) Lượt đồng bộ ghi (mốc ≥ since) bằng dữ liệu đọc TRƯỚC thay đổi, rồi xoá dấu.
+            releaseWrite();
+            await drain;
+            const result = await run;
+            // Rebuild của ca xong, cửa sổ còn mở: job nền chưa được giành khoá rebuild (chưa xong, chưa lỗi).
+            bg.settledInWindow = bg.settled;
+            expect(result.kept).toBe(1);
+            // Bản giữ lại (cũ) được đánh dấu bẩn lại cùng giao dịch replaceAll → lượt xả đọc nguồn mới nhất.
+            expect(atReplace).toEqual({ price: [before], dirty: true });
+            await settle();
+            expect(await pricesOf(vid)).toEqual([NEW]);
+          } finally {
+            releaseWrite();
+            jest.restoreAllMocks();
+            await setSourcePrice(vid, before!);
+            await syncCatalogProducts(container, [pid]);
+          }
+          return { job: bg.job, jobSettledInWindow: bg.settledInWindow };
+        });
+      } finally {
+        ex.close();
+      }
+    };
+
+    it("T-167 (review 🔴1): đồng bộ đọc nguồn TRƯỚC mốc rebuild nhưng ghi SAU mốc → thay đổi không phát sự kiện trước mốc không bị mất", async () => {
+      await expect(syncBeforeSinceCase(false)).resolves.toEqual({ job: null, jobSettledInWindow: false });
+    });
+
+    it("ca biên: job rebuild định kỳ tới giữa ca review 🔴1 (baseline đang giữ khoá rebuild) → không vòng chờ khoá, ca xanh, job chạy xong sau cửa sổ", async () => {
+      const { job, jobSettledInWindow } = await syncBeforeSinceCase(true);
+      // Trước khi sửa: job giữ khoá rebuild chờ khoá ghi do lượt xả bị dừng giữ → ca hết hạn 300 s, cả bộ treo.
+      expect(jobSettledInWindow).toBe(false);
+      // Cửa sổ đóng → job giành khoá rebuild như thường, rebuild xong (không bỏ job, không BUSY_RETRY).
+      await expect(job).resolves.toBe("ok");
+      await settle();
+    });
+
+    it("T-167: hai rebuild đồng thời chạy tuần tự (mỗi lần thay là MỘT ảnh chụp, không xen lúc đọc); ảnh chụp cũ hơn ảnh chụp đã áp bị bỏ", async () => {
+      const svc = index();
+      // T-238: spy clockNow/replaceAll là toàn cục — rebuild của job nền (*/30, đúng lúc cron tới) hay lượt xả theo dấu
+      // '*' chạy song song thành thêm một cặp đọc/thay. Cửa sổ độc quyền chặn chúng giành khoá rebuild giữa ca; chỉ đếm
+      // lời gọi trong ngữ cảnh của ca.
+      expect(await isDirty("*")).toBe(false);
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      const order: string[] = [];
+      let foreign = 0;
+      const clock = svc.clockNow.bind(svc);
+      const replace = svc.replaceAll.bind(svc);
+      jest.spyOn(svc, "clockNow").mockImplementation(async () => {
+        if (ex.owns()) order.push("đọc");
+        else foreign += 1;
+        return clock();
+      });
+      jest.spyOn(svc, "replaceAll").mockImplementation(async (rows, since) => {
+        if (ex.owns()) order.push("thay");
+        else foreign += 1;
+        return replace(rows, since);
+      });
+      // Tick job rebuild thật tới đúng lúc hai rebuild của ca bắt đầu (tái hiện T-238: trước khi sửa, thứ tự thành
+      // đọc/thay × 3). Job chạy NGOÀI ngữ cảnh ca như worker job; bọc trong object để không bị await gộp.
+      const bg = {
+        job: ex
+          .outside(() => catalogIndexRebuildJob(container))
+          .then(
+            () => "ok",
+            (e: unknown) => e,
+          ),
+      };
+      const [a, b] = await ex.run(() =>
+        Promise.all([rebuildCatalogIndex(container), rebuildCatalogIndex(container)]),
+      );
+      expect(order).toEqual(["đọc", "thay", "đọc", "thay"]);
+      for (const r of [a, b]) {
+        expect(r.superseded).toBe(false);
+        expect(r.rows).toBe(expectedTotal);
+      }
+      expect(await count()).toBe(expectedTotal);
+      expect(await distinctKeys()).toBe(expectedTotal);
+      // Cửa sổ chưa đóng: job chưa giành được khoá rebuild (chưa đọc nguồn).
+      expect(foreign).toBe(0);
+      ex.close();
+      // Đóng cửa sổ → job rebuild như thường (không bỏ job); lời gọi của nó không lọt vào thứ tự của ca.
+      await expect(bg.job).resolves.toBe("ok");
+      expect(foreign).toBeGreaterThanOrEqual(2);
+      expect(order).toHaveLength(4);
+      jest.restoreAllMocks();
+      await settle();
+
+      // Chốt ở DB, không dựa vào khoá Redis (lease mất, tiến trình treo): ảnh chụp bắt đầu trước ảnh chụp đã áp → không ghi.
+      const older = await svc.clockNow();
+      const newer = await svc.clockNow();
+      const rows = (await db.raw(`SELECT * FROM catalog_variant_index`)).rows as CatalogIndexRow[];
+      expect((await svc.replaceAll(rows, newer)).applied).toBe(true);
+      const stale = await svc.replaceAll(rows.slice(0, 10), older);
+      expect(stale).toEqual({ applied: false, inserted: 0, keptProducts: [], keptRows: 0 });
+      expect(await count()).toBe(expectedTotal);
+    });
+
+    it("T-167: khoá ghi chỉ giữ lúc thay bảng — câu SQL trong khoá ≤ ⌈dòng/500⌉ + hằng số, không câu nào đọc nguồn, phần lớn câu chạy ngoài khoá", async () => {
+      // Đo theo SỐ CÂU, không theo đồng hồ (máy tải nặng làm wall-clock chập chờn). Trước T-167 mọi câu (kể cả đọc nguồn
+      // 50k SKU ~51–69 s, docs/db/connections.md §5) chạy trong khoá → tỉ lệ 1,0.
+      const locking = container.resolve(Modules.LOCKING);
+      const acquire = locking.acquire.bind(locking);
+      const release = locking.release.bind(locking);
+      const isIndexLock = (keys: string | string[]) =>
+        (Array.isArray(keys) ? keys : [keys]).includes(CATALOG_INDEX_LOCK);
+      // Chỉ khoá do REBUILD giữ: lượt xả nền (chủ `drain-…`, job mỗi phút/lượt hẹn) được phép chạy song song từ T-167.
+      const ownerOf = (args: unknown) => (args as { ownerId?: string } | undefined)?.ownerId ?? "";
+      let heldBy: string | null = null;
+      // T-238: chỉ khoá do rebuild CỦA CA giữ — rebuild của job nền (*/30) giữ khoá ghi thì câu đọc nguồn của rebuild
+      // này lọt vào "trong khoá"; cửa sổ độc quyền chặn job giữa ca. Spy của ca cài TRƯỚC: cửa sổ bọc nối tiếp lên nó.
+      let ex: Awaited<ReturnType<typeof exclusiveRebuilds>> | null = null;
+      jest.spyOn(locking, "acquire").mockImplementation(async (keys, args) => {
+        await acquire(keys, args);
+        if (isIndexLock(keys) && ex?.owns() === true && !ownerOf(args).startsWith("drain-"))
+          heldBy = ownerOf(args);
+      });
+      jest.spyOn(locking, "release").mockImplementation(async (keys, args) => {
+        if (isIndexLock(keys) && ownerOf(args) === heldBy) heldBy = null;
+        return release(keys, args);
+      });
+      ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      const excl = ex;
+      const inLock: string[] = [];
+      let outside = 0;
+      const onQuery = (q: { sql?: string }) => {
+        const sql = q.sql ?? "";
+        // Câu thăm dò hàng đợi của lượt xả nền đang chờ khoá (dirtyCount) không thuộc rebuild — không tính bên nào.
+        if (/catalog_index_dirty/.test(sql)) return;
+        if (heldBy !== null) inLock.push(sql);
+        else outside += 1;
+      };
+      db.on("query", onQuery);
+      const result = await excl
+        .run(() => rebuildCatalogIndex(container))
+        .finally(() => {
+          db.removeListener("query", onQuery);
+          excl.close();
+        });
+      expect(result.rows).toBe(expectedTotal);
+      const SOURCE =
+        /\b(from|join)\s+"?(product|product_variant|price|price_set|price_list|inventory_item|inventory_level|reservation_item|product_category|sales_channel)"?(\s|$)/i;
+      expect(inLock.filter((s) => SOURCE.test(s))).toEqual([]);
+      // Cận dưới: lọc ngữ cảnh ca hỏng (heldBy không bao giờ đặt) thì inLock rỗng và các assert trên/dưới qua suông.
+      expect(inLock.length).toBeGreaterThanOrEqual(Math.ceil(expectedTotal / 500));
+      expect(inLock.length).toBeLessThanOrEqual(Math.ceil(expectedTotal / 500) + 12);
+      // Đo 2026-10-27 (5.605 dòng): 21 câu trong khoá (BEGIN, 6 câu write log/chốt, DELETE, 12 INSERT, COMMIT, đếm cuối)
+      // trên 252 câu cả lượt (8 %); trước T-167: mọi câu trong khoá, gồm 391 câu đọc nguồn.
+      expect(inLock.length / (inLock.length + outside)).toBeLessThan(0.5);
+    });
+
+    // ---- T-238: cửa sổ độc quyền (helper) — phân quyền theo ngữ cảnh của TỪNG cửa sổ, gia hạn lease của chủ đang giữ ----
+    /** Giành `CATALOG_REBUILD_LOCK` không chờ bằng chủ thăm dò (giành được thì nhả ngay); bị từ chối → "busy". */
+    const tryRebuildLock = async (): Promise<"ok" | "busy"> => {
+      const locking = container.resolve(Modules.LOCKING);
+      const owner = `t238-probe-${randomUUID()}`;
+      try {
+        await acquireOrdered(locking, [CATALOG_REBUILD_LOCK], {
+          ownerId: owner,
+          waitMs: 0,
+          ttlSeconds: 5,
+          scope: "test",
+        });
+      } catch (e) {
+        if ((e as { code?: string }).code === "BUSY_RETRY") return "busy";
+        throw e;
+      }
+      await releaseOwned(locking, owner, [CATALOG_REBUILD_LOCK]);
+      return "ok";
+    };
+
+    it("T-238 cửa sổ độc quyền: trong ngữ cảnh cửa sổ được giành khoá rebuild; ngoài ngữ cảnh, hoặc việc còn sót từ ngữ cảnh cửa sổ TRƯỚC, bị báo bận; đóng thì ai cũng giành được", async () => {
+      const first = await exclusiveRebuilds(container);
+      cleanups.push(first.close);
+      // Việc treo sinh trong cửa sổ đầu (như lượt xả hẹn/timer của ca trước), chạy tiếp khi cửa sổ sau đang mở.
+      let fire!: () => void;
+      const fired = new Promise<void>((r) => (fire = r));
+      cleanups.push(() => fire());
+      const leftover = first.run(async () => {
+        await fired;
+        return tryRebuildLock();
+      });
+      expect(await first.run(tryRebuildLock)).toBe("ok");
+      expect(await first.outside(tryRebuildLock)).toBe("busy");
+      expect(await tryRebuildLock()).toBe("busy");
+      first.close();
+      expect(await tryRebuildLock()).toBe("ok");
+
+      const second = await exclusiveRebuilds(container);
+      cleanups.push(second.close);
+      fire();
+      // Trước T-238 (một store chung cho mọi cửa sổ): việc sót của cửa sổ đầu được coi là của ca → giành được khoá.
+      expect(await leftover).toBe("busy");
+      expect(second.owns()).toBe(false);
+      expect(await second.run(async () => [second.owns(), first.owns()])).toEqual([true, false]);
+      expect(await second.run(tryRebuildLock)).toBe("ok");
+      expect(await second.outside(tryRebuildLock)).toBe("busy");
+      second.close();
+      expect(await tryRebuildLock()).toBe("ok");
+    });
+
+    it("T-238 cửa sổ độc quyền: rebuild nền đang giữ khoá lúc mở cửa sổ → lease của nó vẫn được gia hạn (không hết hạn giữa chừng), cửa sổ chỉ mở sau khi nó nhả", async () => {
+      const locking = container.resolve(Modules.LOCKING);
+      const TTL_SECONDS = 2;
+      const bgOwner = `t238-bg-${randomUUID()}`;
+      // Giả lập rebuild nền: giữ khoá rebuild NGOÀI mọi cửa sổ, lease ngắn (gia hạn nền mỗi ~1/3 TTL như rebuild thật).
+      await acquireOrdered(locking, [CATALOG_REBUILD_LOCK], {
+        ownerId: bgOwner,
+        waitMs: 10_000,
+        ttlSeconds: TTL_SECONDS,
+        scope: "test",
+      });
+      let released: Promise<void> | undefined;
+      const releaseBg = () => (released ??= releaseOwned(locking, bgOwner, [CATALOG_REBUILD_LOCK]));
+      cleanups.push(() => void releaseBg());
+      let opened = false;
+      const opening = exclusiveRebuilds(container, 30_000).then((ex) => {
+        opened = true;
+        return ex;
+      });
+      // Ca đỏ/hết hạn trước khi cửa sổ mở: afterEach nhả chủ nền (đăng ký trước) rồi đóng cửa sổ ngay khi nó mở — không để
+      // lớp chặn sót sang ca sau.
+      cleanups.push(
+        () =>
+          void opening.then(
+            (ex) => ex.close(),
+            () => undefined,
+          ),
+      );
+      // Quá 2 × TTL: chặn cả lời gia hạn của chủ đang giữ thì lease hết hạn và cửa sổ giành được khoá khi rebuild nền còn
+      // chạy (mất độc quyền). Đúng: cửa sổ còn chờ.
+      await new Promise((r) => setTimeout(r, 2 * TTL_SECONDS * 1000 + 500));
+      expect(opened).toBe(false);
+      await releaseBg();
+      const ex = await opening;
+      expect(await ex.outside(tryRebuildLock)).toBe("busy");
+      expect(await ex.run(tryRebuildLock)).toBe("ok");
+      ex.close();
     });
 
     it("kiểm cuối báo lỗi có số liệu khi bảng lệch số dòng vừa ghi (không im lặng)", async () => {
@@ -238,122 +835,167 @@ medusaIntegrationTestRunner({
         };
       }) as typeof original);
     };
+    /**
+     * T-240: ca đặt dấu SENTINEL rồi kiểm dấu còn/mất cô lập khỏi job nền. Rebuild của job `*\/30` đọc nguồn TRƯỚC
+     * `breakPricing()` (giá còn tốt) mà gọi `replaceAll` SAU `markSentinel` thì xoá dấu → `sentinelCount()`/
+     * `count(bad AND SENTINEL)` đỏ (tái hiện: 45 → 0). Cả thân ca chạy trong cửa sổ độc quyền rebuild; rebuild của ca chờ
+     * khoá có hạn (ngữ cảnh cửa sổ hỏng → BUSY_RETRY sau 10 s, không treo 5 phút). Cửa sổ đóng ở `finally`, ca hết hạn
+     * giữa chừng thì `afterEach` đóng (`cleanups`); stub giá gỡ bởi `jest.restoreAllMocks`.
+     */
+    const CASE_LOCK_WAIT_MS = 10_000;
+    const isolatedFromJobs = async (fn: (ex: ExclusiveRebuilds) => Promise<void>): Promise<void> => {
+      const ex = await exclusiveRebuilds(container);
+      cleanups.push(ex.close);
+      try {
+        await ex.run(() => fn(ex));
+      } finally {
+        ex.close();
+      }
+    };
+    const rebuildInCase = () => rebuildCatalogIndex(container, { waitMs: CASE_LOCK_WAIT_MS });
 
     it("rebuild khi missing > 0: giữ nguyên bảng cũ, log lỗi, ngoại lệ mở đúng 1 lần dù gọi 2 lần; hết lỗi thì thay bảng", async () => {
-      await rebuildCatalogIndex(container);
-      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
-      await markSentinel("prod_SCALE0000%");
-      const before = await count();
-      const sentinels = await sentinelCount();
-      expect(sentinels).toBeGreaterThan(0);
+      await isolatedFromJobs(async () => {
+        await rebuildInCase();
+        await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+        await markSentinel("prod_SCALE0000%");
+        const before = await count();
+        const sentinels = await sentinelCount();
+        expect(sentinels).toBeGreaterThan(0);
 
-      const error = jest.spyOn(logger, "error");
-      const stub = breakPricing();
-      const r1 = await rebuildCatalogIndex(container);
-      const r2 = await rebuildCatalogIndex(container);
-      stub.mockRestore();
+        const error = jest.spyOn(logger, "error");
+        const stub = breakPricing();
+        const r1 = await rebuildInCase();
+        const r2 = await rebuildInCase();
+        stub.mockRestore();
 
-      for (const r of [r1, r2]) {
-        expect(r.missing).toBe(SKUS_PER_PRODUCT);
-        expect(r.rows).toBe(0);
-      }
-      expect(await count()).toBe(before);
-      expect(await sentinelCount()).toBe(sentinels); // bảng cũ còn nguyên (không bị dựng lại)
-      expect(logged(error, "BỊ HỦY")).toBe(true);
-      expect(await exceptions()).toBe(1);
-      expect(await exceptions("open")).toBe(1);
-      const detail = (await db.raw(`SELECT detail, priority FROM ops_exception WHERE kind = ?`, [KIND]))
-        .rows[0] as { detail: { op: string; missing: number }; priority: string };
-      expect(detail.detail).toMatchObject({ op: "rebuild", missing: SKUS_PER_PRODUCT });
-      expect(detail.priority).toBe("high");
+        for (const r of [r1, r2]) {
+          expect(r.missing).toBe(SKUS_PER_PRODUCT);
+          expect(r.rows).toBe(0);
+        }
+        expect(await count()).toBe(before);
+        expect(await sentinelCount()).toBe(sentinels); // bảng cũ còn nguyên (không bị dựng lại)
+        expect(logged(error, "BỊ HỦY")).toBe(true);
+        expect(await exceptions()).toBe(1);
+        expect(await exceptions("open")).toBe(1);
+        const detail = (await db.raw(`SELECT detail, priority FROM ops_exception WHERE kind = ?`, [KIND]))
+          .rows[0] as { detail: { op: string; missing: number }; priority: string };
+        expect(detail.detail).toMatchObject({ op: "rebuild", missing: SKUS_PER_PRODUCT });
+        expect(detail.priority).toBe("high");
 
-      // Bình thường: vẫn thay cả bảng (sentinel biến mất), ngoại lệ cũ không tự đóng, không mở thêm.
-      const ok = await rebuildCatalogIndex(container);
-      expect(ok.missing).toBe(0);
-      expect(await count()).toBe(expectedTotal);
-      expect(await sentinelCount()).toBe(0);
-      expect(await exceptions()).toBe(1);
+        // Bình thường: vẫn thay cả bảng (sentinel biến mất), ngoại lệ cũ không tự đóng, không mở thêm.
+        const ok = await rebuildInCase();
+        expect(ok.missing).toBe(0);
+        expect(await count()).toBe(expectedTotal);
+        expect(await sentinelCount()).toBe(0);
+        expect(await exceptions()).toBe(1);
 
-      // Xử lý xong (resolved) rồi lỗi tái diễn → mở lại (không bị dedupe vĩnh viễn).
-      await db.raw(`UPDATE ops_exception SET state = 'resolved' WHERE kind = ?`, [KIND]);
-      const stub2 = breakPricing();
-      await rebuildCatalogIndex(container);
-      stub2.mockRestore();
-      expect(await exceptions()).toBe(2);
-      expect(await exceptions("open")).toBe(1);
+        // Xử lý xong (resolved) rồi lỗi tái diễn → mở lại (không bị dedupe vĩnh viễn).
+        await db.raw(`UPDATE ops_exception SET state = 'resolved' WHERE kind = ?`, [KIND]);
+        const stub2 = breakPricing();
+        await rebuildInCase();
+        stub2.mockRestore();
+        expect(await exceptions()).toBe(2);
+        expect(await exceptions("open")).toBe(1);
+      });
     });
 
     it("đồng bộ theo sản phẩm gặp missing: không ghi sản phẩm đó (giữ dòng cũ), sản phẩm khác trong lô vẫn ghi; ngoại lệ không mở trùng", async () => {
-      await rebuildCatalogIndex(container);
-      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
-      await markSentinel("prod_SCALE0000%");
-      const bad = "prod_SCALE00001";
-      const good = "prod_SCALE00002";
-      const badBefore = await count("product_id = ?", [bad]);
-      expect(badBefore).toBe(SKUS_PER_PRODUCT);
+      await isolatedFromJobs(async () => {
+        await rebuildInCase();
+        await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+        await markSentinel("prod_SCALE0000%");
+        const bad = "prod_SCALE00001";
+        const good = "prod_SCALE00002";
+        const badBefore = await count("product_id = ?", [bad]);
+        expect(badBefore).toBe(SKUS_PER_PRODUCT);
 
-      const stub = breakPricing();
-      const written = await syncCatalogProducts(container, [bad, good]);
-      await syncCatalogProducts(container, [bad]);
-      stub.mockRestore();
+        const stub = breakPricing();
+        const written = await syncCatalogProducts(container, [bad, good]);
+        await syncCatalogProducts(container, [bad]);
+        stub.mockRestore();
 
-      expect(written).toBe(SKUS_PER_PRODUCT); // chỉ sản phẩm tốt được ghi
-      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
-      expect(await count("product_id = ?", [bad])).toBe(badBefore);
-      expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
-      expect(await count("product_id = ?", [good])).toBe(SKUS_PER_PRODUCT);
-      expect(await exceptions("open")).toBe(1);
+        expect(written).toBe(SKUS_PER_PRODUCT); // chỉ sản phẩm tốt được ghi
+        expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+        expect(await count("product_id = ?", [bad])).toBe(badBefore);
+        expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
+        expect(await count("product_id = ?", [good])).toBe(SKUS_PER_PRODUCT);
+        expect(await exceptions("open")).toBe(1);
+      });
     });
 
     it("T-061: drain giữ dấu sản phẩm lệch giá, thử lại khi đến hạn (backoff), ghi được khi giá sửa xong; sản phẩm tốt ghi ngay", async () => {
-      await rebuildCatalogIndex(container);
-      await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
-      await markSentinel("prod_SCALE0000%");
-      const bad = "prod_SCALE00001";
-      const good = "prod_SCALE00002";
-      const dirty = async (id: string) =>
-        (
-          await db.raw(
-            `SELECT attempts, next_attempt_at > clock_timestamp() AS waiting FROM catalog_index_dirty WHERE product_id = ?`,
-            [id],
-          )
-        ).rows[0] as { attempts: number; waiting: boolean } | undefined;
-      const makeDue = () =>
-        db.raw(
-          `UPDATE catalog_index_dirty SET next_attempt_at = clock_timestamp() - interval '1 second' WHERE product_id = ?`,
-          [bad],
-        );
+      // T-240: job xả mỗi phút (`waitMs` 0, lượt hẹn) có thể đang giữ CATALOG_INDEX_LOCK đúng lúc ca xả. Ca xả với
+      // `waitMs` 0 thì trả về ngay, không xả gì (tái hiện: processed 0, sentinel của sản phẩm tốt còn 5) → ca chờ khoá có
+      // hạn. Job xả có thể xả hộ dấu của ca — stub giá cài TRƯỚC markDirty nên ai xả cũng ra cùng trạng thái DB.
+      const DRAIN_WAIT_MS = 20_000;
+      const drainInCase = () => drainCatalogIndex(container, { waitMs: DRAIN_WAIT_MS });
+      // Chỉ ghi warn phát ra trong ngữ cảnh của ca: lượt xả nền gặp Redis chậm cũng log "Bỏ lượt xả" mà không phải lỗi của ca.
+      const ownWarns: string[] = [];
+      await isolatedFromJobs(async (ex) => {
+        const warnImpl = logger.warn.bind(logger);
+        jest.spyOn(logger, "warn").mockImplementation((...args: Parameters<typeof logger.warn>) => {
+          if (ex.owns()) ownWarns.push(String(args[0]));
+          return warnImpl(...args);
+        });
+        await rebuildInCase();
+        await db.raw(`DELETE FROM ops_exception WHERE kind = ?`, [KIND]);
+        await markSentinel("prod_SCALE0000%");
+        const bad = "prod_SCALE00001";
+        const good = "prod_SCALE00002";
+        const dirty = async (id: string) =>
+          (
+            await db.raw(
+              `SELECT attempts, next_attempt_at > clock_timestamp() AS waiting FROM catalog_index_dirty WHERE product_id = ?`,
+              [id],
+            )
+          ).rows[0] as { attempts: number; waiting: boolean } | undefined;
+        const makeDue = () =>
+          db.raw(
+            `UPDATE catalog_index_dirty SET next_attempt_at = clock_timestamp() - interval '1 second' WHERE product_id = ?`,
+            [bad],
+          );
 
-      await index().markDirty([bad, good]);
-      const stub = breakPricing();
-      await drainCatalogIndex(container);
-      // Sản phẩm tốt ghi ngay (sentinel biến mất, dấu xoá); sản phẩm lệch giữ dòng cũ + dấu hẹn lại.
-      expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
-      expect(await dirty(good)).toBeUndefined();
-      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
-      expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
+        const stub = breakPricing();
+        await index().markDirty([bad, good]);
+        await drainInCase();
+        // Sản phẩm tốt ghi ngay (sentinel biến mất, dấu xoá); sản phẩm lệch giữ dòng cũ + dấu hẹn lại.
+        expect(await count("product_id = ? AND title = ?", [good, SENTINEL])).toBe(0);
+        expect(await dirty(good)).toBeUndefined();
+        expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+        expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
 
-      // Chưa đến hạn: drain không đọc nguồn (không lặp nóng).
-      const graph = jest.spyOn(container.resolve(ContainerRegistrationKeys.QUERY), "graph");
-      const before = graph.mock.calls.length;
-      await drainCatalogIndex(container);
-      expect(graph.mock.calls.length).toBe(before);
-      expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
+        // Chưa đến hạn: drain không đọc nguồn (không lặp nóng).
+        // Chỉ đếm lời gọi nằm trong lần drain của test — job catalog-index-drain chạy nền không được lẫn vào.
+        const scope = createCountScope("catalog-drain");
+        const graph = scope.counter(container.resolve(ContainerRegistrationKeys.QUERY), "graph");
+        const claim = scope.counter(index(), "claimDirty");
+        const due = scope.counter(index(), "dirtyCount");
+        await scope.measureInProcess(drainInCase);
+        expect(graph.counter.inRequest).toBe(0);
+        // Cận dưới (T-240): lần xả của ca thật sự xét hàng đợi (lấy dấu hoặc đếm dấu đến hạn) — ngữ cảnh đo mất, hay xả
+        // bỏ cuộc vì khoá bận, thì `graph` = 0 ở trên qua suông.
+        expect(claim.counter.inRequest + due.counter.inRequest).toBeGreaterThanOrEqual(1);
+        expect(await dirty(bad)).toEqual({ attempts: 1, waiting: true });
 
-      // Đến hạn mà giá vẫn hỏng: thử lại, attempts tăng, hẹn lùi tiếp.
-      await makeDue();
-      await drainCatalogIndex(container);
-      expect(await dirty(bad)).toEqual({ attempts: 2, waiting: true });
-      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
+        // Đến hạn mà giá vẫn hỏng: thử lại, attempts tăng, hẹn lùi tiếp.
+        await makeDue();
+        await drainInCase();
+        expect(await dirty(bad)).toEqual({ attempts: 2, waiting: true });
+        expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(SKUS_PER_PRODUCT);
 
-      // Giá sửa xong + đến hạn: ghi được, dấu xoá, ngoại lệ đã mở vẫn còn (không tự đóng).
-      stub.mockRestore();
-      await makeDue();
-      await drainCatalogIndex(container);
-      expect(await dirty(bad)).toBeUndefined();
-      expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(0);
-      expect(await count("product_id = ?", [bad])).toBe(SKUS_PER_PRODUCT);
-      expect(await exceptions("open")).toBe(1);
+        // Giá sửa xong + đến hạn: ghi được, dấu xoá, ngoại lệ đã mở vẫn còn (không tự đóng).
+        stub.mockRestore();
+        await makeDue();
+        await drainInCase();
+        expect(await dirty(bad)).toBeUndefined();
+        expect(await count("product_id = ? AND title = ?", [bad, SENTINEL])).toBe(0);
+        expect(await count("product_id = ?", [bad])).toBe(SKUS_PER_PRODUCT);
+        expect(await exceptions("open")).toBe(1);
+      });
+      // Không lần xả nào của ca bỏ cuộc vì khoá bận quá hạn hoặc hạ tầng khoá lỗi.
+      expect(ownWarns.some((m) => m.includes("Khoá index bị giữ quá"))).toBe(false);
+      expect(ownWarns.some((m) => m.includes("Bỏ lượt xả"))).toBe(false);
     });
 
     it("T-061: markDirty mới trên dấu đang chờ backoff đặt lại attempts và đến hạn ngay; migration down/up khứ hồi", async () => {

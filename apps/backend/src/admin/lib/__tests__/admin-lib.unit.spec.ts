@@ -1,9 +1,11 @@
-import { formatVnd as domainFormatVnd } from "@x-shop/domain";
+import { formatVnd as domainFormatVnd, isNonEmpty as domainIsNonEmpty } from "@x-shop/domain";
 import { buildQuery } from "../api";
 import { checkCsvFile } from "../csv-file";
 import { formatAge, formatInstant, formatVnd } from "../format";
 import { checkInspection, type InspectDraft } from "../inspect";
 import { periodFromDays } from "../period";
+import { kindLabel } from "../labels";
+import { isNonEmpty } from "../presence";
 import { describeProblem, normalizeRowErrors, rowErrorsOf, toApiError } from "../problem";
 
 describe("formatVnd / formatAge / formatInstant", () => {
@@ -98,6 +100,16 @@ describe("describeProblem — lỗi API → tiếng Việt", () => {
   });
 });
 
+describe("isNonEmpty bản Admin (BASE-DATA-003)", () => {
+  it('khớp bản domain: thiếu/rỗng → false; có nội dung (kể cả "0", " ") và Date → true', () => {
+    for (const v of [null, undefined, "", " ", "0", "false", "id_1", new Date(0)]) {
+      expect(isNonEmpty(v)).toBe(domainIsNonEmpty(v));
+    }
+    expect(isNonEmpty("")).toBe(false);
+    expect(isNonEmpty("0")).toBe(true);
+  });
+});
+
 describe("lỗi theo dòng/cột", () => {
   it("commit catalog 422: rows {line,column,message}", () => {
     const e = toApiError(422, {
@@ -122,6 +134,10 @@ describe("lỗi theo dòng/cột", () => {
       ],
     });
     expect(rowErrorsOf(e)).toEqual([{ line: 7, column: "sku", message: "SKU trùng" }]);
+  });
+  it("param 'line N: ' cột rỗng → \"*\" (cả dòng), như khi thiếu (BASE-DATA-003)", () => {
+    const e = toApiError(422, { errors: [{ param: "line 4: ", reason: "Dòng lỗi" }] });
+    expect(rowErrorsOf(e)).toEqual([{ line: 4, column: "*", message: "Dòng lỗi" }]);
   });
   it("rỗng/sai hình dạng → danh sách rỗng, không ném lỗi", () => {
     expect(rowErrorsOf(toApiError(500, {}))).toEqual([]);
@@ -228,5 +244,14 @@ describe("buildQuery / checkCsvFile", () => {
     expect(checkCsvFile({ name: "a.csv", size: 0 }, max)).toContain("rỗng");
     expect(checkCsvFile({ name: "a.xlsx", size: 10 }, max)).toContain("đuôi");
     expect(checkCsvFile({ name: "csv", size: 10 }, max)).toContain("đuôi");
+  });
+});
+
+describe("kindLabel (dashboard ngoại lệ)", () => {
+  it("kind ngoại lệ catalog có nhãn tiếng Việt; mã lạ/rỗng hiện nguyên mã", () => {
+    expect(kindLabel("catalog_compensation_failed")).toBe("Hoàn tác dữ liệu sản phẩm lỗi");
+    expect(kindLabel("catalog_index_mismatch")).toBe("Chỉ mục danh mục lệch giá");
+    expect(kindLabel("ma_la")).toBe("ma_la");
+    expect(kindLabel("")).toBe("");
   });
 });

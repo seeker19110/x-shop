@@ -1,5 +1,6 @@
 import type { Permission } from "@x-shop/domain";
 import { parseEnv } from "../env";
+import { SECONDS_PER_MINUTE } from "@x-shop/domain";
 
 /**
  * Tham số bảo mật admin (T-023/T-024). Thời hạn phiên đọc từ env (đã kiểm ở medusa-config, docs/ops/ENV.md); ngưỡng
@@ -37,6 +38,8 @@ export const SENSITIVE_PERMISSIONS: readonly Permission[] = [
   "settings.manage",
   "customer.export",
   "settlement.import",
+  // T-165: ghi đè thanh toán chưa xác minh (hủy đơn mà tiền có thể đã trừ) — cùng mức với hoàn tiền.
+  "payment.override",
 ];
 
 export const isSensitive = (perm: Permission): boolean => SENSITIVE_PERMISSIONS.includes(perm);
@@ -48,7 +51,14 @@ export const isSensitive = (perm: Permission): boolean => SENSITIVE_PERMISSIONS.
  *  - IP (mọi định danh): chỉ chặn quét hàng loạt — ngưỡng CAO để không khoá cả mạng dùng chung (NAT công ty/quán cà phê).
  */
 export const AUTH_RATE_LIMITS = {
-  windowSeconds: 15 * 60,
+  windowSeconds: 15 * SECONDS_PER_MINUTE,
   login: { perIdentityIp: 5, perIdentity: 20, perIp: 100 },
   mfa: { perIdentityIp: 5, perIdentity: 10, perIp: 100 },
+  // Đăng ký (T-138): lượt hợp lệ chỉ có khi được mời (thành công được hoàn) — mọi lượt bị từ chối là dò/chiếm trước email,
+  // nên ngưỡng IP thấp hơn hẳn đăng nhập.
+  register: { perIdentityIp: 5, perIdentity: 10, perIp: 20 },
+  // Yêu cầu đặt lại mật khẩu (T-143): luôn 201 nên KHÔNG hoàn lượt nào. Trên đường request chỉ áp IP và (email + IP) — 429;
+  // `perIdentity` (chống dội thư vào một email) chỉ áp trong việc nền cho identity CÓ THẬT, vượt thì bỏ âm thầm (D-085:
+  // ngưỡng theo email trên đường request cho phép kẻ khác khoá hộ nạn nhân).
+  reset: { perIdentityIp: 3, perIdentity: 5, perIp: 20 },
 } as const;

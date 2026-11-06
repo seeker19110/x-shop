@@ -1,0 +1,13 @@
+-- cart-version-by-cart
+-- Nguồn: apps/backend/src/modules/checkout/service.ts currentCartVersion / observeCartVersion
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["cart_PF0123457"]
+
+SELECT version, fingerprint FROM cart_version WHERE cart_id = $1;
+
+Index Scan using "IDX_cart_version_cart_id_unique" on cart_version  (cost=0.42..8.44 rows=1 width=13) (actual time=0.008..0.009 rows=1 loops=1)
+  Index Cond: (cart_id = 'cart_PF0123457'::text)
+  Buffers: shared hit=4
+Planning Time: 0.025 ms
+Execution Time: 0.014 ms

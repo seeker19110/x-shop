@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { CartContents } from "../../../components/cart/CartContents";
 import { loadCartView } from "../../../lib/cart/service";
+import { t } from "../../../lib/i18n";
 
 export const metadata: Metadata = {
-  title: "Giỏ hàng",
+  title: t("cart.pageTitle"),
   robots: { index: false, follow: false },
 };
 

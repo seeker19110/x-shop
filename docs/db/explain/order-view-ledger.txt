@@ -1,0 +1,15 @@
+-- order-view-ledger
+-- Nguồn: CheckoutModuleService.ledgerEntriesOf + listPaymentLedgers({ order_id }) (view.ts, shipments.ts)
+-- Sinh: node scripts/ops/explain-hot-paths.mjs --write · 2026-10-26 14:14 UTC · DB xshop_perf · PostgreSQL 16.15
+-- Kết luận: đạt
+-- Tham số: ["order_PF0123456"]
+
+SELECT kind, amount, provider_txn_id, refund_id, state FROM payment_ledger
+  WHERE order_id = $1 AND deleted_at IS NULL;
+
+Index Scan using "IDX_payment_ledger_order_id" on payment_ledger  (cost=0.42..8.44 rows=1 width=63) (actual time=0.008..0.009 rows=1 loops=1)
+  Index Cond: (order_id = 'order_PF0123456'::text)
+  Filter: (deleted_at IS NULL)
+  Buffers: shared hit=4
+Planning Time: 0.030 ms
+Execution Time: 0.014 ms

@@ -1,10 +1,12 @@
 import type { PaymentMethod, QuoteView } from "../../lib/checkout/types";
 import { formatVnd } from "../../lib/format-vnd";
 import styles from "./Checkout.module.css";
+import { isNonEmpty } from "../../lib/presence";
+import { t } from "../../lib/i18n";
 
 export const PAYMENT_LABEL: Record<PaymentMethod, string> = {
-  cod: "Thanh toán khi nhận hàng (COD)",
-  vnpay: "Thanh toán online qua VNPAY",
+  cod: t("checkout.payment.cod"),
+  vnpay: t("checkout.payment.vnpay"),
 };
 
 export interface TotalsProps {
@@ -20,35 +22,39 @@ export interface TotalsProps {
  * phương thức thanh toán. Mọi con số do server báo giá; chưa có địa chỉ thì phí/tổng ghi rõ "chưa tính".
  */
 export function Totals({ cartSubtotal, quote, quoting, method }: TotalsProps) {
-  const pending = quoting ? "Đang tính…" : "Nhập địa chỉ để tính";
+  const pending = quoting ? t("checkout.totals.calculating") : t("checkout.totals.enterAddress");
   return (
     <dl className={styles.totals} aria-busy={quoting || undefined} data-testid="totals">
       <div>
-        <dt>Tiền hàng</dt>
+        <dt>{t("checkout.totals.subtotal")}</dt>
         <dd>{formatVnd(quote?.subtotal ?? cartSubtotal)}</dd>
       </div>
       {quote && quote.discountTotal > 0 ? (
         <div>
-          <dt>{quote.discountCode ? `Giảm giá (mã ${quote.discountCode})` : "Giảm giá"}</dt>
-          <dd>{`− ${formatVnd(quote.discountTotal)}`}</dd>
+          <dt>
+            {isNonEmpty(quote.discountCode)
+              ? t("checkout.totals.discountWithCode", { code: quote.discountCode })
+              : t("checkout.totals.discount")}
+          </dt>
+          <dd>{t("checkout.totals.minus", { amount: formatVnd(quote.discountTotal) })}</dd>
         </div>
       ) : null}
       <div>
-        <dt>Phí vận chuyển</dt>
+        <dt>{t("checkout.totals.shipping")}</dt>
         <dd>{quote ? formatVnd(quote.shippingFee) : pending}</dd>
       </div>
       {quote && quote.shippingDiscount > 0 ? (
         <div>
-          <dt>Giảm phí vận chuyển</dt>
-          <dd>{`− ${formatVnd(quote.shippingDiscount)}`}</dd>
+          <dt>{t("checkout.totals.shippingDiscount")}</dt>
+          <dd>{t("checkout.totals.minus", { amount: formatVnd(quote.shippingDiscount) })}</dd>
         </div>
       ) : null}
       <div className={styles.grand}>
-        <dt>Tổng phải trả</dt>
+        <dt>{t("checkout.totals.grand")}</dt>
         <dd>{quote ? formatVnd(quote.total) : pending}</dd>
       </div>
       <div>
-        <dt>Thanh toán</dt>
+        <dt>{t("checkout.totals.method")}</dt>
         <dd>{PAYMENT_LABEL[method]}</dd>
       </div>
     </dl>

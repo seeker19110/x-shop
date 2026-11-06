@@ -3,8 +3,8 @@
  * Cổng VNPAY giả lập cho E2E (không gọi mạng ngoài). Backend đặt VNPAY_PAYMENT_URL trỏ về đây:
  *  - GET  /pay?vnp_…            trang "cổng thanh toán" (hiển thị số tiền, mã giao dịch; liên kết quay về cửa hàng).
  *  - POST /api/ipn {txnRef, outcome?}  giả lập VNPAY gọi IPN: ký bằng MockVnpayGateway của packages/domain (cùng thuật
- *    toán với protocol), gọi GET <backend>/x/webhooks/vnpay/ipn, trả JSON {RspCode, Message} của backend. Gọi lại cùng
- *    (txnRef, outcome) = VNPAY gửi lại IPN y hệt.
+ *    toán với protocol), gọi GET <bộ cân bằng tải backend>/x/webhooks/vnpay/ipn, trả JSON {RspCode, Message} của
+ *    backend. Gọi lại cùng (txnRef, outcome) = VNPAY gửi lại IPN y hệt.
  *  - GET  /health
  * Chỉ nhớ URL thanh toán đã thấy (để biết số tiền) trong bộ nhớ.
  */
@@ -68,7 +68,8 @@ const server = createServer(async (req, res) => {
       const key = `${txnRef}|${outcome}`;
       if (!sentIpn.has(key)) sentIpn.set(key, gateway.pay(paymentUrl, outcome).toString());
       const params = sentIpn.get(key);
-      const r = await fetch(`${URLS.backend}/x/webhooks/vnpay/ipn?${params}`);
+      // Qua bộ cân bằng tải (T-095): IPN có thể tới bản sao khác với bản đã tạo giao dịch.
+      const r = await fetch(`${URLS.backendLb}/x/webhooks/vnpay/ipn?${params}`);
       res.writeHead(200, { "Content-Type": "application/json" }).end(await r.text());
       return;
     }

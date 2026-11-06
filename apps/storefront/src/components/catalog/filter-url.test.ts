@@ -48,6 +48,22 @@ describe("serializeQuery (client) khớp serializeFilter của domain (catalog)"
   });
 });
 
+describe("hrefFor: basePath phải là đường dẫn cùng origin (FE-SEC-002)", () => {
+  it.each([
+    ["//evil.com"],
+    ["/\\evil.com"],
+    ["https://evil.com"],
+    ["danh-muc/ao"],
+    [""],
+    ["javascript:alert(1)"],
+  ])("ném lỗi với %j", (base) => {
+    expect(() => hrefFor(base, EMPTY_FILTER)).toThrow(/basePath/);
+  });
+  it("nhận /danh-muc/ao", () => {
+    expect(hrefFor("/danh-muc/ao", EMPTY_FILTER)).toBe("/danh-muc/ao");
+  });
+});
+
 describe("hrefFor / withoutConditions (catalog)", () => {
   it("không điều kiện → chỉ đường dẫn; có điều kiện → ?query chuẩn", () => {
     expect(hrefFor("/tim-kiem", EMPTY_FILTER)).toBe("/tim-kiem");

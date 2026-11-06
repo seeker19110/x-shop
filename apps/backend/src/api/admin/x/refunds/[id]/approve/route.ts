@@ -5,6 +5,7 @@ import { handleReturnsRouteError, ReturnsError } from "../../../../../../workflo
 import { actorOf, DecisionBody, parseBody } from "../../../../../../workflows/returns/http";
 import { returnsOf } from "../../../../../../workflows/returns/order-context";
 import { approveRefund, presentRefund } from "../../../../../../workflows/returns/refunds";
+import { IdParams, readParams, sendParamNotFound } from "../../../../../../lib/http/request-input";
 
 /**
  * POST /admin/x/refunds/:id/approve — người thứ hai duyệt (quyền `refund.approve`, KHÁC người tạo → 403 SELF_APPROVAL,
@@ -14,7 +15,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse): Promise<voi
   try {
     const actor = actorOf(req, "refund.approve");
     parseBody(DecisionBody, req.body);
-    const current = await returnsOf(req.scope).getRefund(String(req.params.id));
+    const params = readParams(req, IdParams);
+    if (!params.ok) return sendParamNotFound(res);
+    const current = await returnsOf(req.scope).getRefund(params.data.id);
     if (!current) throw new ReturnsError("NOT_FOUND", "Không tìm thấy yêu cầu hoàn tiền");
     if (current.approval_required && rejectWithoutRecentMfa(req, res)) return;
     const { refund, changed } = await approveRefund(req.scope, current.id, actor, auditContextOf(req));

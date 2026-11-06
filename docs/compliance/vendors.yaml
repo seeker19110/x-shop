@@ -1,7 +1,7 @@
 # vendors.yaml — sổ nhà cung cấp / bên xử lý (CMP-AUDIT-007). Kiểm bằng `node scripts/check-data-map.mjs`.
 # - `id` được data-map.yaml tham chiếu ở `recipients`. `packages`: gói npm là SDK/adapter của nhà cung cấp đó (script chặn
 #   SDK dịch vụ bên thứ ba chưa khai ở đây). Hiện x-shop gọi VNPAY và GHN bằng HTTP tự viết ở packages/domain/src/providers/
-#   (không SDK), nên `packages` rỗng.
+#   (không SDK), nên `packages` của hai nhà cung cấp này rỗng. Kho file S3-compatible (T-154) thuộc `hosting`.
 # - Thông tin pháp lý/hợp đồng chưa có = "chưa có" / "(chưa xác minh)" — KHÔNG điền suy đoán. Hạn rà soát <= 12 tháng.
 updated: 2026-10-26
 vendors:
@@ -42,8 +42,10 @@ vendors:
     sub_processor_notice: chưa có
     packages: []
   - id: hosting
-    service: Hạ tầng triển khai (máy chủ ứng dụng, Postgres, Redis, kho ảnh, backup, log) — CHƯA CHỌN
-    status: chưa chọn (RUNBOOK §8.1, §4.5); dev dùng Postgres/Redis cục bộ
+    service: Hạ tầng triển khai (máy chủ ứng dụng, Postgres, Redis, kho ảnh/file S3-compatible, backup, log) — CHƯA CHỌN
+    status: chưa chọn (RUNBOOK §8.1, §4.5, §8.2b); dev dùng Postgres/Redis cục bộ, file trên đĩa cục bộ (FILE_STORAGE=local).
+      Kho file production (T-154) là S3-compatible — tự host (Garage/SeaweedFS) hoặc dịch vụ quản lý; bucket private chứa
+      file xuất có PII (khách hàng/đơn)
     data_touched: toàn bộ dữ liệu của hệ thống, gồm mọi cột PII ở docs/privacy/data-map.yaml
     location: chưa xác định
     dpa: chưa có
@@ -52,4 +54,6 @@ vendors:
     reviewed_on: 2026-10-26
     next_review: 2027-10-26
     sub_processor_notice: chưa có
-    packages: []
+    packages:
+      - "@medusajs/file-s3"   # provider S3 của Medusa (MIT) — lib/upload/s3 bọc lại
+      - "@aws-sdk/client-s3"  # client S3 (Apache-2.0) — nói chuyện với kho S3-compatible bất kỳ

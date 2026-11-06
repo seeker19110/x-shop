@@ -10,6 +10,7 @@ import {
   wouldExceedLimit,
   type WindowSample,
 } from "../security/sliding-window";
+import { hoursToMs, minutesToMs } from "@x-shop/domain";
 
 /**
  * Giới hạn tần suất của các route đơn sau mua (AT20) — bộ đếm ở Postgres, đúng cả khi nhiều instance; quyết định theo
@@ -22,19 +23,19 @@ import {
  */
 export const ORDER_RATE_LIMITS = {
   /** POST /orders/lookup: mỗi SĐT 5 lần/giờ. */
-  lookupPhone: { limit: 5, windowMs: 3600_000 },
+  lookupPhone: { limit: 5, windowMs: hoursToMs(1) },
   /** POST /orders/lookup: mỗi IP 20 lần/giờ. */
-  lookupIp: { limit: 20, windowMs: 3600_000 },
+  lookupIp: { limit: 20, windowMs: hoursToMs(1) },
   /** POST /orders/lookup: mỗi mã đơn 10 lần/giờ. */
-  lookupRef: { limit: 10, windowMs: 3600_000 },
+  lookupRef: { limit: 10, windowMs: hoursToMs(1) },
   /** GET /orders/:ref: mỗi (IP, mã đơn) 60 lần / 10 phút. */
-  viewIpRef: { limit: 60, windowMs: 600_000 },
+  viewIpRef: { limit: 60, windowMs: minutesToMs(10) },
   /** Lần truy cập đơn BỊ TỪ CHỐI (token sai/thiếu, mã khác) mỗi IP 20 lần / 10 phút — chặn dò mã đơn. */
-  deniedIp: { limit: 20, windowMs: 600_000 },
+  deniedIp: { limit: 20, windowMs: minutesToMs(10) },
   /** POST /orders/session: mỗi IP 20 lần / 10 phút. */
-  sessionIp: { limit: 20, windowMs: 600_000 },
+  sessionIp: { limit: 20, windowMs: minutesToMs(10) },
   /** POST /orders/:ref/cancel: mỗi (IP, mã đơn) 10 lần / 10 phút. */
-  cancelIpRef: { limit: 10, windowMs: 600_000 },
+  cancelIpRef: { limit: 10, windowMs: minutesToMs(10) },
 } as const;
 
 export type OrderRateLimit = keyof typeof ORDER_RATE_LIMITS;

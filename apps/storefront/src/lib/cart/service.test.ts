@@ -27,6 +27,7 @@ import {
   resetCartServiceCacheForTests,
   setQuantity,
 } from "./service";
+import { isNonEmpty } from "../presence";
 
 interface FxVariant {
   variant_id: string;
@@ -62,6 +63,17 @@ class FakeBackend {
   productStatus = 200;
   catalogDown = false;
   cartDown = false;
+  /** Mô phỏng hết hạn chờ ở ghi dòng giỏ: "applied" = backend đã ghi rồi mới đứt; "lost" = chưa ghi. */
+  writeTimeout: "applied" | "lost" | null = null;
+  /** GET giỏ lỗi mạng kể từ lúc ghi hết hạn (các GET trước đó vẫn chạy). */
+  readDown = false;
+  private readsFail = false;
+  /** Bỏ qua N lần ghi đầu (chạy bình thường) rồi mới áp `writeTimeout`. */
+  skipWrites = 0;
+  /** Chạy ngay khi ghi "lost" hết hạn (mô phỏng tab khác sửa giỏ đồng thời). */
+  onTimeout: (() => void) | null = null;
+  /** Ghi dòng giỏ trả 500 (không phải NETWORK). */
+  writeFails = false;
   seq = 0;
 
   price(variantId: string): number {
@@ -71,7 +83,7 @@ class FakeBackend {
   fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const body = init?.body != null && init.body !== "" ? JSON.parse(String(init.body)) : undefined;
     this.log.push(`${method} ${url.pathname}`);
     const json = (data: unknown, status = 200) =>
       new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -94,8 +106,24 @@ class FakeBackend {
     const cart = this.carts.get(m[1]!);
     if (!cart) return json({ type: "not_found", message: "Cart not found" }, 404);
     const isLine = p.includes("/line-items");
-    if (!isLine) return json({ cart: this.view(cart.id) });
-    if (method === "POST" && !m[2]) {
+    if (!isLine) {
+      if (this.readsFail) throw new TypeError("fetch failed");
+      return json({ cart: this.view(cart.id) });
+    }
+    if (method !== "GET" && this.writeFails) return new Response("boom", { status: 500 });
+    if (method !== "GET" && this.writeTimeout && this.skipWrites > 0) this.skipWrites--;
+    else if (method !== "GET" && this.writeTimeout) {
+      const mode = this.writeTimeout;
+      this.writeTimeout = null; // chỉ lần ghi đầu hết hạn
+      this.readsFail = this.readDown;
+      if (mode === "lost") {
+        this.onTimeout?.();
+        throw new TypeError("timeout");
+      }
+      await this.fetch(input, init); // backend đã ghi…
+      throw new TypeError("timeout"); // …nhưng phản hồi không về
+    }
+    if (method === "POST" && !isNonEmpty(m[2])) {
       const v = this.product.variants.find((x: FxVariant) => x.variant_id === body.variant_id);
       if (!v || !v.in_stock) {
         return json(
@@ -459,6 +487,178 @@ describe("đọc giỏ", () => {
     be.cartDown = false;
     be.carts.get(id)!.completed_at = "2026-10-24T00:00:00Z";
     expect(await fetchRawCart(id)).toBeNull();
+  });
+});
+
+describe("cart: ghi giỏ hết hạn chờ (NETWORK) — đọc lại để biết đã ghi chưa (T-231)", () => {
+  const qty = (variant: string) =>
+    be.carts.get(jar.get("xs_cart")!.value)!.items.find((i) => i.variant_id === variant)?.quantity;
+  const reads = () => be.log.filter((l) => l.startsWith("GET /store/carts/")).length;
+
+  it("cart addItem: POST hết hạn nhưng backend đã ghi → thành công, số lượng không gấp đôi", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    be.writeTimeout = "applied";
+    const r = await addItem({ handle: "ao-so-mi-lua", variantId: V.denM, quantity: 1 });
+    expect(r).toEqual({ ok: true, count: 3, message: "Đã thêm Áo sơ mi lụa (Đen, M) vào giỏ." });
+    expect(qty(V.denM)).toBe(3);
+  });
+
+  it("cart addItem: POST hết hạn, backend chưa ghi → lỗi thử lại được (UNAVAILABLE), giỏ nguyên", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    be.writeTimeout = "lost";
+    vi.useFakeTimers();
+    const p = addItem({ handle: "ao-so-mi-lua", variantId: V.denM, quantity: 1 });
+    await vi.advanceTimersByTimeAsync(2000); // chờ đọc lại lần 2 (ghi muộn ở server?)
+    const r = await p;
+    vi.useRealTimers();
+    expect(r).toMatchObject({ ok: false, code: "CART_UNKNOWN" });
+    expect(r.ok ? "" : r.message).toMatch(/^Chưa xác nhận được/);
+    expect(qty(V.denM)).toBe(2);
+  });
+
+  it("cart addItem: ghi muộn ở server (lần đọc lại 1 chưa thấy, lần 2 thấy) → thành công, không gấp đôi", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    const cartId = jar.get("xs_cart")!.value;
+    be.writeTimeout = "lost";
+    be.onTimeout = () => {
+      setTimeout(() => (be.carts.get(cartId)!.items[0]!.quantity += 1), 1000); // commit muộn sau 1 s
+    };
+    vi.useFakeTimers();
+    const p = addItem({ handle: "ao-so-mi-lua", variantId: V.denM, quantity: 1 });
+    await vi.advanceTimersByTimeAsync(2000);
+    const r = await p;
+    vi.useRealTimers();
+    expect(r).toMatchObject({ ok: true, count: 3 });
+    expect(qty(V.denM)).toBe(3);
+  });
+
+  it("cart addItem: số lượng đọc lại khác cả trước lẫn đích (tab khác sửa) → CART_UNKNOWN, không đoán", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    const cartId = jar.get("xs_cart")!.value;
+    be.writeTimeout = "lost";
+    be.onTimeout = () => void (be.carts.get(cartId)!.items[0]!.quantity = 7);
+    const r = await addItem({ handle: "ao-so-mi-lua", variantId: V.denM, quantity: 1 });
+    expect(r).toMatchObject({ ok: false, code: "CART_UNKNOWN" });
+    expect(r.ok ? "" : r.message).toMatch(/^Không xác định được giỏ/);
+  });
+
+  it("cart addItem: biến thể chưa có trong giỏ + đã ghi → thành công", async () => {
+    be.seed([]);
+    be.writeTimeout = "applied";
+    expect(await addItem({ handle: "ao-so-mi-lua", variantId: V.trangS, quantity: 2 })).toMatchObject({
+      ok: true,
+      count: 2,
+    });
+  });
+
+  it("cart addItem: POST hết hạn và đọc lại cũng lỗi → CART_UNKNOWN (kiểm giỏ trước khi thử lại)", async () => {
+    be.seed([{ variant: V.denM, qty: 1 }]);
+    be.writeTimeout = "applied";
+    be.readDown = true;
+    const r = await addItem({ handle: "ao-so-mi-lua", variantId: V.denM, quantity: 1 });
+    expect(r).toEqual({
+      ok: false,
+      code: "CART_UNKNOWN",
+      message: "Không xác định được giỏ, vui lòng kiểm tra giỏ trước khi thử lại.",
+    });
+  });
+
+  it("cart addItem: đường thành công không tốn request đọc thừa (GET giỏ: 1 trước + 1 đếm)", async () => {
+    be.seed([{ variant: V.denM, qty: 1 }]);
+    await addItem({ handle: "ao-so-mi-lua", variantId: V.denM, quantity: 1 });
+    expect(reads()).toBe(2);
+    expect(be.mutations()).toHaveLength(1);
+  });
+
+  it("cart addItem: POST lỗi 500 (không phải NETWORK) → UNAVAILABLE, không đọc lại để suy đoán", async () => {
+    be.seed([{ variant: V.denM, qty: 1 }]);
+    be.writeFails = true;
+    const before = reads();
+    const r = await addItem({ handle: "ao-so-mi-lua", variantId: V.denM, quantity: 1 });
+    expect(r).toMatchObject({ ok: false, code: "UNAVAILABLE" });
+    expect(be.mutations()).toHaveLength(1);
+    expect(reads()).toBe(before + 1); // chỉ GET giỏ đầu luồng; không GET đọc lại
+  });
+
+  it("cart setQuantity: hết hạn + đã ghi → thành công; chưa ghi → UNAVAILABLE; đọc lại lỗi → CART_UNKNOWN", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    const lineId = be.carts.get(jar.get("xs_cart")!.value)!.items[0]!.id;
+    be.writeTimeout = "applied";
+    expect(await setQuantity(lineId, 5)).toMatchObject({ ok: true, count: 5 });
+    be.writeTimeout = "lost";
+    expect(await setQuantity(lineId, 7)).toMatchObject({ ok: false, code: "UNAVAILABLE" });
+    expect(qty(V.denM)).toBe(5);
+    be.writeTimeout = "applied";
+    be.readDown = true;
+    expect(await setQuantity(lineId, 7)).toMatchObject({ ok: false, code: "CART_UNKNOWN" });
+  });
+
+  it("cart removeLine: hết hạn + đã xoá → thành công; chưa xoá → UNAVAILABLE", async () => {
+    be.seed([
+      { variant: V.denM, qty: 2 },
+      { variant: V.trangS, qty: 1 },
+    ]);
+    const items = be.carts.get(jar.get("xs_cart")!.value)!.items;
+    be.writeTimeout = "applied";
+    expect(await removeLine(items[0]!.id)).toMatchObject({ ok: true, count: 1 });
+    be.writeTimeout = "lost";
+    expect(await removeLine(items[1]!.id)).toMatchObject({ ok: false, code: "UNAVAILABLE" });
+    expect(qty(V.trangS)).toBe(1);
+  });
+
+  it("cart changeVariant: bước thêm hết hạn đã ghi → tiếp tục gỡ dòng cũ", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    const lineId = be.carts.get(jar.get("xs_cart")!.value)!.items[0]!.id;
+    be.writeTimeout = "applied";
+    expect(await changeVariant(lineId, V.trangS)).toMatchObject({ ok: true, count: 2 });
+    expect(qty(V.denM)).toBeUndefined();
+    expect(qty(V.trangS)).toBe(2);
+  });
+
+  it("cart changeVariant: bước gỡ (bước 2) hết hạn chưa ghi → báo giỏ đổi một nửa, không 'thử lại'", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    const lineId = be.carts.get(jar.get("xs_cart")!.value)!.items[0]!.id;
+    be.writeTimeout = "lost";
+    be.skipWrites = 1; // bước thêm chạy bình thường, bước gỡ mất
+    const r = await changeVariant(lineId, V.trangS);
+    expect(r).toEqual({
+      ok: false,
+      code: "CART_UNKNOWN",
+      message: "Đã thêm phân loại mới nhưng chưa gỡ dòng cũ, vui lòng kiểm tra giỏ.",
+    });
+    expect(qty(V.trangS)).toBe(2);
+  });
+
+  it("cart refreshLinePrice: bước thêm lại (bước 2) hết hạn chưa ghi → báo giỏ đổi một nửa", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    const lineId = be.carts.get(jar.get("xs_cart")!.value)!.items[0]!.id;
+    be.writeTimeout = "lost";
+    be.skipWrites = 1; // bước gỡ chạy bình thường, bước thêm mất
+    vi.useFakeTimers();
+    const p = refreshLinePrice(lineId);
+    await vi.advanceTimersByTimeAsync(2000);
+    const r = await p;
+    vi.useRealTimers();
+    expect(r).toEqual({
+      ok: false,
+      code: "CART_UNKNOWN",
+      message: "Đã gỡ dòng cũ nhưng chưa thêm lại, vui lòng kiểm tra giỏ.",
+    });
+    expect(qty(V.denM)).toBeUndefined();
+  });
+
+  it("cart refreshLinePrice: bước thêm lại hết hạn đã ghi → thành công, không thêm đôi", async () => {
+    be.seed([{ variant: V.denM, qty: 2 }]);
+    const lineId = be.carts.get(jar.get("xs_cart")!.value)!.items[0]!.id;
+    // DELETE đi trước (thành công), POST thêm lại hết hạn
+    const orig = be.fetch;
+    vi.stubGlobal("fetch", async (i: string | URL | Request, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST" && String(i).endsWith("/line-items"))
+        be.writeTimeout = "applied";
+      return orig(i, init);
+    });
+    expect(await refreshLinePrice(lineId)).toMatchObject({ ok: true, count: 2 });
+    expect(qty(V.denM)).toBe(2);
   });
 });
 

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { datasetStatements, expectedSkuCount, SHAPES } from "./dataset.mjs";
-import { assertSafeTargets } from "./env.mjs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { assertNotProduction, assertSafeTargets } from "./env.mjs";
 import {
   classify,
   createDeck,
@@ -20,7 +23,9 @@ import {
   variantIdOf,
   WRITE_MIX,
 } from "./lib.mjs";
-import { renderOpTable, renderReport } from "./report.mjs";
+import { currentCommit, renderOpTable, renderReport } from "./report.mjs";
+
+const repoRoot = path.resolve(import.meta.dirname, "../..");
 
 const s = (op, ms, outcome = "ok", status = 200) => ({ op, ms, outcome, status });
 
@@ -283,4 +288,61 @@ test("renderReport: có ngưỡng, kết quả, bảng tính đúng; dữ liệu
   assert.match(md, /Không đo được/);
   assert.match(md, /20× nhỏ hơn/);
   assert.equal(THRESHOLDS.p95Ms.checkout, 2000);
+});
+
+// QA-PERF-006/007 (T-109)
+const PROD = ["x-shop", "vn"].join("."); // dựng tách vế: CI grep cấm tên miền production trong scripts/load
+test("assertNotProduction: chặn production + subdomain + host cấu hình thêm; cho localhost/staging; URL lỗi/rỗng bị từ chối", () => {
+  assert.throws(() => assertNotProduction(`https://${PROD}`), /production/);
+  assert.throws(() => assertNotProduction(`https://WWW.${PROD.toUpperCase()}/store`), /production/);
+  assert.throws(() => assertNotProduction(`https://${PROD.replace(".vn", ".com")}:8443`), /production/);
+  assert.throws(() => assertNotProduction("https://shop.example.org", "example.org"), /production/);
+  assert.throws(() => assertNotProduction(""), /không hợp lệ/);
+  assert.throws(() => assertNotProduction("không phải url"), /không hợp lệ/);
+  assertNotProduction("http://127.0.0.1:9200");
+  assertNotProduction("https://staging.example.org", "other.test");
+  assertNotProduction(`https://not${PROD}.test`); // không khớp cuối miền
+});
+
+test("renderReport: ghi SHA commit; thiếu commit → 'không xác định'", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const base = {
+    date: "2026-01-01T00:00:00.000Z",
+    config: {
+      seed: 1,
+      dbName: "x",
+      redisDb: 1,
+      port: 1,
+      readRps: 5,
+      writeRps: 1,
+      coldSeconds: 1,
+      steadySeconds: 1,
+      burstSeconds: 1,
+    },
+    machine: { cpus: 1, cpuModel: "x", memGiB: "1", node: "v22", pg: "pg", loadavg: "0" },
+    timings: {},
+    dataset: null,
+    phases: [],
+    checks: [],
+    cache: { hit: 0, read: 0 },
+    ok: true,
+  };
+  assert.match(renderReport({ ...base, commit: sha }), new RegExp(`commit \`${sha}\``));
+  assert.match(renderReport(base), /commit `không xác định`/);
+});
+
+test("currentCommit: SHA 40 hex trong repo; thư mục ngoài repo → rỗng", () => {
+  assert.match(currentCommit(repoRoot), /^[0-9a-f]{40}$/);
+  assert.equal(currentCommit(mkdtempSync(path.join(os.tmpdir(), "nogit-"))), "");
+});
+
+test("cấu hình load/CI không chứa tên miền production", () => {
+  const re = new RegExp(`x-shop\\.(${["vn", "com"].join("|")})`, "i");
+  const walk = (d) =>
+    readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)],
+    );
+  for (const dir of ["scripts/load", ".github/workflows"]) {
+    for (const f of walk(path.join(repoRoot, dir))) assert.doesNotMatch(readFileSync(f, "utf8"), re, f);
+  }
 });

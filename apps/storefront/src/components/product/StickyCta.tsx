@@ -1,6 +1,7 @@
 "use client";
 
 import type { RefObject } from "react";
+import { t } from "../../lib/i18n";
 import { Button } from "../ui/Button";
 import styles from "./Product.module.css";
 import { useStickyVisible } from "./sticky";
@@ -27,7 +28,7 @@ export function StickyCta({
   const visible = useStickyVisible(target);
   if (!visible) return null;
   return (
-    <div className={styles.sticky} role="region" aria-label="Mua nhanh">
+    <div className={styles.sticky} role="region" aria-label={t("product.sticky.label")}>
       <span className={styles.stickyPrice}>{priceLabel}</span>
       <Button
         size="lg"

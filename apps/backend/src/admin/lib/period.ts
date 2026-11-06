@@ -1,5 +1,7 @@
+import { MS_PER_DAY } from "./units";
+
 /**
- * Khoảng báo cáo chọn theo NGÀY (giờ Việt Nam, UTC+7) → cặp mốc `[from, to)` ISO 8601 có múi giờ mà API đòi.
+ * Khoảng báo cáo chọn theo NGÀY (giờ Việt Nam, UTC+7) → cặp mốc `[from, to)` RFC 3339 có giây và offset mà API đòi.
  * `to` là ngày CUỐI được tính (bao gồm) → mốc `to` gửi lên là 00:00 ngày kế tiếp.
  */
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -30,7 +32,7 @@ export function periodFromDays(fromDay: string, toDay: string): PeriodResult {
   if (from && to && from.getTime() > to.getTime()) {
     return { ok: false, error: "Ngày bắt đầu phải trước hoặc bằng ngày kết thúc." };
   }
-  const next = to ? new Date(to.getTime() + 24 * 3600 * 1000) : null;
+  const next = to ? new Date(to.getTime() + MS_PER_DAY) : null;
   return {
     ok: true,
     from: from ? `${ymd(from)}T00:00:00+07:00` : null,
