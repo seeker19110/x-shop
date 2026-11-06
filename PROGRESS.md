@@ -4,7 +4,7 @@
 - Đợt 3 PLAN-2 (mục L, D-129) trên nhánh `claude/festive-wozniak-fwg3eg`, PR #20 đang mở, chờ chủ dự án merge. Chủ dự án yêu cầu merge (2026-11-05) — guard chặn merge do agent (ngoại lệ cứng LOOP-STOP-005, PR chạm auth/thanh toán): chủ dự án bấm squash-merge. `T-241` xong: gộp coverage không còn phủ ảo, sàn branches 82,7 (D-166/D-167, chủ dự án duyệt); `T-239` để mở (vế branches ≥ 83,65 dựa trên số đo ảo).
 
 ## Tiếp theo
-1. Xác nhận sàn branches 82,7 bằng ≥ 2 lần CI trên head cuối của PR #20 (job `integration-coverage-merge`); dao động lớn hơn biên thì báo chủ dự án.
+1. Chờ chủ dự án squash-merge PR #20 (agent bị guard chặn merge). Sàn 82,7 đã xác nhận bằng 2 lần CI trên `b1ac825` (run 42130589447 lần 1/2: branches 82,83 / 82,85; lines 93,87 / 93,85).
 2. Sau khi PR #20 merge, cắt lại nhánh làm việc từ master, mỗi lát một PR, có người rà:
    - `T-186` migration bigint cột tiền (D-140, có sẵn 3 commit ở nhánh riêng);
    - `T-203` consent → `T-204` thời hạn lưu → `T-205` DSAR (D-158, PII, merge cần người);
