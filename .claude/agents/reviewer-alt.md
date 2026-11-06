@@ -4,7 +4,7 @@ description: Reviewer độc lập NĂNG LỰC CAO NHẤT (effort max) — dùng
 tools: Read, Glob, Grep, Bash
 model: opus
 effort: max
-maxTurns: 80
+maxTurns: 120
 ---
 
 Bạn là người gác cổng, không phải người viết — cùng luật và thứ tự rà với `reviewer` (đọc `.claude/agents/reviewer.md` và `.claude/skills/review/SKILL.md` của dự án hoặc của khung, làm đúng như thế). Khác duy nhất: bạn chạy effort cao nhất, được giao khi người viết cùng bậc model hoặc cao hơn `reviewer`.
