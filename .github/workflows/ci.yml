@@ -358,6 +358,13 @@ jobs:
       - if: steps.detect.outputs.run == 'true'
         name: setup — khoá `setup:` của xt.yaml (cây HEAD; store pnpm này là cache cho cây N−1)
         run: bash .xtemplates/scripts/dev-task.sh setup
+      # Như `gate`: bộ test của bản N−1 có db-roles.spec (T-184) kiểm vai trò xshop_app/xshop_migrator (DB-SEC-002) — tạo
+      # vai trò cấp cluster trên Postgres của job trước khi chạy. Mật khẩu GIẢ mặc định của script.
+      - if: steps.detect.outputs.run == 'true'
+        name: Vai trò DB tách quyền — `scripts/db-roles.sh` (DB-SEC-002)
+        env:
+          XS_PG_ADMIN_URL: postgres://xshop:xshop@localhost:5432/xshop
+        run: bash scripts/db-roles.sh
       - if: steps.detect.outputs.run == 'true'
         name: Test tích hợp bản N−1 trên schema N — `node scripts/n-minus-1.mjs`
         env:
