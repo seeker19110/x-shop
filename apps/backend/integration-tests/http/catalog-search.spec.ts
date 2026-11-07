@@ -622,7 +622,19 @@ medusaIntegrationTestRunner({
         expect(new Date(row.price_valid_until as Date).getTime()).toBe(endsAt.getTime());
         // Hết hạn: job mỗi phút đánh dấu + xả; ở đây gọi trực tiếp đúng các hàm job dùng.
         await new Promise((r) => setTimeout(r, Math.max(0, endsAt.getTime() - Date.now() + 500)));
-        expect(await markExpiredPrices(container)).toBeGreaterThanOrEqual(1);
+        // Job `catalog-index-drain` (mỗi phút) gọi đúng markExpiredPrices rồi xả: nếu nó chạy giữa lúc hết hạn và dòng dưới,
+        // dòng đã về giá gốc nên lời gọi này trả 0. Khi đó khẳng định job đã làm thay (read model về giá gốc) — không phụ
+        // thuộc thời điểm cron, vẫn giữ đủ độ chặt.
+        const marked = await markExpiredPrices(container);
+        if (marked === 0) {
+          const now = await index().listRows({ channelIds: [seed.base.salesChannelId], category: null }, [
+            idOf("ao-polo-nam"),
+          ]);
+          expect(now.find((r) => r.sku === "POLO-TRANG-M")).toMatchObject({
+            price: 390_000,
+            price_valid_until: null,
+          });
+        }
         // Khoá bận (lượt xả khác) → job giao lượt chờ nền (D-081) nên đọc lại tới khi hội tụ.
         await drainCatalogIndexForJob(container);
         const after = await eventually(
