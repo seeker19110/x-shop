@@ -19,40 +19,19 @@ updates:
       actions:
         patterns: ["*"]
 
-  # pnpm workspace: Dependabot dùng hệ sinh thái `npm` cho pnpm; mỗi manifest một khối (BASE-DEP-007, OPS-MAINT-001).
-  # Gom minor+patch thành một PR; nâng MAJOR tách PR riêng (không vào group) để theo mẫu PR `major-upgrade` (OPS-MAINT-005).
+  # pnpm workspace: Dependabot dùng hệ sinh thái `npm` cho pnpm. CHỈ một khối ở `/` — repo có một `pnpm-lock.yaml` ở gốc;
+  # khối gốc đã phủ package.json của apps/* và packages/* và cập nhật lockfile cùng PR. Khối con (`/apps/backend`…) sinh PR
+  # chỉ sửa package.json, thiếu lockfile → `--frozen-lockfile` hỏng cả CI (T-242, D-168: #22/#23/#25); check-dependabot
+  # chặn khai lại khối con. Gom minor+patch thành một PR; nâng MAJOR tách PR riêng (không vào group) để theo mẫu PR
+  # `major-upgrade` (OPS-MAINT-005; BASE-DEP-007, OPS-MAINT-001). Trần 5 PR mở: một nhóm minor/patch + các major tách riêng.
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly, day: monday }
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
     cooldown: { default-days: 7 }
     labels: [dependencies]
     groups:
       root-minor-patch: { update-types: [minor, patch] }
-  - package-ecosystem: npm
-    directory: /apps/backend
-    schedule: { interval: weekly, day: monday }
-    open-pull-requests-limit: 3
-    cooldown: { default-days: 7 }
-    labels: [dependencies]
-    groups:
-      backend-minor-patch: { update-types: [minor, patch] }
-  - package-ecosystem: npm
-    directory: /apps/storefront
-    schedule: { interval: weekly, day: monday }
-    open-pull-requests-limit: 3
-    cooldown: { default-days: 7 }
-    labels: [dependencies]
-    groups:
-      storefront-minor-patch: { update-types: [minor, patch] }
-  - package-ecosystem: npm
-    directory: /packages/domain
-    schedule: { interval: weekly, day: monday }
-    open-pull-requests-limit: 2
-    cooldown: { default-days: 7 }
-    labels: [dependencies]
-    groups:
-      domain-minor-patch: { update-types: [minor, patch] }
   # Base image của `Dockerfile` gốc (T-191, ghim tag + digest manifest list): Dependabot nâng cả tag lẫn digest. Node phải
   # khớp `.nvmrc` — PR nâng image đi kèm đổi `.nvmrc` trong cùng PR (xem ghi chú đầu Dockerfile). Image service CI nằm trong
   # `services:` của workflow — Dependabot không quét (digest ghim tay ở T-106). `scripts/check-dependabot.mjs` giữ khối này

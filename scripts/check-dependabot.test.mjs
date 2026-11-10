@@ -20,6 +20,7 @@ function repo(files) {
   put(root, "package.json", "{}");
   put(root, "pnpm-workspace.yaml", "packages:\n  - apps/*\n");
   put(root, "apps/a/package.json", "{}");
+  put(root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
   put(root, ".github/workflows/ci.yml", "name: ci\n");
   for (const [k, v] of Object.entries(files)) put(root, k, v);
   return root;
@@ -38,12 +39,7 @@ test("khớp đầy đủ -> không lỗi", () => {
   withRepo(
     {
       Dockerfile: "FROM x",
-      ".github/dependabot.yml": dep(
-        ["npm", "/"],
-        ["npm", "/apps/a"],
-        ["github-actions", "/"],
-        ["docker", "/"],
-      ),
+      ".github/dependabot.yml": dep(["npm", "/"], ["github-actions", "/"], ["docker", "/"]),
     },
     (root) => assert.deepEqual(check(root), []),
   );
@@ -53,7 +49,7 @@ test("có Dockerfile mà thiếu docker -> lỗi", () => {
   withRepo(
     {
       Dockerfile: "FROM x",
-      ".github/dependabot.yml": dep(["npm", "/"], ["npm", "/apps/a"], ["github-actions", "/"]),
+      ".github/dependabot.yml": dep(["npm", "/"], ["github-actions", "/"]),
     },
     (root) => assert.match(check(root).join("\n"), /thiếu khối dependabot.*docker \//),
   );
@@ -62,35 +58,45 @@ test("có Dockerfile mà thiếu docker -> lỗi", () => {
 test("khai docker mà không còn Dockerfile -> lỗi thừa", () => {
   withRepo(
     {
-      ".github/dependabot.yml": dep(
-        ["npm", "/"],
-        ["npm", "/apps/a"],
-        ["github-actions", "/"],
-        ["docker", "/"],
-      ),
+      ".github/dependabot.yml": dep(["npm", "/"], ["github-actions", "/"], ["docker", "/"]),
     },
     (root) => assert.match(check(root).join("\n"), /không có manifest.*docker \//),
   );
 });
 
-test("thiếu thư mục npm của workspace -> lỗi; directory có dấu / cuối vẫn khớp", () => {
-  withRepo({ ".github/dependabot.yml": dep(["npm", "/"], ["github-actions", "/"]) }, (root) =>
-    assert.match(check(root).join("\n"), /npm \/apps\/a/),
-  );
+test("pnpm một lockfile gốc: chỉ khối npm `/`; khối con -> lỗi nêu lockfile; thiếu `/` -> lỗi; `/` dấu cuối vẫn khớp", () => {
   withRepo(
+    { ".github/dependabot.yml": dep(["npm", "/"], ["npm", "/apps/a"], ["github-actions", "/"]) },
+    (root) => assert.match(check(root).join("\n"), /pnpm workspace.*npm \/apps\/a.*pnpm-lock\.yaml/),
+  );
+  withRepo({ ".github/dependabot.yml": dep(["npm", "/apps/a"], ["github-actions", "/"]) }, (root) =>
+    assert.match(check(root).join("\n"), /thiếu khối dependabot cho manifest: npm \//),
+  );
+  withRepo({ ".github/dependabot.yml": dep(["npm", "//"], ["github-actions", "/"]) }, (root) =>
+    assert.deepEqual(check(root), []),
+  );
+});
+
+test("không có pnpm-lock.yaml gốc (npm/yarn workspaces): mỗi thư mục workspace một khối như cũ", () => {
+  const noLock = (files, fn) =>
+    withRepo(files, (root) => {
+      rmSync(join(root, "pnpm-lock.yaml"));
+      fn(root);
+    });
+  noLock({ ".github/dependabot.yml": dep(["npm", "/"], ["github-actions", "/"]) }, (root) =>
+    assert.match(check(root).join("\n"), /thiếu khối dependabot cho manifest: npm \/apps\/a/),
+  );
+  noLock(
     { ".github/dependabot.yml": dep(["npm", "/"], ["npm", "/apps/a/"], ["github-actions", "/"]) },
     (root) => assert.deepEqual(check(root), []),
   );
 });
 
 test("không có workflows -> github-actions là thừa; thiếu dependabot.yml -> lỗi", () => {
-  withRepo(
-    { ".github/dependabot.yml": dep(["npm", "/"], ["npm", "/apps/a"], ["github-actions", "/"]) },
-    (root) => {
-      rmSync(join(root, ".github/workflows"), { recursive: true });
-      assert.match(check(root).join("\n"), /github-actions/);
-    },
-  );
+  withRepo({ ".github/dependabot.yml": dep(["npm", "/"], ["github-actions", "/"]) }, (root) => {
+    rmSync(join(root, ".github/workflows"), { recursive: true });
+    assert.match(check(root).join("\n"), /github-actions/);
+  });
   withRepo({}, (root) => assert.deepEqual(check(root), ["thiếu .github/dependabot.yml"]));
 });
 
@@ -108,7 +114,7 @@ test("Dockerfile trong node_modules và thư mục ẩn (.claude/worktrees) bị
     {
       "node_modules/x/Dockerfile": "FROM x",
       ".claude/worktrees/agent-1/Dockerfile": "FROM x",
-      ".github/dependabot.yml": dep(["npm", "/"], ["npm", "/apps/a"], ["github-actions", "/"]),
+      ".github/dependabot.yml": dep(["npm", "/"], ["github-actions", "/"]),
     },
     (root) => assert.deepEqual(check(root), []),
   );
