@@ -117,10 +117,17 @@ export function check(root) {
   const errors = [];
   for (const e of [...expected].sort())
     if (!declared.has(e)) errors.push(`thiếu khối dependabot cho manifest: ${e}`);
-  const pnpmRoot = pnpmRootLockfile(root);
+  // Thành viên workspace (có package.json) — chỉ những thư mục này mới "đã được khối `/` phủ".
+  const members = pnpmRootLockfile(root)
+    ? new Set(
+        workspaceDirs(root)
+          .filter((d) => existsSync(join(d, "package.json")))
+          .map((d) => `npm ${toDir(root, d)}`),
+      )
+    : new Set();
   for (const e of [...declared].sort()) {
     if (expected.has(e)) continue;
-    if (pnpmRoot && e.startsWith("npm /") && e !== "npm /")
+    if (members.has(e))
       errors.push(
         `pnpm workspace một lockfile ở gốc: bỏ khối ${e} — khối npm \`/\` đã phủ thư mục này; khối con sinh PR thiếu pnpm-lock.yaml`,
       );

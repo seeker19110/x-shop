@@ -75,6 +75,28 @@ test("pnpm một lockfile gốc: chỉ khối npm `/`; khối con -> lỗi nêu 
   withRepo({ ".github/dependabot.yml": dep(["npm", "//"], ["github-actions", "/"]) }, (root) =>
     assert.deepEqual(check(root), []),
   );
+  // Thư mục không thuộc workspace: thông điệp chung "không có manifest", không nói "khối `/` đã phủ".
+  withRepo(
+    { ".github/dependabot.yml": dep(["npm", "/"], ["npm", "/nope"], ["github-actions", "/"]) },
+    (root) => {
+      const out = check(root).join("\n");
+      assert.match(out, /không có manifest tương ứng: npm \/nope/);
+      assert.doesNotMatch(out, /đã phủ/);
+    },
+  );
+});
+
+test("workspaces trong package.json (không pnpm-workspace.yaml) dù có pnpm-lock.yaml: luật cũ, mỗi thư mục một khối", () => {
+  withRepo(
+    {
+      "package.json": JSON.stringify({ workspaces: ["apps/*"] }),
+      ".github/dependabot.yml": dep(["npm", "/"], ["github-actions", "/"]),
+    },
+    (root) => {
+      rmSync(join(root, "pnpm-workspace.yaml"));
+      assert.match(check(root).join("\n"), /thiếu khối dependabot cho manifest: npm \/apps\/a/);
+    },
+  );
 });
 
 test("không có pnpm-lock.yaml gốc (npm/yarn workspaces): mỗi thư mục workspace một khối như cũ", () => {
