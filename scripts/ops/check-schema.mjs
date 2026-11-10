@@ -1,5 +1,5 @@
 /**
- * Kiểm schema các bảng của module tùy biến (T-101 — DB-MODEL-004, DB-MODEL-005) bằng truy vấn catalog PostgreSQL trên
+ * Kiểm schema các bảng của module tùy biến (T-101 — DB-MODEL-004, DB-MODEL-005; T-186 — DB-MODEL-002) bằng truy vấn catalog trên
  * một DB ĐÃ MIGRATE. Chỉ bảng do migration của dự án tạo (`apps/backend/src/modules/<module>/migrations/Migration*.ts`,
  * `create table if not exists "…"`); bảng native Medusa và bảng link module không thuộc phạm vi.
  *
@@ -26,6 +26,13 @@
  *  - CHECK_ENUM    cột chữ mang trạng thái/loại (tên state/status/kind/type/channel/method/priority/source/outcome/role/
  *                  action/payer/unit hoặc đuôi _state/_status/_kind/_type/_method) phải có CHECK tập giá trị — hoặc nằm
  *                  trong ENUM_ALLOW.
+ *  - MONEY_TYPE    cột TIỀN (nhận theo tên: một đoạn `_` là amount/total/fee/price/cod/refund/cost/discount/subtotal/
+ *                  balance/paid/difference/tax/deposit/surcharge/payout — kể cả số nhiều: fees, taxes, payouts… — hoặc tên
+ *                  compare_at) có kiểu số phải là `bigint` (số nguyên VND, DB-MODEL-002 —
+ *                  T-186). Cấm integer/smallint (trần 2^31−1), real/double precision (dấu phẩy động), money (phụ thuộc
+ *                  lc_monetary). `numeric` chỉ khi nằm trong MONEY_NUMERIC_ALLOW với lý do nêu ADR (ADR-NNNN). Cột trùng
+ *                  tên mà không phải tiền (vd số đếm `rows_total`) → NOT_MONEY_ALLOW. Cột không phải kiểu số (timestamptz
+ *                  `cod_confirm_by`, text `refund_id`…) không xét.
  *  - MIGRATION_NAME  tên file migration duy nhất giữa các module và đã có trong `mikro_orm_migrations` (bảng chung
  *                  của Medusa, khớp theo tên — trùng tên thì bản sau bị bỏ qua âm thầm).
  *  - MISSING_TABLE migration tạo bảng mà DB không có.
@@ -188,12 +195,38 @@ export const ENUM_ALLOW = {
     "nhóm hàng do nhân viên catalog đặt (áo, quần, giày…) — danh mục mở, không phải trạng thái",
 };
 
+/** Cột số trùng tên mẫu tiền nhưng KHÔNG mang nghĩa tiền (miễn MONEY_TYPE). */
+export const NOT_MONEY_ALLOW = {
+  "catalog_import_job.rows_total":
+    "số dòng của tệp nhập catalog (đếm), không phải tiền — đuôi _total trùng mẫu tên",
+};
+
+/**
+ * Cột tiền được phép `numeric(p,s)` — chỉ khi có ADR (DB-MODEL-002: tỷ giá, đơn giá dưới đơn vị nhỏ nhất); lý do phải nêu
+ * `ADR-NNNN`. Hiện không có: mọi cột tiền là bigint (T-186).
+ */
+export const MONEY_NUMERIC_ALLOW = {};
+
 /** Khóa ngoại được miễn luật FK_*. Khóa `bảng.tên_constraint`. Hiện không có. */
 export const FK_ALLOW = {};
 
 const ENUM_NAME =
   /^(state|status|kind|type|channel|method|priority|source|outcome|role|action|payer|unit)$|_(state|status|kind|type|method)$/;
 const NUMERIC_TYPES = new Set(["integer", "bigint", "numeric", "smallint"]);
+/** Tên cột mang nghĩa tiền (T-186): một đoạn tách bởi `_` khớp từ tiền, hoặc compare_at (giá gạch). */
+export const MONEY_NAME =
+  /(?:^|_)(?:amounts?|totals?|fees?|prices?|cod|refunds?|costs?|discounts?|subtotals?|balances?|paid|differences?|tax(?:es)?|deposits?|surcharges?|payouts?|refunded|captured|net|gross|revenues?|charges?|vnd)(?:_|$)|^compare_at$/;
+/** Kiểu số (information_schema.data_type) xét luật MONEY_TYPE. */
+const MONEY_CANDIDATE_TYPES = new Set([
+  "integer",
+  "smallint",
+  "bigint",
+  "numeric",
+  "real",
+  "double precision",
+  "money",
+]);
+const ADR_REF = /ADR-\d{4}/;
 const TEXT_TYPES = new Set(["text", "character varying"]);
 const NO_ACTION = "a";
 
@@ -280,7 +313,16 @@ export function analyze(catalog, { tables, migrations = [], snapshot = new Map()
   const numericAllow = allow.numeric ?? NUMERIC_ALLOW;
   const enumAllow = allow.enum ?? ENUM_ALLOW;
   const fkAllow = allow.fk ?? FK_ALLOW;
-  const used = { nullable: new Set(), numeric: new Set(), enum: new Set(), fk: new Set() };
+  const notMoneyAllow = allow.notMoney ?? NOT_MONEY_ALLOW;
+  const moneyNumericAllow = allow.moneyNumeric ?? MONEY_NUMERIC_ALLOW;
+  const used = {
+    nullable: new Set(),
+    numeric: new Set(),
+    enum: new Set(),
+    fk: new Set(),
+    notMoney: new Set(),
+    moneyNumeric: new Set(),
+  };
   const out = [];
   const push = (v) => out.push(v);
   const inScope = (t) => tables.has(t);
@@ -387,6 +429,19 @@ export function analyze(catalog, { tables, migrations = [], snapshot = new Map()
           message: "cột trạng thái/loại không có CHECK tập giá trị",
         });
     }
+    if (MONEY_CANDIDATE_TYPES.has(c.type) && MONEY_NAME.test(c.column)) {
+      if (Object.hasOwn(notMoneyAllow, key)) used.notMoney.add(key);
+      else if (c.type === "bigint") {
+        // đúng kiểu tiền
+      } else if (c.type === "numeric" && Object.hasOwn(moneyNumericAllow, key)) used.moneyNumeric.add(key);
+      else
+        push({
+          rule: "MONEY_TYPE",
+          table: c.table,
+          column: c.column,
+          message: `cột tiền kiểu ${c.type} — phải là bigint (số nguyên VND; numeric chỉ khi có ADR trong MONEY_NUMERIC_ALLOW)`,
+        });
+    }
   }
 
   for (const [kind, list] of [
@@ -394,10 +449,18 @@ export function analyze(catalog, { tables, migrations = [], snapshot = new Map()
     ["numeric", numericAllow],
     ["enum", enumAllow],
     ["fk", fkAllow],
+    ["notMoney", notMoneyAllow],
+    ["moneyNumeric", moneyNumericAllow],
   ]) {
     for (const [key, why] of Object.entries(list)) {
       if (typeof why !== "string" || why.trim().length < 20)
         push({ rule: "ALLOWLIST", table: key, message: `lý do allowlist ${kind} quá ngắn (< 20 ký tự)` });
+      else if (kind === "moneyNumeric" && !ADR_REF.test(why))
+        push({
+          rule: "ALLOWLIST",
+          table: key,
+          message: "cột tiền numeric phải nêu ADR (ADR-NNNN) trong lý do",
+        });
       if (!used[kind].has(key))
         push({
           rule: "ALLOWLIST",

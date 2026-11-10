@@ -11,6 +11,9 @@ import {
   fkCovered,
   hasEnumCheck,
   hasLowerBound,
+  MONEY_NAME,
+  MONEY_NUMERIC_ALLOW,
+  NOT_MONEY_ALLOW,
   NULLABLE_ALLOW,
   NUMERIC_ALLOW,
   projectTables,
@@ -20,7 +23,7 @@ import {
   snapshotColumns,
 } from "./check-schema.mjs";
 
-const NONE = { nullable: {}, numeric: {}, enum: {}, fk: {} };
+const NONE = { nullable: {}, numeric: {}, enum: {}, fk: {}, notMoney: {}, moneyNumeric: {} };
 const REASON = "lý do đủ dài cho allowlist của test";
 const tables = (...names) => new Map(names.map((n) => [n, "mod"]));
 const catalog = (o = {}) => ({ columns: [], checks: [], fks: [], indexes: [], ...o });
@@ -148,6 +151,150 @@ test("analyze: cột số thiếu cận dưới / cột trạng thái thiếu t�
   assert.deepEqual(analyze(catalog({ columns: cols, checks }), { tables: tables("t"), allow: NONE }), []);
 });
 
+test("MONEY_NAME: nhận từ tiền (kể cả số nhiều) theo đoạn `_`; không nhận chuỗi con (codec, taxonomy, depositor)", () => {
+  for (const name of [
+    "amount",
+    "total",
+    "total_amount",
+    "cod_amount",
+    "cod_reported_amount",
+    "shipping_fee",
+    "refund_amount",
+    "price",
+    "unit_price",
+    "compare_at",
+    "difference",
+    "discount_total",
+    "cost",
+    "paid",
+    "balance",
+    "rows_total",
+    // số nhiều và từ tiền bổ sung (review T-186)
+    "amounts",
+    "fees",
+    "shipping_fees",
+    "totals",
+    "prices",
+    "refunds_total",
+    "tax",
+    "taxes",
+    "vat_tax_amount",
+    "tax_total",
+    "deposit",
+    "deposits",
+    "deposit_amount",
+    "surcharge",
+    "cod_surcharges",
+    "payout",
+    "payouts",
+    "payout_total",
+    // từ tiền bổ sung (review T-186 lần 2)
+    "refunded",
+    "captured",
+    "net",
+    "net_amount",
+    "gross",
+    "revenue",
+    "revenues",
+    "charge",
+    "charges",
+    "total_vnd",
+  ])
+    assert.ok(MONEY_NAME.test(name), name);
+  for (const name of [
+    "codec",
+    "prefetch",
+    "totality",
+    "feed",
+    "feess",
+    "taxi",
+    "taxonomy",
+    "syntax",
+    "depositor",
+    "payoutss",
+    "surcharged",
+    "pricey",
+    "recompare_at",
+    "cart_version",
+    "rank",
+    "network",
+    "charged_at_count",
+    "netflix",
+    "vndx",
+  ])
+    assert.ok(!MONEY_NAME.test(name), name);
+});
+
+test("analyze MONEY_TYPE (DB-MODEL-002, T-186): cột tiền int4/smallint/real/double/money/numeric → vi phạm; bigint đạt", () => {
+  const types = ["integer", "smallint", "real", "double precision", "money", "numeric", "bigint"];
+  const cols = types.map((type, i) => col("t", `amount_${i}`, type));
+  const checks = types.map((_, i) => ({ table: "t", def: `CHECK ((amount_${i} >= 0))` }));
+  const vs = analyze(catalog({ columns: cols, checks }), { tables: tables("t"), allow: NONE });
+  assert.deepEqual(rules(vs), [
+    "MONEY_TYPE t.amount_0",
+    "MONEY_TYPE t.amount_1",
+    "MONEY_TYPE t.amount_2",
+    "MONEY_TYPE t.amount_3",
+    "MONEY_TYPE t.amount_4",
+    "MONEY_TYPE t.amount_5",
+  ]);
+  assert.match(vs[0].message, /kiểu integer — phải là bigint/);
+  // Không phải kiểu số (timestamptz cod_confirm_by, text refund_id, boolean refund_requested) → không xét.
+  const other = [
+    col("t", "cod_confirm_by", "timestamp with time zone"),
+    col("t", "refund_id"),
+    col("t", "refund_requested", "boolean"),
+    col("t", "breakdown_total", "jsonb"),
+  ];
+  assert.deepEqual(analyze(catalog({ columns: other }), { tables: tables("t"), allow: NONE }), []);
+  // Bảng ngoài phạm vi (native Medusa dùng numeric + raw_*) → không xét.
+  assert.deepEqual(
+    analyze(catalog({ columns: [col("t", "x", "text"), col("order_item", "unit_price", "numeric")] }), {
+      tables: tables("t"),
+      allow: NONE,
+    }),
+    [],
+  );
+});
+
+test("analyze MONEY_TYPE: NOT_MONEY_ALLOW miễn số đếm trùng tên; numeric chỉ được miễn khi lý do nêu ADR", () => {
+  const cols = [col("t", "rows_total", "integer"), col("t", "fx_rate_price", "numeric")];
+  const checks = [
+    { table: "t", def: "CHECK ((rows_total >= 0))" },
+    { table: "t", def: "CHECK ((fx_rate_price > 0))" },
+  ];
+  const ok = analyze(catalog({ columns: cols, checks }), {
+    tables: tables("t"),
+    allow: {
+      ...NONE,
+      notMoney: { "t.rows_total": REASON },
+      moneyNumeric: { "t.fx_rate_price": "tỷ giá 6 chữ số thập phân — ADR-0099" },
+    },
+  });
+  assert.deepEqual(ok, []);
+  const noAdr = analyze(catalog({ columns: cols, checks }), {
+    tables: tables("t"),
+    allow: { ...NONE, notMoney: { "t.rows_total": REASON }, moneyNumeric: { "t.fx_rate_price": REASON } },
+  });
+  assert.deepEqual(rules(noAdr), ["ALLOWLIST t.fx_rate_price"]);
+  assert.match(noAdr[0].message, /phải nêu ADR/);
+  // Miễn numeric không áp cho kiểu khác (integer vẫn lỗi); mục không dùng tới → thừa.
+  const wrongType = analyze(
+    catalog({ columns: [col("t", "fx_rate_price", "integer")], checks: [checks[1]] }),
+    {
+      tables: tables("t"),
+      allow: { ...NONE, moneyNumeric: { "t.fx_rate_price": "tỷ giá — ADR-0099 đủ dài" } },
+    },
+  );
+  assert.deepEqual(rules(wrongType), ["ALLOWLIST t.fx_rate_price", "MONEY_TYPE t.fx_rate_price"]);
+  // Cột đã thành bigint (hoặc không còn) mà vẫn trong NOT_MONEY_ALLOW → thừa.
+  const stale = analyze(catalog({ columns: [col("t", "x")] }), {
+    tables: tables("t"),
+    allow: { ...NONE, notMoney: { "t.rows_total": REASON } },
+  });
+  assert.deepEqual(rules(stale), ["ALLOWLIST t.rows_total"]);
+});
+
 test("analyze: allowlist thừa hoặc lý do quá ngắn → vi phạm ALLOWLIST", () => {
   const cols = [col("t", "rank", "integer")];
   const short = analyze(catalog({ columns: cols }), {
@@ -217,6 +364,8 @@ test("repo thật: bảng dự án gồm cả bảng SQL tay và DML, không có
     ...Object.keys(NULLABLE_ALLOW),
     ...Object.keys(NUMERIC_ALLOW),
     ...Object.keys(ENUM_ALLOW),
+    ...Object.keys(NOT_MONEY_ALLOW),
+    ...Object.keys(MONEY_NUMERIC_ALLOW),
   ])
     assert.ok(t.has(key.split(".")[0]), key);
   const names = scanModules().migrations.map((m) => m.name);
