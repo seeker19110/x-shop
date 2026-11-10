@@ -3,7 +3,11 @@
 // OPS-MAINT-001, BASE-DEP-006, BASE-DEP-007.
 //
 // Tập mong đợi (ecosystem, directory) suy từ repo:
-//   npm             — mỗi thư mục có package.json: gốc + các thư mục của pnpm-workspace.yaml (mẫu `dir/*` hoặc đường dẫn cụ thể).
+//   npm             — pnpm workspace có MỘT lockfile ở gốc (`pnpm-workspace.yaml` + `pnpm-lock.yaml`): CHỈ `/` — khối gốc
+//                     đã phủ package.json của mọi thư mục workspace và cập nhật lockfile; khối con (`/apps/x`) sinh PR chỉ sửa
+//                     package.json, thiếu lockfile → `--frozen-lockfile` hỏng (T-242, D-168: #22/#23/#25). Khai khối con → lỗi.
+//                     Ngoài ra (npm/yarn workspaces, không lockfile pnpm gốc): mỗi thư mục có package.json một khối.
+//                     Mẫu workspace vẫn được kiểm (chỉ `dir/*` hoặc đường dẫn cụ thể) ở cả hai trường hợp.
 //   github-actions  — `/` nếu `.github/workflows/` có file .yml/.yaml.
 //   docker          — thư mục chứa `Dockerfile` hoặc `Dockerfile.*` (bỏ node_modules, thư mục ẩn như .git/.claude, build output).
 // Thiếu khối khai báo cho manifest → exit 1; khai báo mà manifest không còn (Dependabot lỗi mỗi lượt) → exit 1.
@@ -77,11 +81,16 @@ function findDockerDirs(root) {
   return [...out];
 }
 
+/** pnpm workspace một lockfile ở gốc → Dependabot chỉ được khai khối npm `/` (T-242). */
+export const pnpmRootLockfile = (root) =>
+  existsSync(join(root, "pnpm-workspace.yaml")) && existsSync(join(root, "pnpm-lock.yaml"));
+
 export function expectedManifests(root) {
   const set = new Set();
   if (existsSync(join(root, "package.json"))) {
-    for (const d of workspaceDirs(root))
-      if (existsSync(join(d, "package.json"))) set.add(`npm ${toDir(root, d)}`);
+    const dirs = workspaceDirs(root); // luôn chạy: mẫu workspace lạ vẫn ném UnsupportedPatternError
+    if (pnpmRootLockfile(root)) set.add("npm /");
+    else for (const d of dirs) if (existsSync(join(d, "package.json"))) set.add(`npm ${toDir(root, d)}`);
   }
   const wf = join(root, ".github", "workflows");
   if (existsSync(wf) && readdirSync(wf).some((f) => /\.ya?ml$/.test(f))) set.add("github-actions /");
@@ -108,8 +117,22 @@ export function check(root) {
   const errors = [];
   for (const e of [...expected].sort())
     if (!declared.has(e)) errors.push(`thiếu khối dependabot cho manifest: ${e}`);
-  for (const e of [...declared].sort())
-    if (!expected.has(e)) errors.push(`dependabot khai báo mà repo không có manifest tương ứng: ${e}`);
+  // Thành viên workspace (có package.json) — chỉ những thư mục này mới "đã được khối `/` phủ".
+  const members = pnpmRootLockfile(root)
+    ? new Set(
+        workspaceDirs(root)
+          .filter((d) => existsSync(join(d, "package.json")))
+          .map((d) => `npm ${toDir(root, d)}`),
+      )
+    : new Set();
+  for (const e of [...declared].sort()) {
+    if (expected.has(e)) continue;
+    if (members.has(e))
+      errors.push(
+        `pnpm workspace một lockfile ở gốc: bỏ khối ${e} — khối npm \`/\` đã phủ thư mục này; khối con sinh PR thiếu pnpm-lock.yaml`,
+      );
+    else errors.push(`dependabot khai báo mà repo không có manifest tương ứng: ${e}`);
+  }
   return errors;
 }
 
